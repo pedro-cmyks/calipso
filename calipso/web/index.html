@@ -144,6 +144,7 @@
     </div>
     <div id="configBody">
       <div class="hint">Preferencia actual: usar suscripciones primero para tareas fuertes; API solo cuando se fuerce o cuando una ruta configurada lo pida.</div>
+      <div class="hint" id="harnessStatus">Cargando estado...</div>
       <div class="config-grid">
         <label for="cfgPolicy">Politica</label><select id="cfgPolicy"><option value="subscription_first">Suscripcion primero</option><option value="balanced">Balanceado</option><option value="local_first">Local primero</option></select>
         <label for="cfgSubClient">Suscripcion</label><select id="cfgSubClient"><option value="claude">Claude</option><option value="codex">Codex</option></select>
@@ -394,6 +395,16 @@ async function loadConfig() {
   document.getElementById("cfgApiModel").value = cfg.api?.model || "";
   document.getElementById("cfgLocalModel").value = cfg.local?.model || "";
   document.getElementById("cfgClassModel").value = cfg.classifier?.model || "";
+  const hr = await fetch("/api/harness/status");
+  if (hr.ok) {
+    const h = await hr.json();
+    const claude = h.subscription?.claude;
+    const codex = h.subscription?.codex;
+    document.getElementById("harnessStatus").textContent =
+      `Estado: claude=${claude?.ready ? "listo" : claude?.error || "no"}; ` +
+      `codex=${codex?.ready ? "listo" : codex?.error || "no"}; ` +
+      `api=${h.api?.up ? "arriba" : "apagada"}; local=${h.local?.up ? "arriba" : "apagado"}.`;
+  }
 }
 document.getElementById("saveConfig").onclick = async () => {
   const body = {
@@ -430,6 +441,8 @@ function connect() {
     const m = JSON.parse(ev.data);
     if (m.type === "meta") {
       let t = `-> ${m.used || m.route}`;
+      if (m.model) t += ` - ${m.model}`;
+      if (m.client) t += ` - ${m.client}`;
       if (m.note) t += ` - ${m.note}`;
       if (m.why) t += ` - ${m.why}`;
       addMsg("meta", t);

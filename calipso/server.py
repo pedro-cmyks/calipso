@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-calipso/server.py â€” Servidor de Calipso (Hito 1: visor/editor de cÃ³digo).
+calipso/server.py Ã¢â‚¬â€ Servidor de Calipso (Hito 1: visor/editor de cÃƒÂ³digo).
 
-Sirve una UI web con un Ã¡rbol de archivos + editor Monaco. Es el primer "cuerpo"
-alrededor del cerebro (dispatch.py). MÃ¡s adelante aquÃ­ se cuelgan:
+Sirve una UI web con un ÃƒÂ¡rbol de archivos + editor Monaco. Es el primer "cuerpo"
+alrededor del cerebro (dispatch.py). MÃƒÂ¡s adelante aquÃƒÂ­ se cuelgan:
   - el chat (WebSocket que llama al router y streamea),
   - el envoltorio de escritorio (Tauri/Electron),
   - el acceso remoto (Tailscale) / bot de WhatsApp.
@@ -45,18 +45,18 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-# El cerebro (router) y la memoria viven en el repo raÃ­z / paquete calipso.
+# El cerebro (router) y la memoria viven en el repo raÃƒÂ­z / paquete calipso.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import dispatch  # noqa: E402
 from calipso import config as calipso_config  # noqa: E402
 from calipso import costs  # noqa: E402
 from calipso.memory import Memory  # noqa: E402
 
-# RaÃ­z del proyecto que Calipso muestra/edita. Por defecto, el cwd.
+# RaÃƒÂ­z del proyecto que Calipso muestra/edita. Por defecto, el cwd.
 ROOT = pathlib.Path(os.environ.get("CALIPSO_ROOT", os.getcwd())).resolve()
 WEB = pathlib.Path(__file__).parent / "web"
 
-# Carpetas que no tiene sentido mostrar en el Ã¡rbol.
+# Carpetas que no tiene sentido mostrar en el ÃƒÂ¡rbol.
 IGNORE_DIRS = {
     ".git", "node_modules", "__pycache__", ".venv", "venv", "env",
     "dist", "build", ".mypy_cache", ".pytest_cache", ".idea", ".vscode",
@@ -67,9 +67,9 @@ MAX_FILE_BYTES = 2_000_000
 app = FastAPI(title="Calipso")
 
 # --------------------------------------------------------------------------
-# SEGURIDAD: token de acceso (defensa en capas, ademÃ¡s de la red privada)
+# SEGURIDAD: token de acceso (defensa en capas, ademÃƒÂ¡s de la red privada)
 # --------------------------------------------------------------------------
-# Calipso tiene acceso a TODOS tus archivos -> aunque estÃ© en una red privada
+# Calipso tiene acceso a TODOS tus archivos -> aunque estÃƒÂ© en una red privada
 # (Tailscale), exige un token. Se toma de CALIPSO_TOKEN o ~/.calipso/token;
 # si no existe, se genera uno y se imprime en consola al arrancar.
 
@@ -261,7 +261,7 @@ def _safe(rel: str) -> pathlib.Path:
 
 
 def _build_tree(directory: pathlib.Path) -> list[dict]:
-    """Ãrbol anidado de archivos/carpetas, carpetas primero y ordenado."""
+    """ÃƒÂrbol anidado de archivos/carpetas, carpetas primero y ordenado."""
     try:
         entries = list(directory.iterdir())
     except OSError:
@@ -484,8 +484,8 @@ def api_harness_status() -> dict:
     return {
         "routing": cfg["routing"],
         "subscription": {
-            "claude": bool(shutil.which("claude")),
-            "codex": bool(shutil.which("codex")),
+            "claude": _subscription_probe("claude"),
+            "codex": _subscription_probe("codex"),
         },
         "api": {
             "base_url": cfg["api"]["base_url"],
@@ -502,25 +502,95 @@ def api_harness_status() -> dict:
 
 
 # --------------------------------------------------------------------------
-# CHAT  (memoria + router + streaming)  â€” el corazÃ³n de Calipso
+# CHAT  (memoria + router + streaming)  Ã¢â‚¬â€ el corazÃƒÂ³n de Calipso
 # --------------------------------------------------------------------------
 
-mem = Memory(project_root=str(ROOT))  # memoria hÃ­brida y por Ã¡mbitos (global + proyecto)
+mem = Memory(project_root=str(ROOT))  # memoria hÃƒÂ­brida y por ÃƒÂ¡mbitos (global + proyecto)
 
 SYSTEM = (
-    "Eres Calipso, el asistente personal de Pedro. Respondes en espaÃ±ol, "
-    "directo y Ãºtil. Usas tu memoria cuando es relevante; si no sabes algo, "
-    "lo dices en vez de inventar."
+    "Eres Calipso, el asistente personal local de Pedro. Respondes en espanol, "
+    "directo y util. No dices que eres Alibaba, OpenAI, Anthropic, Claude, Codex "
+    "ni Ollama: eres Calipso usando un backend. Si te preguntan que modelo o ruta "
+    "usas, respondes solo con el estado real que recibes en el contexto. Si no "
+    "sabes algo o una conexion no esta configurada, lo dices sin inventar."
 )
 
 
-def _build_context(user_msg: str) -> str:
-    """Arma el preÃ¡mbulo: identidad + core markdown + recuerdos relevantes."""
+def _route_model_name(route: str, client: str | None = None) -> str:
+    if route == "api":
+        return dispatch.CONFIG["api"]["model"]
+    if route == "subscription":
+        return client or "subscription"
+    return dispatch.CONFIG["local"]["model"]
+
+
+def _subscription_available(client: str | None) -> bool:
+    return _subscription_probe(client)["ready"]
+
+
+def _subscription_probe(client: str | None) -> dict:
+    if not client:
+        return {"installed": False, "ready": False, "error": "sin cliente"}
+    exe = shutil.which(client)
+    if not exe:
+        return {"installed": False, "ready": False, "error": "no esta en PATH"}
+    try:
+        result = subprocess.run(
+            [client, "--help"], cwd=str(ROOT), text=True, capture_output=True,
+            encoding="utf-8", errors="replace", timeout=5)
+        ready = result.returncode in (0, 1, 2)
+        err = (result.stderr or result.stdout or "").strip().splitlines()
+        return {
+            "installed": True,
+            "ready": ready,
+            "path": exe,
+            "error": "" if ready else (err[0] if err else f"exit {result.returncode}"),
+        }
+    except Exception as e:
+        return {"installed": True, "ready": False, "path": exe, "error": str(e)}
+
+
+def _best_subscription_client(preferred: str | None) -> str | None:
+    if _subscription_available(preferred):
+        return preferred
+    for client in ("codex", "claude"):
+        if client != preferred and _subscription_available(client):
+            return client
+    return None
+
+
+def _harness_context(verdict: dict, used_route: str, model: str, note: str | None) -> str:
+    cfg = calipso_config.load_config()
+    probes = {"claude": _subscription_probe("claude"), "codex": _subscription_probe("codex")}
+    api_up = _http_up(cfg["api"]["base_url"].replace("/v1/chat/completions", "/health"))
+    local_up = _http_up("http://localhost:11434/api/tags")
+    return "\n".join([
+        "=== Estado real de Calipso ===",
+        f"Ruta decidida: {verdict.get('route')}",
+        f"Ruta usada en esta respuesta: {used_route}",
+        f"Cliente de suscripcion elegido: {verdict.get('client') or 'ninguno'}",
+        f"Modelo/backend usado: {model}",
+        f"Motivo de ruteo: {verdict.get('why')}",
+        f"Nota tecnica: {note or 'ninguna'}",
+        f"Politica: {cfg['routing'].get('policy')}",
+        f"Suscripciones: claude_ready={probes['claude']['ready']}, codex_ready={probes['codex']['ready']}",
+        f"Errores suscripcion: claude={probes['claude'].get('error') or 'ninguno'}, codex={probes['codex'].get('error') or 'ninguno'}",
+        f"API configurada: modelo={cfg['api']['model']}, litellm_up={api_up}",
+        f"Local configurado: modelo={cfg['local']['model']}, ollama_up={local_up}",
+        "Regla: no inventes proveedores, suscripciones, modelos ni credenciales. "
+        "Si una ruta no esta disponible, dilo como estado operativo de Calipso.",
+        "Si Pedro pregunta que modelo o ruta usas, menciona tanto la ruta decidida "
+        "como la ruta usada en esta respuesta.",
+    ])
+
+
+def _build_context(user_msg: str, runtime: str) -> str:
+    """Arma el preambulo: identidad + estado real + memoria relevante."""
     core = mem.load_core()
     recalled = mem.recall(user_msg, n=5)
-    blocks = [SYSTEM]
+    blocks = [SYSTEM, runtime]
     if core:
-        blocks.append("=== Memoria nÃºcleo ===\n" + core)
+        blocks.append("=== Memoria nucleo ===\n" + core)
     if recalled:
         lines = "\n".join(f"- ({r['score']}) {r['text']}" for r in recalled)
         blocks.append("=== Recuerdos relevantes ===\n" + lines)
@@ -528,7 +598,7 @@ def _build_context(user_msg: str) -> str:
 
 
 def _chunks_for(route: str, system: str, user_msg: str, usage: dict):
-    """Devuelve (generador, modelo) segÃºn la ruta. Reusa los parsers de
+    """Devuelve (generador, modelo) segÃƒÂºn la ruta. Reusa los parsers de
     streaming del router (SSE / NDJSON) y captura tokens en 'usage'."""
     if route == "api":
         cfg = dispatch.CONFIG["api"]
@@ -538,7 +608,7 @@ def _chunks_for(route: str, system: str, user_msg: str, usage: dict):
                        {"role": "user", "content": user_msg}]}
         headers = {"Authorization": f"Bearer {cfg['api_key']}"}
         return dispatch._sse_text_chunks(cfg["base_url"], payload, headers, usage), cfg["model"]
-    # local (Ollama) â€” y tambiÃ©n el fallback de cualquier otra ruta por ahora.
+    # local (Ollama) Ã¢â‚¬â€ y tambiÃƒÂ©n el fallback de cualquier otra ruta por ahora.
     cfg = dispatch.CONFIG["local"]
     prompt = f"{system}\n\nUsuario: {user_msg}\nCalipso:"
     payload = {"model": cfg["model"], "prompt": prompt, "stream": True}
@@ -555,7 +625,7 @@ def _next_or_stop(gen, sentinel):
 @app.websocket("/ws/chat")
 async def ws_chat(ws: WebSocket) -> None:
     if not _valid(ws.cookies.get(COOKIE)):
-        await ws.close(code=1008)  # polÃ­tica violada: sin token vÃ¡lido
+        await ws.close(code=1008)  # polÃƒÂ­tica violada: sin token vÃƒÂ¡lido
         return
     await ws.accept()
     sentinel = object()
@@ -569,16 +639,23 @@ async def ws_chat(ws: WebSocket) -> None:
             verdict = dispatch.route(user_msg, None)
             route = verdict["route"]
             note = None
-            # El chat streamea por api/local. Si cae en suscripciÃ³n (claude/codex,
-            # aÃºn no instalados), lo respondemos con el modelo local y avisamos.
             if route == "subscription":
-                note = "esta tarea irÃ­a a claude/codex; por ahora respondo en local"
+                chosen = _best_subscription_client(verdict.get("client"))
+                if chosen:
+                    verdict["client"] = chosen
+                    note = "suscripcion disponible detectada; el chat aun responde por local hasta conectar ejecucion interactiva"
+                else:
+                    note = "no hay cliente de suscripcion listo para ejecutar; fallback local"
                 route = "local"
+            model = _route_model_name(route, verdict.get("client"))
             await ws.send_json({"type": "meta", "route": verdict["route"],
-                                "used": route, "why": verdict["why"], "note": note})
+                                "used": route, "model": model,
+                                "client": verdict.get("client"),
+                                "why": verdict["why"], "note": note})
 
             # 2) contexto (core + recuerdos) y 3) streaming
-            system = _build_context(user_msg)
+            runtime = _harness_context(verdict, route, model, note)
+            system = _build_context(user_msg, runtime)
             usage: dict = {}
             used_route = route
             gen, model = _chunks_for(route, system, user_msg, usage)
@@ -594,9 +671,14 @@ async def ws_chat(ws: WebSocket) -> None:
                 if route != "local":
                     await ws.send_json({"type": "meta", "route": verdict["route"],
                                         "used": "local",
-                                        "why": f"ruta {route} fallÃ³ ({e}); fallback local",
+                                        "model": _route_model_name("local"),
+                                        "client": verdict.get("client"),
+                                        "why": f"ruta {route} fallÃƒÂ³ ({e}); fallback local",
                                         "note": "fallback a local"})
                     used_route, usage = "local", {}
+                    model = _route_model_name("local")
+                    runtime = _harness_context(verdict, "local", model, f"ruta {route} fallo; fallback local")
+                    system = _build_context(user_msg, runtime)
                     gen, model = _chunks_for("local", system, user_msg, usage)
                     while True:
                         chunk = await asyncio.to_thread(_next_or_stop, gen, sentinel)
@@ -615,9 +697,9 @@ async def ws_chat(ws: WebSocket) -> None:
                                 "tokens": entry["prompt_tokens"] + entry["completion_tokens"],
                                 "cost_usd": entry["cost_usd"]})
 
-            # 5) recordar el intercambio (episÃ³dica)
+            # 5) recordar el intercambio (episÃƒÂ³dica)
             if full.strip():
-                mem.remember(f"Pedro preguntÃ³: {user_msg}\nCalipso respondiÃ³: {full.strip()}",
+                mem.remember(f"Pedro preguntÃƒÂ³: {user_msg}\nCalipso respondiÃƒÂ³: {full.strip()}",
                              route=verdict["route"], kind="chat")
             await ws.send_json({"type": "done"})
     except WebSocketDisconnect:
@@ -626,7 +708,7 @@ async def ws_chat(ws: WebSocket) -> None:
 
 @app.post("/api/reflect")
 def api_reflect() -> dict:
-    """Dispara la consolidaciÃ³n: promueve hechos duraderos al core curado."""
+    """Dispara la consolidaciÃƒÂ³n: promueve hechos duraderos al core curado."""
     promoted = mem.reflect()
     return {"promoted": promoted}
 
@@ -652,13 +734,13 @@ def index() -> FileResponse:
     return FileResponse(WEB / "index.html")
 
 
-# EstÃ¡ticos (por si aÃ±adimos assets locales: monaco vendorizado, iconos, etc.)
+# EstÃƒÂ¡ticos (por si aÃƒÂ±adimos assets locales: monaco vendorizado, iconos, etc.)
 if WEB.exists():
     app.mount("/static", StaticFiles(directory=str(WEB)), name="static")
 
 
 if __name__ == "__main__":
-    # 0.0.0.0 = escucha en toda la red local: Ã¡brelo desde el celular u otro PC
+    # 0.0.0.0 = escucha en toda la red local: ÃƒÂ¡brelo desde el celular u otro PC
     # en el mismo WiFi con http://<IP-de-tu-PC>:8000
     import socket
     ip = socket.gethostbyname(socket.gethostname())

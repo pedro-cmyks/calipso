@@ -208,7 +208,13 @@ def route(prompt: str, forced: str | None) -> dict:
     if verdict is not None:
         verdict["source"] = "rules"
         return verdict
-    return decide_by_model(prompt)
+    verdict = decide_by_model(prompt)
+    routing = (load_config() if load_config else {}).get("routing", {})
+    if verdict.get("route") == "api" and routing.get("api_only_when_forced", True):
+        verdict["route"] = "subscription"
+        verdict["client"] = routing.get("subscription_client", "claude")
+        verdict["why"] = verdict.get("why", "clasificador eligio api") + "; politica evita API no forzada"
+    return verdict
 
 
 # ----------------------------------------------------------------------------
