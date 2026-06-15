@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Calipso local runtime data
+.calipso/
+*.log
+
+# Claude/Codex local machine settings
+.claude/settings.local.json
+
+# Local/editor noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temporary archives/artifacts
+files.zip

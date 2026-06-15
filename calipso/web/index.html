@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Calipso</title>
+<style>
+  :root {
+    --bg: #1e1e1e; --panel: #252526; --bar: #181818;
+    --border: #333; --text: #d4d4d4; --muted: #888;
+    --accent: #4ea1ff; --accent-dim: #2d6cb0; --dirty: #e2c08d;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: system-ui, "Segoe UI", sans-serif;
+               background: var(--bg); color: var(--text); overflow: hidden; }
+  #app { display: flex; flex-direction: column; height: 100%; }
+  header { display: flex; align-items: center; gap: 12px; height: 40px;
+           padding: 0 14px; background: var(--bar); border-bottom: 1px solid var(--border);
+           font-size: 13px; flex: 0 0 auto; }
+  header .logo { font-weight: 700; color: var(--accent); letter-spacing: .5px; }
+  header .proj { color: var(--muted); }
+  header .status { margin-left: auto; color: var(--muted); font-size: 12px; }
+  header .status.dirty { color: var(--dirty); }
+  header .status.saved { color: #6a9955; }
+  main { display: flex; flex: 1 1 auto; min-height: 0; }
+  #sidebar { width: 270px; flex: 0 0 auto; background: var(--panel);
+             border-right: 1px solid var(--border); overflow: auto; padding: 6px 0; }
+  #sidebar .title { font-size: 11px; text-transform: uppercase; letter-spacing: .8px;
+                    color: var(--muted); padding: 6px 14px; }
+  ul.tree { list-style: none; margin: 0; padding: 0; }
+  ul.tree ul { list-style: none; margin: 0; padding-left: 14px; }
+  .node { display: flex; align-items: center; gap: 6px; padding: 3px 14px;
+          cursor: pointer; font-size: 13px; white-space: nowrap; user-select: none; }
+  .node:hover { background: #2a2d2e; }
+  .node.active { background: var(--accent-dim); color: #fff; }
+  .node .ico { width: 14px; text-align: center; opacity: .85; }
+  .dir > .node .caret { transition: transform .12s; }
+  .dir.collapsed > .node .caret { transform: rotate(-90deg); }
+  .dir.collapsed > ul { display: none; }
+  #editor { flex: 1 1 auto; min-width: 0; }
+  #placeholder { display: flex; align-items: center; justify-content: center;
+                 height: 100%; color: var(--muted); font-size: 14px; }
+  /* --- Chat --- */
+  #chat { width: 380px; flex: 0 0 auto; display: flex; flex-direction: column;
+          background: var(--panel); border-left: 1px solid var(--border); }
+  #chat .chat-title { font-size: 12px; font-weight: 600; color: var(--accent);
+                      padding: 8px 14px; border-bottom: 1px solid var(--border); }
+  #messages { flex: 1 1 auto; overflow: auto; padding: 12px; display: flex;
+              flex-direction: column; gap: 10px; }
+  .msg { font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word;
+         padding: 8px 11px; border-radius: 10px; max-width: 92%; }
+  .msg.user { align-self: flex-end; background: var(--accent-dim); color: #fff; }
+  .msg.bot  { align-self: flex-start; background: #2d2d30; }
+  .msg.meta { align-self: center; background: transparent; color: var(--muted);
+              font-size: 11px; padding: 1px 6px; max-width: 100%; }
+  .msg.bot .cursor { animation: blink 1s steps(2) infinite; color: var(--accent); }
+  @keyframes blink { 50% { opacity: 0; } }
+  #composer { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); }
+  #input { flex: 1 1 auto; resize: none; height: 44px; background: var(--bg);
+           color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+           padding: 8px 10px; font-family: inherit; font-size: 13px; }
+  #input:focus { outline: none; border-color: var(--accent); }
+  #send { background: var(--accent); color: #fff; border: none; border-radius: 8px;
+          width: 44px; font-size: 16px; cursor: pointer; }
+  #send:disabled { opacity: .4; cursor: default; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="logo">⚡ Calipso</span>
+    <span class="proj" id="proj">—</span>
+    <span class="status" id="status">listo</span>
+  </header>
+  <main>
+    <nav id="sidebar">
+      <div class="title">Explorador</div>
+      <ul class="tree" id="tree"></ul>
+    </nav>
+    <div id="editor"><div id="placeholder">Selecciona un archivo del explorador</div></div>
+    <aside id="chat">
+      <div class="chat-title">💬 Habla con Calipso</div>
+      <div id="messages"></div>
+      <div id="composer">
+        <textarea id="input" placeholder="Háblale a Calipso…  (Enter envía, Shift+Enter salto)"></textarea>
+        <button id="send" title="Enviar">▶</button>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
+<script>
+const EXT_LANG = {
+  py:"python", js:"javascript", ts:"typescript", jsx:"javascript", tsx:"typescript",
+  json:"json", html:"html", css:"css", md:"markdown", yaml:"yaml", yml:"yaml",
+  sh:"shell", ps1:"powershell", sql:"sql", go:"go", rs:"rust", java:"java",
+  c:"c", h:"c", cpp:"cpp", txt:"plaintext", toml:"ini", ini:"ini", xml:"xml",
+};
+let editor = null, currentPath = null, dirty = false, monacoReady;
+
+function setStatus(text, cls) {
+  const s = document.getElementById("status");
+  s.textContent = text; s.className = "status" + (cls ? " " + cls : "");
+}
+function markDirty(d) {
+  dirty = d;
+  if (!currentPath) return setStatus("listo");
+  setStatus((d ? "● " : "") + currentPath + (d ? " — sin guardar" : " — guardado"),
+            d ? "dirty" : "saved");
+}
+
+require.config({ paths: { vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs" } });
+monacoReady = new Promise(res => require(["vs/editor/editor.main"], () => {
+  document.getElementById("placeholder")?.remove();
+  editor = monaco.editor.create(document.getElementById("editor"), {
+    value: "", language: "plaintext", theme: "vs-dark",
+    automaticLayout: true, fontSize: 13, minimap: { enabled: true },
+  });
+  editor.onDidChangeModelContent(() => { if (!dirty) markDirty(true); });
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveFile);
+  res();
+}));
+
+async function loadTree() {
+  const r = await fetch("/api/tree"); const data = await r.json();
+  document.getElementById("proj").textContent = data.root;
+  document.getElementById("tree").innerHTML = "";
+  renderNodes(data.tree, document.getElementById("tree"));
+}
+function renderNodes(nodes, parent) {
+  for (const n of nodes) {
+    const li = document.createElement("li");
+    if (n.type === "dir") {
+      li.className = "dir";
+      const node = nodeRow("▾", "📁", n.name);
+      node.onclick = () => li.classList.toggle("collapsed");
+      li.appendChild(node);
+      const ul = document.createElement("ul");
+      renderNodes(n.children, ul); li.appendChild(ul);
+    } else {
+      const node = nodeRow("", fileIcon(n.name), n.name);
+      node.dataset.path = n.path;
+      node.onclick = () => openFile(n.path, node);
+      li.appendChild(node);
+    }
+    parent.appendChild(li);
+  }
+}
+function nodeRow(caret, ico, name) {
+  const div = document.createElement("div"); div.className = "node";
+  div.innerHTML = `<span class="ico caret">${caret}</span><span class="ico">${ico}</span><span>${name}</span>`;
+  return div;
+}
+function fileIcon(name) {
+  const e = name.split(".").pop().toLowerCase();
+  return ({py:"🐍", md:"📝", json:"🔧", html:"🌐", js:"📜", ts:"📘"})[e] || "📄";
+}
+function langFor(path) { return EXT_LANG[path.split(".").pop().toLowerCase()] || "plaintext"; }
+
+async function openFile(path, node) {
+  if (dirty && !confirm("Hay cambios sin guardar. ¿Descartar?")) return;
+  await monacoReady;
+  const r = await fetch("/api/file?path=" + encodeURIComponent(path));
+  if (!r.ok) { setStatus("error: " + (await r.json()).detail, "dirty"); return; }
+  const data = await r.json();
+  const model = monaco.editor.createModel(data.content, langFor(path));
+  editor.setModel(model);
+  currentPath = path;
+  document.querySelectorAll(".node.active").forEach(n => n.classList.remove("active"));
+  node.classList.add("active");
+  markDirty(false);
+}
+
+async function saveFile() {
+  if (!currentPath) return;
+  setStatus("guardando…");
+  const r = await fetch("/api/file", {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: currentPath, content: editor.getValue() }),
+  });
+  if (r.ok) markDirty(false);
+  else setStatus("error al guardar", "dirty");
+}
+
+window.addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); saveFile(); }
+});
+loadTree();
+
+// ----------------------------- CHAT -----------------------------
+const messages = document.getElementById("messages");
+const input = document.getElementById("input");
+const sendBtn = document.getElementById("send");
+let ws = null, botEl = null, busy = false;
+
+function addMsg(cls, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + cls; div.textContent = text || "";
+  messages.appendChild(div); messages.scrollTop = messages.scrollHeight;
+  return div;
+}
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws/chat`);
+  ws.onmessage = ev => {
+    const m = JSON.parse(ev.data);
+    if (m.type === "meta") {
+      let t = `↳ ${m.used || m.route}`;
+      if (m.note) t += ` · ${m.note}`;
+      if (m.why) t += ` · ${m.why}`;
+      addMsg("meta", t);
+      if (!botEl) botEl = addMsg("bot", "");
+    } else if (m.type === "chunk") {
+      if (!botEl) botEl = addMsg("bot", "");
+      botEl.textContent += m.text; messages.scrollTop = messages.scrollHeight;
+    } else if (m.type === "cost") {
+      const c = m.cost_usd > 0 ? `$${m.cost_usd.toFixed(4)}` : "gratis";
+      addMsg("meta", `💰 ${m.route} · ${m.tokens} tokens · ${c}`);
+    } else if (m.type === "error") {
+      addMsg("meta", "⚠ " + m.text);
+    } else if (m.type === "done") {
+      botEl = null; setBusy(false);
+    }
+  };
+  ws.onclose = () => { addMsg("meta", "· desconectado, reintentando…"); setTimeout(connect, 1500); };
+}
+function setBusy(b) { busy = b; sendBtn.disabled = b; input.disabled = b; if (!b) input.focus(); }
+function send() {
+  const text = input.value.trim();
+  if (!text || busy || !ws || ws.readyState !== 1) return;
+  addMsg("user", text); input.value = ""; botEl = null; setBusy(true);
+  ws.send(text);
+}
+sendBtn.onclick = send;
+input.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+connect();
+</script>
+</body>
+</html>
