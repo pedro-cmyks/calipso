@@ -980,9 +980,14 @@ async def ws_chat(ws: WebSocket) -> None:
                 continue  # /stop en reposo no interrumpe nada
             turn_started = time.perf_counter()
             fallbacks: list[dict] = []
+            # avisa de inmediato que está pensando (los probes pueden tardar)
+            await ws.send_json({"type": "thinking"})
 
             # 1) routing a nivel de MODELO (afinidad x costo x tier x intensidad)
-            verdict, features, ranked, directives = _decide(user_msg)
+            #    en un hilo: los probes de suscripción son síncronos y NO deben
+            #    bloquear el event loop (si no, no se puede interrumpir/steerear).
+            verdict, features, ranked, directives = await asyncio.to_thread(
+                _decide, user_msg)
             if directives.get("help"):
                 await ws.send_json({"type": "chunk", "text": HELP_TEXT})
                 await ws.send_json({"type": "done"})
@@ -1268,11 +1273,12 @@ def api_telemetry(limit: int = 100) -> dict:
 
 
 @app.on_event("startup")
-def _startup_discover() -> None:
+async def _startup_warm() -> None:
     try:
-        found = discovery.discover(register=True)
+        found = await asyncio.to_thread(discovery.discover, True)
         if found["added"]:
             print(f"[calipso] modelos descubiertos: {found['added']}")
+        await asyncio.to_thread(_backend_availability)  # pre-calienta el cache de probes
     except Exception:
         pass
 

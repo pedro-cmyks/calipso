@@ -8,6 +8,37 @@
 > **Idioma:** Pedro escribe en español. Responde en español.
 > **Estado:** funcional de punta a punta. Esta guía es la fuente de verdad.
 
+## Estado del cerebro (lo construido, resumen)
+
+- **Ruteo a nivel de MODELO** (`calipso/capabilities.py`): registro donde cada modelo
+  (Haiku/Sonnet/Opus, Codex gpt-5-codex/-mini/gpt-5.5, DeepSeek, Fable 5, local qwen)
+  declara tier (small/mid/frontier/apex), persona (filósofo), costo y afinidad por
+  tarea. `choose(features, effort)` puntúa afinidad×costo×tier×intensidad → elige el
+  modelo por tarea; suscripción > API paga. NO es un gate que prueba en orden.
+- **Intensidad ("ultrathink")**: fast/balanced/think/ultra, derivada de la complejidad;
+  más intensidad exige tier más alto. Slash: `/fast /think /ultrathink /model /local
+  /claude /codex /help`. A la API se le pasa `output_config.effort`.
+- **Features** (`dispatch.extract_features`): {type, complexity, private, needs_repo}.
+- **Memoria** (`calipso/memory.py`): híbrida (markdown core + Chroma episódica),
+  jerárquica global/proyecto, embeddings multilingües `bge-m3`, `reflect()` promueve.
+- **Contexto presupuestado** (cache-friendly, just-in-time; ~5KB/turno).
+- **Aprendizaje** (`calipso/learning.py`): telemetría → ajusta pesos por modelo,
+  global y por repo. POST /api/learn.
+- **Sesiones** (`calipso/sessions.py`): cada sesión tiene su elenco (roster temático
+  distinto → nombres cambian por sesión); por agente: nombre, intensidad, enabled.
+  Panel en la UI. Endpoints /api/session*.
+- **Descubrimiento + updates** (`calipso/discovery.py`): registra modelos vivos
+  (Ollama/LiteLLM), avisa de updates (CLIs vs npm, modelos nuevos). /api/discover,
+  /api/updates.
+- **Steering**: el WS lee mensajes en paralelo; escribir mientras responde interrumpe
+  (barge-in); `/stop` detiene. UI: botón Detener + frases de "pensando".
+- **Costos** (`calipso/costs.py`), **telemetría** (`calipso/telemetry.py`),
+  **seguridad** (TOTP + token en `server.py`), **config** (`calipso/config.py`).
+
+Pendientes (en la memoria de Claude): #5 quota_low real (budget-aware), /api/learn
+periódico, loguear aceptar/descartar propuestas, effort real a sub-claude/local,
+preview de navegación web (si Calipso navega), descubrimiento de modelos de suscripción.
+
 ---
 
 ## 1. Arranque rápido

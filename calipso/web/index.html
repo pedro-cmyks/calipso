@@ -98,6 +98,19 @@
   .connector-top { display: flex; align-items: center; gap: 8px; }
   .connector-top strong { color: var(--text); }
   .connector-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  #agentsTable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  #agentsTable th { text-align: left; color: var(--muted); font-weight: 600;
+                    padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  #agentsTable td { padding: 5px 8px; border-bottom: 1px solid #2a2a2a; }
+  #agentsTable input[type=text] { background: var(--bg); border: 1px solid var(--border);
+        color: var(--text); border-radius: 6px; padding: 4px 7px; width: 130px; font-size: 12.5px; }
+  #agentsTable select { background: var(--bg); border: 1px solid var(--border);
+        color: var(--text); border-radius: 6px; padding: 3px 5px; font-size: 12px; }
+  #agentsTable tr.off { opacity: .45; }
+  #agentsTable .mname { color: var(--muted); }
+  .thinking { align-self: flex-start; color: var(--accent); font-size: 12.5px;
+              font-style: italic; padding: 2px 6px; }
+  .thinking::after { content: "…"; }
 </style>
 </head>
 <body>
@@ -108,6 +121,7 @@
     <button class="toolbtn" id="changesBtn" title="Ver cambios">Cambios <span class="badge" id="changesCount">0</span></button>
     <button class="toolbtn" id="proposeBtn" title="Guardar como propuesta">Proponer</button>
     <button class="toolbtn" id="configBtn" title="Configurar harness">Config</button>
+    <button class="toolbtn" id="sessionBtn" title="Elenco de agentes de la sesion">Sesion</button>
     <span class="status" id="status">listo</span>
   </header>
   <main>
@@ -161,6 +175,21 @@
         <label for="cfgClassModel">Clasificador</label><input id="cfgClassModel" placeholder="qwen2.5:3b" />
       </div>
       <div class="hint" id="configSaved"></div>
+    </div>
+  </section>
+  <section class="drawer" id="sessionPanel" aria-label="Sesion">
+    <div class="drawer-head">
+      <strong>Elenco de la sesion</strong>
+      <select id="sessSelect" class="toolbtn"></select>
+      <button class="toolbtn" id="sessNew">Nueva</button>
+      <span class="spacer"></span>
+      <button class="toolbtn" id="closeSession">Cerrar</button>
+    </div>
+    <div id="sessionBody">
+      <div class="hint">Cada sesion tiene su propio elenco: renombra un agente, fija su intensidad o apagalo. El ruteo lo respeta.</div>
+      <table id="agentsTable"><thead><tr>
+        <th>Agente</th><th>Modelo</th><th>Tier</th><th>Intensidad</th><th>On</th>
+      </tr></thead><tbody id="agentsBody"></tbody></table>
     </div>
   </section>
 </div>
@@ -394,6 +423,52 @@ loadGitStatus();
 const configPanel = document.getElementById("configPanel");
 document.getElementById("configBtn").onclick = () => { configPanel.classList.add("open"); loadConfig(); };
 document.getElementById("closeConfig").onclick = () => configPanel.classList.remove("open");
+
+// ---- Panel de sesiones (elenco de agentes) ----
+const sessionPanel = document.getElementById("sessionPanel");
+const INTENS = ["", "fast", "balanced", "think", "ultra"];
+document.getElementById("sessionBtn").onclick = () => { sessionPanel.classList.add("open"); loadSession(); };
+document.getElementById("closeSession").onclick = () => sessionPanel.classList.remove("open");
+async function loadSession() {
+  const [prof, list] = await Promise.all([
+    fetch("/api/session").then(r => r.json()),
+    fetch("/api/sessions").then(r => r.json())
+  ]);
+  document.getElementById("sessSelect").innerHTML = list.sessions.map(s =>
+    `<option value="${s.id}" ${s.id === list.active ? "selected" : ""}>${s.name}</option>`).join("");
+  const body = document.getElementById("agentsBody");
+  body.innerHTML = "";
+  for (const a of prof.agents) {
+    const tr = document.createElement("tr");
+    if (!a.enabled) tr.className = "off";
+    const opts = INTENS.map(v =>
+      `<option value="${v}" ${("" + (a.intensity || "")) === v ? "selected" : ""}>${v || "auto"}</option>`).join("");
+    tr.innerHTML = `<td><input type="text" value="${a.name || ""}"></td>`
+      + `<td class="mname">${a.model || ""}</td><td>${a.tier || ""}</td>`
+      + `<td><select>${opts}</select></td>`
+      + `<td style="text-align:center"><input type="checkbox" ${a.enabled ? "checked" : ""}></td>`;
+    const put = (extra) => fetch("/api/session/agent", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model_id: a.model_id, ...extra }) });
+    tr.querySelector("input[type=text]").onchange = e => put({ name: e.target.value });
+    tr.querySelector("select").onchange = e => put({ intensity: e.target.value || null });
+    tr.querySelector("input[type=checkbox]").onchange = e => {
+      tr.classList.toggle("off", !e.target.checked); put({ enabled: e.target.checked });
+    };
+    body.appendChild(tr);
+  }
+}
+document.getElementById("sessSelect").onchange = async e => {
+  await fetch("/api/session/active", { method: "PUT",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: e.target.value }) });
+  loadSession();
+};
+document.getElementById("sessNew").onclick = async () => {
+  const name = prompt("Nombre de la sesion nueva:") || "";
+  await fetch("/api/sessions", { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+  loadSession();
+};
 async function loadConfig() {
   const r = await fetch("/api/config");
   if (!r.ok) return;
@@ -486,7 +561,9 @@ function connect() {
   ws = new WebSocket(`${proto}://${location.host}/ws/chat`);
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
-    if (m.type === "meta") {
+    if (m.type === "thinking") {
+      startThinking();
+    } else if (m.type === "meta") {
       let t = `-> ${m.persona || m.used || m.route}`;
       if (m.model) t += ` - ${m.model}`;
       if (m.tier) t += ` (${m.tier})`;
@@ -494,25 +571,47 @@ function connect() {
       if (m.note) t += ` - ${m.note}`;
       if (m.why) t += ` - ${m.why}`;
       addMsg("meta", t);
-      if (!botEl) botEl = addMsg("bot", "");
     } else if (m.type === "steered") {
-      addMsg("meta", "interrumpido");
-      botEl = null;
+      stopThinking(); addMsg("meta", "interrumpido"); botEl = null;
     } else if (m.type === "chunk") {
+      stopThinking();
       if (!botEl) botEl = addMsg("bot", "");
       botEl.textContent += m.text; messages.scrollTop = messages.scrollHeight;
     } else if (m.type === "cost") {
       const c = m.cost_usd > 0 ? `$${m.cost_usd.toFixed(4)}` : "gratis";
       addMsg("meta", `$ ${m.route} - ${m.tokens} tokens - ${c}`);
     } else if (m.type === "error") {
-      addMsg("meta", "! " + m.text);
+      stopThinking(); addMsg("meta", "! " + m.text);
     } else if (m.type === "done") {
-      botEl = null; setBusy(false);
+      stopThinking(); botEl = null; setBusy(false);
     }
   };
   ws.onclose = () => { addMsg("meta", "desconectado, reintentando..."); setTimeout(connect, 1500); };
 }
 const stopBtn = document.getElementById("stop");
+
+// Frases de "pensando" (como Claude: discombobulating...)
+const THINK_PHRASES = ["discombobulando", "rumiando", "destilando ideas",
+  "consultando a los filosofos", "puliendo bytes", "tejiendo la respuesta",
+  "calibrando neuronas", "sopesando opciones", "hilando fino", "cavilando",
+  "maquinando", "barajando modelos", "afinando el verbo", "atando cabos",
+  "convocando a Aristoteles", "midiendo la intensidad"];
+let thinkEl = null, thinkTimer = null;
+function startThinking() {
+  if (thinkEl) return;
+  thinkEl = document.createElement("div");
+  thinkEl.className = "thinking";
+  messages.appendChild(thinkEl);
+  const tick = () => {
+    thinkEl.textContent = THINK_PHRASES[Math.floor(Math.random() * THINK_PHRASES.length)];
+    messages.scrollTop = messages.scrollHeight;
+  };
+  tick(); thinkTimer = setInterval(tick, 1800);
+}
+function stopThinking() {
+  if (thinkTimer) { clearInterval(thinkTimer); thinkTimer = null; }
+  if (thinkEl) { thinkEl.remove(); thinkEl = null; }
+}
 function setBusy(b) { busy = b; stopBtn.style.display = b ? "block" : "none"; input.focus(); }
 function send() {
   const text = input.value.trim();
