@@ -33,6 +33,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -605,6 +606,13 @@ def _subscription_probe(client: str | None) -> dict:
                 authenticated = json.loads(auth.stdout).get("loggedIn", False)
             except Exception:
                 authenticated = auth.returncode == 0
+        elif client == "codex" and executable:
+            auth = subprocess.run(
+                [exe, "login", "status"], cwd=str(ROOT), text=True,
+                capture_output=True, encoding="utf-8", errors="replace",
+                timeout=5)
+            auth_text = (auth.stdout or "") + (auth.stderr or "")
+            authenticated = auth.returncode == 0 and "Logged in" in auth_text
         ready = executable and (authenticated is not False)
         err = (result.stderr or result.stdout or "").strip().splitlines()
         return {
@@ -628,9 +636,8 @@ SUBSCRIPTION_CONNECTORS = {
         "docs": "https://code.claude.com/docs/en/setup",
     },
     "codex": {
-        "install": ["powershell", "-ExecutionPolicy", "ByPass", "-Command",
-                    "irm https://chatgpt.com/codex/install.ps1 | iex"],
-        "login": ["codex", "login"],
+        "install": ["npm.cmd", "install", "-g", "@openai/codex"],
+        "login": ["codex.cmd", "login"],
         "docs": "https://developers.openai.com/codex/cli",
     },
 }
@@ -723,6 +730,65 @@ def _chunks_for(route: str, system: str, user_msg: str, usage: dict):
     return dispatch._ollama_text_chunks(cfg["base_url"], payload, usage), cfg["model"]
 
 
+def _run_subscription_text(client: str, system: str, user_msg: str) -> str:
+    template = dispatch.CONFIG["subscription"].get(client)
+    if not template:
+        raise RuntimeError(f"cliente de suscripcion desconocido: {client}")
+    exe = _subscription_command(client)
+    if not exe:
+        raise RuntimeError(f"{client} no esta instalado")
+    system_prompt = (
+        f"{system}\n\n"
+        "Responde como Calipso. No digas que eres el backend usado."
+    )
+    prompt = f"Usuario: {user_msg}\nCalipso:"
+    cmd = [exe if i == 0 else arg.replace("{prompt}", prompt)
+           for i, arg in enumerate(template)]
+    temp_name = None
+    output_name = None
+    if client == "claude":
+        with tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", suffix=".md", delete=False) as f:
+            f.write(system_prompt)
+            temp_name = f.name
+        cmd = [exe, "--append-system-prompt-file", temp_name, "-p", prompt]
+    elif client == "codex":
+        with tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", suffix=".txt", delete=False) as f:
+            output_name = f.name
+        cmd = [
+            (exe if i == 0 else
+             arg.replace("{prompt}", prompt).replace("{output}", output_name))
+            for i, arg in enumerate(template)
+        ]
+    env = os.environ.copy()
+    if client == "claude":
+        env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    try:
+        result = subprocess.run(
+            cmd, cwd=str(ROOT), text=True, capture_output=True,
+            encoding="utf-8", errors="replace", timeout=240, env=env)
+        if result.returncode != 0:
+            msg = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(msg or f"{client} fallo con exit {result.returncode}")
+        if output_name:
+            out = pathlib.Path(output_name).read_text(encoding="utf-8").strip()
+            return out or result.stdout.strip()
+        return result.stdout.strip()
+    finally:
+        if temp_name:
+            try:
+                pathlib.Path(temp_name).unlink(missing_ok=True)
+            except Exception:
+                pass
+        if output_name:
+            try:
+                pathlib.Path(output_name).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
 def _next_or_stop(gen, sentinel):
     try:
         return next(gen)
@@ -751,10 +817,11 @@ async def ws_chat(ws: WebSocket) -> None:
                 chosen = _best_subscription_client(verdict.get("client"))
                 if chosen:
                     verdict["client"] = chosen
-                    note = "suscripcion disponible detectada; el chat aun responde por local hasta conectar ejecucion interactiva"
+                    note = "suscripcion disponible; Calipso la usara como backend"
+                    route = "subscription"
                 else:
                     note = "no hay cliente de suscripcion listo para ejecutar; fallback local"
-                route = "local"
+                    route = "local"
             model = _route_model_name(route, verdict.get("client"))
             await ws.send_json({"type": "meta", "route": verdict["route"],
                                 "used": route, "model": model,
@@ -766,36 +833,79 @@ async def ws_chat(ws: WebSocket) -> None:
             system = _build_context(user_msg, runtime)
             usage: dict = {}
             used_route = route
-            gen, model = _chunks_for(route, system, user_msg, usage)
             full = ""
             try:
-                while True:
-                    chunk = await asyncio.to_thread(_next_or_stop, gen, sentinel)
-                    if chunk is sentinel:
-                        break
-                    full += chunk
-                    await ws.send_json({"type": "chunk", "text": chunk})
-            except Exception as e:  # p.ej. LiteLLM apagado en ruta api
-                if route != "local":
-                    await ws.send_json({"type": "meta", "route": verdict["route"],
-                                        "used": "local",
-                                        "model": _route_model_name("local"),
-                                        "client": verdict.get("client"),
-                                        "why": f"ruta {route} fallÃƒÂ³ ({e}); fallback local",
-                                        "note": "fallback a local"})
-                    used_route, usage = "local", {}
-                    model = _route_model_name("local")
-                    runtime = _harness_context(verdict, "local", model, f"ruta {route} fallo; fallback local")
-                    system = _build_context(user_msg, runtime)
-                    gen, model = _chunks_for("local", system, user_msg, usage)
+                if route == "subscription":
+                    full = await asyncio.to_thread(
+                        _run_subscription_text, verdict["client"], system, user_msg)
+                    usage["completion_tokens"] = len(full.split())
+                    await ws.send_json({"type": "chunk", "text": full})
+                else:
+                    gen, model = _chunks_for(route, system, user_msg, usage)
                     while True:
                         chunk = await asyncio.to_thread(_next_or_stop, gen, sentinel)
                         if chunk is sentinel:
                             break
                         full += chunk
                         await ws.send_json({"type": "chunk", "text": chunk})
+            except Exception as e:  # p.ej. LiteLLM apagado en ruta api
+                if route != "local":
+                    if route == "subscription":
+                        alternate = _best_subscription_client(
+                            "codex" if verdict.get("client") == "claude" else "claude")
+                        if alternate and alternate != verdict.get("client"):
+                            await ws.send_json({
+                                "type": "meta", "route": verdict["route"],
+                                "used": "subscription", "model": alternate,
+                                "client": alternate,
+                                "why": f"{verdict.get('client')} fallo ({e}); probando {alternate}",
+                                "note": "fallback entre suscripciones"})
+                            try:
+                                verdict["client"] = alternate
+                                model = _route_model_name("subscription", alternate)
+                                runtime = _harness_context(
+                                    verdict, "subscription", model,
+                                    f"fallback de suscripcion a {alternate}")
+                                system = _build_context(user_msg, runtime)
+                                full = await asyncio.to_thread(
+                                    _run_subscription_text, alternate, system, user_msg)
+                                usage["completion_tokens"] = len(full.split())
+                                await ws.send_json({"type": "chunk", "text": full})
+                                used_route = "subscription"
+                                route = "subscription"
+                                raise StopIteration
+                            except StopIteration:
+                                pass
+                            except Exception as e2:
+                                e = e2
+                            else:
+                                continue
+                        if full:
+                            pass
+                    if full and used_route == "subscription":
+                        pass
+                    else:
+                        await ws.send_json({"type": "meta", "route": verdict["route"],
+                                            "used": "local",
+                                            "model": _route_model_name("local"),
+                                            "client": verdict.get("client"),
+                                            "why": f"ruta {route} falló ({e}); fallback local",
+                                            "note": "fallback a local"})
+                        used_route, usage = "local", {}
+                        model = _route_model_name("local")
+                        runtime = _harness_context(verdict, "local", model, f"ruta {route} fallo; fallback local")
+                        system = _build_context(user_msg, runtime)
+                        gen, model = _chunks_for("local", system, user_msg, usage)
+                        while True:
+                            chunk = await asyncio.to_thread(_next_or_stop, gen, sentinel)
+                            if chunk is sentinel:
+                                break
+                            full += chunk
+                            await ws.send_json({"type": "chunk", "text": chunk})
                 else:
                     await ws.send_json({"type": "error", "text": str(e)})
+            except StopIteration:
+                pass
 
             # 4) registrar costo/uso y avisar
             entry = costs.log_usage(

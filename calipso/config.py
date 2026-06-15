@@ -18,7 +18,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "subscription": {
         "claude": ["claude.cmd", "-p", "{prompt}"],
-        "codex": ["codex", "exec", "{prompt}"],
+        "codex": ["codex.cmd", "exec", "--output-last-message", "{output}", "{prompt}"],
     },
     "api": {
         "base_url": "http://localhost:4000/v1/chat/completions",
@@ -71,6 +71,11 @@ def dispatch_config() -> dict[str, Any]:
     subscription = copy.deepcopy(cfg["subscription"])
     if os.name == "nt" and subscription.get("claude", [""])[0] == "claude":
         subscription["claude"][0] = "claude.cmd"
+    if os.name == "nt" and subscription.get("codex", [""])[0] == "codex":
+        subscription["codex"][0] = "codex.cmd"
+    if subscription.get("codex") == ["codex.cmd", "exec", "{prompt}"]:
+        subscription["codex"] = [
+            "codex.cmd", "exec", "--output-last-message", "{output}", "{prompt}"]
     api = cfg["api"].copy()
     api["api_key"] = os.environ.get(
         api.get("api_key_env", "LITELLM_MASTER_KEY"),
