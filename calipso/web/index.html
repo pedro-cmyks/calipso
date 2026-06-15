@@ -33,7 +33,14 @@
   main { display: flex; flex: 1 1 auto; min-height: 0; }
   #sidebar { width: 270px; min-width: 160px; max-width: 45vw; flex: 0 0 auto;
              background: var(--panel); border-right: 1px solid var(--border);
-             overflow: auto; padding: 6px 0; resize: horizontal; }
+             overflow: auto; padding: 6px 0; }
+  .splitter { width: 7px; flex: 0 0 7px; cursor: col-resize; background: var(--bg);
+              border-left: 1px solid #242424; border-right: 1px solid #242424;
+              position: relative; }
+  .splitter::after { content: ""; position: absolute; top: 50%; left: 2px;
+                     width: 1px; height: 42px; transform: translateY(-50%);
+                     background: #555; box-shadow: 2px 0 #555; opacity: .45; }
+  .splitter:hover, .splitter.dragging { background: #2a2d2e; }
   #sidebar .title { font-size: 11px; text-transform: uppercase; letter-spacing: .8px;
                     color: var(--muted); padding: 6px 14px; }
   ul.tree { list-style: none; margin: 0; padding: 0; }
@@ -51,7 +58,7 @@
                  height: 100%; color: var(--muted); font-size: 14px; }
   #chat { width: 380px; min-width: 280px; max-width: 70vw; flex: 0 0 auto;
           display: flex; flex-direction: column; background: var(--panel);
-          border-left: 1px solid var(--border); resize: horizontal; overflow: auto; }
+          border-left: 1px solid var(--border); overflow: hidden; }
   #chat .chat-title { font-size: 12px; font-weight: 600; color: var(--accent);
                       padding: 8px 14px; border-bottom: 1px solid var(--border); }
   #messages { flex: 1 1 auto; overflow: auto; padding: 12px; display: flex;
@@ -138,7 +145,9 @@
       <div class="title">Explorador</div>
       <ul class="tree" id="tree"></ul>
     </nav>
+    <div class="splitter" id="leftSplitter" title="Arrastra para cambiar el explorador"></div>
     <div id="editor"><div id="placeholder">Selecciona un archivo del explorador</div></div>
+    <div class="splitter" id="rightSplitter" title="Arrastra para cambiar el chat"></div>
     <aside id="chat">
       <div class="chat-title">Habla con Calipso</div>
       <div id="messages"></div>
@@ -245,6 +254,50 @@ const EXT_LANG = {
   c:"c", h:"c", cpp:"cpp", txt:"plaintext", toml:"ini", ini:"ini", xml:"xml",
 };
 let editor = null, currentPath = null, dirty = false, monacoReady;
+
+function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+function applyPaneSizes() {
+  const savedLeft = Number(localStorage.getItem("calipso.sidebarWidth") || 270);
+  const savedChat = Number(localStorage.getItem("calipso.chatWidth") || 380);
+  document.getElementById("sidebar").style.width = `${clamp(savedLeft, 160, window.innerWidth * 0.45)}px`;
+  document.getElementById("chat").style.width = `${clamp(savedChat, 280, window.innerWidth * 0.70)}px`;
+}
+function setupSplitters() {
+  const sidebar = document.getElementById("sidebar");
+  const chat = document.getElementById("chat");
+  const left = document.getElementById("leftSplitter");
+  const right = document.getElementById("rightSplitter");
+  const startDrag = (kind, ev) => {
+    ev.preventDefault();
+    const splitter = kind === "left" ? left : right;
+    splitter.classList.add("dragging");
+    const startX = ev.clientX;
+    const startW = kind === "left" ? sidebar.offsetWidth : chat.offsetWidth;
+    const onMove = e => {
+      if (kind === "left") {
+        const w = clamp(startW + (e.clientX - startX), 160, window.innerWidth * 0.45);
+        sidebar.style.width = `${w}px`;
+        localStorage.setItem("calipso.sidebarWidth", String(Math.round(w)));
+      } else {
+        const w = clamp(startW - (e.clientX - startX), 280, window.innerWidth * 0.70);
+        chat.style.width = `${w}px`;
+        localStorage.setItem("calipso.chatWidth", String(Math.round(w)));
+      }
+      if (editor) editor.layout();
+    };
+    const onUp = () => {
+      splitter.classList.remove("dragging");
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+  left.addEventListener("mousedown", ev => startDrag("left", ev));
+  right.addEventListener("mousedown", ev => startDrag("right", ev));
+}
+applyPaneSizes();
+window.addEventListener("resize", () => { applyPaneSizes(); if (editor) editor.layout(); });
 
 function setStatus(text, cls) {
   const s = document.getElementById("status");
@@ -372,6 +425,7 @@ window.addEventListener("keydown", e => {
 });
 loadTree();
 loadProject();
+setupSplitters();
 
 const changesPanel = document.getElementById("changesPanel");
 const changesBtn = document.getElementById("changesBtn");
