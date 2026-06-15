@@ -597,6 +597,18 @@ function connect() {
       startThinking();
     } else if (m.type === "web") {
       renderWeb(m);
+    } else if (m.type === "process") {
+      if (m.action === "start") {
+        addMsg("meta", `${m.label || "proceso"} iniciado`);
+      } else if (m.action === "running") {
+        addMsg("meta", `${m.label || "proceso"} sigue corriendo (${m.elapsed || 0}s)`);
+      } else if (m.action === "queued") {
+        addMsg("meta", m.hint || "mensaje recibido; queda en cola");
+      } else if (m.action === "stopped") {
+        stopThinking(); addMsg("meta", `${m.label || "proceso"} cancelado`);
+      } else if (m.action === "done") {
+        addMsg("meta", `${m.label || "proceso"} termino (${m.elapsed || 0}s)`);
+      }
     } else if (m.type === "agent") {
       if (m.action === "team") {
         const names = (m.agents || []).map(a => `${a.persona || a.role} (${a.model || a.route})`).join(", ");

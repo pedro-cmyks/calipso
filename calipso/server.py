@@ -873,8 +873,23 @@ def _run_backend_text(route: str, client: str | None, model: str | None,
     return (data.get("response") or "").strip()
 
 
-async def _run_dynamic_team(ws: WebSocket, chat_msg: str, features: dict,
-                            base_system: str, verdict: dict) -> tuple[str, dict]:
+async def _run_agent_text(ws: WebSocket, inbox: asyncio.Queue, agent: dict,
+                          agent_system: str, user_msg: str) -> tuple[str, str | None]:
+    if agent.get("route") == "subscription":
+        return await _run_subscription_text_live(
+            ws, inbox, agent.get("client"), agent_system, user_msg,
+            agent.get("model"),
+            label=f"agente {agent.get('persona') or agent.get('role')}")
+    text = await asyncio.to_thread(
+        _run_backend_text, agent["route"], agent.get("client"),
+        agent.get("model"), agent_system, user_msg,
+        capabilities.EFFORT.get(agent.get("intensity", "balanced"), 1))
+    return text, None
+
+
+async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
+                            features: dict, base_system: str,
+                            verdict: dict) -> tuple[str, dict, str | None]:
     plan_obj = await asyncio.to_thread(_plan_dynamic_team, chat_msg, features)
     team = orchestrator.build_team(
         plan_obj, _backend_availability(), project_root=str(ROOT),
@@ -884,15 +899,15 @@ async def _run_dynamic_team(ws: WebSocket, chat_msg: str, features: dict,
         raise RuntimeError("no hay agentes disponibles para el equipo dinamico")
     await ws.send_json({"type": "agent", "action": "team", "agents": agents})
     results: list[dict] = []
+    queued_msg: str | None = None
     for idx, agent in enumerate(agents, start=1):
         await ws.send_json({"type": "agent", "action": "start", "index": idx,
                             "agent": agent})
         agent_system = orchestrator.agent_system(agent, base_system)
         try:
-            output = await asyncio.to_thread(
-                _run_backend_text, agent["route"], agent.get("client"),
-                agent.get("model"), agent_system, agent["task"],
-                capabilities.EFFORT.get(agent.get("intensity", "balanced"), 1))
+            output, queued = await _run_agent_text(
+                ws, inbox, agent, agent_system, agent["task"])
+            queued_msg = queued_msg or queued
         except Exception as e:
             agent["fallback_error"] = str(e)
             try:
@@ -929,9 +944,15 @@ async def _run_dynamic_team(ws: WebSocket, chat_msg: str, features: dict,
     await ws.send_json({"type": "agent", "action": "synthesis"})
     synth_prompt = orchestrator.synthesis_prompt(chat_msg, results)
     try:
-        final = await asyncio.to_thread(
-            _run_backend_text, verdict.get("route"), verdict.get("client"),
-            verdict.get("model"), base_system, synth_prompt, verdict.get("effort"))
+        if verdict.get("route") == "subscription":
+            final, queued = await _run_subscription_text_live(
+                ws, inbox, verdict.get("client"), base_system, synth_prompt,
+                verdict.get("model"), label="sintesis")
+            queued_msg = queued_msg or queued
+        else:
+            final = await asyncio.to_thread(
+                _run_backend_text, verdict.get("route"), verdict.get("client"),
+                verdict.get("model"), base_system, synth_prompt, verdict.get("effort"))
     except Exception as e:
         try:
             final = await asyncio.to_thread(
@@ -949,7 +970,7 @@ async def _run_dynamic_team(ws: WebSocket, chat_msg: str, features: dict,
         {k: a.get(k) for k in ("persona", "role", "model_id", "route", "client",
                                "model", "tier", "intensity")}
         for a in agents
-    ]}
+    ]}, queued_msg
 
 
 def _harness_context(verdict: dict, used_route: str, model: str, note: str | None) -> str:
@@ -1081,8 +1102,8 @@ def _chunks_for(route: str, system: str, user_msg: str, usage: dict,
     return dispatch._ollama_text_chunks(cfg["base_url"], payload, usage), mdl
 
 
-def _run_subscription_text(client: str, system: str, user_msg: str,
-                           model: str | None = None) -> str:
+def _subscription_invocation(client: str, system: str, user_msg: str,
+                             model: str | None = None) -> tuple[list[str], dict, str | None, str | None]:
     template = dispatch.CONFIG["subscription"].get(client)
     if not template:
         raise RuntimeError(f"cliente de suscripcion desconocido: {client}")
@@ -1122,10 +1143,30 @@ def _run_subscription_text(client: str, system: str, user_msg: str,
     if client == "claude":
         env.pop("ANTHROPIC_API_KEY", None)
         env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    return cmd, env, temp_name, output_name
+
+
+def _cleanup_subscription_files(temp_name: str | None, output_name: str | None) -> None:
+    if temp_name:
+        try:
+            pathlib.Path(temp_name).unlink(missing_ok=True)
+        except Exception:
+            pass
+    if output_name:
+        try:
+            pathlib.Path(output_name).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _run_subscription_text(client: str, system: str, user_msg: str,
+                           model: str | None = None) -> str:
+    cmd, env, temp_name, output_name = _subscription_invocation(
+        client, system, user_msg, model)
     try:
         result = subprocess.run(
             cmd, cwd=str(ROOT), text=True, capture_output=True,
-            encoding="utf-8", errors="replace", timeout=240, env=env)
+            encoding="utf-8", errors="replace", timeout=None, env=env)
         if result.returncode != 0:
             msg = (result.stderr or result.stdout or "").strip()
             raise RuntimeError(msg or f"{client} fallo con exit {result.returncode}")
@@ -1134,16 +1175,70 @@ def _run_subscription_text(client: str, system: str, user_msg: str,
             return out or result.stdout.strip()
         return result.stdout.strip()
     finally:
-        if temp_name:
-            try:
-                pathlib.Path(temp_name).unlink(missing_ok=True)
-            except Exception:
-                pass
+        _cleanup_subscription_files(temp_name, output_name)
+
+
+async def _run_subscription_text_live(
+        ws: WebSocket, inbox: asyncio.Queue, client: str, system: str,
+        user_msg: str, model: str | None = None,
+        label: str = "proceso") -> tuple[str, str | None]:
+    cmd, env, temp_name, output_name = _subscription_invocation(
+        client, system, user_msg, model)
+    started = time.perf_counter()
+    last_notice = started
+    pending_msg: str | None = None
+    proc = subprocess.Popen(
+        cmd, cwd=str(ROOT), text=True, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, encoding="utf-8", errors="replace", env=env)
+    try:
+        await ws.send_json({"type": "process", "action": "start",
+                            "label": label, "client": client, "model": model})
+        while proc.poll() is None:
+            now = time.perf_counter()
+            if now - last_notice >= 30:
+                await ws.send_json({
+                    "type": "process", "action": "running",
+                    "label": label, "client": client, "model": model,
+                    "elapsed": round(now - started),
+                    "hint": "sigue corriendo; envia /stop para cancelar o escribe y lo atiendo al terminar"})
+                last_notice = now
+            if not inbox.empty():
+                msg = await inbox.get()
+                if msg is None:
+                    proc.terminate()
+                    raise RuntimeError("conexion cerrada mientras el proceso seguia")
+                clean = msg.strip()
+                if clean == "/stop":
+                    proc.terminate()
+                    try:
+                        await asyncio.to_thread(proc.wait, 8)
+                    except Exception:
+                        proc.kill()
+                    await ws.send_json({"type": "process", "action": "stopped",
+                                        "label": label})
+                    return "...(proceso interrumpido)", None
+                if clean:
+                    pending_msg = clean
+                    await ws.send_json({
+                        "type": "process", "action": "queued",
+                        "label": label,
+                        "hint": "lo recibi; este CLI no acepta steering en vivo, lo proceso al terminar"})
+            await asyncio.sleep(1.5)
+        stdout, stderr = await asyncio.to_thread(proc.communicate)
+        if proc.returncode != 0:
+            msg = (stderr or stdout or "").strip()
+            raise RuntimeError(msg or f"{client} fallo con exit {proc.returncode}")
         if output_name:
-            try:
-                pathlib.Path(output_name).unlink(missing_ok=True)
-            except Exception:
-                pass
+            out = pathlib.Path(output_name).read_text(encoding="utf-8").strip()
+            text = out or (stdout or "").strip()
+        else:
+            text = (stdout or "").strip()
+        elapsed = round(time.perf_counter() - started)
+        await ws.send_json({"type": "process", "action": "done",
+                            "label": label, "elapsed": elapsed})
+        return text, pending_msg
+    finally:
+        _cleanup_subscription_files(temp_name, output_name)
 
 
 def _next_or_stop(gen, sentinel):
@@ -1240,14 +1335,19 @@ async def ws_chat(ws: WebSocket) -> None:
                     system = _build_context(chat_msg, runtime, features)
                     if web_material and (web_material["results"] or web_material["pages"]):
                         system += "\n\n" + calipso_web.context_block(web_material)
-                    full, agent_team = await _run_dynamic_team(
-                        ws, chat_msg, features, system, verdict)
+                    full, agent_team, queued = await _run_dynamic_team(
+                        ws, inbox, chat_msg, features, system, verdict)
+                    if queued:
+                        pending = queued
                     used_route = "orchestrator"
                     usage["completion_tokens"] = len(full.split())
                     await ws.send_json({"type": "chunk", "text": full})
                 elif route == "subscription":
-                    full = await asyncio.to_thread(
-                        _run_subscription_text, verdict["client"], system, chat_msg, model)
+                    full, queued = await _run_subscription_text_live(
+                        ws, inbox, verdict["client"], system, chat_msg, model,
+                        label=f"{verdict.get('persona') or verdict['client']} via {verdict['client']}")
+                    if queued:
+                        pending = queued
                     usage["completion_tokens"] = len(full.split())
                     await ws.send_json({"type": "chunk", "text": full})
                 else:
@@ -1294,8 +1394,11 @@ async def ws_chat(ws: WebSocket) -> None:
                                     verdict, "subscription", model,
                                     f"fallback de suscripcion a {alternate}")
                                 system = _build_context(chat_msg, runtime, features)
-                                full = await asyncio.to_thread(
-                                    _run_subscription_text, alternate, system, chat_msg)
+                                full, queued = await _run_subscription_text_live(
+                                    ws, inbox, alternate, system, chat_msg, None,
+                                    label=f"fallback via {alternate}")
+                                if queued:
+                                    pending = queued
                                 usage["completion_tokens"] = len(full.split())
                                 await ws.send_json({"type": "chunk", "text": full})
                                 used_route = "subscription"

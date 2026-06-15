@@ -42,6 +42,12 @@ Politica actual:
 - Si una suscripcion falla por limite, autenticacion o permisos, intentar otra
   suscripcion disponible antes de caer local.
 - Si todo falla, caer local y explicarlo.
+- Los procesos largos no deben cortarse por un timeout arbitrario. Calipso sabe
+  que un CLI termino cuando el proceso termina y entrega salida/codigo de salida.
+- Mientras un CLI largo corre, Calipso debe seguir escuchando. Si Pedro escribe
+  `/stop`, cancela; si escribe otra instruccion, la conserva y la atiende al
+  terminar. Si no sabe si esperar, debe decir que sigue corriendo y preguntar o
+  indicar claramente como cancelar.
 
 ## Memoria
 
@@ -91,10 +97,18 @@ Conectores iniciales:
 - Codex: `codex.cmd` via `@openai/codex`.
 - Local: Ollama.
 - API: LiteLLM en `localhost:4000`.
+- CLI tools: GitHub CLI (`gh`), Vercel CLI, Hugging Face CLI u otros comandos
+  autenticables.
+- MCP servers: herramientas externas instalables que exponen recursos y acciones.
+- Skills: paquetes de instrucciones/capacidades descargables o locales.
 
 Calipso debe poder agregar conectores nuevos sin reescribir su identidad. Un
 nuevo conector necesita: deteccion, instalacion opcional, login/autenticacion,
 prueba de salud, ejecucion y telemetria.
+
+La UI de conectores debe mostrar estado, forma de autenticacion, permisos,
+ultima prueba de salud y acciones claras: instalar, login, probar, desactivar.
+Calipso no debe asumir que un conector esta listo: debe probarlo.
 
 ## Voz
 
