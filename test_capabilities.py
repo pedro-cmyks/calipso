@@ -1,72 +1,69 @@
 #!/usr/bin/env python3
 """
-test_capabilities.py — El router por puntaje elige por AFINIDAD, no por orden.
+test_capabilities.py — Ruteo a nivel de MODELO: afinidad + tier + intensidad.
 
-Verifica los casos que pidió Pedro:
-  - código/repo -> codex gana a claude (afinidad, no orden fijo).
-  - razonar/escribir -> claude gana a codex.
-  - se prefiere suscripción (costo ~0) sobre API paga cuando ambas sirven.
-  - trivial/privado -> local (gratis, y único apto si es privado).
-  - si la suscripción ganadora tiene cuota agotada, pasa al siguiente APTO
-    (otra suscripción o API), no a local por defecto.
+Verifica lo que pidió Pedro:
+  - tarea trivial rápida -> modelo chico/barato (Haiku/local), no Opus.
+  - repo/código -> Codex (Arquímedes), por afinidad.
+  - razonar con /ultrathink -> exige tier frontier (Opus/Aristóteles).
+  - parse_directives capta slash y palabras de intensidad.
+  - discover() agrega un modelo nuevo con prior por tier + persona.
 """
 from calipso import capabilities as cap
 
-ALL = {k: True for k in cap.DEFAULT_BACKENDS}
+ALL = {k: True for k in cap.REGISTRY}
 
 
-def top(features, available=None, quota_low=None):
-    r = cap.choose(features, available or ALL, quota_low)
-    return r[0]["key"] if r else None, r
+def top(features, effort):
+    r = cap.choose(features, effort, ALL)
+    return (r[0]["key"], r[0]["persona"]) if r else (None, None)
 
 
 def main() -> int:
     fails = []
 
-    def check(name, got, expected):
-        ok = got == expected
-        print(f"  [{'OK' if ok else 'FAIL'}] {name}: {got}"
-              + ("" if ok else f"  (esperaba {expected})"))
-        if not ok:
+    def check(name, cond, extra=""):
+        print(f"  [{'OK' if cond else 'FAIL'}] {name}{(' ' + extra) if extra else ''}")
+        if not cond:
             fails.append(name)
 
-    # repo/código -> codex
-    g, r = top({"type": "repo", "complexity": 4})
-    check("repo -> codex", g, "subscription:codex")
+    # trivial rápido -> modelo chico (tier small). No Opus.
+    k, p = top({"type": "translate", "complexity": 1}, cap.EFFORT["fast"])
+    check("trivial rápido -> tier small", cap.REGISTRY[k]["tier"] == "small", f"({p}:{k})")
 
-    # refactor de código -> codex (mejor en code/repo)
-    g, _ = top({"type": "code", "complexity": 4})
-    check("code -> codex", g, "subscription:codex")
+    # repo/código -> Codex
+    k, p = top({"type": "repo", "complexity": 4}, cap.EFFORT["think"])
+    check("repo -> Codex", k == "subscription:codex", f"({p})")
 
-    # razonar -> claude por encima de codex
-    g, r = top({"type": "reasoning", "complexity": 3})
-    check("reasoning -> claude", g, "subscription:claude")
+    # razonar con ultra -> exige frontier (Opus o superior)
+    k, p = top({"type": "reasoning", "complexity": 3}, cap.EFFORT["ultra"])
+    check("ultra reasoning -> frontier+", cap.TIER_RANK[cap.REGISTRY[k]["tier"]] >= 2, f"({p}:{k})")
+    check("ultra reasoning -> Opus (Aristóteles)", k == "subscription:claude:opus", f"({p})")
 
-    # escribir -> claude
-    g, _ = top({"type": "writing", "complexity": 3})
-    check("writing -> claude", g, "subscription:claude")
+    # ultra excluye los chicos
+    ranked = cap.choose({"type": "reasoning", "complexity": 3}, cap.EFFORT["ultra"], ALL)
+    smalls = [r for r in ranked if cap.REGISTRY[r["key"]]["tier"] == "small"]
+    check("ultra excluye tier small", len(smalls) == 0)
 
-    # suscripción preferida sobre API paga cuando ambas sirven (razonar)
-    keys = [x["key"] for x in r]
-    sub_before_api = (keys.index("subscription:claude")
-                      < keys.index("api:deepseek-chat"))
-    check("suscripcion antes que api", sub_before_api, True)
+    # parse_directives
+    d = cap.parse_directives("arregla el bug /ultrathink")
+    check("parse /ultrathink -> effort ultra", d["effort"] == cap.EFFORT["ultra"])
+    check("parse limpia el slash", "/ultrathink" not in d["clean"])
+    d2 = cap.parse_directives("resume esto rápido")
+    check("palabra 'rápido' -> effort fast", d2["effort"] == cap.EFFORT["fast"])
+    d3 = cap.parse_directives("/model opus piensa")
+    check("/model captura el modelo", d3["force_model"] == "opus")
 
-    # trivial/privado -> local (y único apto si privado)
-    g, r = top({"type": "translate", "complexity": 1, "private": True})
-    check("privado -> local", g, "local")
-    check("privado excluye no-locales", len(r), 1)
-
-    # cuota de claude agotada en tarea de razonar -> siguiente apto (no local)
-    g, _ = top({"type": "reasoning", "complexity": 4},
-               quota_low={"subscription:claude": True})
-    check("claude sin cuota -> otra suscripcion/api (no local)",
-          g in ("subscription:codex", "api:deepseek-chat"), True)
+    # discovery
+    reg = dict(cap.REGISTRY)
+    key = cap.discover("api", "gpt-5.5", tier="frontier", registry=reg)
+    check("discover agrega modelo nuevo", key == "api:gpt-5.5" and key in reg)
+    check("discover asigna persona", bool(reg[key].get("persona")))
 
     if fails:
         print("\nFALLARON:", fails)
         return 1
-    print("\nOK: el router puntua y selecciona por afinidad/costo/cuota")
+    print("\nOK: ruteo a nivel de modelo + intensidad + descubrimiento")
     return 0
 
 

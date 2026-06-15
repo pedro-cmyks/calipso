@@ -24,16 +24,13 @@ MIN_SAMPLES = int(os.environ.get("CALIPSO_LEARN_MIN", "3"))
 
 
 def _backend_key(ev: dict) -> str | None:
-    """Mapea un evento de telemetría a la clave del backend en el mapa."""
-    route = ev.get("route_used")
-    if route == "local":
-        return "local"
-    if route == "subscription":
-        c = ev.get("client")
-        return f"subscription:{c}" if c else None
-    if route == "api":
-        m = ev.get("model")
-        return f"api:{m}" if m else None
+    """Clave del MODELO en el registro. Prefiere model_id (lo loguea el chat);
+    cae a una reconstrucción por ruta para telemetría antigua."""
+    if ev.get("model_id"):
+        return ev["model_id"]
+    route, model = ev.get("route_used"), ev.get("model")
+    if route and model:
+        return f"{route}:{model}"
     return None
 
 
@@ -85,7 +82,7 @@ def apply(deltas: dict, target_file: str | pathlib.Path) -> list[dict]:
         except Exception:
             current = {}
     backends = current.setdefault("backends", {})
-    defaults = capabilities.DEFAULT_BACKENDS
+    defaults = capabilities.REGISTRY
     changed = []
     for bk, tts in deltas.items():
         strengths = backends.setdefault(bk, {}).setdefault("strengths", {})

@@ -562,6 +562,17 @@ def api_subscription_login(client: str) -> dict:
 
 mem = Memory(project_root=str(ROOT))  # memoria hÃƒÂ­brida y por ÃƒÂ¡mbitos (global + proyecto)
 
+HELP_TEXT = (
+    "Comandos de Calipso:\n"
+    "  /fast        respuesta rápida y barata (modelo chico)\n"
+    "  /think       más esfuerzo (tier medio+)\n"
+    "  /ultrathink  máximo esfuerzo (tier frontier: Opus/Fable)\n"
+    "  /model <x>   forzar un modelo o persona (opus, codex, Aristoteles…)\n"
+    "  /local /claude /codex /api  forzar la ruta\n"
+    "  /help        esta ayuda\n"
+    "Si no pones nada, Calipso decide solo (modelo + intensidad) por la tarea."
+)
+
 SYSTEM = (
     "Eres Calipso, el asistente personal local de Pedro. Respondes en espanol, "
     "directo y util. No dices que eres Alibaba, OpenAI, Anthropic, Claude, Codex "
@@ -710,24 +721,47 @@ def _backend_quota_low() -> dict:
     return {}
 
 
-def _decide(user_msg: str) -> tuple[dict, dict, list]:
-    """Decisión de ruteo por PUNTAJE de capacidades (afinidad x costo x cuota)."""
-    features = dispatch.extract_features(user_msg)
+def _decide(user_msg: str) -> tuple[dict, dict, list, dict]:
+    """Decisión a nivel de MODELO: directivas (slash/intensidad) -> features ->
+    intensidad -> choose(). Devuelve (verdict, features, ranked, directivas)."""
+    d = capabilities.parse_directives(user_msg)
+    features = dispatch.extract_features(d["clean"])
+    effort = d["effort"] if d["effort"] is not None else capabilities.derive_effort(
+        features["complexity"])
     ranked = capabilities.choose(
-        features, _backend_availability(), _backend_quota_low(),
+        features, effort, _backend_availability(), _backend_quota_low(),
         project_root=str(ROOT))
+
+    # overrides explícitos de Pedro (slash)
+    if d.get("force_route"):
+        ranked = [r for r in ranked if r["route"] == d["force_route"]] or ranked
+    if d.get("force_model"):
+        fm = d["force_model"].lower()
+        forced = [r for r in ranked if fm in (r["key"].lower(), (r["model"] or "").lower(),
+                                              (r["client"] or "").lower(),
+                                              r["persona"].lower())]
+        if forced:
+            ranked = forced
+
     if ranked:
         top = ranked[0]
         verdict = {
             "route": top["route"], "client": top.get("client"),
+            "model": top.get("model"), "model_id": top["key"],
+            "persona": top.get("persona"), "tier": top.get("tier"),
+            "effort": effort, "effort_name": capabilities.EFFORT_NAME[effort],
             "source": "capabilities",
-            "why": f"afinidad {features['type']} c{features['complexity']} "
-                   f"(score {top['score']})",
+            "why": f"{top.get('persona')} ({top.get('tier')}) para "
+                   f"{features['type']} c{features['complexity']} "
+                   f"intensidad={capabilities.EFFORT_NAME[effort]} (score {top['score']})",
         }
     else:
-        verdict = {"route": "local", "client": None, "source": "capabilities",
-                   "why": "ningun backend apto; fallback local"}
-    return verdict, features, ranked
+        verdict = {"route": "local", "client": None, "model": "qwen2.5:7b",
+                   "model_id": "local:qwen2.5:7b", "persona": "Epicteto",
+                   "tier": "small", "effort": effort,
+                   "effort_name": capabilities.EFFORT_NAME[effort],
+                   "source": "capabilities", "why": "ningun modelo apto; local"}
+    return verdict, features, ranked, d
 
 
 def _harness_context(verdict: dict, used_route: str, model: str, note: str | None) -> str:
@@ -806,25 +840,29 @@ def _build_context(user_msg: str, runtime: str, features: dict | None = None) ->
     return "\n\n".join(b for b in blocks if b)
 
 
-def _chunks_for(route: str, system: str, user_msg: str, usage: dict):
+def _chunks_for(route: str, system: str, user_msg: str, usage: dict,
+                model: str | None = None):
     """Devuelve (generador, modelo) segÃƒÂºn la ruta. Reusa los parsers de
     streaming del router (SSE / NDJSON) y captura tokens en 'usage'."""
     if route == "api":
         cfg = dispatch.CONFIG["api"]
-        payload = {"model": cfg["model"], "stream": True,
+        mdl = model or cfg["model"]
+        payload = {"model": mdl, "stream": True,
                    "stream_options": {"include_usage": True}, "messages": [
                        {"role": "system", "content": system},
                        {"role": "user", "content": user_msg}]}
         headers = {"Authorization": f"Bearer {cfg['api_key']}"}
-        return dispatch._sse_text_chunks(cfg["base_url"], payload, headers, usage), cfg["model"]
+        return dispatch._sse_text_chunks(cfg["base_url"], payload, headers, usage), mdl
     # local (Ollama) Ã¢â‚¬â€ y tambiÃƒÂ©n el fallback de cualquier otra ruta por ahora.
     cfg = dispatch.CONFIG["local"]
+    mdl = model or cfg["model"]
     prompt = f"{system}\n\nUsuario: {user_msg}\nCalipso:"
-    payload = {"model": cfg["model"], "prompt": prompt, "stream": True}
-    return dispatch._ollama_text_chunks(cfg["base_url"], payload, usage), cfg["model"]
+    payload = {"model": mdl, "prompt": prompt, "stream": True}
+    return dispatch._ollama_text_chunks(cfg["base_url"], payload, usage), mdl
 
 
-def _run_subscription_text(client: str, system: str, user_msg: str) -> str:
+def _run_subscription_text(client: str, system: str, user_msg: str,
+                           model: str | None = None) -> str:
     template = dispatch.CONFIG["subscription"].get(client)
     if not template:
         raise RuntimeError(f"cliente de suscripcion desconocido: {client}")
@@ -845,7 +883,10 @@ def _run_subscription_text(client: str, system: str, user_msg: str) -> str:
                 "w", encoding="utf-8", suffix=".md", delete=False) as f:
             f.write(system_prompt)
             temp_name = f.name
-        cmd = [exe, "--append-system-prompt-file", temp_name, "-p", prompt]
+        cmd = [exe]
+        if model in ("haiku", "sonnet", "opus"):
+            cmd += ["--model", model]  # elige el tier de Claude
+        cmd += ["--append-system-prompt-file", temp_name, "-p", prompt]
     elif client == "codex":
         with tempfile.NamedTemporaryFile(
                 "w", encoding="utf-8", suffix=".txt", delete=False) as f:
@@ -905,31 +946,39 @@ async def ws_chat(ws: WebSocket) -> None:
             turn_started = time.perf_counter()
             fallbacks: list[dict] = []
 
-            # 1) routing por PUNTAJE de capacidades (afinidad x costo x cuota),
-            #    no un gate que prueba en orden.
-            verdict, features, ranked = _decide(user_msg)
+            # 1) routing a nivel de MODELO (afinidad x costo x tier x intensidad)
+            verdict, features, ranked, directives = _decide(user_msg)
+            if directives.get("help"):
+                await ws.send_json({"type": "chunk", "text": HELP_TEXT})
+                await ws.send_json({"type": "done"})
+                continue
+            chat_msg = directives["clean"]
             route = verdict["route"]
-            note = "; ".join(f"{r['key']}={r['score']}" for r in ranked[:3]) or None
-            model = _route_model_name(route, verdict.get("client"))
+            model = verdict.get("model")
+            note = "; ".join(f"{r['persona']}={r['score']}" for r in ranked[:3]) or None
             await ws.send_json({"type": "meta", "route": verdict["route"],
                                 "used": route, "model": model,
+                                "model_id": verdict.get("model_id"),
+                                "persona": verdict.get("persona"),
+                                "tier": verdict.get("tier"),
+                                "effort": verdict.get("effort_name"),
                                 "client": verdict.get("client"),
                                 "why": verdict["why"], "note": note})
 
             # 2) contexto (core + recuerdos) y 3) streaming
             runtime = _harness_context(verdict, route, model, note)
-            system = _build_context(user_msg, runtime, features)
+            system = _build_context(chat_msg, runtime, features)
             usage: dict = {}
             used_route = route
             full = ""
             try:
                 if route == "subscription":
                     full = await asyncio.to_thread(
-                        _run_subscription_text, verdict["client"], system, user_msg)
+                        _run_subscription_text, verdict["client"], system, chat_msg, model)
                     usage["completion_tokens"] = len(full.split())
                     await ws.send_json({"type": "chunk", "text": full})
                 else:
-                    gen, model = _chunks_for(route, system, user_msg, usage)
+                    gen, model = _chunks_for(route, system, chat_msg, usage, model)
                     while True:
                         chunk = await asyncio.to_thread(_next_or_stop, gen, sentinel)
                         if chunk is sentinel:
@@ -959,9 +1008,9 @@ async def ws_chat(ws: WebSocket) -> None:
                                 runtime = _harness_context(
                                     verdict, "subscription", model,
                                     f"fallback de suscripcion a {alternate}")
-                                system = _build_context(user_msg, runtime, features)
+                                system = _build_context(chat_msg, runtime, features)
                                 full = await asyncio.to_thread(
-                                    _run_subscription_text, alternate, system, user_msg)
+                                    _run_subscription_text, alternate, system, chat_msg)
                                 usage["completion_tokens"] = len(full.split())
                                 await ws.send_json({"type": "chunk", "text": full})
                                 used_route = "subscription"
@@ -992,8 +1041,8 @@ async def ws_chat(ws: WebSocket) -> None:
                         used_route, usage = "local", {}
                         model = _route_model_name("local")
                         runtime = _harness_context(verdict, "local", model, f"ruta {route} fallo; fallback local")
-                        system = _build_context(user_msg, runtime, features)
-                        gen, model = _chunks_for("local", system, user_msg, usage)
+                        system = _build_context(chat_msg, runtime, features)
+                        gen, model = _chunks_for("local", system, chat_msg, usage)
                         while True:
                             chunk = await asyncio.to_thread(_next_or_stop, gen, sentinel)
                             if chunk is sentinel:
@@ -1023,6 +1072,10 @@ async def ws_chat(ws: WebSocket) -> None:
                 route_used=used_route,
                 client=verdict.get("client"),
                 model=model,
+                model_id=verdict.get("model_id"),
+                persona=verdict.get("persona"),
+                tier=verdict.get("tier"),
+                effort=verdict.get("effort_name"),
                 why=verdict.get("why"),
                 fallbacks=fallbacks,
                 latency_ms=round((time.perf_counter() - turn_started) * 1000),
