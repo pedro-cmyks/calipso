@@ -597,6 +597,19 @@ function connect() {
       startThinking();
     } else if (m.type === "web") {
       renderWeb(m);
+    } else if (m.type === "agent") {
+      if (m.action === "team") {
+        const names = (m.agents || []).map(a => `${a.persona || a.role} (${a.model || a.route})`).join(", ");
+        addMsg("meta", `equipo dinamico: ${names}`);
+      } else if (m.action === "start") {
+        const a = m.agent || {};
+        addMsg("meta", `agente ${m.index}: ${a.persona || a.role} trabajando en ${a.role || "subtarea"}`);
+      } else if (m.action === "done") {
+        const a = m.agent || {};
+        addMsg("meta", `agente ${m.index}: ${a.persona || a.role} listo`);
+      } else if (m.action === "synthesis") {
+        addMsg("meta", "Calipso sintetizando");
+      }
     } else if (m.type === "meta") {
       let t = `-> ${m.persona || m.used || m.route}`;
       if (m.model) t += ` - ${m.model}`;

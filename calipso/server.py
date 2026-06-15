@@ -55,6 +55,7 @@ from calipso import config as calipso_config  # noqa: E402
 from calipso import costs  # noqa: E402
 from calipso import discovery  # noqa: E402
 from calipso import learning  # noqa: E402
+from calipso import orchestrator  # noqa: E402
 from calipso import sessions  # noqa: E402
 from calipso import telemetry  # noqa: E402
 from calipso import web as calipso_web  # noqa: E402
@@ -778,6 +779,161 @@ def _decide(user_msg: str) -> tuple[dict, dict, list, dict]:
     return verdict, features, ranked, d
 
 
+def _should_orchestrate(features: dict, directives: dict, message: str) -> bool:
+    """Activa equipo dinamico solo cuando suma valor real."""
+    if directives.get("effort") == capabilities.EFFORT["fast"]:
+        return False
+    low = message.lower()
+    if len(low.split()) < 10 and features.get("complexity", 1) <= 2:
+        return False
+    hard_types = {"repo", "agentic", "code", "analysis"}
+    if features.get("type") in hard_types and features.get("complexity", 1) >= 3:
+        return True
+    if features.get("complexity", 1) >= 4:
+        return True
+    if features.get("needs_web") and features.get("complexity", 1) >= 3:
+        return True
+    multi_signals = (" y ", " tambien ", " ademas ", " luego ", " despues ")
+    return features.get("complexity", 1) >= 3 and any(s in low for s in multi_signals)
+
+
+def _heuristic_plan(request: str, features: dict) -> dict:
+    task_type = features.get("type", "reasoning")
+    complexity = int(features.get("complexity", 2) or 2)
+    if task_type in {"repo", "agentic", "code"}:
+        agents = [
+            {"role": "arquitecto", "task": "entender el objetivo y proponer la estrategia tecnica minima",
+             "tier": "frontier", "intensity": "think", "type": "agentic", "quirk": "pragmatico"},
+            {"role": "ingeniero", "task": request,
+             "tier": "frontier", "intensity": "think", "type": task_type, "quirk": "meticuloso"},
+            {"role": "revisor", "task": "buscar riesgos, huecos y siguientes pasos concretos",
+             "tier": "mid", "intensity": "balanced", "type": "analysis", "quirk": "honesto"},
+        ]
+    elif features.get("needs_web"):
+        agents = [
+            {"role": "investigador", "task": "separar hechos verificables de supuestos",
+             "tier": "mid", "intensity": "balanced", "type": "analysis", "quirk": "esceptico"},
+            {"role": "sintetizador", "task": request,
+             "tier": "mid", "intensity": "balanced", "type": task_type, "quirk": "claro"},
+        ]
+    elif complexity >= 4:
+        agents = [
+            {"role": "analista", "task": "descomponer el problema y detectar decisiones importantes",
+             "tier": "frontier", "intensity": "think", "type": "analysis", "quirk": "preciso"},
+            {"role": "redactor", "task": request,
+             "tier": "mid", "intensity": "balanced", "type": task_type, "quirk": "directo"},
+        ]
+    else:
+        agents = [{"role": "asistente", "task": request, "tier": "mid",
+                   "intensity": "balanced", "type": task_type, "quirk": ""}]
+    return {"agents": agents[:3], "synthesis": "entrega una sola respuesta util para Pedro"}
+
+
+def _plan_dynamic_team(request: str, features: dict) -> dict:
+    def llm_json(prompt: str) -> dict:
+        cfg = dispatch.CONFIG["classifier"]
+        try:
+            data = dispatch._http_post_json(
+                cfg["base_url"],
+                {"model": cfg["model"], "prompt": prompt, "stream": False,
+                 "format": "json", "options": {"temperature": 0}},
+            )
+            return json.loads(data.get("response") or "{}")
+        except Exception:
+            return _heuristic_plan(request, features)
+
+    return orchestrator.plan(request, llm_json)
+
+
+def _run_backend_text(route: str, client: str | None, model: str | None,
+                      system: str, user_msg: str, effort: int | None = None) -> str:
+    if route == "subscription":
+        if not client:
+            raise RuntimeError("suscripcion sin cliente")
+        return _run_subscription_text(client, system, user_msg, model)
+    if route == "api":
+        cfg = dispatch.CONFIG["api"]
+        mdl = model or cfg["model"]
+        payload = {"model": mdl, "stream": False, "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_msg},
+        ]}
+        if effort is not None:
+            payload["output_config"] = {"effort": capabilities.EFFORT_PARAM[effort]}
+        data = dispatch._http_post_json(
+            cfg["base_url"], payload, {"Authorization": f"Bearer {cfg['api_key']}"})
+        return (data.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+    cfg = dispatch.CONFIG["local"]
+    mdl = model or cfg["model"]
+    data = dispatch._http_post_json(
+        cfg["base_url"],
+        {"model": mdl, "prompt": f"{system}\n\nUsuario: {user_msg}\nCalipso:",
+         "stream": False},
+    )
+    return (data.get("response") or "").strip()
+
+
+async def _run_dynamic_team(ws: WebSocket, chat_msg: str, features: dict,
+                            base_system: str, verdict: dict) -> tuple[str, dict]:
+    plan_obj = await asyncio.to_thread(_plan_dynamic_team, chat_msg, features)
+    team = orchestrator.build_team(
+        plan_obj, _backend_availability(), project_root=str(ROOT),
+        session=sessions.active())
+    agents = team.get("agents", [])
+    if not agents:
+        raise RuntimeError("no hay agentes disponibles para el equipo dinamico")
+    await ws.send_json({"type": "agent", "action": "team", "agents": agents})
+    results: list[dict] = []
+    for idx, agent in enumerate(agents, start=1):
+        await ws.send_json({"type": "agent", "action": "start", "index": idx,
+                            "agent": agent})
+        agent_system = orchestrator.agent_system(agent, base_system)
+        try:
+            output = await asyncio.to_thread(
+                _run_backend_text, agent["route"], agent.get("client"),
+                agent.get("model"), agent_system, agent["task"],
+                capabilities.EFFORT.get(agent.get("intensity", "balanced"), 1))
+        except Exception as e:
+            output = await asyncio.to_thread(
+                _run_backend_text, "local", None, _route_model_name("local"),
+                agent_system, agent["task"], None)
+            agent["fallback_error"] = str(e)
+        result = {**agent, "output": output}
+        results.append(result)
+        telemetry.log_event(
+            "agent_turn",
+            project=str(ROOT),
+            prompt_chars=len(agent["task"]),
+            response_chars=len(output),
+            route_used=agent.get("route"),
+            client=agent.get("client"),
+            model=agent.get("model"),
+            model_id=agent.get("model_id"),
+            persona=agent.get("persona"),
+            tier=agent.get("tier"),
+            task_type=agent.get("type"),
+            fallback_error=agent.get("fallback_error"),
+        )
+        await ws.send_json({"type": "agent", "action": "done", "index": idx,
+                            "agent": agent})
+
+    await ws.send_json({"type": "agent", "action": "synthesis"})
+    synth_prompt = orchestrator.synthesis_prompt(chat_msg, results)
+    try:
+        final = await asyncio.to_thread(
+            _run_backend_text, verdict.get("route"), verdict.get("client"),
+            verdict.get("model"), base_system, synth_prompt, verdict.get("effort"))
+    except Exception:
+        final = await asyncio.to_thread(
+            _run_backend_text, "local", None, _route_model_name("local"),
+            base_system, synth_prompt, None)
+    return final, {"plan": plan_obj, "agents": [
+        {k: a.get(k) for k in ("persona", "role", "model_id", "route", "client",
+                               "model", "tier", "intensity")}
+        for a in agents
+    ]}
+
+
 def _harness_context(verdict: dict, used_route: str, model: str, note: str | None) -> str:
     cfg = calipso_config.load_config()
     probes = {"claude": _subscription_probe("claude"), "codex": _subscription_probe("codex")}
@@ -1027,8 +1183,21 @@ async def ws_chat(ws: WebSocket) -> None:
             usage: dict = {}
             used_route = route
             full = ""
+            agent_team: dict | None = None
             try:
-                if route == "subscription":
+                if _should_orchestrate(features, directives, chat_msg):
+                    runtime = _harness_context(
+                        verdict, "orchestrator", model,
+                        f"equipo dinamico sobre ruta base {route}")
+                    system = _build_context(chat_msg, runtime, features)
+                    if web_material and (web_material["results"] or web_material["pages"]):
+                        system += "\n\n" + calipso_web.context_block(web_material)
+                    full, agent_team = await _run_dynamic_team(
+                        ws, chat_msg, features, system, verdict)
+                    used_route = "orchestrator"
+                    usage["completion_tokens"] = len(full.split())
+                    await ws.send_json({"type": "chunk", "text": full})
+                elif route == "subscription":
                     full = await asyncio.to_thread(
                         _run_subscription_text, verdict["client"], system, chat_msg, model)
                     usage["completion_tokens"] = len(full.split())
@@ -1157,6 +1326,7 @@ async def ws_chat(ws: WebSocket) -> None:
                 effort=verdict.get("effort_name"),
                 why=verdict.get("why"),
                 fallbacks=fallbacks,
+                agent_team=agent_team,
                 latency_ms=round((time.perf_counter() - turn_started) * 1000),
                 cost_usd=entry["cost_usd"],
             )
