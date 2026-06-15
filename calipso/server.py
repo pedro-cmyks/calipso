@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 calipso/server.py Ã¢â‚¬â€ Servidor de Calipso (Hito 1: visor/editor de cÃƒÂ³digo).
 
@@ -753,32 +753,55 @@ def _harness_context(verdict: dict, used_route: str, model: str, note: str | Non
     ])
 
 
-def _load_agent_docs() -> str:
-    parts = []
-    for name in ("CALIPSO.md", "AGENTS.md", "CLAUDE.md", "CODEX.md", "GEMINI.md"):
-        p = ROOT / name
-        if p.exists() and p.is_file() and p.stat().st_size <= MAX_FILE_BYTES:
-            try:
-                parts.append(f"### {name}\n{p.read_text(encoding='utf-8').strip()}")
-            except UnicodeDecodeError:
-                continue
-    return "\n\n".join(parts)
+# Economía de contexto (context engineering de Anthropic + prompt caching):
+# estable al inicio (cacheable -> 90% descuento en sub/api), volátil al final,
+# presupuestado, y just-in-time (no precargar archivos del repo).
+CONTEXT_CONST_MAX = int(os.environ.get("CALIPSO_CONST_MAX", "3000"))
+CONTEXT_CORE_MAX = int(os.environ.get("CALIPSO_CORE_MAX", "3000"))
+RECALL_MIN_SCORE = float(os.environ.get("CALIPSO_RECALL_MIN", "0.30"))
+RECALL_MAX = int(os.environ.get("CALIPSO_RECALL_MAX", "4"))
 
 
-def _build_context(user_msg: str, runtime: str) -> str:
-    """Arma el preambulo: identidad + estado real + memoria relevante."""
+def _identity_doc() -> str:
+    """Solo la constitución (CALIPSO.md). NO el handoff técnico (AGENTS.md,
+    CLAUDE.md, etc.): eso es para agentes de código, no para responderle a Pedro;
+    volcarlo cada turno era puro gasto de tokens."""
+    p = ROOT / "CALIPSO.md"
+    if not (p.exists() and p.is_file()):
+        return ""
+    try:
+        return p.read_text(encoding="utf-8").strip()[:CONTEXT_CONST_MAX]
+    except UnicodeDecodeError:
+        return ""
+
+
+def _build_context(user_msg: str, runtime: str, features: dict | None = None) -> str:
+    """Contexto ordenado para caché (estable -> volátil) y presupuestado.
+
+    Estable (prefijo, se cachea en sub/api): identidad + memoria núcleo.
+    Volátil (sufijo): recuerdos relevantes (podados por score) + estado real.
+    Just-in-time: los archivos del repo NO se precargan; se piden bajo demanda.
+    """
+    # --- prefijo estable (cacheable) ---
+    blocks = [SYSTEM]
+    ident = _identity_doc()
+    if ident:
+        blocks.append("=== Constitucion de Calipso ===\n" + ident)
     core = mem.load_core()
-    recalled = mem.recall(user_msg, n=5)
-    blocks = [SYSTEM, runtime]
-    docs = _load_agent_docs()
-    if docs:
-        blocks.append("=== Instrucciones del proyecto ===\n" + docs)
     if core:
-        blocks.append("=== Memoria nucleo ===\n" + core)
+        blocks.append("=== Memoria nucleo ===\n" + core[:CONTEXT_CORE_MAX])
+
+    # --- sufijo volátil ---
+    recalled = [r for r in mem.recall(user_msg, n=8)
+                if r["score"] >= RECALL_MIN_SCORE][:RECALL_MAX]
     if recalled:
         lines = "\n".join(f"- ({r['score']}) {r['text']}" for r in recalled)
         blocks.append("=== Recuerdos relevantes ===\n" + lines)
-    return "\n\n".join(blocks)
+    if features and features.get("needs_repo"):
+        blocks.append("=== Repo ===\nSi necesitas archivos del repo, pidelos por "
+                      "nombre; no se precargan para ahorrar contexto.")
+    blocks.append(runtime)
+    return "\n\n".join(b for b in blocks if b)
 
 
 def _chunks_for(route: str, system: str, user_msg: str, usage: dict):
@@ -893,7 +916,7 @@ async def ws_chat(ws: WebSocket) -> None:
 
             # 2) contexto (core + recuerdos) y 3) streaming
             runtime = _harness_context(verdict, route, model, note)
-            system = _build_context(user_msg, runtime)
+            system = _build_context(user_msg, runtime, features)
             usage: dict = {}
             used_route = route
             full = ""
@@ -934,7 +957,7 @@ async def ws_chat(ws: WebSocket) -> None:
                                 runtime = _harness_context(
                                     verdict, "subscription", model,
                                     f"fallback de suscripcion a {alternate}")
-                                system = _build_context(user_msg, runtime)
+                                system = _build_context(user_msg, runtime, features)
                                 full = await asyncio.to_thread(
                                     _run_subscription_text, alternate, system, user_msg)
                                 usage["completion_tokens"] = len(full.split())
@@ -967,7 +990,7 @@ async def ws_chat(ws: WebSocket) -> None:
                         used_route, usage = "local", {}
                         model = _route_model_name("local")
                         runtime = _harness_context(verdict, "local", model, f"ruta {route} fallo; fallback local")
-                        system = _build_context(user_msg, runtime)
+                        system = _build_context(user_msg, runtime, features)
                         gen, model = _chunks_for("local", system, user_msg, usage)
                         while True:
                             chunk = await asyncio.to_thread(_next_or_stop, gen, sentinel)
