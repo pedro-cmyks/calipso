@@ -31,7 +31,7 @@ def main() -> int:
     # --- 1) aprendizaje global (a nivel de MODELO) ---
     # analysis: codex gana (sin fallos), opus pierde (falla siempre)
     for _ in range(4):
-        _turn("analysis", "subscription:codex:gpt-5-codex", False, 5000)
+        _turn("analysis", "subscription:codex:gpt-5.5", False, 5000)
         _turn("analysis", "subscription:claude:opus", True, 9000)
     # reasoning: deepseek gana, local-7b pierde
     for _ in range(4):
@@ -42,7 +42,7 @@ def main() -> int:
     print("  aprendido:", json.dumps(result["changed"], ensure_ascii=False))
 
     backends = capabilities.load_backends()
-    codex_an = backends["subscription:codex:gpt-5-codex"]["strengths"].get("analysis")
+    codex_an = backends["subscription:codex:gpt-5.5"]["strengths"].get("analysis")
     opus_an = backends["subscription:claude:opus"]["strengths"].get("analysis")
     api_re = backends["api:deepseek-chat"]["strengths"].get("reasoning")
 
@@ -56,13 +56,13 @@ def main() -> int:
     proj = pathlib.Path(tempfile.mkdtemp(prefix="calipso_repo_"))
     (proj / ".calipso").mkdir(parents=True, exist_ok=True)
     (proj / ".calipso" / "capabilities.json").write_text(json.dumps(
-        {"backends": {"subscription:codex:gpt-5-codex": {"strengths": {"repo": 0.5}}}}),
+        {"backends": {"subscription:codex:gpt-5.5": {"strengths": {"repo": 0.5}}}}),
         encoding="utf-8")
     merged = capabilities.load_backends(project_root=str(proj))
     check("override de repo aplica (codex.repo = 0.5)",
-          merged["subscription:codex:gpt-5-codex"]["strengths"]["repo"] == 0.5)
+          merged["subscription:codex:gpt-5.5"]["strengths"]["repo"] == 0.5)
     check("lo no-override queda default (codex.code = 1.0)",
-          merged["subscription:codex:gpt-5-codex"]["strengths"]["code"] == 1.0)
+          merged["subscription:codex:gpt-5.5"]["strengths"]["code"] == 1.0)
 
     if fails:
         print("\nFALLARON:", fails)

@@ -894,10 +894,19 @@ async def _run_dynamic_team(ws: WebSocket, chat_msg: str, features: dict,
                 agent.get("model"), agent_system, agent["task"],
                 capabilities.EFFORT.get(agent.get("intensity", "balanced"), 1))
         except Exception as e:
-            output = await asyncio.to_thread(
-                _run_backend_text, "local", None, _route_model_name("local"),
-                agent_system, agent["task"], None)
             agent["fallback_error"] = str(e)
+            try:
+                output = await asyncio.to_thread(
+                    _run_backend_text, "local", None, _route_model_name("local"),
+                    agent_system, agent["task"], None)
+                agent["fallback_route"] = "local"
+            except Exception as e2:
+                output = (
+                    f"No pude ejecutar esta subtarea. Ruta original: "
+                    f"{agent.get('route')} {agent.get('model') or ''}. "
+                    f"Error: {e}. Fallback local: {e2}."
+                )
+                agent["fallback_route"] = "failed"
         result = {**agent, "output": output}
         results.append(result)
         telemetry.log_event(
@@ -923,10 +932,19 @@ async def _run_dynamic_team(ws: WebSocket, chat_msg: str, features: dict,
         final = await asyncio.to_thread(
             _run_backend_text, verdict.get("route"), verdict.get("client"),
             verdict.get("model"), base_system, synth_prompt, verdict.get("effort"))
-    except Exception:
-        final = await asyncio.to_thread(
-            _run_backend_text, "local", None, _route_model_name("local"),
-            base_system, synth_prompt, None)
+    except Exception as e:
+        try:
+            final = await asyncio.to_thread(
+                _run_backend_text, "local", None, _route_model_name("local"),
+                base_system, synth_prompt, None)
+        except Exception as e2:
+            final = (
+                "No pude completar la sintesis automatica. Resultado parcial del equipo:\n\n"
+                + "\n\n".join(
+                    f"[{r['persona']} - {r['role']}]\n{r['output']}"
+                    for r in results)
+                + f"\n\nErrores de sintesis: {e}; fallback local: {e2}"
+            )
     return final, {"plan": plan_obj, "agents": [
         {k: a.get(k) for k in ("persona", "role", "model_id", "route", "client",
                                "model", "tier", "intensity")}
@@ -966,6 +984,7 @@ CONTEXT_CONST_MAX = int(os.environ.get("CALIPSO_CONST_MAX", "3000"))
 CONTEXT_CORE_MAX = int(os.environ.get("CALIPSO_CORE_MAX", "3000"))
 RECALL_MIN_SCORE = float(os.environ.get("CALIPSO_RECALL_MIN", "0.30"))
 RECALL_MAX = int(os.environ.get("CALIPSO_RECALL_MAX", "4"))
+REPO_BRIEF_MAX = int(os.environ.get("CALIPSO_REPO_BRIEF_MAX", "4500"))
 
 
 def _identity_doc() -> str:
@@ -979,6 +998,36 @@ def _identity_doc() -> str:
         return p.read_text(encoding="utf-8").strip()[:CONTEXT_CONST_MAX]
     except UnicodeDecodeError:
         return ""
+
+
+def _repo_brief() -> str:
+    """Mapa compacto del repo para fallbacks sin herramientas de archivo."""
+    files: list[str] = []
+    for p in ROOT.rglob("*"):
+        try:
+            rel = p.relative_to(ROOT)
+        except ValueError:
+            continue
+        parts = rel.parts
+        if any(part.startswith(".") or part in IGNORE_DIRS for part in parts):
+            continue
+        if p.is_file():
+            files.append(rel.as_posix())
+        if len(files) >= 120:
+            break
+    files.sort()
+    blocks = ["Archivos principales:\n" + "\n".join(f"- {f}" for f in files[:80])]
+    for name in ("AGENTS.md", "CALIPSO.md", "README.md", "SETUP.md"):
+        p = ROOT / name
+        if not p.exists() or not p.is_file():
+            continue
+        try:
+            text = p.read_text(encoding="utf-8").strip()
+        except UnicodeDecodeError:
+            continue
+        if text:
+            blocks.append(f"Extracto de {name}:\n{text[:1400]}")
+    return "\n\n".join(blocks)[:REPO_BRIEF_MAX]
 
 
 def _build_context(user_msg: str, runtime: str, features: dict | None = None) -> str:
@@ -1004,8 +1053,7 @@ def _build_context(user_msg: str, runtime: str, features: dict | None = None) ->
         lines = "\n".join(f"- ({r['score']}) {r['text']}" for r in recalled)
         blocks.append("=== Recuerdos relevantes ===\n" + lines)
     if features and features.get("needs_repo"):
-        blocks.append("=== Repo ===\nSi necesitas archivos del repo, pidelos por "
-                      "nombre; no se precargan para ahorrar contexto.")
+        blocks.append("=== Repo ===\n" + _repo_brief())
     blocks.append(runtime)
     return "\n\n".join(b for b in blocks if b)
 

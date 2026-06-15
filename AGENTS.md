@@ -11,7 +11,7 @@
 ## Estado del cerebro (lo construido, resumen)
 
 - **Ruteo a nivel de MODELO** (`calipso/capabilities.py`): registro donde cada modelo
-  (Haiku/Sonnet/Opus, Codex gpt-5-codex/-mini/gpt-5.5, DeepSeek, Fable 5, local qwen)
+  (Haiku/Sonnet/Opus, Codex gpt-5.5, DeepSeek, Fable 5, local qwen)
   declara tier (small/mid/frontier/apex), persona (filósofo), costo y afinidad por
   tarea. `choose(features, effort)` puntúa afinidad×costo×tier×intensidad → elige el
   modelo por tarea; suscripción > API paga. NO es un gate que prueba en orden.
