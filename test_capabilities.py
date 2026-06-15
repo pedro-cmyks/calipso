@@ -31,9 +31,9 @@ def main() -> int:
     k, p = top({"type": "translate", "complexity": 1}, cap.EFFORT["fast"])
     check("trivial rápido -> tier small", cap.REGISTRY[k]["tier"] == "small", f"({p}:{k})")
 
-    # repo/código -> Codex
+    # repo/código -> Codex (gpt-5-codex)
     k, p = top({"type": "repo", "complexity": 4}, cap.EFFORT["think"])
-    check("repo -> Codex", k == "subscription:codex", f"({p})")
+    check("repo -> Codex", k == "subscription:codex:gpt-5-codex", f"({p})")
 
     # razonar con ultra -> exige frontier (Opus o superior)
     k, p = top({"type": "reasoning", "complexity": 3}, cap.EFFORT["ultra"])

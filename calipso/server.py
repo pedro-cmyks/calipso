@@ -54,6 +54,7 @@ from calipso import capabilities  # noqa: E402
 from calipso import config as calipso_config  # noqa: E402
 from calipso import costs  # noqa: E402
 from calipso import learning  # noqa: E402
+from calipso import sessions  # noqa: E402
 from calipso import telemetry  # noqa: E402
 from calipso.memory import Memory  # noqa: E402
 
@@ -726,41 +727,52 @@ def _decide(user_msg: str) -> tuple[dict, dict, list, dict]:
     intensidad -> choose(). Devuelve (verdict, features, ranked, directivas)."""
     d = capabilities.parse_directives(user_msg)
     features = dispatch.extract_features(d["clean"])
-    effort = d["effort"] if d["effort"] is not None else capabilities.derive_effort(
+    sel_effort = d["effort"] if d["effort"] is not None else capabilities.derive_effort(
         features["complexity"])
-    ranked = capabilities.choose(
-        features, effort, _backend_availability(), _backend_quota_low(),
-        project_root=str(ROOT))
 
-    # overrides explícitos de Pedro (slash)
+    # sesión activa: deshabilita los agentes apagados para ESTA sesión
+    prof = sessions.active()
+    avail = _backend_availability()
+    for mid, a in (prof.get("agents") or {}).items():
+        if not a.get("enabled", True):
+            avail[mid] = False
+
+    ranked = capabilities.choose(features, sel_effort, avail,
+                                 _backend_quota_low(), project_root=str(ROOT))
     if d.get("force_route"):
         ranked = [r for r in ranked if r["route"] == d["force_route"]] or ranked
     if d.get("force_model"):
         fm = d["force_model"].lower()
-        forced = [r for r in ranked if fm in (r["key"].lower(), (r["model"] or "").lower(),
-                                              (r["client"] or "").lower(),
-                                              r["persona"].lower())]
+        forced = [r for r in ranked if fm in (
+            r["key"].lower(), (r["model"] or "").lower(), (r["client"] or "").lower(),
+            (prof["agents"].get(r["key"], {}).get("name") or r["persona"]).lower())]
         if forced:
             ranked = forced
 
     if ranked:
         top = ranked[0]
+        sess = sessions.apply(prof, top["key"], top.get("persona"), top["route"])
+        # intensidad efectiva: slash > intensidad de sesión del agente > derivada
+        exec_effort = sel_effort
+        if d["effort"] is None and sess["intensity"]:
+            exec_effort = capabilities.EFFORT[sess["intensity"]]
         verdict = {
             "route": top["route"], "client": top.get("client"),
             "model": top.get("model"), "model_id": top["key"],
-            "persona": top.get("persona"), "tier": top.get("tier"),
-            "effort": effort, "effort_name": capabilities.EFFORT_NAME[effort],
-            "source": "capabilities",
-            "why": f"{top.get('persona')} ({top.get('tier')}) para "
-                   f"{features['type']} c{features['complexity']} "
-                   f"intensidad={capabilities.EFFORT_NAME[effort]} (score {top['score']})",
+            "persona": sess["name"], "tier": top.get("tier"),
+            "effort": exec_effort, "effort_name": capabilities.EFFORT_NAME[exec_effort],
+            "session": prof["id"], "source": "capabilities",
+            "why": f"{sess['name']} ({top.get('tier')}) para {features['type']} "
+                   f"c{features['complexity']} intensidad="
+                   f"{capabilities.EFFORT_NAME[exec_effort]} (score {top['score']})",
         }
     else:
         verdict = {"route": "local", "client": None, "model": "qwen2.5:7b",
                    "model_id": "local:qwen2.5:7b", "persona": "Epicteto",
-                   "tier": "small", "effort": effort,
-                   "effort_name": capabilities.EFFORT_NAME[effort],
-                   "source": "capabilities", "why": "ningun modelo apto; local"}
+                   "tier": "small", "effort": sel_effort,
+                   "effort_name": capabilities.EFFORT_NAME[sel_effort],
+                   "session": prof["id"], "source": "capabilities",
+                   "why": "ningun modelo apto; local"}
     return verdict, features, ranked, d
 
 
@@ -841,7 +853,7 @@ def _build_context(user_msg: str, runtime: str, features: dict | None = None) ->
 
 
 def _chunks_for(route: str, system: str, user_msg: str, usage: dict,
-                model: str | None = None):
+                model: str | None = None, effort: int | None = None):
     """Devuelve (generador, modelo) segÃƒÂºn la ruta. Reusa los parsers de
     streaming del router (SSE / NDJSON) y captura tokens en 'usage'."""
     if route == "api":
@@ -851,6 +863,8 @@ def _chunks_for(route: str, system: str, user_msg: str, usage: dict,
                    "stream_options": {"include_usage": True}, "messages": [
                        {"role": "system", "content": system},
                        {"role": "user", "content": user_msg}]}
+        if effort is not None:  # intensidad real para modelos thinking (vía LiteLLM)
+            payload["output_config"] = {"effort": capabilities.EFFORT_PARAM[effort]}
         headers = {"Authorization": f"Bearer {cfg['api_key']}"}
         return dispatch._sse_text_chunks(cfg["base_url"], payload, headers, usage), mdl
     # local (Ollama) Ã¢â‚¬â€ y tambiÃƒÂ©n el fallback de cualquier otra ruta por ahora.
@@ -896,6 +910,8 @@ def _run_subscription_text(client: str, system: str, user_msg: str,
              arg.replace("{prompt}", prompt).replace("{output}", output_name))
             for i, arg in enumerate(template)
         ]
+        if model and model.startswith("gpt"):  # elige el modelo de Codex
+            cmd[1:1] = ["-m", model]  # tras 'exec'... insertamos antes de exec
     env = os.environ.copy()
     if client == "claude":
         env.pop("ANTHROPIC_API_KEY", None)
@@ -978,7 +994,8 @@ async def ws_chat(ws: WebSocket) -> None:
                     usage["completion_tokens"] = len(full.split())
                     await ws.send_json({"type": "chunk", "text": full})
                 else:
-                    gen, model = _chunks_for(route, system, chat_msg, usage, model)
+                    gen, model = _chunks_for(route, system, chat_msg, usage, model,
+                                             verdict.get("effort"))
                     while True:
                         chunk = await asyncio.to_thread(_next_or_stop, gen, sentinel)
                         if chunk is sentinel:
@@ -1105,6 +1122,73 @@ def api_learn(scope: str = "global") -> dict:
     if scope == "project":
         return learning.learn(project_root=str(ROOT), project=str(ROOT))
     return learning.learn()
+
+
+# --------------------------------------------------------------------------
+# SESIONES  (elenco de agentes por sesión: nombre, modelo, intensidad)
+# --------------------------------------------------------------------------
+
+def _session_view(prof: dict) -> dict:
+    """Perfil enriquecido con tier/ruta de cada modelo (para la UI)."""
+    reg = capabilities.REGISTRY
+    agents = []
+    for mid, a in prof["agents"].items():
+        m = reg.get(mid, {})
+        agents.append({"model_id": mid, "name": a.get("name"),
+                       "intensity": a.get("intensity"), "enabled": a.get("enabled", True),
+                       "tier": m.get("tier"), "route": m.get("route"),
+                       "model": m.get("model")})
+    return {"id": prof["id"], "name": prof.get("name"), "agents": agents}
+
+
+@app.get("/api/sessions")
+def api_sessions() -> dict:
+    active = sessions.active()
+    return {"active": active["id"],
+            "sessions": [{"id": s["id"], "name": s.get("name")}
+                         for s in sessions.list_sessions()]}
+
+
+@app.post("/api/sessions")
+async def api_session_create(request: Request) -> dict:
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    return _session_view(sessions.create(body.get("name")))
+
+
+@app.get("/api/session")
+def api_session_get() -> dict:
+    return _session_view(sessions.active())
+
+
+@app.put("/api/session/active")
+async def api_session_switch(request: Request) -> dict:
+    body = await request.json()
+    sid = body.get("id")
+    if not sessions.load(sid):
+        raise HTTPException(status_code=404, detail="sesion no existe")
+    sessions.set_active(sid)
+    return _session_view(sessions.active())
+
+
+@app.put("/api/session/agent")
+async def api_session_agent(request: Request) -> dict:
+    body = await request.json()
+    mid = body.get("model_id")
+    if not mid:
+        raise HTTPException(status_code=400, detail="falta model_id")
+    try:
+        prof = sessions.set_agent(
+            sessions.active()["id"], mid,
+            name=body.get("name"),
+            intensity=body["intensity"] if "intensity" in body else "_keep",
+            enabled=body.get("enabled"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _session_view(prof)
 
 
 @app.get("/api/costs")

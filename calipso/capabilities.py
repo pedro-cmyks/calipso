@@ -78,12 +78,26 @@ REGISTRY: dict[str, dict] = {
                       "analysis": 0.97, "code": 0.95, "agentic": 0.9,
                       "repo": 0.9},
     },
-    "subscription:codex": {
-        "route": "subscription", "client": "codex", "model": "codex",
+    "subscription:codex:gpt-5-codex": {
+        "route": "subscription", "client": "codex", "model": "gpt-5-codex",
         "tier": "frontier", "persona": "Arquimedes", "cost": 1, "speed": 0.9,
         "max_complexity": 5, "private_ok": False,
         "strengths": {"code": 1.0, "agentic": 1.0, "repo": 1.0, "exec": 1.0,
                       "refactor": 0.92, "reasoning": 0.8, "analysis": 0.8},
+    },
+    "subscription:codex:gpt-5-codex-mini": {
+        "route": "subscription", "client": "codex", "model": "gpt-5-codex-mini",
+        "tier": "small", "persona": "Heron", "cost": 1, "speed": 0.95,
+        "max_complexity": 3, "private_ok": False,
+        "strengths": {"code": 0.85, "agentic": 0.8, "repo": 0.8, "exec": 0.85,
+                      "refactor": 0.8, "trivial": 0.7},
+    },
+    "subscription:codex:gpt-5.5": {
+        "route": "subscription", "client": "codex", "model": "gpt-5.5",
+        "tier": "apex", "persona": "Tales", "cost": 1, "speed": 0.82,
+        "max_complexity": 5, "private_ok": False,
+        "strengths": {"code": 1.0, "agentic": 1.0, "repo": 1.0, "reasoning": 0.97,
+                      "analysis": 0.97, "refactor": 0.95, "writing": 0.85},
     },
     "api:deepseek-chat": {
         "route": "api", "client": None, "model": "deepseek-chat",
