@@ -6,18 +6,29 @@
 <title>Calipso</title>
 <style>
   :root {
-    --bg: #1e1e1e; --panel: #252526; --bar: #181818;
-    --border: #333; --text: #d4d4d4; --muted: #888;
-    --accent: #4ea1ff; --accent-dim: #2d6cb0; --dirty: #e2c08d;
+    /* Tema Tech Innovation (adaptado a oscuro): azul eléctrico + cian sobre grafito */
+    --bg: #0d1117; --bg2: #131923; --panel: #161b22; --bar: #0b0e14;
+    --border: #222a35; --border2: #2c3744;
+    --text: #e6edf3; --muted: #8b98a9;
+    --accent: #2f81f7; --accent2: #22d3ee; --accent-dim: #1f4b87;
+    --dirty: #e2c08d; --good: #3fb950;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; font-family: system-ui, "Segoe UI", sans-serif;
-               background: var(--bg); color: var(--text); overflow: hidden; }
+  html, body { margin: 0; height: 100%;
+               font-family: "Inter", system-ui, "Segoe UI", -apple-system, sans-serif;
+               background: var(--bg); color: var(--text); overflow: hidden;
+               -webkit-font-smoothing: antialiased; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 6px; }
+  ::-webkit-scrollbar-thumb:hover { background: #3b4858; }
+  ::-webkit-scrollbar-track { background: transparent; }
   #app { display: flex; flex-direction: column; height: 100%; }
   header { display: flex; align-items: center; gap: 12px; height: 40px;
            padding: 0 14px; background: var(--bar); border-bottom: 1px solid var(--border);
            font-size: 13px; flex: 0 0 auto; }
-  header .logo { font-weight: 700; color: var(--accent); letter-spacing: .5px; }
+  header .logo { font-weight: 800; letter-spacing: .3px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
   header .proj { color: var(--muted); }
   header .status { margin-left: auto; color: var(--muted); font-size: 12px; }
   header .status.dirty { color: var(--dirty); }
@@ -25,7 +36,7 @@
   .toolbtn { background: transparent; border: 1px solid var(--border); color: var(--text);
              border-radius: 6px; height: 26px; padding: 0 9px; font-size: 12px;
              cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
-  .toolbtn:hover { border-color: #555; background: #222; }
+  .toolbtn:hover { border-color: var(--border2); background: var(--bg2); color: #fff; }
   .toolbtn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
            background: var(--accent-dim); color: #fff; display: inline-flex;
@@ -80,7 +91,7 @@
   .msg { font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word;
          padding: 8px 11px; border-radius: 8px; max-width: 92%; }
   .msg.user { align-self: flex-end; background: var(--accent-dim); color: #fff; }
-  .msg.bot  { align-self: flex-start; background: #2d2d30; }
+  .msg.bot  { align-self: flex-start; background: var(--bg2); border: 1px solid var(--border); }
   .msg.meta { align-self: center; background: transparent; color: var(--muted);
               font-size: 11px; padding: 1px 6px; max-width: 100%; }
   .msg.detail { align-self: stretch; max-width: 100%; background: #232326;
