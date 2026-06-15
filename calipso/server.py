@@ -291,7 +291,7 @@ def _build_tree(directory: pathlib.Path) -> list[dict]:
 
 @app.get("/api/tree")
 def api_tree() -> dict:
-    return {"root": ROOT.name, "tree": _build_tree(ROOT)}
+    return {"root": ROOT.name, "path": str(ROOT), "tree": _build_tree(ROOT)}
 
 
 @app.get("/api/file")
@@ -1187,19 +1187,47 @@ async def _run_subscription_text_live(
     started = time.perf_counter()
     last_notice = started
     pending_msg: str | None = None
+    stdout_name = None
+    stderr_name = None
+    stdout_file = tempfile.NamedTemporaryFile(
+        "w+", encoding="utf-8", errors="replace", suffix=".stdout", delete=False)
+    stderr_file = tempfile.NamedTemporaryFile(
+        "w+", encoding="utf-8", errors="replace", suffix=".stderr", delete=False)
+    stdout_name = stdout_file.name
+    stderr_name = stderr_file.name
     proc = subprocess.Popen(
-        cmd, cwd=str(ROOT), text=True, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, encoding="utf-8", errors="replace", env=env)
+        cmd, cwd=str(ROOT), text=True, stdout=stdout_file,
+        stderr=stderr_file, encoding="utf-8", errors="replace", env=env)
+
+    def _read_partial() -> tuple[str, str]:
+        for f in (stdout_file, stderr_file):
+            try:
+                f.flush()
+            except Exception:
+                pass
+        stdout = pathlib.Path(stdout_name).read_text(
+            encoding="utf-8", errors="replace") if stdout_name else ""
+        stderr = pathlib.Path(stderr_name).read_text(
+            encoding="utf-8", errors="replace") if stderr_name else ""
+        out = ""
+        if output_name and pathlib.Path(output_name).exists():
+            out = pathlib.Path(output_name).read_text(
+                encoding="utf-8", errors="replace").strip()
+        return out or stdout.strip(), stderr.strip()
+
     try:
         await ws.send_json({"type": "process", "action": "start",
-                            "label": label, "client": client, "model": model})
+                            "label": label, "client": client, "model": model,
+                            "prompt_tokens": max(1, (len(system) + len(user_msg)) // 4)})
         while proc.poll() is None:
             now = time.perf_counter()
-            if now - last_notice >= 30:
+            if now - last_notice >= 5:
+                partial, _ = _read_partial()
                 await ws.send_json({
                     "type": "process", "action": "running",
                     "label": label, "client": client, "model": model,
                     "elapsed": round(now - started),
+                    "tokens": max(1, ((len(system) + len(user_msg)) + len(partial)) // 4),
                     "hint": "sigue corriendo; envia /stop para cancelar o escribe y lo atiendo al terminar"})
                 last_notice = now
             if not inbox.empty():
@@ -1214,9 +1242,14 @@ async def _run_subscription_text_live(
                         await asyncio.to_thread(proc.wait, 8)
                     except Exception:
                         proc.kill()
+                    partial, stderr = _read_partial()
                     await ws.send_json({"type": "process", "action": "stopped",
                                         "label": label})
-                    return "...(proceso interrumpido)", None
+                    if partial:
+                        return partial + "\n\n...(proceso interrumpido)", None
+                    if stderr:
+                        return stderr + "\n\n...(proceso interrumpido)", None
+                    return "...(proceso interrumpido sin salida parcial)", None
                 if clean:
                     pending_msg = clean
                     await ws.send_json({
@@ -1224,20 +1257,29 @@ async def _run_subscription_text_live(
                         "label": label,
                         "hint": "lo recibi; este CLI no acepta steering en vivo, lo proceso al terminar"})
             await asyncio.sleep(1.5)
-        stdout, stderr = await asyncio.to_thread(proc.communicate)
+        await asyncio.to_thread(proc.wait)
+        partial, stderr = _read_partial()
         if proc.returncode != 0:
-            msg = (stderr or stdout or "").strip()
+            msg = (stderr or partial or "").strip()
             raise RuntimeError(msg or f"{client} fallo con exit {proc.returncode}")
-        if output_name:
-            out = pathlib.Path(output_name).read_text(encoding="utf-8").strip()
-            text = out or (stdout or "").strip()
-        else:
-            text = (stdout or "").strip()
+        text = partial
         elapsed = round(time.perf_counter() - started)
         await ws.send_json({"type": "process", "action": "done",
-                            "label": label, "elapsed": elapsed})
+                            "label": label, "elapsed": elapsed,
+                            "tokens": max(1, ((len(system) + len(user_msg)) + len(text)) // 4)})
         return text, pending_msg
     finally:
+        for f in (stdout_file, stderr_file):
+            try:
+                f.close()
+            except Exception:
+                pass
+        for name in (stdout_name, stderr_name):
+            try:
+                if name:
+                    pathlib.Path(name).unlink(missing_ok=True)
+            except Exception:
+                pass
         _cleanup_subscription_files(temp_name, output_name)
 
 
