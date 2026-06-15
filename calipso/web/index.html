@@ -120,7 +120,8 @@
       <div class="chat-title">Habla con Calipso</div>
       <div id="messages"></div>
       <div id="composer">
-        <textarea id="input" placeholder="Hablale a Calipso...  (Enter envia, Shift+Enter salto)"></textarea>
+        <textarea id="input" placeholder="Hablale a Calipso...  (Enter envia - escribe mientras responde para guiar)"></textarea>
+        <button id="stop" title="Detener" style="display:none">Detener</button>
         <button id="send" title="Enviar">Enviar</button>
       </div>
     </aside>
@@ -486,13 +487,17 @@ function connect() {
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
     if (m.type === "meta") {
-      let t = `-> ${m.used || m.route}`;
+      let t = `-> ${m.persona || m.used || m.route}`;
       if (m.model) t += ` - ${m.model}`;
-      if (m.client) t += ` - ${m.client}`;
+      if (m.tier) t += ` (${m.tier})`;
+      if (m.effort) t += ` - intensidad ${m.effort}`;
       if (m.note) t += ` - ${m.note}`;
       if (m.why) t += ` - ${m.why}`;
       addMsg("meta", t);
       if (!botEl) botEl = addMsg("bot", "");
+    } else if (m.type === "steered") {
+      addMsg("meta", "interrumpido");
+      botEl = null;
     } else if (m.type === "chunk") {
       if (!botEl) botEl = addMsg("bot", "");
       botEl.textContent += m.text; messages.scrollTop = messages.scrollHeight;
@@ -507,18 +512,36 @@ function connect() {
   };
   ws.onclose = () => { addMsg("meta", "desconectado, reintentando..."); setTimeout(connect, 1500); };
 }
-function setBusy(b) { busy = b; sendBtn.disabled = b; input.disabled = b; if (!b) input.focus(); }
+const stopBtn = document.getElementById("stop");
+function setBusy(b) { busy = b; stopBtn.style.display = b ? "block" : "none"; input.focus(); }
 function send() {
   const text = input.value.trim();
-  if (!text || busy || !ws || ws.readyState !== 1) return;
-  addMsg("user", text); input.value = ""; botEl = null; setBusy(true);
+  if (!text || !ws || ws.readyState !== 1) return;
+  // si esta generando, este mensaje GUIA (steering); si no, inicia turno.
+  addMsg("user", text); input.value = ""; if (!busy) botEl = null;
+  setBusy(true);
   ws.send(text);
 }
+stopBtn.onclick = () => { if (ws && ws.readyState === 1) ws.send("/stop"); };
 sendBtn.onclick = send;
 input.addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
 connect();
+
+// aviso de updates (modelos nuevos / CLIs desactualizados)
+fetch("/api/updates").then(r => r.json()).then(u => {
+  const out = Object.entries(u.clis || {})
+    .filter(([k, v]) => v.outdated).map(([k, v]) => `${k} ${v.latest}`);
+  const news = (u.new_models || []).length;
+  const proj = document.getElementById("proj");
+  if (out.length || news) {
+    const parts = [];
+    if (news) parts.push(`${news} modelo(s) nuevo(s)`);
+    if (out.length) parts.push(`update: ${out.join(", ")}`);
+    if (proj) { proj.textContent += "  ·  ⬆ " + parts.join(" · "); proj.title = "Updates disponibles"; }
+  }
+}).catch(() => {});
 </script>
 </body>
 </html>

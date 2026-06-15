@@ -53,6 +53,7 @@ import dispatch  # noqa: E402
 from calipso import capabilities  # noqa: E402
 from calipso import config as calipso_config  # noqa: E402
 from calipso import costs  # noqa: E402
+from calipso import discovery  # noqa: E402
 from calipso import learning  # noqa: E402
 from calipso import sessions  # noqa: E402
 from calipso import telemetry  # noqa: E402
@@ -954,11 +955,29 @@ async def ws_chat(ws: WebSocket) -> None:
         return
     await ws.accept()
     sentinel = object()
+    inbox: asyncio.Queue = asyncio.Queue()
+
+    async def _receiver():
+        try:
+            while True:
+                await inbox.put(await ws.receive_text())
+        except Exception:
+            await inbox.put(None)  # desconexión
+
+    rtask = asyncio.create_task(_receiver())
+    pending = None
     try:
         while True:
-            user_msg = (await ws.receive_text()).strip()
-            if not user_msg:
-                continue
+            if pending is not None:
+                user_msg, pending = pending, None
+            else:
+                raw = await inbox.get()
+                if raw is None:
+                    break
+                user_msg = raw
+            user_msg = user_msg.strip()
+            if not user_msg or user_msg == "/stop":
+                continue  # /stop en reposo no interrumpe nada
             turn_started = time.perf_counter()
             fallbacks: list[dict] = []
 
@@ -997,6 +1016,17 @@ async def ws_chat(ws: WebSocket) -> None:
                     gen, model = _chunks_for(route, system, chat_msg, usage, model,
                                              verdict.get("effort"))
                     while True:
+                        if not inbox.empty():  # steering: barge-in mientras responde
+                            steer = inbox.get_nowait()
+                            try:
+                                gen.close()
+                            except Exception:
+                                pass
+                            await ws.send_json({"type": "steered"})
+                            full += " …(interrumpido)"
+                            if steer and steer.strip() and steer.strip() != "/stop":
+                                pending = steer
+                            break
                         chunk = await asyncio.to_thread(_next_or_stop, gen, sentinel)
                         if chunk is sentinel:
                             break
@@ -1061,6 +1091,17 @@ async def ws_chat(ws: WebSocket) -> None:
                         system = _build_context(chat_msg, runtime, features)
                         gen, model = _chunks_for("local", system, chat_msg, usage)
                         while True:
+                            if not inbox.empty():  # steering en el fallback local
+                                steer = inbox.get_nowait()
+                                try:
+                                    gen.close()
+                                except Exception:
+                                    pass
+                                await ws.send_json({"type": "steered"})
+                                full += " …(interrumpido)"
+                                if steer and steer.strip() and steer.strip() != "/stop":
+                                    pending = steer
+                                break
                             chunk = await asyncio.to_thread(_next_or_stop, gen, sentinel)
                             if chunk is sentinel:
                                 break
@@ -1105,7 +1146,9 @@ async def ws_chat(ws: WebSocket) -> None:
                              route=verdict["route"], kind="chat")
             await ws.send_json({"type": "done"})
     except WebSocketDisconnect:
-        return
+        pass
+    finally:
+        rtask.cancel()
 
 
 @app.post("/api/reflect")
@@ -1113,6 +1156,18 @@ def api_reflect() -> dict:
     """Dispara la consolidaciÃƒÂ³n: promueve hechos duraderos al core curado."""
     promoted = mem.reflect()
     return {"promoted": promoted}
+
+
+@app.post("/api/discover")
+def api_discover() -> dict:
+    """Descubre modelos vivos (Ollama/LiteLLM) y los registra."""
+    return discovery.discover(register=True)
+
+
+@app.get("/api/updates")
+def api_updates() -> dict:
+    """Versiones de CLIs (+ si hay update en npm) y modelos nuevos descubiertos."""
+    return discovery.updates()
 
 
 @app.post("/api/learn")
@@ -1210,6 +1265,16 @@ def api_memory() -> dict:
 @app.get("/api/telemetry")
 def api_telemetry(limit: int = 100) -> dict:
     return {"events": telemetry.recent(limit)}
+
+
+@app.on_event("startup")
+def _startup_discover() -> None:
+    try:
+        found = discovery.discover(register=True)
+        if found["added"]:
+            print(f"[calipso] modelos descubiertos: {found['added']}")
+    except Exception:
+        pass
 
 
 @app.get("/")
