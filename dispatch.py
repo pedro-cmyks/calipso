@@ -31,6 +31,12 @@ import subprocess
 import sys
 import urllib.request
 
+try:
+    from calipso.config import dispatch_config, load_config
+except Exception:
+    dispatch_config = None
+    load_config = None
+
 # ----------------------------------------------------------------------------
 # CONFIGURACIÓN  (ajusta a tu entorno)
 # ----------------------------------------------------------------------------
@@ -65,6 +71,9 @@ CONFIG = {
         "model": "qwen2.5:3b",
     },
 }
+
+if dispatch_config:
+    CONFIG = dispatch_config()
 
 # Ruta a la que caemos si el clasificador local falla. "local" para no escalar
 # a una API de pago por accidente (privacidad/coste).
@@ -116,9 +125,12 @@ def decide_by_rules(prompt: str) -> dict | None:
     """
     p = prompt.strip()
     long_prompt = len(p) > 800
+    routing = (load_config() if load_config else {}).get("routing", {})
+    sub_client = routing.get("subscription_client", "claude")
+    subscription_first = routing.get("policy", "subscription_first") == "subscription_first"
 
     if CODE_HEAVY.search(p):
-        return {"route": "subscription", "client": "claude",
+        return {"route": "subscription", "client": sub_client,
                 "why": "tarea de código pesada"}
 
     if TRIVIAL.search(p):
@@ -126,11 +138,14 @@ def decide_by_rules(prompt: str) -> dict | None:
                 "why": "tarea trivial/privada (local aunque sea larga)"}
 
     if CHEAP_REASONING.search(p):
+        if subscription_first:
+            return {"route": "subscription", "client": sub_client,
+                    "why": "razonamiento amplio; politica suscripcion primero"}
         return {"route": "api", "client": None,
                 "why": "razonamiento barato"}
 
     if long_prompt:
-        return {"route": "subscription", "client": "claude",
+        return {"route": "subscription", "client": sub_client,
                 "why": "prompt largo sin señal clara; necesita contexto grande"}
 
     return None  # -> pasa al clasificador

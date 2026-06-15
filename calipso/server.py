@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 calipso/server.py â€” Servidor de Calipso (Hito 1: visor/editor de cÃ³digo).
 
@@ -21,17 +21,22 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import datetime
+import difflib
 import hashlib
 import hmac
 import io
 import os
 import pathlib
 import secrets
+import shutil
 import struct
 import subprocess
 import sys
 import time
 import urllib.parse
+import urllib.request
+import uuid
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -43,6 +48,7 @@ from pydantic import BaseModel
 # El cerebro (router) y la memoria viven en el repo raÃ­z / paquete calipso.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import dispatch  # noqa: E402
+from calipso import config as calipso_config  # noqa: E402
 from calipso import costs  # noqa: E402
 from calipso.memory import Memory  # noqa: E402
 
@@ -205,6 +211,11 @@ async def auth_guard(request: Request, call_next):
     if _valid(request.cookies.get(COOKIE)):
         return await call_next(request)
     if _valid(request.query_params.get("token")):
+        if path.startswith("/api") or request.method != "GET":
+            resp = await call_next(request)
+            resp.set_cookie(COOKIE, TOKEN, httponly=True, samesite="lax",
+                            max_age=31_536_000)
+            return resp
         return _session_response(path)
     if path.startswith("/api") or path.startswith("/ws"):
         return JSONResponse({"detail": "no autorizado"}, status_code=401)
@@ -294,6 +305,12 @@ class SaveBody(BaseModel):
     content: str
 
 
+class ProposalBody(BaseModel):
+    path: str
+    content: str
+    source: str = "editor"
+
+
 @app.put("/api/file")
 def api_save_file(body: SaveBody) -> dict:
     p = _safe(body.path)
@@ -302,6 +319,73 @@ def api_save_file(body: SaveBody) -> dict:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(body.content, encoding="utf-8", newline="")
     return {"ok": True, "bytes": len(body.content.encode("utf-8"))}
+
+
+PENDING_CHANGES: dict[str, dict] = {}
+
+
+def _proposal_diff(path: str, content: str) -> str:
+    p = _safe(path)
+    old = ""
+    if p.exists() and p.is_file():
+        try:
+            old = p.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            old = "(archivo binario o no legible como texto)\n"
+    old_lines = old.splitlines(keepends=True)
+    new_lines = content.splitlines(keepends=True)
+    return "".join(difflib.unified_diff(
+        old_lines, new_lines, fromfile=f"a/{path}", tofile=f"b/{path}"))
+
+
+@app.get("/api/proposals")
+def api_proposals() -> dict:
+    return {"proposals": list(PENDING_CHANGES.values())}
+
+
+@app.post("/api/proposals")
+def api_propose_change(body: ProposalBody) -> dict:
+    _safe(body.path)
+    change_id = uuid.uuid4().hex[:12]
+    item = {
+        "id": change_id,
+        "path": body.path,
+        "source": body.source,
+        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+    }
+    PENDING_CHANGES[change_id] = {**item, "content": body.content}
+    return {**item, "diff": _proposal_diff(body.path, body.content)}
+
+
+@app.get("/api/proposals/{change_id}/diff")
+def api_proposal_diff(change_id: str) -> dict:
+    item = PENDING_CHANGES.get(change_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="propuesta no existe")
+    return {"id": change_id, "path": item["path"],
+            "diff": _proposal_diff(item["path"], item["content"])}
+
+
+@app.post("/api/proposals/{change_id}/apply")
+def api_apply_proposal(change_id: str) -> dict:
+    item = PENDING_CHANGES.get(change_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="propuesta no existe")
+    p = _safe(item["path"])
+    if p.is_dir():
+        raise HTTPException(status_code=400, detail="es una carpeta")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(item["content"], encoding="utf-8", newline="")
+    del PENDING_CHANGES[change_id]
+    return {"ok": True, "path": item["path"]}
+
+
+@app.delete("/api/proposals/{change_id}")
+def api_discard_proposal(change_id: str) -> dict:
+    if change_id not in PENDING_CHANGES:
+        raise HTTPException(status_code=404, detail="propuesta no existe")
+    item = PENDING_CHANGES.pop(change_id)
+    return {"ok": True, "path": item["path"]}
 
 
 # --------------------------------------------------------------------------
@@ -367,6 +451,54 @@ def api_git_diff(path: str | None = None) -> dict:
                 content = "(archivo binario o no legible como texto)"
             text = f"Archivo nuevo o sin diff unstaged para {path}\n\n{content}"
     return {"path": path, "diff": text}
+
+
+# --------------------------------------------------------------------------
+# CONFIG  (harness: rutas, modelos y preferencias de costo)
+# --------------------------------------------------------------------------
+
+@app.get("/api/config")
+def api_config_get() -> dict:
+    return calipso_config.load_config()
+
+
+@app.put("/api/config")
+async def api_config_save(request: Request) -> dict:
+    data = await request.json()
+    cfg = calipso_config.save_config(data)
+    dispatch.CONFIG = calipso_config.dispatch_config()
+    return cfg
+
+
+def _http_up(url: str, timeout: float = 1.5) -> bool:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+@app.get("/api/harness/status")
+def api_harness_status() -> dict:
+    cfg = calipso_config.load_config()
+    return {
+        "routing": cfg["routing"],
+        "subscription": {
+            "claude": bool(shutil.which("claude")),
+            "codex": bool(shutil.which("codex")),
+        },
+        "api": {
+            "base_url": cfg["api"]["base_url"],
+            "model": cfg["api"]["model"],
+            "up": _http_up(cfg["api"]["base_url"].replace("/v1/chat/completions", "/health")),
+        },
+        "local": {
+            "base_url": cfg["local"]["base_url"],
+            "model": cfg["local"]["model"],
+            "up": _http_up("http://localhost:11434/api/tags"),
+        },
+        "classifier": cfg["classifier"],
+    }
 
 
 # --------------------------------------------------------------------------

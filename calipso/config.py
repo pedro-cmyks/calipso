@@ -1,0 +1,84 @@
+from __future__ import annotations
+
+import copy
+import json
+import os
+import pathlib
+from typing import Any
+
+CALIPSO_HOME = pathlib.Path(os.environ.get(
+    "CALIPSO_HOME", os.path.expanduser("~/.calipso")))
+CONFIG_FILE = CALIPSO_HOME / "config.json"
+
+DEFAULT_CONFIG: dict[str, Any] = {
+    "routing": {
+        "policy": "subscription_first",
+        "subscription_client": "claude",
+        "api_only_when_forced": True,
+    },
+    "subscription": {
+        "claude": ["claude", "-p", "{prompt}"],
+        "codex": ["codex", "exec", "{prompt}"],
+    },
+    "api": {
+        "base_url": "http://localhost:4000/v1/chat/completions",
+        "api_key_env": "LITELLM_MASTER_KEY",
+        "api_key_default": "sk-litellm-local",
+        "model": "deepseek-chat",
+    },
+    "local": {
+        "base_url": "http://localhost:11434/api/generate",
+        "model": "qwen2.5:7b",
+    },
+    "classifier": {
+        "base_url": "http://localhost:11434/api/generate",
+        "model": "qwen2.5:3b",
+    },
+}
+
+
+def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    out = copy.deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def load_config() -> dict[str, Any]:
+    if not CONFIG_FILE.exists():
+        return copy.deepcopy(DEFAULT_CONFIG)
+    try:
+        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return copy.deepcopy(DEFAULT_CONFIG)
+    return _merge(DEFAULT_CONFIG, data)
+
+
+def save_config(data: dict[str, Any]) -> dict[str, Any]:
+    cfg = _merge(load_config(), data)
+    CALIPSO_HOME.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.write_text(
+        json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8")
+    return cfg
+
+
+def dispatch_config() -> dict[str, Any]:
+    cfg = load_config()
+    api = cfg["api"].copy()
+    api["api_key"] = os.environ.get(
+        api.get("api_key_env", "LITELLM_MASTER_KEY"),
+        api.get("api_key_default", "sk-litellm-local"))
+    return {
+        "subscription": cfg["subscription"],
+        "api": {
+            "base_url": api["base_url"],
+            "api_key": api["api_key"],
+            "model": api["model"],
+        },
+        "local": cfg["local"],
+        "classifier": cfg["classifier"],
+    }

@@ -26,6 +26,7 @@
              border-radius: 6px; height: 26px; padding: 0 9px; font-size: 12px;
              cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
   .toolbtn:hover { border-color: #555; background: #222; }
+  .toolbtn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
            background: var(--accent-dim); color: #fff; display: inline-flex;
            align-items: center; justify-content: center; font-size: 11px; }
@@ -40,14 +41,13 @@
           cursor: pointer; font-size: 13px; white-space: nowrap; user-select: none; }
   .node:hover { background: #2a2d2e; }
   .node.active { background: var(--accent-dim); color: #fff; }
-  .node .ico { width: 14px; text-align: center; opacity: .85; }
-  .dir > .node .caret { transition: transform .12s; }
+  .node .ico { min-width: 24px; text-align: left; opacity: .85; font-size: 11px; color: var(--muted); }
+  .dir > .node .caret { min-width: 12px; transition: transform .12s; }
   .dir.collapsed > .node .caret { transform: rotate(-90deg); }
   .dir.collapsed > ul { display: none; }
   #editor { flex: 1 1 auto; min-width: 0; }
   #placeholder { display: flex; align-items: center; justify-content: center;
                  height: 100%; color: var(--muted); font-size: 14px; }
-  /* --- Chat --- */
   #chat { width: 380px; flex: 0 0 auto; display: flex; flex-direction: column;
           background: var(--panel); border-left: 1px solid var(--border); }
   #chat .chat-title { font-size: 12px; font-weight: 600; color: var(--accent);
@@ -55,47 +55,53 @@
   #messages { flex: 1 1 auto; overflow: auto; padding: 12px; display: flex;
               flex-direction: column; gap: 10px; }
   .msg { font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word;
-         padding: 8px 11px; border-radius: 10px; max-width: 92%; }
+         padding: 8px 11px; border-radius: 8px; max-width: 92%; }
   .msg.user { align-self: flex-end; background: var(--accent-dim); color: #fff; }
   .msg.bot  { align-self: flex-start; background: #2d2d30; }
   .msg.meta { align-self: center; background: transparent; color: var(--muted);
               font-size: 11px; padding: 1px 6px; max-width: 100%; }
-  .msg.bot .cursor { animation: blink 1s steps(2) infinite; color: var(--accent); }
-  @keyframes blink { 50% { opacity: 0; } }
   #composer { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); }
   #input { flex: 1 1 auto; resize: none; height: 44px; background: var(--bg);
            color: var(--text); border: 1px solid var(--border); border-radius: 8px;
            padding: 8px 10px; font-family: inherit; font-size: 13px; }
   #input:focus { outline: none; border-color: var(--accent); }
   #send { background: var(--accent); color: #fff; border: none; border-radius: 8px;
-          width: 44px; font-size: 16px; cursor: pointer; }
+          min-width: 60px; font-size: 13px; cursor: pointer; }
   #send:disabled { opacity: .4; cursor: default; }
-  #changesPanel { position: fixed; top: 40px; right: 0; bottom: 0; width: min(620px, 92vw);
-                  background: #202020; border-left: 1px solid var(--border);
-                  z-index: 20; display: none; flex-direction: column; box-shadow: -16px 0 40px #0008; }
-  #changesPanel.open { display: flex; }
-  .changes-head { height: 42px; display: flex; align-items: center; gap: 8px;
-                  padding: 0 12px; border-bottom: 1px solid var(--border); }
-  .changes-head strong { color: var(--accent); font-size: 13px; }
-  .changes-head .spacer { flex: 1; }
-  #changesBody { display: grid; grid-template-columns: 210px 1fr; min-height: 0; flex: 1; }
+  .drawer { position: fixed; top: 40px; right: 0; bottom: 0; width: min(680px, 92vw);
+            background: #202020; border-left: 1px solid var(--border);
+            z-index: 20; display: none; flex-direction: column; box-shadow: -16px 0 40px #0008; }
+  .drawer.open { display: flex; }
+  .drawer-head { height: 42px; display: flex; align-items: center; gap: 8px;
+                 padding: 0 12px; border-bottom: 1px solid var(--border); }
+  .drawer-head strong { color: var(--accent); font-size: 13px; }
+  .drawer-head .spacer { flex: 1; }
+  #changesBody { display: grid; grid-template-columns: 220px 1fr; min-height: 0; flex: 1; }
   #changedFiles { border-right: 1px solid var(--border); overflow: auto; padding: 8px 0; }
   .change-row { padding: 7px 10px; font-size: 12px; cursor: pointer; display: flex;
                 gap: 7px; align-items: center; min-width: 0; }
   .change-row:hover, .change-row.active { background: #2a2d2e; }
-  .change-code { color: var(--dirty); width: 22px; flex: 0 0 auto; font-family: Consolas, monospace; }
+  .change-code { color: var(--dirty); width: 28px; flex: 0 0 auto; font-family: Consolas, monospace; }
   .change-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #diffView { margin: 0; padding: 12px; overflow: auto; font-family: Consolas, monospace;
               font-size: 12px; line-height: 1.45; white-space: pre; color: #d4d4d4; }
   .empty { color: var(--muted); font-size: 13px; padding: 14px; }
+  #configBody { padding: 14px; overflow: auto; display: grid; gap: 12px; }
+  .config-grid { display: grid; grid-template-columns: 150px 1fr; gap: 8px 10px; align-items: center; }
+  label { color: var(--muted); font-size: 12px; }
+  input, select { background: var(--bg); color: var(--text); border: 1px solid var(--border);
+                  border-radius: 6px; padding: 8px; font-family: inherit; font-size: 13px; }
+  .hint { color: var(--muted); font-size: 12px; line-height: 1.45; }
 </style>
 </head>
 <body>
 <div id="app">
   <header>
-    <span class="logo">âš¡ Calipso</span>
-    <span class="proj" id="proj">â€”</span>
+    <span class="logo">Calipso</span>
+    <span class="proj" id="proj">-</span>
     <button class="toolbtn" id="changesBtn" title="Ver cambios">Cambios <span class="badge" id="changesCount">0</span></button>
+    <button class="toolbtn" id="proposeBtn" title="Guardar como propuesta">Proponer</button>
+    <button class="toolbtn" id="configBtn" title="Configurar harness">Config</button>
     <span class="status" id="status">listo</span>
   </header>
   <main>
@@ -105,25 +111,47 @@
     </nav>
     <div id="editor"><div id="placeholder">Selecciona un archivo del explorador</div></div>
     <aside id="chat">
-      <div class="chat-title">ðŸ’¬ Habla con Calipso</div>
+      <div class="chat-title">Habla con Calipso</div>
       <div id="messages"></div>
       <div id="composer">
-        <textarea id="input" placeholder="HÃ¡blale a Calipsoâ€¦  (Enter envÃ­a, Shift+Enter salto)"></textarea>
-        <button id="send" title="Enviar">â–¶</button>
+        <textarea id="input" placeholder="Hablale a Calipso...  (Enter envia, Shift+Enter salto)"></textarea>
+        <button id="send" title="Enviar">Enviar</button>
       </div>
     </aside>
   </main>
-  <section id="changesPanel" aria-label="Cambios">
-    <div class="changes-head">
+  <section class="drawer" id="changesPanel" aria-label="Cambios">
+    <div class="drawer-head">
       <strong>Cambios</strong>
       <span class="proj" id="gitBranch">Git</span>
       <span class="spacer"></span>
+      <button class="toolbtn primary" id="applyProposal" disabled>Aplicar</button>
+      <button class="toolbtn" id="discardProposal" disabled>Descartar</button>
       <button class="toolbtn" id="refreshChanges">Actualizar</button>
       <button class="toolbtn" id="closeChanges">Cerrar</button>
     </div>
     <div id="changesBody">
       <div id="changedFiles"></div>
       <pre id="diffView">Sin cambios.</pre>
+    </div>
+  </section>
+  <section class="drawer" id="configPanel" aria-label="Config">
+    <div class="drawer-head">
+      <strong>Harness</strong>
+      <span class="proj">rutas y modelos</span>
+      <span class="spacer"></span>
+      <button class="toolbtn primary" id="saveConfig">Guardar</button>
+      <button class="toolbtn" id="closeConfig">Cerrar</button>
+    </div>
+    <div id="configBody">
+      <div class="hint">Preferencia actual: usar suscripciones primero para tareas fuertes; API solo cuando se fuerce o cuando una ruta configurada lo pida.</div>
+      <div class="config-grid">
+        <label for="cfgPolicy">Politica</label><select id="cfgPolicy"><option value="subscription_first">Suscripcion primero</option><option value="balanced">Balanceado</option><option value="local_first">Local primero</option></select>
+        <label for="cfgSubClient">Suscripcion</label><select id="cfgSubClient"><option value="claude">Claude</option><option value="codex">Codex</option></select>
+        <label for="cfgApiModel">Modelo API</label><input id="cfgApiModel" placeholder="deepseek-chat" />
+        <label for="cfgLocalModel">Modelo local</label><input id="cfgLocalModel" placeholder="qwen2.5:7b" />
+        <label for="cfgClassModel">Clasificador</label><input id="cfgClassModel" placeholder="qwen2.5:3b" />
+      </div>
+      <div class="hint" id="configSaved"></div>
     </div>
   </section>
 </div>
@@ -145,7 +173,7 @@ function setStatus(text, cls) {
 function markDirty(d) {
   dirty = d;
   if (!currentPath) return setStatus("listo");
-  setStatus((d ? "â— " : "") + currentPath + (d ? " â€” sin guardar" : " â€” guardado"),
+  setStatus((d ? "* " : "") + currentPath + (d ? " - sin guardar" : " - guardado"),
             d ? "dirty" : "saved");
 }
 
@@ -172,7 +200,7 @@ function renderNodes(nodes, parent) {
     const li = document.createElement("li");
     if (n.type === "dir") {
       li.className = "dir";
-      const node = nodeRow("â–¾", "ðŸ“", n.name);
+      const node = nodeRow("v", "dir", n.name);
       node.onclick = () => li.classList.toggle("collapsed");
       li.appendChild(node);
       const ul = document.createElement("ul");
@@ -193,12 +221,12 @@ function nodeRow(caret, ico, name) {
 }
 function fileIcon(name) {
   const e = name.split(".").pop().toLowerCase();
-  return ({py:"ðŸ", md:"ðŸ“", json:"ðŸ”§", html:"ðŸŒ", js:"ðŸ“œ", ts:"ðŸ“˜"})[e] || "ðŸ“„";
+  return ({py:"py", md:"md", json:"json", html:"html", js:"js", ts:"ts"})[e] || "file";
 }
 function langFor(path) { return EXT_LANG[path.split(".").pop().toLowerCase()] || "plaintext"; }
 
 async function openFile(path, node) {
-  if (dirty && !confirm("Hay cambios sin guardar. Â¿Descartar?")) return;
+  if (dirty && !confirm("Hay cambios sin guardar. Descartar?")) return;
   await monacoReady;
   const r = await fetch("/api/file?path=" + encodeURIComponent(path));
   if (!r.ok) { setStatus("error: " + (await r.json()).detail, "dirty"); return; }
@@ -213,7 +241,7 @@ async function openFile(path, node) {
 
 async function saveFile() {
   if (!currentPath) return;
-  setStatus("guardandoâ€¦");
+  setStatus("guardando...");
   const r = await fetch("/api/file", {
     method: "PUT", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path: currentPath, content: editor.getValue() }),
@@ -227,13 +255,15 @@ window.addEventListener("keydown", e => {
 });
 loadTree();
 
-// ----------------------------- CAMBIOS -----------------------------
 const changesPanel = document.getElementById("changesPanel");
 const changesBtn = document.getElementById("changesBtn");
 const changesCount = document.getElementById("changesCount");
 const changedFiles = document.getElementById("changedFiles");
 const diffView = document.getElementById("diffView");
 const gitBranch = document.getElementById("gitBranch");
+const applyProposal = document.getElementById("applyProposal");
+const discardProposal = document.getElementById("discardProposal");
+let selectedProposalId = null;
 
 function statusLabel(file) {
   if (file.status === "??") return "nuevo";
@@ -243,25 +273,36 @@ function statusLabel(file) {
   if (file.index === "R") return "renombrado";
   return file.status.trim() || "cambio";
 }
-
 async function loadGitStatus() {
   try {
+    selectedProposalId = null;
+    applyProposal.disabled = true;
+    discardProposal.disabled = true;
+    const pr = await fetch("/api/proposals");
+    const proposals = pr.ok ? (await pr.json()).proposals : [];
     const r = await fetch("/api/git/status");
     const data = await r.json();
     if (!data.available) {
-      changesCount.textContent = "-";
+      changesCount.textContent = proposals.length || "-";
       gitBranch.textContent = "sin git";
       changedFiles.innerHTML = '<div class="empty">Git no esta disponible.</div>';
       return;
     }
-    changesCount.textContent = data.files.length;
+    changesCount.textContent = data.files.length + proposals.length;
     gitBranch.textContent = data.branch || "Git";
-    if (!data.files.length) {
+    if (!data.files.length && !proposals.length) {
       changedFiles.innerHTML = '<div class="empty">Sin cambios.</div>';
       diffView.textContent = "Sin cambios.";
       return;
     }
     changedFiles.innerHTML = "";
+    for (const p of proposals) {
+      const row = document.createElement("div");
+      row.className = "change-row";
+      row.innerHTML = `<span class="change-code">P</span><span class="change-path" title="${p.path}">${p.path}</span>`;
+      row.onclick = () => selectProposal(row, p.id);
+      changedFiles.appendChild(row);
+    }
     for (const f of data.files) {
       const row = document.createElement("div");
       row.className = "change-row";
@@ -274,8 +315,10 @@ async function loadGitStatus() {
     changedFiles.innerHTML = '<div class="empty">No pude leer los cambios.</div>';
   }
 }
-
 async function selectChangedFile(row, path, label) {
+  selectedProposalId = null;
+  applyProposal.disabled = true;
+  discardProposal.disabled = true;
   document.querySelectorAll(".change-row.active").forEach(n => n.classList.remove("active"));
   row.classList.add("active");
   diffView.textContent = "Cargando diff...";
@@ -287,13 +330,88 @@ async function selectChangedFile(row, path, label) {
   const data = await r.json();
   diffView.textContent = data.diff || `Sin diff textual para ${path} (${label}).`;
 }
-
+async function selectProposal(row, id) {
+  selectedProposalId = id;
+  applyProposal.disabled = false;
+  discardProposal.disabled = false;
+  document.querySelectorAll(".change-row.active").forEach(n => n.classList.remove("active"));
+  row.classList.add("active");
+  diffView.textContent = "Cargando propuesta...";
+  const r = await fetch(`/api/proposals/${id}/diff`);
+  if (!r.ok) {
+    diffView.textContent = "No pude cargar la propuesta.";
+    return;
+  }
+  const data = await r.json();
+  diffView.textContent = data.diff || `Propuesta sin diff textual para ${data.path}.`;
+}
 changesBtn.onclick = () => { changesPanel.classList.add("open"); loadGitStatus(); };
 document.getElementById("closeChanges").onclick = () => changesPanel.classList.remove("open");
 document.getElementById("refreshChanges").onclick = loadGitStatus;
+document.getElementById("proposeBtn").onclick = async () => {
+  if (!currentPath || !editor) return;
+  const r = await fetch("/api/proposals", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: currentPath, content: editor.getValue(), source: "editor" }),
+  });
+  if (r.ok) {
+    dirty = false;
+    changesPanel.classList.add("open");
+    await loadGitStatus();
+    setStatus(currentPath + " - propuesta pendiente", "dirty");
+  } else {
+    setStatus("no pude crear propuesta", "dirty");
+  }
+};
+applyProposal.onclick = async () => {
+  if (!selectedProposalId) return;
+  await fetch(`/api/proposals/${selectedProposalId}/apply`, { method: "POST" });
+  selectedProposalId = null;
+  applyProposal.disabled = true;
+  discardProposal.disabled = true;
+  await loadTree();
+  await loadGitStatus();
+};
+discardProposal.onclick = async () => {
+  if (!selectedProposalId) return;
+  await fetch(`/api/proposals/${selectedProposalId}`, { method: "DELETE" });
+  selectedProposalId = null;
+  applyProposal.disabled = true;
+  discardProposal.disabled = true;
+  await loadGitStatus();
+};
 loadGitStatus();
 
-// ----------------------------- CHAT -----------------------------
+const configPanel = document.getElementById("configPanel");
+document.getElementById("configBtn").onclick = () => { configPanel.classList.add("open"); loadConfig(); };
+document.getElementById("closeConfig").onclick = () => configPanel.classList.remove("open");
+async function loadConfig() {
+  const r = await fetch("/api/config");
+  if (!r.ok) return;
+  const cfg = await r.json();
+  document.getElementById("cfgPolicy").value = cfg.routing?.policy || "subscription_first";
+  document.getElementById("cfgSubClient").value = cfg.routing?.subscription_client || "claude";
+  document.getElementById("cfgApiModel").value = cfg.api?.model || "";
+  document.getElementById("cfgLocalModel").value = cfg.local?.model || "";
+  document.getElementById("cfgClassModel").value = cfg.classifier?.model || "";
+}
+document.getElementById("saveConfig").onclick = async () => {
+  const body = {
+    routing: {
+      policy: document.getElementById("cfgPolicy").value,
+      subscription_client: document.getElementById("cfgSubClient").value,
+    },
+    api: { model: document.getElementById("cfgApiModel").value.trim() },
+    local: { model: document.getElementById("cfgLocalModel").value.trim() },
+    classifier: { model: document.getElementById("cfgClassModel").value.trim() },
+  };
+  const r = await fetch("/api/config", {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  document.getElementById("configSaved").textContent = r.ok ? "Configuracion guardada." : "No pude guardar.";
+};
+
 const messages = document.getElementById("messages");
 const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
@@ -311,9 +429,9 @@ function connect() {
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
     if (m.type === "meta") {
-      let t = `â†³ ${m.used || m.route}`;
-      if (m.note) t += ` Â· ${m.note}`;
-      if (m.why) t += ` Â· ${m.why}`;
+      let t = `-> ${m.used || m.route}`;
+      if (m.note) t += ` - ${m.note}`;
+      if (m.why) t += ` - ${m.why}`;
       addMsg("meta", t);
       if (!botEl) botEl = addMsg("bot", "");
     } else if (m.type === "chunk") {
@@ -321,14 +439,14 @@ function connect() {
       botEl.textContent += m.text; messages.scrollTop = messages.scrollHeight;
     } else if (m.type === "cost") {
       const c = m.cost_usd > 0 ? `$${m.cost_usd.toFixed(4)}` : "gratis";
-      addMsg("meta", `ðŸ’° ${m.route} Â· ${m.tokens} tokens Â· ${c}`);
+      addMsg("meta", `$ ${m.route} - ${m.tokens} tokens - ${c}`);
     } else if (m.type === "error") {
-      addMsg("meta", "âš  " + m.text);
+      addMsg("meta", "! " + m.text);
     } else if (m.type === "done") {
       botEl = null; setBusy(false);
     }
   };
-  ws.onclose = () => { addMsg("meta", "Â· desconectado, reintentandoâ€¦"); setTimeout(connect, 1500); };
+  ws.onclose = () => { addMsg("meta", "desconectado, reintentando..."); setTimeout(connect, 1500); };
 }
 function setBusy(b) { busy = b; sendBtn.disabled = b; input.disabled = b; if (!b) input.focus(); }
 function send() {
