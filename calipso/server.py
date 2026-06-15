@@ -57,6 +57,7 @@ from calipso import discovery  # noqa: E402
 from calipso import learning  # noqa: E402
 from calipso import sessions  # noqa: E402
 from calipso import telemetry  # noqa: E402
+from calipso import web as calipso_web  # noqa: E402
 from calipso.memory import Memory  # noqa: E402
 
 # RaÃƒÂ­z del proyecto que Calipso muestra/edita. Por defecto, el cwd.
@@ -1005,9 +1006,24 @@ async def ws_chat(ws: WebSocket) -> None:
                                 "client": verdict.get("client"),
                                 "why": verdict["why"], "note": note})
 
+            # 1.5) navegación web si la tarea lo pide (grounding + preview)
+            web_material = None
+            if features.get("needs_web") or directives.get("force_web"):
+                await ws.send_json({"type": "web", "action": "search",
+                                    "query": chat_msg[:140]})
+                web_material = await asyncio.to_thread(
+                    calipso_web.research, chat_msg, 4, 2)
+                await ws.send_json({
+                    "type": "web", "action": "results",
+                    "results": web_material["results"],
+                    "pages": [{"url": p["url"], "title": p["title"]}
+                              for p in web_material["pages"]]})
+
             # 2) contexto (core + recuerdos) y 3) streaming
             runtime = _harness_context(verdict, route, model, note)
             system = _build_context(chat_msg, runtime, features)
+            if web_material and (web_material["results"] or web_material["pages"]):
+                system += "\n\n" + calipso_web.context_block(web_material)
             usage: dict = {}
             used_route = route
             full = ""

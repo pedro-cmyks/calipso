@@ -122,6 +122,7 @@
     <button class="toolbtn" id="proposeBtn" title="Guardar como propuesta">Proponer</button>
     <button class="toolbtn" id="configBtn" title="Configurar harness">Config</button>
     <button class="toolbtn" id="sessionBtn" title="Elenco de agentes de la sesion">Sesion</button>
+    <button class="toolbtn" id="webBtn" title="Preview de navegacion web">Web</button>
     <span class="status" id="status">listo</span>
   </header>
   <main>
@@ -191,6 +192,15 @@
         <th>Agente</th><th>Modelo</th><th>Tier</th><th>Intensidad</th><th>On</th>
       </tr></thead><tbody id="agentsBody"></tbody></table>
     </div>
+  </section>
+  <section class="drawer" id="webPanel" aria-label="Web">
+    <div class="drawer-head">
+      <strong>Navegacion web</strong>
+      <span class="proj" id="webQuery">preview</span>
+      <span class="spacer"></span>
+      <button class="toolbtn" id="closeWeb">Cerrar</button>
+    </div>
+    <div id="webBody"><div class="hint">Cuando Calipso busque en la web, aqui veras lo que consulto y leyo.</div></div>
   </section>
 </div>
 
@@ -469,6 +479,28 @@ document.getElementById("sessNew").onclick = async () => {
     headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
   loadSession();
 };
+
+// ---- Panel web (preview de navegacion) ----
+const webPanel = document.getElementById("webPanel");
+document.getElementById("webBtn").onclick = () => webPanel.classList.add("open");
+document.getElementById("closeWeb").onclick = () => webPanel.classList.remove("open");
+function esc(s) { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
+function renderWeb(m) {
+  webPanel.classList.add("open");
+  if (m.action === "search") {
+    document.getElementById("webQuery").textContent = m.query;
+    document.getElementById("webBody").innerHTML = '<div class="hint">Buscando: ' + esc(m.query) + ' ...</div>';
+  } else if (m.action === "results") {
+    const res = (m.results || []).map(r =>
+      `<div style="margin:8px 0"><a href="${esc(r.url)}" target="_blank" style="color:var(--accent)">${esc(r.title)}</a>`
+      + `<div style="color:var(--muted);font-size:11px">${esc(r.url)}</div>`
+      + `<div style="font-size:12px">${esc(r.snippet || "")}</div></div>`).join("");
+    const read = (m.pages || []).map(p => `<li>${esc(p.title)} <span style="color:var(--muted)">(${esc(p.url)})</span></li>`).join("");
+    document.getElementById("webBody").innerHTML =
+      (res || '<div class="hint">Sin resultados.</div>')
+      + (read ? `<div class="hint" style="margin-top:10px">Calipso leyo:<ul>${read}</ul></div>` : "");
+  }
+}
 async function loadConfig() {
   const r = await fetch("/api/config");
   if (!r.ok) return;
@@ -563,6 +595,8 @@ function connect() {
     const m = JSON.parse(ev.data);
     if (m.type === "thinking") {
       startThinking();
+    } else if (m.type === "web") {
+      renderWeb(m);
     } else if (m.type === "meta") {
       let t = `-> ${m.persona || m.used || m.route}`;
       if (m.model) t += ` - ${m.model}`;

@@ -126,6 +126,10 @@ SUMMARIZE = re.compile(r"\b(resume|resumen|resumir|sintetiza)\b", re.IGNORECASE)
 AGENTIC = re.compile(
     r"\b(ejecuta|corre los tests|automatiza|agente|herramienta|run )\b",
     re.IGNORECASE)
+WEB = re.compile(
+    r"\b(busca|b[uú]scame|googlea|noticias?|actualidad|hoy|[uú]ltim[ao]s?|"
+    r"reciente|precio de|cotizaci[oó]n|clima|qui[eé]n gan|qu[eé] pas[oó]|"
+    r"en internet|en la web|search)\b", re.IGNORECASE)
 
 VALID_TYPES = {"trivial", "translate", "summarize", "writing", "reasoning",
                "analysis", "code", "repo", "agentic"}
@@ -178,7 +182,8 @@ def extract_features(prompt: str) -> dict:
     needs_repo}. Reglas (rápido/gratis) primero; clasificador solo si hace falta."""
     p = prompt.strip()
     feat = {"type": None, "complexity": 2,
-            "private": bool(PRIVATE.search(p)), "needs_repo": False}
+            "private": bool(PRIVATE.search(p)), "needs_repo": False,
+            "needs_web": bool(WEB.search(p)) or bool(re.search(r"https?://", p))}
     if CODE_HEAVY.search(p):
         if REPO.search(p):
             feat["type"], feat["needs_repo"] = "repo", True

@@ -32,6 +32,19 @@
   /api/updates.
 - **Steering**: el WS lee mensajes en paralelo; escribir mientras responde interrumpe
   (barge-in); `/stop` detiene. UI: botón Detener + frases de "pensando".
+- **Navegación web** (`calipso/web.py`): search (DuckDuckGo HTML, POST, sin llave) +
+  fetch (texto legible). El chat detecta `needs_web` (o `/web`), busca+lee, inyecta el
+  material como contexto (grounding) y manda eventos "web" al panel de preview.
+
+## DIRECCIÓN MAYOR pendiente — agentes DINÁMICOS (multi-agente)
+Pedro NO quiere un roster fijo precargado; quiere que Calipso **descomponga** la
+petición y **cree agentes a medida por subtarea**, con rol/traits/quirks y su
+(modelo + intensidad): ej. "esta parte fácil → agente con Haiku; esta necesita razonar
+→ agente que planee a máximo esfuerzo; otro que edite código" y los coordine. Es
+orquestación multi-agente (planner → equipo → merge). El panel/roster actual pasa a ser
+plantillas/defaults. Es el próximo salto grande tras lo conversacional. Además: VOZ
+multilingüe para narrar prompts (Web Speech API en navegador / Whisper local), estilo
+ChatGPT (entiende en cualquier idioma en una sola frase).
 - **Costos** (`calipso/costs.py`), **telemetría** (`calipso/telemetry.py`),
   **seguridad** (TOTP + token en `server.py`), **config** (`calipso/config.py`).
 
