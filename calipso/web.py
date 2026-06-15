@@ -66,11 +66,21 @@ def fetch(url: str, max_chars: int = 4000) -> str:
 
 def research(query: str, n_results: int = 4, read: int = 2) -> dict:
     """Busca y lee los primeros 'read' resultados. Devuelve material para el
-    contexto del modelo + lo que vio (para el preview de la UI)."""
+    contexto del modelo + lo que vio (para el preview de la UI).
+
+    Texto vía urllib (rápido); si una página viene vacía (sitio con JS) y el
+    navegador ya está instalado, cae a Playwright para renderizarla."""
     results = search(query, n_results)
     pages = []
     for r in results[:read]:
         body = fetch(r["url"], 2500)
+        if not body:
+            try:
+                from calipso import deps, browser
+                if deps.is_ready("browser"):
+                    body = browser.render(r["url"], max_chars=2500)
+            except Exception:
+                body = ""
         if body:
             pages.append({"url": r["url"], "title": r["title"], "text": body})
     return {"query": query, "results": results, "pages": pages}

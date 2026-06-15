@@ -730,10 +730,17 @@ function renderWeb(m) {
       `<div style="margin:8px 0"><a href="${esc(r.url)}" target="_blank" style="color:var(--accent)">${esc(r.title)}</a>`
       + `<div style="color:var(--muted);font-size:11px">${esc(r.url)}</div>`
       + `<div style="font-size:12px">${esc(r.snippet || "")}</div></div>`).join("");
-    const read = (m.pages || []).map(p => `<li>${esc(p.title)} <span style="color:var(--muted)">(${esc(p.url)})</span></li>`).join("");
+    const read = (m.pages || []).map(p => {
+      const ssrc = "/api/browser/screenshot?url=" + encodeURIComponent(p.url);
+      return `<div style="margin:12px 0"><div style="font-size:12.5px;margin-bottom:4px">${esc(p.title)}</div>`
+        + `<img src="${ssrc}" loading="lazy" alt="${esc(p.title)}" title="${esc(p.url)}"`
+        + ` style="width:100%;max-width:520px;border:1px solid var(--border);border-radius:8px;background:#222"`
+        + ` onerror="this.style.display='none'">`
+        + `<div style="color:var(--muted);font-size:11px">${esc(p.url)}</div></div>`;
+    }).join("");
     document.getElementById("webBody").innerHTML =
       (res || '<div class="hint">Sin resultados.</div>')
-      + (read ? `<div class="hint" style="margin-top:10px">Calipso leyo:<ul>${read}</ul></div>` : "");
+      + (read ? `<div class="hint" style="margin-top:12px">Calipso navego (screenshots reales):</div>${read}` : "");
   }
 }
 async function loadConfig() {
