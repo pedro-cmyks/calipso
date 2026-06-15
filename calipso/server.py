@@ -479,6 +479,39 @@ async def api_config_save(request: Request) -> dict:
     return cfg
 
 
+def _remember_project(path: pathlib.Path) -> None:
+    cfg = calipso_config.load_config()
+    recent = [p for p in cfg.get("projects", {}).get("recent", []) if p != str(path)]
+    recent.insert(0, str(path))
+    calipso_config.save_config({"projects": {"recent": recent[:12]}})
+
+
+@app.get("/api/project")
+def api_project() -> dict:
+    cfg = calipso_config.load_config()
+    return {
+        "name": ROOT.name,
+        "path": str(ROOT),
+        "recent": cfg.get("projects", {}).get("recent", []),
+    }
+
+
+@app.post("/api/project/open")
+async def api_project_open(request: Request) -> dict:
+    global ROOT, mem
+    data = await request.json()
+    raw = str(data.get("path") or "").strip().strip('"')
+    if not raw:
+        raise HTTPException(status_code=400, detail="falta ruta")
+    p = pathlib.Path(os.path.expandvars(os.path.expanduser(raw))).resolve()
+    if not p.exists() or not p.is_dir():
+        raise HTTPException(status_code=400, detail="la ruta no existe o no es carpeta")
+    ROOT = p
+    mem = Memory(project_root=str(ROOT))
+    _remember_project(ROOT)
+    return {"ok": True, "name": ROOT.name, "path": str(ROOT)}
+
+
 def _http_up(url: str, timeout: float = 1.5) -> bool:
     try:
         with urllib.request.urlopen(url, timeout=timeout):
@@ -520,6 +553,42 @@ def api_subscriptions() -> dict:
             }
             for name, connector in SUBSCRIPTION_CONNECTORS.items()
         }
+    }
+
+
+@app.get("/api/connectors")
+def api_connectors() -> dict:
+    return {
+        "cli": {
+            name: {
+                "docs": connector["docs"],
+                "state": _cli_probe(name),
+            }
+            for name, connector in CLI_CONNECTORS.items()
+        }
+    }
+
+
+@app.post("/api/connectors/{name}/{action}")
+def api_connector_action(name: str, action: str) -> dict:
+    connector = CLI_CONNECTORS.get(name)
+    if not connector:
+        raise HTTPException(status_code=404, detail="conector no soportado")
+    if action not in ("install", "login"):
+        raise HTTPException(status_code=400, detail="accion no soportada")
+    cmd = connector[action]
+    exe = _cmd_exe(cmd[0]) or cmd[0]
+    run_cmd = [exe] + cmd[1:]
+    try:
+        subprocess.Popen(
+            run_cmd, cwd=str(ROOT), creationflags=subprocess.CREATE_NEW_CONSOLE)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "ok": True,
+        "connector": name,
+        "message": f"{action} lanzado en una terminal nueva",
+        "command": " ".join(run_cmd),
     }
 
 
@@ -661,12 +730,60 @@ SUBSCRIPTION_CONNECTORS = {
     },
 }
 
+CLI_CONNECTORS = {
+    "github": {
+        "exe": "gh",
+        "install": ["winget", "install", "--id", "GitHub.cli", "-e"],
+        "login": ["gh", "auth", "login"],
+        "status": ["gh", "auth", "status"],
+        "docs": "https://cli.github.com/manual/",
+    },
+}
+
 
 def _connector_or_404(client: str) -> dict:
     connector = SUBSCRIPTION_CONNECTORS.get(client)
     if not connector:
         raise HTTPException(status_code=404, detail="conector no soportado")
     return connector
+
+
+def _cmd_exe(name: str) -> str | None:
+    if os.name == "nt":
+        return shutil.which(f"{name}.cmd") or shutil.which(f"{name}.exe") or shutil.which(name)
+    return shutil.which(name)
+
+
+def _cli_probe(name: str) -> dict:
+    c = CLI_CONNECTORS.get(name)
+    if not c:
+        return {"installed": False, "ready": False, "error": "conector desconocido"}
+    exe = _cmd_exe(c["exe"])
+    if not exe:
+        return {"installed": False, "ready": False, "error": "no esta en PATH"}
+    version = ""
+    try:
+        ver = subprocess.run(
+            [exe, "--version"], cwd=str(ROOT), text=True, capture_output=True,
+            encoding="utf-8", errors="replace", timeout=5)
+        version = (ver.stdout or ver.stderr or "").strip().splitlines()[0] if (ver.stdout or ver.stderr) else ""
+    except Exception:
+        pass
+    try:
+        status_cmd = [exe if i == 0 else arg for i, arg in enumerate(c["status"])]
+        auth = subprocess.run(
+            status_cmd, cwd=str(ROOT), text=True, capture_output=True,
+            encoding="utf-8", errors="replace", timeout=8)
+        text = (auth.stdout or "") + (auth.stderr or "")
+        ready = auth.returncode == 0
+        return {
+            "installed": True, "ready": ready, "path": exe,
+            "version": version,
+            "error": "" if ready else (text.strip().splitlines()[0] if text.strip() else "no autenticado"),
+        }
+    except Exception as e:
+        return {"installed": True, "ready": False, "path": exe,
+                "version": version, "error": str(e)}
 
 
 def _best_subscription_client(preferred: str | None) -> str | None:

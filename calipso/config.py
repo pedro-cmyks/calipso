@@ -11,6 +11,9 @@ CALIPSO_HOME = pathlib.Path(os.environ.get(
 CONFIG_FILE = CALIPSO_HOME / "config.json"
 
 DEFAULT_CONFIG: dict[str, Any] = {
+    "projects": {
+        "recent": [],
+    },
     "routing": {
         "policy": "subscription_first",
         "subscription_client": "claude",

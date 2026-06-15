@@ -93,6 +93,7 @@
               font-size: 12px; line-height: 1.45; white-space: pre; color: #d4d4d4; }
   .empty { color: var(--muted); font-size: 13px; padding: 14px; }
   #configBody { padding: 14px; overflow: auto; display: grid; gap: 12px; }
+  #projectBody { padding: 14px; overflow: auto; display: grid; gap: 12px; }
   .config-grid { display: grid; grid-template-columns: 150px 1fr; gap: 8px 10px; align-items: center; }
   label { color: var(--muted); font-size: 12px; }
   input, select { background: var(--bg); color: var(--text); border: 1px solid var(--border);
@@ -124,6 +125,7 @@
   <header>
     <span class="logo">Calipso</span>
     <span class="proj" id="proj">-</span>
+    <button class="toolbtn" id="projectBtn" title="Abrir o cambiar proyecto">Proyecto</button>
     <button class="toolbtn" id="changesBtn" title="Ver cambios">Cambios <span class="badge" id="changesCount">0</span></button>
     <button class="toolbtn" id="proposeBtn" title="Guardar como propuesta">Proponer</button>
     <button class="toolbtn" id="configBtn" title="Configurar harness">Config</button>
@@ -162,6 +164,28 @@
       <pre id="diffView">Sin cambios.</pre>
     </div>
   </section>
+  <section class="drawer" id="projectPanel" aria-label="Proyecto">
+    <div class="drawer-head">
+      <strong>Proyecto</strong>
+      <span class="proj" id="projectName">actual</span>
+      <span class="spacer"></span>
+      <button class="toolbtn" id="closeProject">Cerrar</button>
+    </div>
+    <div id="projectBody">
+      <div class="hint">Ruta actual</div>
+      <div class="connector"><strong id="projectPath">-</strong></div>
+      <div class="config-grid">
+        <label for="projectInput">Abrir ruta</label><input id="projectInput" placeholder="C:\Users\Pedro\Desktop\otro-repo" />
+      </div>
+      <div class="connector-actions">
+        <button class="toolbtn primary" id="openProject">Abrir</button>
+        <button class="toolbtn" id="refreshProject">Actualizar</button>
+      </div>
+      <div class="hint">Recientes</div>
+      <div class="connector-list" id="recentProjects"></div>
+      <div class="hint" id="projectSaved"></div>
+    </div>
+  </section>
   <section class="drawer" id="configPanel" aria-label="Config">
     <div class="drawer-head">
       <strong>Harness</strong>
@@ -174,6 +198,8 @@
       <div class="hint">Preferencia actual: usar suscripciones primero para tareas fuertes; API solo cuando se fuerce o cuando una ruta configurada lo pida.</div>
       <div class="hint" id="harnessStatus">Cargando estado...</div>
       <div class="connector-list" id="subscriptionConnectors"></div>
+      <div class="hint">Conectores CLI</div>
+      <div class="connector-list" id="cliConnectors"></div>
       <div class="config-grid">
         <label for="cfgPolicy">Politica</label><select id="cfgPolicy"><option value="subscription_first">Suscripcion primero</option><option value="balanced">Balanceado</option><option value="local_first">Local primero</option></select>
         <label for="cfgSubClient">Suscripcion</label><select id="cfgSubClient"><option value="claude">Claude</option><option value="codex">Codex</option></select>
@@ -250,6 +276,42 @@ async function loadTree() {
   document.getElementById("tree").innerHTML = "";
   renderNodes(data.tree, document.getElementById("tree"));
 }
+
+async function loadProject() {
+  const r = await fetch("/api/project");
+  if (!r.ok) return;
+  const p = await r.json();
+  document.getElementById("projectName").textContent = p.name || "actual";
+  document.getElementById("projectPath").textContent = p.path || "-";
+  document.getElementById("projectInput").value = p.path || "";
+  const box = document.getElementById("recentProjects");
+  box.innerHTML = "";
+  for (const path of (p.recent || [])) {
+    const el = document.createElement("button");
+    el.className = "toolbtn";
+    el.textContent = path;
+    el.title = path;
+    el.onclick = () => openProject(path);
+    box.appendChild(el);
+  }
+  if (!(p.recent || []).length) box.innerHTML = '<div class="hint">Aun no hay recientes.</div>';
+}
+
+async function openProject(path) {
+  const target = (path || document.getElementById("projectInput").value || "").trim();
+  if (!target) return;
+  const r = await fetch("/api/project/open", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: target }),
+  });
+  const out = r.ok ? await r.json() : await r.json().catch(() => ({ detail: "No pude abrir el proyecto." }));
+  document.getElementById("projectSaved").textContent = r.ok ? `Abierto: ${out.path}` : (out.detail || "No pude abrir.");
+  if (r.ok) {
+    currentPath = null; dirty = false;
+    if (editor) editor.setValue("");
+    await loadTree(); await loadProject(); await loadGitStatus(); await loadConfig();
+  }
+}
 function renderNodes(nodes, parent) {
   for (const n of nodes) {
     const li = document.createElement("li");
@@ -309,6 +371,7 @@ window.addEventListener("keydown", e => {
   if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); saveFile(); }
 });
 loadTree();
+loadProject();
 
 const changesPanel = document.getElementById("changesPanel");
 const changesBtn = document.getElementById("changesBtn");
@@ -403,6 +466,11 @@ async function selectProposal(row, id) {
 changesBtn.onclick = () => { changesPanel.classList.add("open"); loadGitStatus(); };
 document.getElementById("closeChanges").onclick = () => changesPanel.classList.remove("open");
 document.getElementById("refreshChanges").onclick = loadGitStatus;
+const projectPanel = document.getElementById("projectPanel");
+document.getElementById("projectBtn").onclick = () => { projectPanel.classList.add("open"); loadProject(); };
+document.getElementById("closeProject").onclick = () => projectPanel.classList.remove("open");
+document.getElementById("refreshProject").onclick = loadProject;
+document.getElementById("openProject").onclick = () => openProject();
 document.getElementById("proposeBtn").onclick = async () => {
   if (!currentPath || !editor) return;
   const r = await fetch("/api/proposals", {
@@ -528,6 +596,7 @@ async function loadConfig() {
       `api=${h.api?.up ? "arriba" : "apagada"}; local=${h.local?.up ? "arriba" : "apagado"}.`;
   }
   await loadSubscriptions();
+  await loadCliConnectors();
 }
 async function loadSubscriptions() {
   const box = document.getElementById("subscriptionConnectors");
@@ -561,6 +630,44 @@ async function loadSubscriptions() {
       btn.disabled = true;
       btn.textContent = "Lanzando...";
       const resp = await fetch(`/api/subscriptions/${client}/${action}`, { method: "POST" });
+      const msg = resp.ok ? await resp.json() : await resp.json().catch(() => ({ detail: "fallo" }));
+      document.getElementById("configSaved").textContent = msg.message || msg.detail || "accion lanzada";
+      setTimeout(loadConfig, 1500);
+    };
+  });
+}
+async function loadCliConnectors() {
+  const box = document.getElementById("cliConnectors");
+  const r = await fetch("/api/connectors");
+  if (!r.ok) {
+    box.innerHTML = '<div class="hint">No pude leer conectores CLI.</div>';
+    return;
+  }
+  const data = await r.json();
+  box.innerHTML = "";
+  for (const [name, item] of Object.entries(data.cli || {})) {
+    const state = item.state || {};
+    const status = state.ready ? "listo" : (state.installed ? "instalado, falta login" : "no instalado");
+    const error = state.error ? ` - ${state.error}` : "";
+    const version = state.version ? ` · ${state.version}` : "";
+    const el = document.createElement("div");
+    el.className = "connector";
+    el.innerHTML = `
+      <div class="connector-top"><strong>${name}</strong><span class="hint">${status}${error}${version}</span></div>
+      <div class="connector-actions">
+        <button class="toolbtn" data-action="install" data-connector="${name}">Instalar</button>
+        <button class="toolbtn" data-action="login" data-connector="${name}">Login</button>
+        <a class="toolbtn" href="${item.docs}" target="_blank" rel="noreferrer">Docs</a>
+      </div>`;
+    box.appendChild(el);
+  }
+  box.querySelectorAll("button[data-connector]").forEach(btn => {
+    btn.onclick = async () => {
+      const name = btn.dataset.connector;
+      const action = btn.dataset.action;
+      btn.disabled = true;
+      btn.textContent = "Lanzando...";
+      const resp = await fetch(`/api/connectors/${name}/${action}`, { method: "POST" });
       const msg = resp.ok ? await resp.json() : await resp.json().catch(() => ({ detail: "fallo" }));
       document.getElementById("configSaved").textContent = msg.message || msg.detail || "accion lanzada";
       setTimeout(loadConfig, 1500);
