@@ -43,7 +43,7 @@ import uuid
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
-                               RedirectResponse)
+                               RedirectResponse, Response)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -53,7 +53,9 @@ import dispatch  # noqa: E402
 from calipso import capabilities  # noqa: E402
 from calipso import chats  # noqa: E402
 from calipso import config as calipso_config  # noqa: E402
+from calipso import browser as calipso_browser  # noqa: E402
 from calipso import costs  # noqa: E402
+from calipso import deps  # noqa: E402
 from calipso import discovery  # noqa: E402
 from calipso import learning  # noqa: E402
 from calipso import orchestrator  # noqa: E402
@@ -1750,6 +1752,41 @@ def api_reflect() -> dict:
 def api_discover() -> dict:
     """Descubre modelos vivos (Ollama/LiteLLM) y los registra."""
     return discovery.discover(register=True)
+
+
+# --------------------------------------------------------------------------
+# DEPENDENCIAS  (Calipso instala lo que necesita; no se queda bloqueada)
+# --------------------------------------------------------------------------
+
+@app.get("/api/deps")
+def api_deps() -> dict:
+    """Estado de las capacidades que dependen de paquetes (browser, etc.)."""
+    return {"tools": deps.status()}
+
+
+@app.post("/api/deps/install")
+async def api_deps_install(request: Request) -> dict:
+    """Instala una capacidad ('tool') o un paquete pip arbitrario."""
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    if body.get("tool"):
+        return await asyncio.to_thread(deps.ensure, body["tool"])
+    if body.get("package"):
+        return await asyncio.to_thread(deps.ensure_pip, body["package"], body.get("module"))
+    raise HTTPException(status_code=400, detail="falta 'tool' o 'package'")
+
+
+@app.get("/api/browser/screenshot")
+async def api_browser_screenshot(url: str, full: bool = False):
+    """Screenshot real de una URL con el navegador (instala Playwright si falta)."""
+    try:
+        png = await asyncio.to_thread(calipso_browser.screenshot, url, None, full)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"no se pudo capturar: {e}")
+    return Response(content=png, media_type="image/png")
 
 
 @app.get("/api/updates")
