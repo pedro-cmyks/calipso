@@ -34,6 +34,20 @@
   #sidebar { width: 270px; min-width: 160px; max-width: 45vw; flex: 0 0 auto;
              background: var(--panel); border-right: 1px solid var(--border);
              overflow: auto; padding: 6px 0; }
+  #sideTabs { display: flex; gap: 4px; padding: 6px 8px; position: sticky; top: 0;
+              background: var(--panel); z-index: 2; border-bottom: 1px solid var(--border); }
+  .side-tab { width: 32px; height: 28px; border-radius: 6px; border: 1px solid transparent;
+              background: transparent; color: var(--muted); cursor: pointer; }
+  .side-tab:hover, .side-tab.active { color: var(--text); background: #2a2d2e; border-color: #444; }
+  .side-view { display: none; }
+  .side-view.active { display: block; }
+  .side-list { padding: 8px; display: grid; gap: 8px; }
+  .side-item { border: 1px solid var(--border); border-radius: 7px; padding: 8px;
+               background: #202020; cursor: pointer; display: grid; gap: 4px; }
+  .side-item:hover, .side-item.active { border-color: var(--accent); background: #213247; }
+  .side-item strong { font-size: 12px; color: var(--text); }
+  .side-item span { font-size: 11px; color: var(--muted); overflow: hidden;
+                    text-overflow: ellipsis; white-space: nowrap; }
   .splitter { width: 7px; flex: 0 0 7px; cursor: col-resize; background: var(--bg);
               border-left: 1px solid #242424; border-right: 1px solid #242424;
               position: relative; }
@@ -74,6 +88,11 @@
   .msg.detail summary { cursor: pointer; color: var(--accent); }
   .msg.detail pre { margin: 8px 0 0; white-space: pre-wrap; color: var(--text); }
   #composer { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); }
+  #attach { width: 34px; border: 1px solid var(--border); background: transparent;
+            color: var(--text); border-radius: 8px; cursor: pointer; font-size: 18px; }
+  #contextPill { max-width: 160px; align-self: center; color: var(--muted); font-size: 11px;
+                 border: 1px solid var(--border); border-radius: 999px; padding: 5px 8px;
+                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #input { flex: 1 1 auto; resize: none; height: 44px; background: var(--bg);
            color: var(--text); border: 1px solid var(--border); border-radius: 8px;
            padding: 8px 10px; font-family: inherit; font-size: 13px; }
@@ -146,8 +165,30 @@
   </header>
   <main>
     <nav id="sidebar">
-      <div class="title">Explorador</div>
-      <ul class="tree" id="tree"></ul>
+      <div id="sideTabs">
+        <button class="side-tab active" data-side="filesView" title="Archivos">📁</button>
+        <button class="side-tab" data-side="chatsView" title="Chats">☰</button>
+        <button class="side-tab" data-side="gitView" title="Git">⑂</button>
+        <button class="side-tab" data-side="workView" title="Trabajo">◷</button>
+      </div>
+      <div class="side-view active" id="filesView">
+        <div class="title">Explorador</div>
+        <ul class="tree" id="tree"></ul>
+      </div>
+      <div class="side-view" id="chatsView">
+        <div class="title">Chats por proyecto</div>
+        <div class="side-list" id="chatListSide"></div>
+      </div>
+      <div class="side-view" id="gitView">
+        <div class="title">Git</div>
+        <div class="side-list" id="gitSide"></div>
+      </div>
+      <div class="side-view" id="workView">
+        <div class="title">Trabajo</div>
+        <div class="side-list" id="workSide">
+          <div class="side-item"><strong>Sin tarea activa</strong><span>Los agentes apareceran aqui.</span></div>
+        </div>
+      </div>
     </nav>
     <div class="splitter" id="leftSplitter" title="Arrastra para cambiar el explorador"></div>
     <div id="editor"><div id="placeholder">Selecciona un archivo del explorador</div></div>
@@ -156,6 +197,8 @@
       <div class="chat-title">Habla con Calipso</div>
       <div id="messages"></div>
       <div id="composer">
+        <button id="attach" title="Agregar proyecto/carpeta">+</button>
+        <div id="contextPill" title="Proyecto actual">proyecto</div>
         <textarea id="input" placeholder="Hablale a Calipso...  (Enter envia - escribe mientras responde para guiar)"></textarea>
         <button id="stop" title="Detener" style="display:none">Detener</button>
         <button id="send" title="Enviar">Enviar</button>
@@ -343,6 +386,8 @@ async function loadTree() {
   const r = await fetch("/api/tree"); const data = await r.json();
   document.getElementById("proj").textContent = data.root;
   document.getElementById("proj").title = data.path || data.root;
+  document.getElementById("contextPill").textContent = data.root;
+  document.getElementById("contextPill").title = data.path || data.root;
   document.getElementById("tree").innerHTML = "";
   renderNodes(data.tree, document.getElementById("tree"));
 }
@@ -472,6 +517,7 @@ async function loadGitStatus() {
     const proposals = pr.ok ? (await pr.json()).proposals : [];
     const r = await fetch("/api/git/status");
     const data = await r.json();
+    updateGitSide(data, proposals);
     if (!data.available) {
       changesCount.textContent = proposals.length || "-";
       gitBranch.textContent = "sin git";
@@ -503,6 +549,38 @@ async function loadGitStatus() {
   } catch (e) {
     changesCount.textContent = "!";
     changedFiles.innerHTML = '<div class="empty">No pude leer los cambios.</div>';
+  }
+}
+function updateGitSide(data, proposals) {
+  const gitSide = document.getElementById("gitSide");
+  if (!gitSide) return;
+  gitSide.innerHTML = "";
+  if (!data.available) {
+    gitSide.innerHTML = '<div class="side-item"><strong>Sin git</strong><span>No disponible en este proyecto.</span></div>';
+    return;
+  }
+  const files = data.files || [];
+  const counts = files.reduce((acc, f) => {
+    const s = (f.status || "").trim();
+    if (s.includes("??") || s.includes("A")) acc.added++;
+    else if (s.includes("D")) acc.removed++;
+    else acc.modified++;
+    return acc;
+  }, { added: 0, modified: 0, removed: 0 });
+  const summary = document.createElement("div");
+  summary.className = "side-item";
+  summary.innerHTML = `<strong>${files.length + (proposals || []).length} cambios</strong><span>+${counts.added} · ~${counts.modified} · -${counts.removed} · P${(proposals || []).length}</span>`;
+  summary.onclick = () => changesPanel.classList.add("open");
+  gitSide.appendChild(summary);
+  for (const f of files.slice(0, 18)) {
+    const item = document.createElement("div");
+    item.className = "side-item";
+    item.innerHTML = `<strong>${f.status || ""} ${f.path}</strong><span>${statusLabel(f)}</span>`;
+    item.onclick = () => changesPanel.classList.add("open");
+    gitSide.appendChild(item);
+  }
+  if (!files.length && !(proposals || []).length) {
+    gitSide.innerHTML = '<div class="side-item"><strong>Limpio</strong><span>No hay cambios.</span></div>';
   }
 }
 async function selectChangedFile(row, path, label) {
@@ -803,6 +881,25 @@ function updateDetail(el, title, line) {
 function processKey(m) {
   return `${m.label || "proceso"}:${m.client || ""}:${m.model || ""}`;
 }
+function setSideView(id) {
+  document.querySelectorAll(".side-view").forEach(v => v.classList.toggle("active", v.id === id));
+  document.querySelectorAll(".side-tab").forEach(b => b.classList.toggle("active", b.dataset.side === id));
+}
+document.querySelectorAll(".side-tab").forEach(btn => {
+  btn.onclick = () => setSideView(btn.dataset.side);
+});
+function workItem(key, title, detail) {
+  const box = document.getElementById("workSide");
+  let el = box.querySelector(`[data-work="${key}"]`);
+  if (!el) {
+    if (box.textContent.includes("Sin tarea activa")) box.innerHTML = "";
+    el = document.createElement("div");
+    el.className = "side-item";
+    el.dataset.work = key;
+    box.appendChild(el);
+  }
+  el.innerHTML = `<strong>${title}</strong><span>${detail || ""}</span>`;
+}
 function renderHistory(chat) {
   currentChatId = chat?.id || currentChatId;
   messages.innerHTML = "";
@@ -821,7 +918,9 @@ async function loadChats() {
   const data = await r.json();
   currentChatId = data.active || currentChatId;
   const box = document.getElementById("chatList");
+  const sideBox = document.getElementById("chatListSide");
   box.innerHTML = "";
+  sideBox.innerHTML = "";
   const groups = {};
   for (const c of (data.chats || [])) {
     const key = c.project_path || "sin proyecto";
@@ -838,9 +937,15 @@ async function loadChats() {
       btn.innerHTML = `<strong>${c.title || "Chat"}</strong><span class="hint">${c.messages || 0} mensajes · ${c.project_name || ""}</span>`;
       btn.onclick = () => activateChat(c.id);
       box.appendChild(btn);
+      const side = document.createElement("div");
+      side.className = "side-item" + (c.id === currentChatId ? " active" : "");
+      side.innerHTML = `<strong>${c.title || "Chat"}</strong><span>${c.project_name || ""} · ${c.messages || 0} mensajes</span>`;
+      side.onclick = () => activateChat(c.id);
+      sideBox.appendChild(side);
     }
   }
   if (!(data.chats || []).length) box.innerHTML = '<div class="hint">Aun no hay chats.</div>';
+  if (!(data.chats || []).length) sideBox.innerHTML = '<div class="side-item"><strong>Sin chats</strong><span>Crea uno con + o Nuevo.</span></div>';
   if (currentChatId && !messages.children.length) {
     const hr = await fetch(`/api/chats/${currentChatId}`);
     if (hr.ok) renderHistory(await hr.json());
@@ -889,9 +994,11 @@ function connect() {
       let el = processEls.get(key);
       if (m.action === "start") {
         el = addDetail(key, `${m.label || "proceso"} iniciado`, `modelo: ${m.model || m.client || "?"}\ntokens aprox: ${m.prompt_tokens || "?"}`);
+        workItem(key, m.label || "proceso", `iniciado · ${m.model || m.client || ""}`);
         addMsg("meta", `${m.label || "proceso"} iniciado`);
       } else if (m.action === "running") {
         const title = `${m.label || "proceso"} corriendo - ${m.elapsed || 0}s - ${m.tokens || "?"} tokens aprox`;
+        workItem(key, m.label || "proceso", `${m.elapsed || 0}s · ${m.tokens || "?"} tokens`);
         updateDetail(el, title, `sigue corriendo: ${m.elapsed || 0}s, ${m.tokens || "?"} tokens aprox`);
       } else if (m.action === "queued") {
         updateDetail(el, `${m.label || "proceso"} corriendo`, m.hint || "mensaje recibido; queda en cola");
@@ -900,6 +1007,7 @@ function connect() {
         updateDetail(el, `${m.label || "proceso"} cancelado`, "cancelado por Pedro");
         stopThinking(); addMsg("meta", `${m.label || "proceso"} cancelado`);
       } else if (m.action === "done") {
+        workItem(key, m.label || "proceso", `listo · ${m.elapsed || 0}s · ${m.tokens || "?"} tokens`);
         updateDetail(el, `${m.label || "proceso"} termino - ${m.elapsed || 0}s - ${m.tokens || "?"} tokens aprox`, "terminado");
         addMsg("meta", `${m.label || "proceso"} termino (${m.elapsed || 0}s)`);
       }
@@ -910,10 +1018,12 @@ function connect() {
       } else if (m.action === "start") {
         const a = m.agent || {};
         const key = `agent:${m.index}`;
+        workItem(key, `agente ${m.index}: ${a.persona || a.role}`, `${a.role || ""} · ${a.model || a.route || ""}`);
         addDetail(key, `agente ${m.index}: ${a.persona || a.role}`, `rol: ${a.role || "?"}\nmodelo: ${a.model || a.route || "?"}\nsubtarea: ${a.task || ""}`);
         addMsg("meta", `agente ${m.index}: ${a.persona || a.role} trabajando en ${a.role || "subtarea"}`);
       } else if (m.action === "done") {
         const a = m.agent || {};
+        workItem(`agent:${m.index}`, `agente ${m.index}: ${a.persona || a.role}`, "listo");
         updateDetail(agentEls.get(`agent:${m.index}`), `agente ${m.index}: ${a.persona || a.role} listo`, "listo");
         addMsg("meta", `agente ${m.index}: ${a.persona || a.role} listo`);
       } else if (m.action === "synthesis") {
