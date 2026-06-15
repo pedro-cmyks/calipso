@@ -51,6 +51,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import dispatch  # noqa: E402
 from calipso import config as calipso_config  # noqa: E402
 from calipso import costs  # noqa: E402
+from calipso import telemetry  # noqa: E402
 from calipso.memory import Memory  # noqa: E402
 
 # RaÃƒÂ­z del proyecto que Calipso muestra/edita. Por defecto, el cwd.
@@ -808,6 +809,8 @@ async def ws_chat(ws: WebSocket) -> None:
             user_msg = (await ws.receive_text()).strip()
             if not user_msg:
                 continue
+            turn_started = time.perf_counter()
+            fallbacks: list[dict] = []
 
             # 1) routing (reglas -> o clasificador local)
             verdict = dispatch.route(user_msg, None)
@@ -860,6 +863,11 @@ async def ws_chat(ws: WebSocket) -> None:
                                 "client": alternate,
                                 "why": f"{verdict.get('client')} fallo ({e}); probando {alternate}",
                                 "note": "fallback entre suscripciones"})
+                            fallbacks.append({
+                                "from": verdict.get("client"),
+                                "to": alternate,
+                                "error": str(e),
+                            })
                             try:
                                 verdict["client"] = alternate
                                 model = _route_model_name("subscription", alternate)
@@ -891,6 +899,11 @@ async def ws_chat(ws: WebSocket) -> None:
                                             "client": verdict.get("client"),
                                             "why": f"ruta {route} falló ({e}); fallback local",
                                             "note": "fallback a local"})
+                        fallbacks.append({
+                            "from": route,
+                            "to": "local",
+                            "error": str(e),
+                        })
                         used_route, usage = "local", {}
                         model = _route_model_name("local")
                         runtime = _harness_context(verdict, "local", model, f"ruta {route} fallo; fallback local")
@@ -914,6 +927,19 @@ async def ws_chat(ws: WebSocket) -> None:
             await ws.send_json({"type": "cost", "model": model, "route": used_route,
                                 "tokens": entry["prompt_tokens"] + entry["completion_tokens"],
                                 "cost_usd": entry["cost_usd"]})
+            telemetry.log_event(
+                "chat_turn",
+                prompt_chars=len(user_msg),
+                response_chars=len(full),
+                route_decided=verdict.get("route"),
+                route_used=used_route,
+                client=verdict.get("client"),
+                model=model,
+                why=verdict.get("why"),
+                fallbacks=fallbacks,
+                latency_ms=round((time.perf_counter() - turn_started) * 1000),
+                cost_usd=entry["cost_usd"],
+            )
 
             # 5) recordar el intercambio (episÃƒÂ³dica)
             if full.strip():
@@ -945,6 +971,11 @@ def api_memory() -> dict:
         "global_episodes": mem.glob.count(),
         "project_episodes": mem.project.count() if mem.project else 0,
     }
+
+
+@app.get("/api/telemetry")
+def api_telemetry(limit: int = 100) -> dict:
+    return {"events": telemetry.recent(limit)}
 
 
 @app.get("/")
