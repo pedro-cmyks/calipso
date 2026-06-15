@@ -22,6 +22,13 @@
   header .status { margin-left: auto; color: var(--muted); font-size: 12px; }
   header .status.dirty { color: var(--dirty); }
   header .status.saved { color: #6a9955; }
+  .toolbtn { background: transparent; border: 1px solid var(--border); color: var(--text);
+             border-radius: 6px; height: 26px; padding: 0 9px; font-size: 12px;
+             cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+  .toolbtn:hover { border-color: #555; background: #222; }
+  .badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+           background: var(--accent-dim); color: #fff; display: inline-flex;
+           align-items: center; justify-content: center; font-size: 11px; }
   main { display: flex; flex: 1 1 auto; min-height: 0; }
   #sidebar { width: 270px; flex: 0 0 auto; background: var(--panel);
              border-right: 1px solid var(--border); overflow: auto; padding: 6px 0; }
@@ -63,13 +70,32 @@
   #send { background: var(--accent); color: #fff; border: none; border-radius: 8px;
           width: 44px; font-size: 16px; cursor: pointer; }
   #send:disabled { opacity: .4; cursor: default; }
+  #changesPanel { position: fixed; top: 40px; right: 0; bottom: 0; width: min(620px, 92vw);
+                  background: #202020; border-left: 1px solid var(--border);
+                  z-index: 20; display: none; flex-direction: column; box-shadow: -16px 0 40px #0008; }
+  #changesPanel.open { display: flex; }
+  .changes-head { height: 42px; display: flex; align-items: center; gap: 8px;
+                  padding: 0 12px; border-bottom: 1px solid var(--border); }
+  .changes-head strong { color: var(--accent); font-size: 13px; }
+  .changes-head .spacer { flex: 1; }
+  #changesBody { display: grid; grid-template-columns: 210px 1fr; min-height: 0; flex: 1; }
+  #changedFiles { border-right: 1px solid var(--border); overflow: auto; padding: 8px 0; }
+  .change-row { padding: 7px 10px; font-size: 12px; cursor: pointer; display: flex;
+                gap: 7px; align-items: center; min-width: 0; }
+  .change-row:hover, .change-row.active { background: #2a2d2e; }
+  .change-code { color: var(--dirty); width: 22px; flex: 0 0 auto; font-family: Consolas, monospace; }
+  .change-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #diffView { margin: 0; padding: 12px; overflow: auto; font-family: Consolas, monospace;
+              font-size: 12px; line-height: 1.45; white-space: pre; color: #d4d4d4; }
+  .empty { color: var(--muted); font-size: 13px; padding: 14px; }
 </style>
 </head>
 <body>
 <div id="app">
   <header>
-    <span class="logo">⚡ Calipso</span>
-    <span class="proj" id="proj">—</span>
+    <span class="logo">âš¡ Calipso</span>
+    <span class="proj" id="proj">â€”</span>
+    <button class="toolbtn" id="changesBtn" title="Ver cambios">Cambios <span class="badge" id="changesCount">0</span></button>
     <span class="status" id="status">listo</span>
   </header>
   <main>
@@ -79,14 +105,27 @@
     </nav>
     <div id="editor"><div id="placeholder">Selecciona un archivo del explorador</div></div>
     <aside id="chat">
-      <div class="chat-title">💬 Habla con Calipso</div>
+      <div class="chat-title">ðŸ’¬ Habla con Calipso</div>
       <div id="messages"></div>
       <div id="composer">
-        <textarea id="input" placeholder="Háblale a Calipso…  (Enter envía, Shift+Enter salto)"></textarea>
-        <button id="send" title="Enviar">▶</button>
+        <textarea id="input" placeholder="HÃ¡blale a Calipsoâ€¦  (Enter envÃ­a, Shift+Enter salto)"></textarea>
+        <button id="send" title="Enviar">â–¶</button>
       </div>
     </aside>
   </main>
+  <section id="changesPanel" aria-label="Cambios">
+    <div class="changes-head">
+      <strong>Cambios</strong>
+      <span class="proj" id="gitBranch">Git</span>
+      <span class="spacer"></span>
+      <button class="toolbtn" id="refreshChanges">Actualizar</button>
+      <button class="toolbtn" id="closeChanges">Cerrar</button>
+    </div>
+    <div id="changesBody">
+      <div id="changedFiles"></div>
+      <pre id="diffView">Sin cambios.</pre>
+    </div>
+  </section>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
@@ -106,7 +145,7 @@ function setStatus(text, cls) {
 function markDirty(d) {
   dirty = d;
   if (!currentPath) return setStatus("listo");
-  setStatus((d ? "● " : "") + currentPath + (d ? " — sin guardar" : " — guardado"),
+  setStatus((d ? "â— " : "") + currentPath + (d ? " â€” sin guardar" : " â€” guardado"),
             d ? "dirty" : "saved");
 }
 
@@ -133,7 +172,7 @@ function renderNodes(nodes, parent) {
     const li = document.createElement("li");
     if (n.type === "dir") {
       li.className = "dir";
-      const node = nodeRow("▾", "📁", n.name);
+      const node = nodeRow("â–¾", "ðŸ“", n.name);
       node.onclick = () => li.classList.toggle("collapsed");
       li.appendChild(node);
       const ul = document.createElement("ul");
@@ -154,12 +193,12 @@ function nodeRow(caret, ico, name) {
 }
 function fileIcon(name) {
   const e = name.split(".").pop().toLowerCase();
-  return ({py:"🐍", md:"📝", json:"🔧", html:"🌐", js:"📜", ts:"📘"})[e] || "📄";
+  return ({py:"ðŸ", md:"ðŸ“", json:"ðŸ”§", html:"ðŸŒ", js:"ðŸ“œ", ts:"ðŸ“˜"})[e] || "ðŸ“„";
 }
 function langFor(path) { return EXT_LANG[path.split(".").pop().toLowerCase()] || "plaintext"; }
 
 async function openFile(path, node) {
-  if (dirty && !confirm("Hay cambios sin guardar. ¿Descartar?")) return;
+  if (dirty && !confirm("Hay cambios sin guardar. Â¿Descartar?")) return;
   await monacoReady;
   const r = await fetch("/api/file?path=" + encodeURIComponent(path));
   if (!r.ok) { setStatus("error: " + (await r.json()).detail, "dirty"); return; }
@@ -174,12 +213,12 @@ async function openFile(path, node) {
 
 async function saveFile() {
   if (!currentPath) return;
-  setStatus("guardando…");
+  setStatus("guardandoâ€¦");
   const r = await fetch("/api/file", {
     method: "PUT", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path: currentPath, content: editor.getValue() }),
   });
-  if (r.ok) markDirty(false);
+  if (r.ok) { markDirty(false); loadGitStatus(); }
   else setStatus("error al guardar", "dirty");
 }
 
@@ -187,6 +226,72 @@ window.addEventListener("keydown", e => {
   if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); saveFile(); }
 });
 loadTree();
+
+// ----------------------------- CAMBIOS -----------------------------
+const changesPanel = document.getElementById("changesPanel");
+const changesBtn = document.getElementById("changesBtn");
+const changesCount = document.getElementById("changesCount");
+const changedFiles = document.getElementById("changedFiles");
+const diffView = document.getElementById("diffView");
+const gitBranch = document.getElementById("gitBranch");
+
+function statusLabel(file) {
+  if (file.status === "??") return "nuevo";
+  if (file.index === "D" || file.worktree === "D") return "borrado";
+  if (file.index === "A") return "agregado";
+  if (file.index === "M" || file.worktree === "M") return "modificado";
+  if (file.index === "R") return "renombrado";
+  return file.status.trim() || "cambio";
+}
+
+async function loadGitStatus() {
+  try {
+    const r = await fetch("/api/git/status");
+    const data = await r.json();
+    if (!data.available) {
+      changesCount.textContent = "-";
+      gitBranch.textContent = "sin git";
+      changedFiles.innerHTML = '<div class="empty">Git no esta disponible.</div>';
+      return;
+    }
+    changesCount.textContent = data.files.length;
+    gitBranch.textContent = data.branch || "Git";
+    if (!data.files.length) {
+      changedFiles.innerHTML = '<div class="empty">Sin cambios.</div>';
+      diffView.textContent = "Sin cambios.";
+      return;
+    }
+    changedFiles.innerHTML = "";
+    for (const f of data.files) {
+      const row = document.createElement("div");
+      row.className = "change-row";
+      row.innerHTML = `<span class="change-code">${f.status}</span><span class="change-path" title="${f.path}">${f.path}</span>`;
+      row.onclick = () => selectChangedFile(row, f.path, statusLabel(f));
+      changedFiles.appendChild(row);
+    }
+  } catch (e) {
+    changesCount.textContent = "!";
+    changedFiles.innerHTML = '<div class="empty">No pude leer los cambios.</div>';
+  }
+}
+
+async function selectChangedFile(row, path, label) {
+  document.querySelectorAll(".change-row.active").forEach(n => n.classList.remove("active"));
+  row.classList.add("active");
+  diffView.textContent = "Cargando diff...";
+  const r = await fetch("/api/git/diff?path=" + encodeURIComponent(path));
+  if (!r.ok) {
+    diffView.textContent = "No pude cargar el diff.";
+    return;
+  }
+  const data = await r.json();
+  diffView.textContent = data.diff || `Sin diff textual para ${path} (${label}).`;
+}
+
+changesBtn.onclick = () => { changesPanel.classList.add("open"); loadGitStatus(); };
+document.getElementById("closeChanges").onclick = () => changesPanel.classList.remove("open");
+document.getElementById("refreshChanges").onclick = loadGitStatus;
+loadGitStatus();
 
 // ----------------------------- CHAT -----------------------------
 const messages = document.getElementById("messages");
@@ -206,9 +311,9 @@ function connect() {
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
     if (m.type === "meta") {
-      let t = `↳ ${m.used || m.route}`;
-      if (m.note) t += ` · ${m.note}`;
-      if (m.why) t += ` · ${m.why}`;
+      let t = `â†³ ${m.used || m.route}`;
+      if (m.note) t += ` Â· ${m.note}`;
+      if (m.why) t += ` Â· ${m.why}`;
       addMsg("meta", t);
       if (!botEl) botEl = addMsg("bot", "");
     } else if (m.type === "chunk") {
@@ -216,14 +321,14 @@ function connect() {
       botEl.textContent += m.text; messages.scrollTop = messages.scrollHeight;
     } else if (m.type === "cost") {
       const c = m.cost_usd > 0 ? `$${m.cost_usd.toFixed(4)}` : "gratis";
-      addMsg("meta", `💰 ${m.route} · ${m.tokens} tokens · ${c}`);
+      addMsg("meta", `ðŸ’° ${m.route} Â· ${m.tokens} tokens Â· ${c}`);
     } else if (m.type === "error") {
-      addMsg("meta", "⚠ " + m.text);
+      addMsg("meta", "âš  " + m.text);
     } else if (m.type === "done") {
       botEl = null; setBusy(false);
     }
   };
-  ws.onclose = () => { addMsg("meta", "· desconectado, reintentando…"); setTimeout(connect, 1500); };
+  ws.onclose = () => { addMsg("meta", "Â· desconectado, reintentandoâ€¦"); setTimeout(connect, 1500); };
 }
 function setBusy(b) { busy = b; sendBtn.disabled = b; input.disabled = b; if (!b) input.focus(); }
 function send() {

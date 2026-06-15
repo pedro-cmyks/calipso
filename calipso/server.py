@@ -28,6 +28,7 @@ import os
 import pathlib
 import secrets
 import struct
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -301,6 +302,71 @@ def api_save_file(body: SaveBody) -> dict:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(body.content, encoding="utf-8", newline="")
     return {"ok": True, "bytes": len(body.content.encode("utf-8"))}
+
+
+# --------------------------------------------------------------------------
+# GIT  (estado y diffs para confirmar cambios antes de confiar)
+# --------------------------------------------------------------------------
+
+def _git(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args], cwd=str(ROOT), text=True, capture_output=True,
+        encoding="utf-8", errors="replace", timeout=10)
+
+
+def _git_available() -> bool:
+    return _git(["rev-parse", "--is-inside-work-tree"]).returncode == 0
+
+
+@app.get("/api/git/status")
+def api_git_status() -> dict:
+    if not _git_available():
+        return {"available": False, "clean": True, "branch": None, "files": []}
+    branch = _git(["branch", "--show-current"]).stdout.strip() or "HEAD"
+    raw = _git(["status", "--porcelain=v1"]).stdout.splitlines()
+    files = []
+    for line in raw:
+        if not line:
+            continue
+        status = line[:2]
+        path = line[3:].strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        files.append({
+            "path": path,
+            "status": status,
+            "index": status[0],
+            "worktree": status[1],
+        })
+    return {
+        "available": True,
+        "clean": not files,
+        "branch": branch,
+        "files": files,
+    }
+
+
+@app.get("/api/git/diff")
+def api_git_diff(path: str | None = None) -> dict:
+    if not _git_available():
+        raise HTTPException(status_code=404, detail="git no disponible")
+    args = ["diff", "--"]
+    if path:
+        _safe(path)
+        args.append(path)
+    diff = _git(args)
+    if diff.returncode != 0:
+        raise HTTPException(status_code=500, detail=diff.stderr.strip() or "git diff fallo")
+    text = diff.stdout
+    if path and not text:
+        p = _safe(path)
+        if p.is_file() and path in {f["path"] for f in api_git_status()["files"]}:
+            try:
+                content = p.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                content = "(archivo binario o no legible como texto)"
+            text = f"Archivo nuevo o sin diff unstaged para {path}\n\n{content}"
+    return {"path": path, "diff": text}
 
 
 # --------------------------------------------------------------------------
