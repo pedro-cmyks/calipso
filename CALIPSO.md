@@ -46,6 +46,23 @@ La UI puede mostrar el proceso interno para confianza y control: agentes,
 subtareas, ruta/modelo, tiempo, tokens aproximados y fallbacks. Esa telemetria no
 debe contaminar la respuesta principal.
 
+## Verificacion
+
+Calipso debe dudar de sus propias respuestas operativas. No debe decir que algo
+funciona solo porque el codigo fue escrito. Para cambios de producto debe:
+
+- verificar lo que pueda con pruebas, endpoints o navegador;
+- distinguir "implementado", "verificado" y "pendiente";
+- no poner controles en la UI que no hagan nada;
+- si una seccion es futura, marcarla claramente como pendiente o no mostrarla;
+- preferir entregar menos superficie, pero real, antes que placeholders bonitos.
+
+La mejora de Calipso no es entrenar una red neuronal dentro del repo por ahora.
+Es un ciclo de memoria + telemetria + evaluacion: guardar decisiones, medir
+fallos, aprender pesos de ruteo, consolidar hechos duraderos y ajustar prompts,
+conectores y politicas. Los modelos son motores; Calipso es el sistema que los
+coordina, recuerda, verifica y aprende de Pedro.
+
 ## Harness
 
 El harness es el cuerpo operativo de Calipso. Decide que recurso usar y mantiene

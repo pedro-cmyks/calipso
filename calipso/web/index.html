@@ -93,9 +93,10 @@
   #contextPill { max-width: 160px; align-self: center; color: var(--muted); font-size: 11px;
                  border: 1px solid var(--border); border-radius: 999px; padding: 5px 8px;
                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #input { flex: 1 1 auto; resize: none; height: 44px; background: var(--bg);
+  #input { flex: 1 1 auto; resize: none; min-height: 44px; max-height: 50vh;
+           background: var(--bg);
            color: var(--text); border: 1px solid var(--border); border-radius: 8px;
-           padding: 8px 10px; font-family: inherit; font-size: 13px; }
+           padding: 8px 10px; font-family: inherit; font-size: 13px; overflow: hidden; }
   #input:focus { outline: none; border-color: var(--accent); }
   #send { background: var(--accent); color: #fff; border: none; border-radius: 8px;
           min-width: 60px; font-size: 13px; cursor: pointer; }
@@ -177,6 +178,9 @@
       </div>
       <div class="side-view" id="chatsView">
         <div class="title">Chats por proyecto</div>
+        <div class="side-list">
+          <button class="toolbtn primary" id="newChatSide">Nuevo chat</button>
+        </div>
         <div class="side-list" id="chatListSide"></div>
       </div>
       <div class="side-view" id="gitView">
@@ -197,7 +201,7 @@
       <div class="chat-title">Habla con Calipso</div>
       <div id="messages"></div>
       <div id="composer">
-        <button id="attach" title="Agregar proyecto/carpeta">+</button>
+        <button id="attach" title="Escoger proyecto o carpeta">+</button>
         <div id="contextPill" title="Proyecto actual">proyecto</div>
         <textarea id="input" placeholder="Hablale a Calipso...  (Enter envia - escribe mientras responde para guiar)"></textarea>
         <button id="stop" title="Detener" style="display:none">Detener</button>
@@ -625,6 +629,8 @@ const chatsPanel = document.getElementById("chatsPanel");
 document.getElementById("chatsBtn").onclick = () => { chatsPanel.classList.add("open"); loadChats(); };
 document.getElementById("closeChats").onclick = () => chatsPanel.classList.remove("open");
 document.getElementById("newChat").onclick = createChat;
+document.getElementById("newChatSide").onclick = createChat;
+document.getElementById("attach").onclick = () => { projectPanel.classList.add("open"); loadProject(); };
 document.getElementById("proposeBtn").onclick = async () => {
   if (!currentPath || !editor) return;
   const r = await fetch("/api/proposals", {
@@ -859,6 +865,13 @@ function addMsg(cls, text) {
   messages.appendChild(div); messages.scrollTop = messages.scrollHeight;
   return div;
 }
+function autosizeInput() {
+  input.style.height = "auto";
+  const max = Math.round(window.innerHeight * 0.5);
+  const h = Math.min(input.scrollHeight, max);
+  input.style.height = `${Math.max(44, h)}px`;
+  input.style.overflowY = input.scrollHeight > max ? "auto" : "hidden";
+}
 function addDetail(key, title, body) {
   const d = document.createElement("details");
   d.className = "msg detail";
@@ -960,16 +973,25 @@ async function activateChat(id) {
   await loadTree(); await loadProject(); await loadGitStatus(); await loadChats();
 }
 async function createChat() {
-  const projectPath = document.getElementById("projectPath")?.textContent || "";
+  let projectPath = document.getElementById("projectPath")?.textContent || "";
+  if (!projectPath || projectPath === "-") {
+    const pr = await fetch("/api/project");
+    if (pr.ok) projectPath = (await pr.json()).path || "";
+  }
   const r = await fetch("/api/chats", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ project_path: projectPath }),
   });
-  if (!r.ok) return;
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ detail: "No pude crear el chat." }));
+    addMsg("meta", "! " + (err.detail || "No pude crear el chat."));
+    return;
+  }
   const chat = await r.json();
   currentChatId = chat.id;
   renderHistory(chat);
   await loadChats(); await loadTree(); await loadProject(); await loadGitStatus();
+  setSideView("chatsView");
 }
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -1084,6 +1106,7 @@ function send() {
   if (!text || !ws || ws.readyState !== 1) return;
   // si esta generando, este mensaje GUIA (steering); si no, inicia turno.
   addMsg("user", text); input.value = ""; if (!busy) botEl = null;
+  autosizeInput();
   setBusy(true);
   ws.send(JSON.stringify({ chat_id: currentChatId, text }));
 }
@@ -1092,6 +1115,8 @@ sendBtn.onclick = send;
 input.addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
+input.addEventListener("input", autosizeInput);
+autosizeInput();
 connect();
 
 // aviso de updates (modelos nuevos / CLIs desactualizados)
