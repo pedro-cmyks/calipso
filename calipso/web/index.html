@@ -101,6 +101,7 @@
   .empty { color: var(--muted); font-size: 13px; padding: 14px; }
   #configBody { padding: 14px; overflow: auto; display: grid; gap: 12px; }
   #projectBody { padding: 14px; overflow: auto; display: grid; gap: 12px; }
+  #chatsBody { padding: 14px; overflow: auto; display: grid; gap: 12px; }
   .config-grid { display: grid; grid-template-columns: 150px 1fr; gap: 8px 10px; align-items: center; }
   label { color: var(--muted); font-size: 12px; }
   input, select { background: var(--bg); color: var(--text); border: 1px solid var(--border);
@@ -112,6 +113,8 @@
   .connector-top { display: flex; align-items: center; gap: 8px; }
   .connector-top strong { color: var(--text); }
   .connector-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chat-row { text-align: left; height: auto; min-height: 42px; justify-content: flex-start; }
+  .chat-row.active { border-color: var(--accent); background: #213247; }
   #agentsTable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   #agentsTable th { text-align: left; color: var(--muted); font-weight: 600;
                     padding: 6px 8px; border-bottom: 1px solid var(--border); }
@@ -133,6 +136,7 @@
     <span class="logo">Calipso</span>
     <span class="proj" id="proj">-</span>
     <button class="toolbtn" id="projectBtn" title="Abrir o cambiar proyecto">Proyecto</button>
+    <button class="toolbtn" id="chatsBtn" title="Conversaciones por proyecto">Chats</button>
     <button class="toolbtn" id="changesBtn" title="Ver cambios">Cambios <span class="badge" id="changesCount">0</span></button>
     <button class="toolbtn" id="proposeBtn" title="Guardar como propuesta">Proponer</button>
     <button class="toolbtn" id="configBtn" title="Configurar harness">Config</button>
@@ -193,6 +197,19 @@
       <div class="hint">Recientes</div>
       <div class="connector-list" id="recentProjects"></div>
       <div class="hint" id="projectSaved"></div>
+    </div>
+  </section>
+  <section class="drawer" id="chatsPanel" aria-label="Chats">
+    <div class="drawer-head">
+      <strong>Chats</strong>
+      <span class="proj">por proyecto</span>
+      <span class="spacer"></span>
+      <button class="toolbtn primary" id="newChat">Nuevo</button>
+      <button class="toolbtn" id="closeChats">Cerrar</button>
+    </div>
+    <div id="chatsBody">
+      <div class="hint">Cada chat recuerda su carpeta de trabajo. Al abrirlo, Calipso cambia a ese proyecto.</div>
+      <div class="connector-list" id="chatList"></div>
     </div>
   </section>
   <section class="drawer" id="configPanel" aria-label="Config">
@@ -425,6 +442,7 @@ window.addEventListener("keydown", e => {
 });
 loadTree();
 loadProject();
+loadChats();
 setupSplitters();
 
 const changesPanel = document.getElementById("changesPanel");
@@ -525,6 +543,10 @@ document.getElementById("projectBtn").onclick = () => { projectPanel.classList.a
 document.getElementById("closeProject").onclick = () => projectPanel.classList.remove("open");
 document.getElementById("refreshProject").onclick = loadProject;
 document.getElementById("openProject").onclick = () => openProject();
+const chatsPanel = document.getElementById("chatsPanel");
+document.getElementById("chatsBtn").onclick = () => { chatsPanel.classList.add("open"); loadChats(); };
+document.getElementById("closeChats").onclick = () => chatsPanel.classList.remove("open");
+document.getElementById("newChat").onclick = createChat;
 document.getElementById("proposeBtn").onclick = async () => {
   if (!currentPath || !editor) return;
   const r = await fetch("/api/proposals", {
@@ -749,6 +771,7 @@ const messages = document.getElementById("messages");
 const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
 let ws = null, botEl = null, busy = false;
+let currentChatId = null;
 const processEls = new Map();
 const agentEls = new Map();
 
@@ -780,6 +803,69 @@ function updateDetail(el, title, line) {
 function processKey(m) {
   return `${m.label || "proceso"}:${m.client || ""}:${m.model || ""}`;
 }
+function renderHistory(chat) {
+  currentChatId = chat?.id || currentChatId;
+  messages.innerHTML = "";
+  botEl = null;
+  processEls.clear(); agentEls.clear();
+  for (const msg of (chat?.messages || [])) {
+    addMsg(msg.role === "user" ? "user" : "bot", msg.text || "");
+    if (msg.meta && (msg.meta.route || msg.meta.model)) {
+      addMsg("meta", `$ ${msg.meta.route || "ruta"} - ${msg.meta.model || ""}`);
+    }
+  }
+}
+async function loadChats() {
+  const r = await fetch("/api/chats");
+  if (!r.ok) return;
+  const data = await r.json();
+  currentChatId = data.active || currentChatId;
+  const box = document.getElementById("chatList");
+  box.innerHTML = "";
+  const groups = {};
+  for (const c of (data.chats || [])) {
+    const key = c.project_path || "sin proyecto";
+    (groups[key] ||= []).push(c);
+  }
+  for (const [project, chats] of Object.entries(groups)) {
+    const title = document.createElement("div");
+    title.className = "hint";
+    title.textContent = project;
+    box.appendChild(title);
+    for (const c of chats) {
+      const btn = document.createElement("button");
+      btn.className = "toolbtn chat-row" + (c.id === currentChatId ? " active" : "");
+      btn.innerHTML = `<strong>${c.title || "Chat"}</strong><span class="hint">${c.messages || 0} mensajes · ${c.project_name || ""}</span>`;
+      btn.onclick = () => activateChat(c.id);
+      box.appendChild(btn);
+    }
+  }
+  if (!(data.chats || []).length) box.innerHTML = '<div class="hint">Aun no hay chats.</div>';
+  if (currentChatId && !messages.children.length) {
+    const hr = await fetch(`/api/chats/${currentChatId}`);
+    if (hr.ok) renderHistory(await hr.json());
+  }
+}
+async function activateChat(id) {
+  const r = await fetch(`/api/chats/${id}/activate`, { method: "POST" });
+  if (!r.ok) return;
+  const chat = await r.json();
+  currentChatId = chat.id;
+  renderHistory(chat);
+  await loadTree(); await loadProject(); await loadGitStatus(); await loadChats();
+}
+async function createChat() {
+  const projectPath = document.getElementById("projectPath")?.textContent || "";
+  const r = await fetch("/api/chats", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_path: projectPath }),
+  });
+  if (!r.ok) return;
+  const chat = await r.json();
+  currentChatId = chat.id;
+  renderHistory(chat);
+  await loadChats(); await loadTree(); await loadProject(); await loadGitStatus();
+}
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/ws/chat`);
@@ -787,6 +873,15 @@ function connect() {
     const m = JSON.parse(ev.data);
     if (m.type === "thinking") {
       startThinking();
+    } else if (m.type === "chat") {
+      if (m.chat) {
+        currentChatId = m.chat.id || currentChatId;
+        loadChats();
+      }
+    } else if (m.type === "project") {
+      if (m.path) {
+        loadTree(); loadProject(); loadGitStatus();
+      }
     } else if (m.type === "web") {
       renderWeb(m);
     } else if (m.type === "process") {
@@ -880,7 +975,7 @@ function send() {
   // si esta generando, este mensaje GUIA (steering); si no, inicia turno.
   addMsg("user", text); input.value = ""; if (!busy) botEl = null;
   setBusy(true);
-  ws.send(text);
+  ws.send(JSON.stringify({ chat_id: currentChatId, text }));
 }
 stopBtn.onclick = () => { if (ws && ws.readyState === 1) ws.send("/stop"); };
 sendBtn.onclick = send;

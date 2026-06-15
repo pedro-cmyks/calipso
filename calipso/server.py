@@ -51,6 +51,7 @@ from pydantic import BaseModel
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import dispatch  # noqa: E402
 from calipso import capabilities  # noqa: E402
+from calipso import chats  # noqa: E402
 from calipso import config as calipso_config  # noqa: E402
 from calipso import costs  # noqa: E402
 from calipso import discovery  # noqa: E402
@@ -510,6 +511,61 @@ async def api_project_open(request: Request) -> dict:
     mem = Memory(project_root=str(ROOT))
     _remember_project(ROOT)
     return {"ok": True, "name": ROOT.name, "path": str(ROOT)}
+
+
+def _switch_project(path: str) -> None:
+    global ROOT, mem
+    p = pathlib.Path(os.path.expandvars(os.path.expanduser(path))).resolve()
+    if not p.exists() or not p.is_dir():
+        raise HTTPException(status_code=400, detail="la ruta del chat no existe")
+    ROOT = p
+    mem = Memory(project_root=str(ROOT))
+    _remember_project(ROOT)
+
+
+def _chat_view(chat: dict) -> dict:
+    return {
+        "id": chat["id"],
+        "title": chat.get("title"),
+        "project_path": chat.get("project_path"),
+        "project_name": chat.get("project_name"),
+        "created_at": chat.get("created_at"),
+        "updated_at": chat.get("updated_at"),
+        "messages": chat.get("messages", []),
+    }
+
+
+@app.get("/api/chats")
+def api_chats() -> dict:
+    return {"active": chats.active_id(), "chats": chats.list_chats()}
+
+
+@app.post("/api/chats")
+async def api_chat_create(request: Request) -> dict:
+    body = await request.json()
+    project_path = str(body.get("project_path") or ROOT)
+    title = body.get("title")
+    _switch_project(project_path)
+    chat = chats.create(str(ROOT), title)
+    return _chat_view(chat)
+
+
+@app.get("/api/chats/{chat_id}")
+def api_chat_get(chat_id: str) -> dict:
+    chat = chats.get(chat_id)
+    if not chat:
+        raise HTTPException(status_code=404, detail="chat no existe")
+    return _chat_view(chat)
+
+
+@app.post("/api/chats/{chat_id}/activate")
+def api_chat_activate(chat_id: str) -> dict:
+    try:
+        chat = chats.set_active(chat_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="chat no existe")
+    _switch_project(chat["project_path"])
+    return _chat_view(chat)
 
 
 def _http_up(url: str, timeout: float = 1.5) -> bool:
@@ -1427,16 +1483,36 @@ async def ws_chat(ws: WebSocket) -> None:
     pending = None
     try:
         while True:
+            chat_id = chats.active_id()
             if pending is not None:
                 user_msg, pending = pending, None
             else:
                 raw = await inbox.get()
                 if raw is None:
                     break
-                user_msg = raw
+                try:
+                    packet = json.loads(raw)
+                    if isinstance(packet, dict):
+                        user_msg = str(packet.get("text") or "")
+                        chat_id = packet.get("chat_id") or chat_id
+                    else:
+                        user_msg = raw
+                except Exception:
+                    user_msg = raw
             user_msg = user_msg.strip()
             if not user_msg or user_msg == "/stop":
                 continue  # /stop en reposo no interrumpe nada
+            if not chat_id or not chats.get(chat_id):
+                chat = chats.create(str(ROOT), user_msg[:70])
+                chat_id = chat["id"]
+                await ws.send_json({"type": "chat", "action": "active",
+                                    "chat": _chat_view(chat)})
+            active_chat = chats.get(chat_id)
+            if active_chat and active_chat.get("project_path") != str(ROOT):
+                _switch_project(active_chat["project_path"])
+                await ws.send_json({"type": "project", "action": "changed",
+                                    "name": ROOT.name, "path": str(ROOT)})
+            chats.append(chat_id, "user", user_msg)
             turn_started = time.perf_counter()
             fallbacks: list[dict] = []
             # avisa de inmediato que está pensando (los probes pueden tardar)
@@ -1645,6 +1721,17 @@ async def ws_chat(ws: WebSocket) -> None:
             if full.strip():
                 mem.remember(f"Pedro preguntÃƒÂ³: {user_msg}\nCalipso respondiÃƒÂ³: {full.strip()}",
                              route=verdict["route"], kind="chat")
+            if full.strip():
+                chats.append(chat_id, "assistant", full.strip(), {
+                    "route": used_route,
+                    "model": model,
+                    "client": verdict.get("client"),
+                    "agent_team": agent_team,
+                })
+                current_chat = chats.get(chat_id)
+                if current_chat:
+                    await ws.send_json({"type": "chat", "action": "updated",
+                                        "chat": _chat_view(current_chat)})
             await ws.send_json({"type": "done"})
     except WebSocketDisconnect:
         pass

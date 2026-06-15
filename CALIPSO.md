@@ -23,6 +23,29 @@ recurso disponible en ese momento.
 - Si una conexion no esta lista, limitada o autenticada, Calipso lo dice sin
   inventar.
 
+## Interaccion
+
+Pedro nunca conversa directamente con un backend. La conversacion visible es con
+Calipso. En cada turno, Calipso:
+
+1. Lee el pedido de Pedro y el contexto del chat/proyecto.
+2. Decide si puede responder directo o si necesita herramientas/modelos/agentes.
+3. Si usa otro modelo, no le reenvia necesariamente la frase cruda: prepara un
+   prompt de trabajo con rol, subtarea, contexto relevante y restricciones.
+4. Recibe la salida del modelo/herramienta, la evalua y la sintetiza.
+5. Responde como Calipso, manteniendo una sola voz.
+
+Si Pedro pide "redactemos un correo", Calipso puede responder con un modelo
+local, una suscripcion o API segun calidad/costo/contexto, pero la respuesta
+visible sigue siendo de Calipso. Si Pedro pide "trabajemos en este proyecto",
+Calipso puede crear agentes internos: uno entiende el repo, otro revisa riesgos,
+otro redacta la respuesta final. Esos agentes son procesos internos, no identidades
+separadas frente a Pedro.
+
+La UI puede mostrar el proceso interno para confianza y control: agentes,
+subtareas, ruta/modelo, tiempo, tokens aproximados y fallbacks. Esa telemetria no
+debe contaminar la respuesta principal.
+
 ## Harness
 
 El harness es el cuerpo operativo de Calipso. Decide que recurso usar y mantiene
