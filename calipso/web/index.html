@@ -148,6 +148,24 @@
   .thinking { align-self: flex-start; color: var(--accent); font-size: 12.5px;
               font-style: italic; padding: 2px 6px; }
   .thinking::after { content: "…"; }
+  .plan-card { align-self: stretch; background: #21222b; border: 1px solid var(--accent-dim, #355);
+               border-radius: 12px; padding: 12px 13px; max-width: 100%; }
+  .plan-card .ph { font-weight: 600; color: var(--accent); margin-bottom: 8px; font-size: 13px; }
+  .plan-card .todo { padding: 6px 6px; border-radius: 8px; font-size: 12.5px; line-height: 1.45; }
+  .plan-card .todo + .todo { margin-top: 2px; }
+  .plan-card .todo .tk { color: var(--muted); }
+  .plan-card .todo.doing { background: #2a2d3a; }
+  .plan-card .todo.doing .tk { color: var(--accent); }
+  .plan-card .todo.done { opacity: .7; }
+  .plan-card .todo.done .tk { color: #6a9955; }
+  .plan-card .tm { color: var(--muted); font-size: 11px; }
+  .plan-card .tt { color: var(--text); margin: 2px 0 0 18px; font-size: 12px; }
+  .plan-card .psyn { color: var(--muted); font-size: 11.5px; margin-top: 8px; font-style: italic; }
+  .plan-card .pa { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .plan-card .pbtn { border: 0; border-radius: 8px; padding: 7px 12px; font-size: 12.5px; cursor: pointer; }
+  .plan-card .pbtn.ok { background: var(--accent); color: #fff; }
+  .plan-card .pbtn.no { background: #3a3a3a; color: var(--text); }
+  .plan-card .phint { color: var(--muted); font-size: 11px; }
 </style>
 </head>
 <body>
@@ -743,6 +761,41 @@ function renderWeb(m) {
       + (read ? `<div class="hint" style="margin-top:12px">Calipso navego (screenshots reales):</div>${read}` : "");
   }
 }
+
+// ---- Plan-first (Planning Mode): plan revisable con todo-list ----
+let planEl = null;
+function planSend(text) { if (ws && ws.readyState === 1) { addMsg("user", text); ws.send(text); setBusy(true); } }
+function renderPlan(m) {
+  if (m.action === "propose") {
+    planEl = document.createElement("div");
+    planEl.className = "msg plan-card";
+    const items = (m.todos || []).map(t =>
+      `<div class="todo" data-id="${t.id}"><span class="tk">o</span> `
+      + `<b>${esc(t.persona || t.role)}</b> &middot; ${esc(t.role || "")} `
+      + `<span class="tm">${esc(t.model || "")}${t.tier ? " (" + esc(t.tier) + ")" : ""} &middot; ${esc(t.intensity || "")}</span>`
+      + `<div class="tt">${esc(t.task || "")}</div></div>`).join("");
+    planEl.innerHTML = `<div class="ph">Plan propuesto - ${(m.todos || []).length} agente(s)</div>`
+      + items
+      + (m.synthesis ? `<div class="psyn">Sintesis: ${esc(m.synthesis)}</div>` : "")
+      + `<div class="pa"><button class="pbtn ok">Aprobar y ejecutar</button>`
+      + `<button class="pbtn no">Cancelar</button>`
+      + `<span class="phint">o escribe un ajuste para replanear</span></div>`;
+    messages.appendChild(planEl); messages.scrollTop = messages.scrollHeight;
+    planEl.querySelector(".ok").onclick = () => planSend("ok");
+    planEl.querySelector(".no").onclick = () => planSend("/skip");
+  } else if (m.action === "todo" && planEl) {
+    const el = planEl.querySelector(`.todo[data-id="${m.id}"]`);
+    if (el) { el.classList.add(m.status); el.querySelector(".tk").textContent = m.status === "done" ? "+" : ">"; }
+  } else if (m.action === "approved" && planEl) {
+    planEl.querySelector(".pa").innerHTML = '<span class="phint">aprobado - ejecutando...</span>';
+  } else if (m.action === "revising") {
+    addMsg("meta", "ajustando el plan: " + (m.note || ""));
+  } else if (m.action === "cancelled" && planEl) {
+    planEl.querySelector(".pa").innerHTML = '<span class="phint">plan cancelado</span>';
+  } else if (m.action === "synthesizing") {
+    addMsg("meta", "combinando resultados del equipo...");
+  }
+}
 async function loadConfig() {
   const r = await fetch("/api/config");
   if (!r.ok) return;
@@ -1040,6 +1093,8 @@ function connect() {
         updateDetail(el, `${m.label || "proceso"} termino - ${m.elapsed || 0}s - ${m.tokens || "?"} tokens aprox`, "terminado");
         addMsg("meta", `${m.label || "proceso"} termino (${m.elapsed || 0}s)`);
       }
+    } else if (m.type === "plan") {
+      renderPlan(m);
     } else if (m.type === "agent") {
       if (m.action === "team") {
         const names = (m.agents || []).map(a => `${a.persona || a.role} (${a.model || a.route})`).join(", ");

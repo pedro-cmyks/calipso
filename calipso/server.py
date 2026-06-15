@@ -956,6 +956,8 @@ def _decide(user_msg: str) -> tuple[dict, dict, list, dict]:
 
 def _should_orchestrate(features: dict, directives: dict, message: str) -> bool:
     """Activa equipo dinamico solo cuando suma valor real."""
+    if directives.get("force_team"):
+        return True  # /plan o /team: planning mode explícito
     if directives.get("effort") == capabilities.EFFORT["fast"]:
         return False
     low = message.lower()
@@ -1072,10 +1074,47 @@ async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
     agents = team.get("agents", [])
     if not agents:
         raise RuntimeError("no hay agentes disponibles para el equipo dinamico")
+
+    # PLANNING MODE: propone el plan (todo-list) y espera aprobación o ajuste.
+    _APPROVE = {"ok", "okay", "dale", "ejecuta", "ejecutar", "si", "sí", "/run",
+                "/ok", "aprobar", "aprobado", "adelante", "hazlo", "listo"}
+    _CANCEL = {"/skip", "no", "cancela", "cancelar", "/stop", "para"}
+    revise = 0
+    while True:
+        todos = [{"id": i, "role": a.get("role"), "task": a.get("task"),
+                  "persona": a.get("persona"), "model": a.get("model"),
+                  "tier": a.get("tier"), "intensity": a.get("intensity"),
+                  "status": "pending"} for i, a in enumerate(agents, start=1)]
+        await ws.send_json({"type": "plan", "action": "propose", "todos": todos,
+                            "synthesis": team.get("synthesis", "")})
+        decision = await inbox.get()
+        if decision is None:
+            return "", {"plan": plan_obj, "agents": []}, None
+        d = decision.strip().lower()
+        if d in _CANCEL:
+            await ws.send_json({"type": "plan", "action": "cancelled"})
+            return "Plan cancelado.", {"plan": plan_obj, "agents": []}, None
+        if d in _APPROVE:
+            break
+        revise += 1
+        if revise > 3:
+            break  # demasiadas vueltas: ejecuta el último plan
+        await ws.send_json({"type": "plan", "action": "revising", "note": decision})
+        plan_obj = await asyncio.to_thread(
+            _plan_dynamic_team,
+            f"{chat_msg}\n\nAjuste de Pedro al plan: {decision}", features)
+        team = orchestrator.build_team(
+            plan_obj, _backend_availability(), project_root=str(ROOT),
+            session=sessions.active())
+        agents = team.get("agents", []) or agents
+
+    await ws.send_json({"type": "plan", "action": "approved"})
     await ws.send_json({"type": "agent", "action": "team", "agents": agents})
     results: list[dict] = []
     queued_msg: str | None = None
     for idx, agent in enumerate(agents, start=1):
+        await ws.send_json({"type": "plan", "action": "todo", "id": idx,
+                            "status": "doing"})
         await ws.send_json({"type": "agent", "action": "start", "index": idx,
                             "agent": agent})
         agent_system = orchestrator.agent_system(agent, base_system)
@@ -1115,7 +1154,10 @@ async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
         )
         await ws.send_json({"type": "agent", "action": "done", "index": idx,
                             "agent": agent})
+        await ws.send_json({"type": "plan", "action": "todo", "id": idx,
+                            "status": "done"})
 
+    await ws.send_json({"type": "plan", "action": "synthesizing"})
     await ws.send_json({"type": "agent", "action": "synthesis"})
     synth_prompt = orchestrator.synthesis_prompt(chat_msg, results)
     try:
@@ -1150,9 +1192,9 @@ async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
 
 def _harness_context(verdict: dict, used_route: str, model: str, note: str | None) -> str:
     cfg = calipso_config.load_config()
-    probes = {"claude": _subscription_probe("claude"), "codex": _subscription_probe("codex")}
-    api_up = _http_up(cfg["api"]["base_url"].replace("/v1/chat/completions", "/health"))
-    local_up = _http_up("http://localhost:11434/api/tags")
+    probes = {"claude": _probe_cached("claude"), "codex": _probe_cached("codex")}
+    api_up = _http_up_cached(cfg["api"]["base_url"].replace("/v1/chat/completions", "/health"))
+    local_up = _http_up_cached("http://localhost:11434/api/tags")
     return "\n".join([
         "=== Estado real de Calipso ===",
         f"Ruta decidida: {verdict.get('route')}",
