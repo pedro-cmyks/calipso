@@ -67,15 +67,34 @@ DEFAULT_BACKENDS: dict[str, dict] = {
 WEIGHTS = {"capability": 1.0, "cost": 0.25, "speed": 0.2, "quota": 0.6}
 
 
-def load_backends() -> dict[str, dict]:
+def _apply_overrides(backends: dict, path: pathlib.Path) -> None:
+    """Mezcla un archivo de overrides; 'strengths' se fusiona, no se reemplaza."""
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    for k, v in data.get("backends", {}).items():
+        tgt = backends.setdefault(k, {})
+        for kk, vv in v.items():
+            if kk == "strengths" and isinstance(vv, dict):
+                tgt.setdefault("strengths", {}).update(vv)
+            else:
+                tgt[kk] = vv
+
+
+def load_backends(project_root: str | None = None) -> dict[str, dict]:
+    """Mapa de capacidades: defaults -> global -> repo (lo específico gana).
+
+    El override por repo (<repo>/.calipso/capabilities.json) permite que Calipso
+    aprenda preferencias de ruteo EXCLUSIVAS de ese proyecto.
+    """
     backends = copy.deepcopy(DEFAULT_BACKENDS)
-    if CAP_FILE.exists():
-        try:
-            data = json.loads(CAP_FILE.read_text(encoding="utf-8"))
-            for k, v in data.get("backends", {}).items():
-                backends.setdefault(k, {}).update(v)
-        except Exception:
-            pass
+    _apply_overrides(backends, CAP_FILE)  # global
+    if project_root:
+        _apply_overrides(
+            backends, pathlib.Path(project_root) / ".calipso" / "capabilities.json")
     return backends
 
 
@@ -105,15 +124,17 @@ def score_backend(features: dict, backend: dict,
 
 
 def choose(features: dict, available: dict[str, bool],
-           quota_low: dict[str, bool] | None = None) -> list[dict]:
+           quota_low: dict[str, bool] | None = None,
+           project_root: str | None = None) -> list[dict]:
     """Devuelve el ranking de backends aptos (mayor puntaje primero).
 
     features: {type, complexity(1-5), private(bool), needs_repo(bool)}
     available: {backend_key: bool}
     quota_low: {backend_key: bool}  (cuota/saldo casi agotado)
+    project_root: si se da, aplica los overrides de capacidad de ese repo.
     """
     quota_low = quota_low or {}
-    backends = load_backends()
+    backends = load_backends(project_root)
     ranked = []
     for key, backend in backends.items():
         s = score_backend(features, backend, available.get(key, False),

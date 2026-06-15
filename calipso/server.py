@@ -53,6 +53,7 @@ import dispatch  # noqa: E402
 from calipso import capabilities  # noqa: E402
 from calipso import config as calipso_config  # noqa: E402
 from calipso import costs  # noqa: E402
+from calipso import learning  # noqa: E402
 from calipso import telemetry  # noqa: E402
 from calipso.memory import Memory  # noqa: E402
 
@@ -713,7 +714,8 @@ def _decide(user_msg: str) -> tuple[dict, dict, list]:
     """Decisión de ruteo por PUNTAJE de capacidades (afinidad x costo x cuota)."""
     features = dispatch.extract_features(user_msg)
     ranked = capabilities.choose(
-        features, _backend_availability(), _backend_quota_low())
+        features, _backend_availability(), _backend_quota_low(),
+        project_root=str(ROOT))
     if ranked:
         top = ranked[0]
         verdict = {
@@ -1012,6 +1014,7 @@ async def ws_chat(ws: WebSocket) -> None:
                                 "cost_usd": entry["cost_usd"]})
             telemetry.log_event(
                 "chat_turn",
+                project=str(ROOT),
                 prompt_chars=len(user_msg),
                 response_chars=len(full),
                 task_type=features.get("type"),
@@ -1040,6 +1043,15 @@ def api_reflect() -> dict:
     """Dispara la consolidaciÃƒÂ³n: promueve hechos duraderos al core curado."""
     promoted = mem.reflect()
     return {"promoted": promoted}
+
+
+@app.post("/api/learn")
+def api_learn(scope: str = "global") -> dict:
+    """Bucle de aprendizaje: telemetría → pesos de ruteo.
+    scope=global (todo) o scope=project (solo este repo)."""
+    if scope == "project":
+        return learning.learn(project_root=str(ROOT), project=str(ROOT))
+    return learning.learn()
 
 
 @app.get("/api/costs")
