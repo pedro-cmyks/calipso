@@ -110,6 +110,102 @@ CHEAP_REASONING = re.compile(
     re.IGNORECASE,
 )
 
+# Pistas extra para extraer FEATURES (no solo la ruta) que alimentan el router
+# por puntaje de capacidades.
+PRIVATE = re.compile(
+    r"\b(privado|confidencial|secreto|contrase|password|personal|sensible|"
+    r"no comparta|no compartas)\b", re.IGNORECASE)
+REPO = re.compile(
+    r"\b(repo|repositorio|pull request|build|compila|migra|despliega|deploy|"
+    r"stack trace)\b", re.IGNORECASE)
+WRITING = re.compile(
+    r"\b(escribe|redacta|redactar|borrador|draft|correo|email|carta|post|"
+    r"art[ií]culo)\b", re.IGNORECASE)
+TRANSLATE = re.compile(r"\b(traduce|traducir|traducci)\b", re.IGNORECASE)
+SUMMARIZE = re.compile(r"\b(resume|resumen|resumir|sintetiza)\b", re.IGNORECASE)
+AGENTIC = re.compile(
+    r"\b(ejecuta|corre los tests|automatiza|agente|herramienta|run )\b",
+    re.IGNORECASE)
+
+VALID_TYPES = {"trivial", "translate", "summarize", "writing", "reasoning",
+               "analysis", "code", "repo", "agentic"}
+
+FEATURES_SYSTEM = (
+    "Extrae las features de la PETICIÓN del usuario. Responde SOLO JSON, sin "
+    "texto extra. Formato exacto:\n"
+    '{"type":"trivial|translate|summarize|writing|reasoning|analysis|code|repo|agentic",'
+    '"complexity":1,"private":false,"needs_repo":false}\n'
+    "complexity 1 = trivial, 5 = muy complejo. private=true si toca datos "
+    "personales/sensibles. needs_repo=true si requiere leer el repositorio."
+)
+
+
+def _estimate_complexity(prompt: str, task_type: str | None) -> int:
+    base = 1 if task_type in ("trivial", "translate", "summarize") else 2
+    if len(prompt) > 400:
+        base += 1
+    if len(prompt) > 1200:
+        base += 1
+    if CODE_HEAVY.search(prompt):
+        base += 1
+    return max(1, min(5, base))
+
+
+def _classify_features_llm(prompt: str) -> dict | None:
+    cfg = CONFIG["classifier"]
+    payload = {
+        "model": cfg["model"],
+        "prompt": f"{FEATURES_SYSTEM}\n\nPETICIÓN:\n{prompt}\n\nJSON:",
+        "stream": False, "format": "json", "options": {"temperature": 0},
+    }
+    try:
+        raw = _http_post_json(cfg["base_url"], payload)
+        data = json.loads(raw.get("response", "{}"))
+        t = data.get("type")
+        comp = data.get("complexity", 2)
+        return {
+            "type": t if t in VALID_TYPES else "reasoning",
+            "complexity": int(comp) if str(comp).isdigit() else 2,
+            "private": bool(data.get("private", False)),
+            "needs_repo": bool(data.get("needs_repo", False)),
+        }
+    except Exception:
+        return None
+
+
+def extract_features(prompt: str) -> dict:
+    """Features para el router por capacidades: {type, complexity, private,
+    needs_repo}. Reglas (rápido/gratis) primero; clasificador solo si hace falta."""
+    p = prompt.strip()
+    feat = {"type": None, "complexity": 2,
+            "private": bool(PRIVATE.search(p)), "needs_repo": False}
+    if CODE_HEAVY.search(p):
+        if REPO.search(p):
+            feat["type"], feat["needs_repo"] = "repo", True
+        elif AGENTIC.search(p):
+            feat["type"] = "agentic"
+        else:
+            feat["type"] = "code"
+    elif TRANSLATE.search(p):
+        feat["type"] = "translate"
+    elif SUMMARIZE.search(p):
+        feat["type"] = "summarize"
+    elif TRIVIAL.search(p):
+        feat["type"] = "trivial"
+    elif WRITING.search(p):
+        feat["type"] = "writing"
+    elif CHEAP_REASONING.search(p):
+        feat["type"] = "analysis" if re.search(r"\banaliza", p, re.IGNORECASE) else "reasoning"
+
+    if feat["type"] is None:  # reglas no decidieron -> clasificador local
+        llm = _classify_features_llm(p)
+        if llm:
+            feat.update(llm)
+        else:
+            feat["type"] = "reasoning"
+    feat["complexity"] = _estimate_complexity(p, feat["type"])
+    return feat
+
 
 def decide_by_rules(prompt: str) -> dict | None:
     """Devuelve un veredicto {ruta, cliente} o None si no está claro.

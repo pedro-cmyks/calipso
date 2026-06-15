@@ -26,6 +26,7 @@ import difflib
 import hashlib
 import hmac
 import io
+import json
 import os
 import pathlib
 import secrets
@@ -49,6 +50,7 @@ from pydantic import BaseModel
 # El cerebro (router) y la memoria viven en el repo raÃƒÂ­z / paquete calipso.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import dispatch  # noqa: E402
+from calipso import capabilities  # noqa: E402
 from calipso import config as calipso_config  # noqa: E402
 from calipso import costs  # noqa: E402
 from calipso import telemetry  # noqa: E402
@@ -660,6 +662,72 @@ def _best_subscription_client(preferred: str | None) -> str | None:
     return None
 
 
+# Cache TTL para los probes: evita 4 subprocess/http por turno de chat (latencia).
+_PROBE_CACHE: dict = {}
+
+
+def _ttl_cached(key: str, ttl: float, producer):
+    now = time.time()
+    e = _PROBE_CACHE.get(key)
+    if e and now - e[0] < ttl:
+        return e[1]
+    val = producer()
+    _PROBE_CACHE[key] = (now, val)
+    return val
+
+
+def _probe_cached(client: str | None) -> dict:
+    return _ttl_cached(f"probe:{client}", 20.0, lambda: _subscription_probe(client))
+
+
+def _http_up_cached(url: str) -> bool:
+    return _ttl_cached(f"up:{url}", 20.0, lambda: _http_up(url))
+
+
+def _backend_availability() -> dict:
+    """Mapa {backend_key: disponible} para el router por capacidades."""
+    cfg = calipso_config.load_config()
+    ollama_up = _http_up_cached("http://localhost:11434/api/tags")
+    api_up = _http_up_cached(
+        cfg["api"]["base_url"].replace("/v1/chat/completions", "/health"))
+    av: dict[str, bool] = {}
+    for key, b in capabilities.load_backends().items():
+        route = b.get("route")
+        if route == "local":
+            av[key] = ollama_up
+        elif route == "api":
+            av[key] = api_up
+        elif route == "subscription":
+            av[key] = _probe_cached(b.get("client")).get("ready", False)
+        else:
+            av[key] = False
+    return av
+
+
+def _backend_quota_low() -> dict:
+    # TODO (fase C): leer cuota/saldo real por backend. Por ahora, ninguno.
+    return {}
+
+
+def _decide(user_msg: str) -> tuple[dict, dict, list]:
+    """Decisión de ruteo por PUNTAJE de capacidades (afinidad x costo x cuota)."""
+    features = dispatch.extract_features(user_msg)
+    ranked = capabilities.choose(
+        features, _backend_availability(), _backend_quota_low())
+    if ranked:
+        top = ranked[0]
+        verdict = {
+            "route": top["route"], "client": top.get("client"),
+            "source": "capabilities",
+            "why": f"afinidad {features['type']} c{features['complexity']} "
+                   f"(score {top['score']})",
+        }
+    else:
+        verdict = {"route": "local", "client": None, "source": "capabilities",
+                   "why": "ningun backend apto; fallback local"}
+    return verdict, features, ranked
+
+
 def _harness_context(verdict: dict, used_route: str, model: str, note: str | None) -> str:
     cfg = calipso_config.load_config()
     probes = {"claude": _subscription_probe("claude"), "codex": _subscription_probe("codex")}
@@ -812,19 +880,11 @@ async def ws_chat(ws: WebSocket) -> None:
             turn_started = time.perf_counter()
             fallbacks: list[dict] = []
 
-            # 1) routing (reglas -> o clasificador local)
-            verdict = dispatch.route(user_msg, None)
+            # 1) routing por PUNTAJE de capacidades (afinidad x costo x cuota),
+            #    no un gate que prueba en orden.
+            verdict, features, ranked = _decide(user_msg)
             route = verdict["route"]
-            note = None
-            if route == "subscription":
-                chosen = _best_subscription_client(verdict.get("client"))
-                if chosen:
-                    verdict["client"] = chosen
-                    note = "suscripcion disponible; Calipso la usara como backend"
-                    route = "subscription"
-                else:
-                    note = "no hay cliente de suscripcion listo para ejecutar; fallback local"
-                    route = "local"
+            note = "; ".join(f"{r['key']}={r['score']}" for r in ranked[:3]) or None
             model = _route_model_name(route, verdict.get("client"))
             await ws.send_json({"type": "meta", "route": verdict["route"],
                                 "used": route, "model": model,
@@ -931,6 +991,8 @@ async def ws_chat(ws: WebSocket) -> None:
                 "chat_turn",
                 prompt_chars=len(user_msg),
                 response_chars=len(full),
+                task_type=features.get("type"),
+                complexity=features.get("complexity"),
                 route_decided=verdict.get("route"),
                 route_used=used_route,
                 client=verdict.get("client"),
