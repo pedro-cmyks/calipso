@@ -92,6 +92,12 @@
   input, select { background: var(--bg); color: var(--text); border: 1px solid var(--border);
                   border-radius: 6px; padding: 8px; font-family: inherit; font-size: 13px; }
   .hint { color: var(--muted); font-size: 12px; line-height: 1.45; }
+  .connector-list { display: grid; gap: 8px; }
+  .connector { border: 1px solid var(--border); border-radius: 8px; padding: 10px;
+               display: grid; gap: 8px; }
+  .connector-top { display: flex; align-items: center; gap: 8px; }
+  .connector-top strong { color: var(--text); }
+  .connector-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 </style>
 </head>
 <body>
@@ -145,6 +151,7 @@
     <div id="configBody">
       <div class="hint">Preferencia actual: usar suscripciones primero para tareas fuertes; API solo cuando se fuerce o cuando una ruta configurada lo pida.</div>
       <div class="hint" id="harnessStatus">Cargando estado...</div>
+      <div class="connector-list" id="subscriptionConnectors"></div>
       <div class="config-grid">
         <label for="cfgPolicy">Politica</label><select id="cfgPolicy"><option value="subscription_first">Suscripcion primero</option><option value="balanced">Balanceado</option><option value="local_first">Local primero</option></select>
         <label for="cfgSubClient">Suscripcion</label><select id="cfgSubClient"><option value="claude">Claude</option><option value="codex">Codex</option></select>
@@ -405,6 +412,45 @@ async function loadConfig() {
       `codex=${codex?.ready ? "listo" : codex?.error || "no"}; ` +
       `api=${h.api?.up ? "arriba" : "apagada"}; local=${h.local?.up ? "arriba" : "apagado"}.`;
   }
+  await loadSubscriptions();
+}
+async function loadSubscriptions() {
+  const box = document.getElementById("subscriptionConnectors");
+  const r = await fetch("/api/subscriptions");
+  if (!r.ok) {
+    box.innerHTML = '<div class="hint">No pude leer conectores de suscripcion.</div>';
+    return;
+  }
+  const data = await r.json();
+  box.innerHTML = "";
+  for (const [name, item] of Object.entries(data.connectors || {})) {
+    const state = item.state || {};
+    const status = state.ready ? "listo" :
+      (state.installed ? (state.executable ? "instalado, falta login" : "instalado, no ejecutable") : "no instalado");
+    const error = state.error ? ` - ${state.error}` : "";
+    const el = document.createElement("div");
+    el.className = "connector";
+    el.innerHTML = `
+      <div class="connector-top"><strong>${name}</strong><span class="hint">${status}${error}</span></div>
+      <div class="connector-actions">
+        <button class="toolbtn" data-action="install" data-client="${name}">Instalar</button>
+        <button class="toolbtn" data-action="login" data-client="${name}">Login</button>
+        <a class="toolbtn" href="${item.docs}" target="_blank" rel="noreferrer">Docs</a>
+      </div>`;
+    box.appendChild(el);
+  }
+  box.querySelectorAll("button[data-action]").forEach(btn => {
+    btn.onclick = async () => {
+      const client = btn.dataset.client;
+      const action = btn.dataset.action;
+      btn.disabled = true;
+      btn.textContent = "Lanzando...";
+      const resp = await fetch(`/api/subscriptions/${client}/${action}`, { method: "POST" });
+      const msg = resp.ok ? await resp.json() : await resp.json().catch(() => ({ detail: "fallo" }));
+      document.getElementById("configSaved").textContent = msg.message || msg.detail || "accion lanzada";
+      setTimeout(loadConfig, 1500);
+    };
+  });
 }
 document.getElementById("saveConfig").onclick = async () => {
   const body = {

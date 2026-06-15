@@ -17,7 +17,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "api_only_when_forced": True,
     },
     "subscription": {
-        "claude": ["claude", "-p", "{prompt}"],
+        "claude": ["claude.cmd", "-p", "{prompt}"],
         "codex": ["codex", "exec", "{prompt}"],
     },
     "api": {
@@ -68,12 +68,15 @@ def save_config(data: dict[str, Any]) -> dict[str, Any]:
 
 def dispatch_config() -> dict[str, Any]:
     cfg = load_config()
+    subscription = copy.deepcopy(cfg["subscription"])
+    if os.name == "nt" and subscription.get("claude", [""])[0] == "claude":
+        subscription["claude"][0] = "claude.cmd"
     api = cfg["api"].copy()
     api["api_key"] = os.environ.get(
         api.get("api_key_env", "LITELLM_MASTER_KEY"),
         api.get("api_key_default", "sk-litellm-local"))
     return {
-        "subscription": cfg["subscription"],
+        "subscription": subscription,
         "api": {
             "base_url": api["base_url"],
             "api_key": api["api_key"],

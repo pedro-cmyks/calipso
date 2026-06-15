@@ -501,6 +501,56 @@ def api_harness_status() -> dict:
     }
 
 
+@app.get("/api/subscriptions")
+def api_subscriptions() -> dict:
+    return {
+        "connectors": {
+            name: {
+                "docs": connector["docs"],
+                "state": _subscription_probe(name),
+            }
+            for name, connector in SUBSCRIPTION_CONNECTORS.items()
+        }
+    }
+
+
+@app.post("/api/subscriptions/{client}/install")
+def api_subscription_install(client: str) -> dict:
+    connector = _connector_or_404(client)
+    cmd = connector["install"]
+    try:
+        subprocess.Popen(
+            cmd, cwd=str(ROOT), creationflags=subprocess.CREATE_NEW_CONSOLE)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "ok": True,
+        "client": client,
+        "message": "instalacion lanzada en una terminal nueva",
+        "command": " ".join(cmd),
+    }
+
+
+@app.post("/api/subscriptions/{client}/login")
+def api_subscription_login(client: str) -> dict:
+    connector = _connector_or_404(client)
+    probe = _subscription_probe(client)
+    if not probe["installed"]:
+        raise HTTPException(status_code=400, detail="primero instala el CLI")
+    cmd = connector["login"]
+    try:
+        subprocess.Popen(
+            cmd, cwd=str(ROOT), creationflags=subprocess.CREATE_NEW_CONSOLE)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "ok": True,
+        "client": client,
+        "message": "login lanzado en una terminal nueva",
+        "command": " ".join(cmd),
+    }
+
+
 # --------------------------------------------------------------------------
 # CHAT  (memoria + router + streaming)  Ã¢â‚¬â€ el corazÃƒÂ³n de Calipso
 # --------------------------------------------------------------------------
@@ -528,26 +578,69 @@ def _subscription_available(client: str | None) -> bool:
     return _subscription_probe(client)["ready"]
 
 
+def _subscription_command(client: str) -> str | None:
+    if os.name == "nt":
+        return shutil.which(f"{client}.cmd") or shutil.which(f"{client}.exe") or shutil.which(client)
+    return shutil.which(client)
+
+
 def _subscription_probe(client: str | None) -> dict:
     if not client:
         return {"installed": False, "ready": False, "error": "sin cliente"}
-    exe = shutil.which(client)
+    exe = _subscription_command(client)
     if not exe:
         return {"installed": False, "ready": False, "error": "no esta en PATH"}
     try:
         result = subprocess.run(
-            [client, "--help"], cwd=str(ROOT), text=True, capture_output=True,
+            [exe, "--version"], cwd=str(ROOT), text=True, capture_output=True,
             encoding="utf-8", errors="replace", timeout=5)
-        ready = result.returncode in (0, 1, 2)
+        executable = result.returncode == 0
+        authenticated = None
+        if client == "claude" and executable:
+            auth = subprocess.run(
+                [exe, "auth", "status"], cwd=str(ROOT), text=True,
+                capture_output=True, encoding="utf-8", errors="replace",
+                timeout=5)
+            try:
+                authenticated = json.loads(auth.stdout).get("loggedIn", False)
+            except Exception:
+                authenticated = auth.returncode == 0
+        ready = executable and (authenticated is not False)
         err = (result.stderr or result.stdout or "").strip().splitlines()
         return {
             "installed": True,
+            "executable": executable,
+            "authenticated": authenticated,
             "ready": ready,
             "path": exe,
-            "error": "" if ready else (err[0] if err else f"exit {result.returncode}"),
+            "error": "" if ready else (
+                "no autenticado" if authenticated is False else
+                (err[0] if err else f"exit {result.returncode}")),
         }
     except Exception as e:
         return {"installed": True, "ready": False, "path": exe, "error": str(e)}
+
+
+SUBSCRIPTION_CONNECTORS = {
+    "claude": {
+        "install": ["npm.cmd", "install", "-g", "@anthropic-ai/claude-code@latest"],
+        "login": ["claude.cmd", "auth", "login"],
+        "docs": "https://code.claude.com/docs/en/setup",
+    },
+    "codex": {
+        "install": ["powershell", "-ExecutionPolicy", "ByPass", "-Command",
+                    "irm https://chatgpt.com/codex/install.ps1 | iex"],
+        "login": ["codex", "login"],
+        "docs": "https://developers.openai.com/codex/cli",
+    },
+}
+
+
+def _connector_or_404(client: str) -> dict:
+    connector = SUBSCRIPTION_CONNECTORS.get(client)
+    if not connector:
+        raise HTTPException(status_code=404, detail="conector no soportado")
+    return connector
 
 
 def _best_subscription_client(preferred: str | None) -> str | None:
@@ -584,11 +677,26 @@ def _harness_context(verdict: dict, used_route: str, model: str, note: str | Non
     ])
 
 
+def _load_agent_docs() -> str:
+    parts = []
+    for name in ("CALIPSO.md", "AGENTS.md", "CLAUDE.md", "CODEX.md", "GEMINI.md"):
+        p = ROOT / name
+        if p.exists() and p.is_file() and p.stat().st_size <= MAX_FILE_BYTES:
+            try:
+                parts.append(f"### {name}\n{p.read_text(encoding='utf-8').strip()}")
+            except UnicodeDecodeError:
+                continue
+    return "\n\n".join(parts)
+
+
 def _build_context(user_msg: str, runtime: str) -> str:
     """Arma el preambulo: identidad + estado real + memoria relevante."""
     core = mem.load_core()
     recalled = mem.recall(user_msg, n=5)
     blocks = [SYSTEM, runtime]
+    docs = _load_agent_docs()
+    if docs:
+        blocks.append("=== Instrucciones del proyecto ===\n" + docs)
     if core:
         blocks.append("=== Memoria nucleo ===\n" + core)
     if recalled:
