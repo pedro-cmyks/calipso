@@ -19,6 +19,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "subscription_client": "claude",
         "api_only_when_forced": True,
     },
+    "limits": {
+        "api_monthly_usd": 5.0,
+        "api_warn_ratio": 0.8,
+        "block_api_when_over_budget": True,
+        "subscription_blocked": {
+            "claude": False,
+            "codex": False,
+        },
+    },
     "subscription": {
         "claude": ["claude.cmd", "-p", "{prompt}"],
         "codex": ["codex.cmd", "exec", "--output-last-message", "{output}", "{prompt}"],

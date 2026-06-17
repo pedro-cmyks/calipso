@@ -15,6 +15,7 @@ Uso típico desde una herramienta:
 from __future__ import annotations
 
 import importlib
+import pathlib
 import subprocess
 import sys
 
@@ -39,9 +40,24 @@ def _importable(module: str) -> bool:
         return False
 
 
+def _browser_ready() -> bool:
+    if not _importable("playwright"):
+        return False
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            return pathlib.Path(p.chromium.executable_path).exists()
+    except Exception:
+        return False
+
+
 def is_ready(tool: str) -> bool:
     spec = TOOLS.get(tool)
-    return bool(spec) and _importable(spec["module"])
+    if not spec:
+        return False
+    if tool == "browser":
+        return _browser_ready()
+    return _importable(spec["module"])
 
 
 def status() -> dict:

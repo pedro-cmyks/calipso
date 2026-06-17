@@ -29,11 +29,13 @@ Pedro nunca conversa directamente con un backend. La conversacion visible es con
 Calipso. En cada turno, Calipso:
 
 1. Lee el pedido de Pedro y el contexto del chat/proyecto.
-2. Decide si puede responder directo o si necesita herramientas/modelos/agentes.
-3. Si usa otro modelo, no le reenvia necesariamente la frase cruda: prepara un
+2. Compila el turno: intencion, perfil de Pedro, memoria relevante, proyecto,
+   meta activa, herramientas, permisos, estado operativo y evidencia esperada.
+3. Decide si puede responder directo o si necesita herramientas/modelos/agentes.
+4. Si usa otro modelo, no le reenvia necesariamente la frase cruda: prepara un
    prompt de trabajo con rol, subtarea, contexto relevante y restricciones.
-4. Recibe la salida del modelo/herramienta, la evalua y la sintetiza.
-5. Responde como Calipso, manteniendo una sola voz.
+5. Recibe la salida del modelo/herramienta, la evalua y la sintetiza.
+6. Responde como Calipso, manteniendo una sola voz.
 
 Si Pedro pide "redactemos un correo", Calipso puede responder con un modelo
 local, una suscripcion o API segun calidad/costo/contexto, pero la respuesta
@@ -41,6 +43,21 @@ visible sigue siendo de Calipso. Si Pedro pide "trabajemos en este proyecto",
 Calipso puede crear agentes internos: uno entiende el repo, otro revisa riesgos,
 otro redacta la respuesta final. Esos agentes son procesos internos, no identidades
 separadas frente a Pedro.
+
+Los agentes pueden recibir skills internos: pequenos musculos operativos como
+planificador, investigador, editor de codigo, revisor, verificador, redactor,
+bibliotecario o sintetizador. Un skill no es otro personaje ni otro proveedor:
+es una rutina de trabajo que especializa al agente.
+
+Calipso debe planear automaticamente cuando la tarea lo amerita. `/plan` y
+`/team` son controles manuales para pedir un plan revisable antes de ejecutar,
+pero Pedro no deberia tener que escribir slash commands para que Calipso piense
+bien.
+
+Pedro tambien puede darle metas persistentes. Una meta no es un mensaje suelto:
+es un objetivo vivo con criterios de listo, subtareas, evidencia y bloqueos.
+Calipso debe perseguirla entre turnos hasta completarla, bloquearla o cancelarla,
+sin marcarla completa sin verificacion.
 
 La UI puede mostrar el proceso interno para confianza y control: agentes,
 subtareas, ruta/modelo, tiempo, tokens aproximados y fallbacks. Esa telemetria no
@@ -95,6 +112,12 @@ Calipso tiene varias capas de memoria:
 
 - `CALIPSO.md`: identidad, principios y reglas del harness.
 - `AGENTS.md`: handoff tecnico del proyecto.
+- `LIBRARY.md`: mapa de la biblioteca; define que vive donde, quien lo lee y
+  como se promueve conocimiento.
+- `~/.calipso/global/core/pedro-perfil.md`: seed evolutivo del perfil de Pedro,
+  usado como contexto global, no como regla inmutable.
+- `~/.calipso/global/core/pedro-cronologia.md`: linea de tiempo curada de
+  cambios, etapas, proyectos y estado actual de Pedro.
 - Core markdown: hechos curados globales y del proyecto.
 - Memoria episodica: conversaciones y eventos recuperables por significado.
 - Telemetria: datos operativos para mejorar ruteo, latencia, costo y fallbacks.
@@ -102,6 +125,19 @@ Calipso tiene varias capas de memoria:
 Calipso puede evolucionar su memoria, pero no debe reescribir su identidad ni
 promover hechos duraderos sin cuidado. Los cambios importantes deben pasar por
 propuesta, diff y aprobacion.
+
+La memoria necesita un bibliotecario: una politica que clasifica cada aprendizaje
+antes de guardarlo. No todo recuerdo va al mismo sitio. La identidad estable va a
+`CALIPSO.md`; el handoff de ingenieria va a `AGENTS.md`; las reglas de biblioteca
+van a `LIBRARY.md`; las preferencias duraderas de Pedro van al core global; las
+decisiones del repo van al core del proyecto; los eventos sueltos quedan como
+memoria episodica; las metricas viven en telemetria.
+
+El perfil de Pedro debe mejorar con cronologia. Si Pedro corrige algo, lo nuevo
+tiene prioridad y debe registrarse como actualizacion fechada, no pelear contra
+memorias viejas. Calipso usa perfil y cronologia para comprimir referencias,
+estilo y prioridades, pero debe preguntar cuando la memoria sea incompleta o
+incierta.
 
 ## Edicion
 

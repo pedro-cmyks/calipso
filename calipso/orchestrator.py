@@ -17,6 +17,8 @@ El planner (un LLM) se INYECTA (llm_json) para poder testear sin modelo.
 from __future__ import annotations
 
 from calipso import capabilities
+from calipso import prompt_compiler
+from calipso import skills
 
 PLANNER_SYSTEM = (
     "Eres el planificador de Calipso. Descompón la PETICIÓN en un EQUIPO PEQUEÑO "
@@ -91,21 +93,26 @@ def build_team(plan_obj: dict, available: dict, project_root: str | None = None,
         persona = m.get("persona", key)
         if session:
             persona = (session.get("agents", {}).get(key, {}).get("name")) or persona
+        skill_id = skills.infer(a)
         agents.append({
             "persona": persona, "role": a["role"], "task": a["task"],
             "quirk": a["quirk"], "intensity": a["intensity"],
+            "skill": skill_id, "skill_name": skills.REGISTRY[skill_id]["name"],
             "model_id": key, "route": m["route"], "client": m.get("client"),
             "model": m.get("model"), "tier": m.get("tier"),
         })
     return {"agents": agents, "synthesis": plan_obj.get("synthesis", "")}
 
 
-def agent_system(agent: dict, base: str = "") -> str:
+def agent_system(agent: dict, base: str = "", request: str | None = None) -> str:
     """System prompt del agente: identidad + rol + quirk + subtarea."""
     bits = [base] if base else []
     bits.append(
         f"Eres {agent['persona']}, un agente de Calipso con el rol de "
         f"{agent['role']}." + (f" Estilo: {agent['quirk']}." if agent['quirk'] else ""))
+    bits.append(prompt_compiler.agent_brief(agent, request))
+    if agent.get("skill"):
+        bits.append(skills.prompt(agent["skill"]))
     bits.append(f"Tu SUBTAREA: {agent['task']}\n"
                 "Hazla bien y entrega solo tu parte, lista para integrarse.")
     return "\n".join(bits)

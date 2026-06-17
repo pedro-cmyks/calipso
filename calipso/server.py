@@ -51,17 +51,31 @@ from pydantic import BaseModel
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import dispatch  # noqa: E402
 from calipso import capabilities  # noqa: E402
+from calipso import attachments  # noqa: E402
 from calipso import chats  # noqa: E402
 from calipso import config as calipso_config  # noqa: E402
 from calipso import browser as calipso_browser  # noqa: E402
+from calipso import chronology as calipso_chronology  # noqa: E402
+from calipso import connectors as calipso_connectors  # noqa: E402
 from calipso import costs  # noqa: E402
+from calipso import developer  # noqa: E402
 from calipso import deps  # noqa: E402
 from calipso import discovery  # noqa: E402
+from calipso import github as calipso_github  # noqa: E402
 from calipso import learning  # noqa: E402
+from calipso import goals  # noqa: E402
+from calipso import jobs  # noqa: E402
+from calipso import librarian  # noqa: E402
 from calipso import orchestrator  # noqa: E402
+from calipso import prompt_compiler  # noqa: E402
+from calipso import routines as calipso_routines  # noqa: E402
+from calipso import backup as calipso_backup  # noqa: E402
 from calipso import sessions  # noqa: E402
+from calipso import skills  # noqa: E402
 from calipso import telemetry  # noqa: E402
 from calipso import web as calipso_web  # noqa: E402
+from calipso import verification  # noqa: E402
+from calipso.tools import commands as calipso_commands  # noqa: E402
 from calipso.memory import Memory  # noqa: E402
 
 # RaÃƒÂ­z del proyecto que Calipso muestra/edita. Por defecto, el cwd.
@@ -323,6 +337,99 @@ class ProposalBody(BaseModel):
     source: str = "editor"
 
 
+class AttachmentBody(BaseModel):
+    name: str
+    content: str
+    mode: str = "read_only"
+    mime: str | None = None
+    encoding: str = "text"
+    source: dict | None = None
+
+
+class FolderAttachmentBody(BaseModel):
+    path: str = ""
+    mode: str = "read_only"
+    max_chars: int = 12_000
+    max_files: int = 40
+
+
+class GoalBody(BaseModel):
+    objective: str
+    title: str | None = None
+    criteria: list | None = None
+    subtasks: list | None = None
+    make_active: bool = True
+
+
+class GoalUpdateBody(BaseModel):
+    title: str | None = None
+    objective: str | None = None
+    status: str | None = None
+    criteria: list | None = None
+    subtasks: list | None = None
+    blocker: str | None = None
+    active: bool | None = None
+
+
+class GoalEvidenceBody(BaseModel):
+    kind: str = "note"
+    text: str
+    data: dict | None = None
+
+
+class GoalCriterionBody(BaseModel):
+    done: bool = True
+    evidence: str | None = None
+
+
+class GoalSubtaskBody(BaseModel):
+    status: str = "done"
+
+
+class CommandRunBody(BaseModel):
+    command_id: str
+    goal_id: str | None = None
+    timeout: int | None = None
+
+
+class VerificationRunBody(BaseModel):
+    goal_id: str | None = None
+    commands: list[dict] | None = None
+    files: list[dict] | None = None
+    proposals: list[dict] | None = None
+
+
+class MemoryProposalBody(BaseModel):
+    text: str
+    scope: str = "project"
+    target: str = "aprendido"
+    rationale: str | None = None
+    source: dict | None = None
+
+
+class MemoryProposalUpdateBody(BaseModel):
+    text: str | None = None
+    scope: str | None = None
+    target: str | None = None
+    rationale: str | None = None
+
+
+class MemorySuggestBody(BaseModel):
+    text: str
+    source: dict | None = None
+
+
+class MemoryDiscardBody(BaseModel):
+    reason: str | None = None
+
+
+class ChronologyProposalBody(BaseModel):
+    text: str
+    topic: str = "Pedro"
+    date: str | None = None
+    rationale: str | None = None
+
+
 @app.put("/api/file")
 def api_save_file(body: SaveBody) -> dict:
     p = _safe(body.path)
@@ -331,6 +438,81 @@ def api_save_file(body: SaveBody) -> dict:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(body.content, encoding="utf-8", newline="")
     return {"ok": True, "bytes": len(body.content.encode("utf-8"))}
+
+
+@app.get("/api/attachments")
+def api_attachments(limit: int = 50) -> dict:
+    return {"attachments": attachments.list_attachments(str(ROOT), limit)}
+
+
+@app.post("/api/attachments")
+def api_attachment_create(body: AttachmentBody) -> dict:
+    meta = attachments.create(
+        str(ROOT), body.name, body.content, mode=body.mode,
+        mime=body.mime, encoding=body.encoding, source=body.source)
+    active_goal = goals.active(str(ROOT))
+    job = jobs.start(
+        "attachment", f"Adjunto: {meta['name']}", project_root=str(ROOT),
+        attachment_id=meta["id"], goal_id=active_goal.get("id") if active_goal else None,
+        mode=meta["mode"], mime=meta["mime"])
+    if body.encoding == "text":
+        jobs.write_artifact(str(ROOT), job["id"], meta["name"], body.content,
+                            content_type=meta["mime"])
+    else:
+        try:
+            raw = base64.b64decode(body.content.encode("ascii"), validate=False)
+        except Exception:
+            raw = b""
+        jobs.write_artifact(str(ROOT), job["id"], meta["name"], raw,
+                            content_type=meta["mime"])
+    jobs.update(str(ROOT), job["id"], status="done", attachment_id=meta["id"])
+    if active_goal:
+        goals.add_evidence(
+            str(ROOT), active_goal["id"], "attachment",
+            f"Adjunto agregado: {meta['name']}",
+            job_id=job["id"], attachment_id=meta["id"], mode=meta["mode"])
+    return {"attachment": meta, "job": jobs.load(str(ROOT), job["id"])}
+
+
+@app.post("/api/attachments/folder")
+def api_attachment_folder(body: FolderAttachmentBody) -> dict:
+    _safe(body.path or ".")
+    try:
+        content, source = attachments.folder_bundle(
+            str(ROOT), body.path or "", max_chars=body.max_chars, max_files=body.max_files)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    label = source.get("path") or "."
+    meta = attachments.create(
+        str(ROOT), f"carpeta {label}", content,
+        mode=body.mode if body.mode in {"read_only", "editable"} else "read_only",
+        mime="text/markdown", encoding="text", source=source)
+    active_goal = goals.active(str(ROOT))
+    job = jobs.start(
+        "attachment", f"Adjunto carpeta: {label}", project_root=str(ROOT),
+        attachment_id=meta["id"], goal_id=active_goal.get("id") if active_goal else None,
+        mode=meta["mode"], mime=meta["mime"], path=label)
+    jobs.write_artifact(str(ROOT), job["id"], f"{meta['name']}.md", content,
+                        content_type=meta["mime"])
+    jobs.update(str(ROOT), job["id"], status="done", attachment_id=meta["id"])
+    if active_goal:
+        goals.add_evidence(
+            str(ROOT), active_goal["id"], "attachment",
+            f"Carpeta adjunta: {label}",
+            job_id=job["id"], attachment_id=meta["id"], mode=meta["mode"],
+            path=label, files=len(source.get("files_included") or []))
+    return {"attachment": meta, "job": jobs.load(str(ROOT), job["id"])}
+
+
+@app.get("/api/attachments/{attachment_id}")
+def api_attachment(attachment_id: str) -> dict:
+    meta = attachments.load(str(ROOT), attachment_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="adjunto no existe")
+    return {
+        "attachment": meta,
+        "content": attachments.content(str(ROOT), attachment_id),
+    }
 
 
 PENDING_CHANGES: dict[str, dict] = {}
@@ -379,17 +561,58 @@ def api_proposal_diff(change_id: str) -> dict:
 
 
 @app.post("/api/proposals/{change_id}/apply")
-def api_apply_proposal(change_id: str) -> dict:
+def api_apply_proposal(change_id: str, verify: bool = False,
+                       command_id: str = "py_compile_core") -> dict:
     item = PENDING_CHANGES.get(change_id)
     if not item:
         raise HTTPException(status_code=404, detail="propuesta no existe")
     p = _safe(item["path"])
     if p.is_dir():
         raise HTTPException(status_code=400, detail="es una carpeta")
+    diff = _proposal_diff(item["path"], item["content"])
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(item["content"], encoding="utf-8", newline="")
     del PENDING_CHANGES[change_id]
-    return {"ok": True, "path": item["path"]}
+    active_goal = goals.active(str(ROOT))
+    job = jobs.start(
+        "proposal_apply", f"Aplicar propuesta: {item['path']}",
+        project_root=str(ROOT), goal_id=active_goal.get("id") if active_goal else None,
+        path=item["path"], source=item.get("source"))
+    jobs.write_artifact(str(ROOT), job["id"], "proposal.diff", diff)
+    jobs.write_artifact(str(ROOT), job["id"], "applied-content.txt", item["content"])
+    jobs.update(str(ROOT), job["id"], status="done", path=item["path"])
+    jobs.event(str(ROOT), job["id"], "applied", path=item["path"])
+    if active_goal:
+        goals.add_evidence(
+            str(ROOT), active_goal["id"], "proposal",
+            f"Propuesta aplicada: {item['path']}",
+            job_id=job["id"], path=item["path"], artifact="proposal.diff")
+    verification_result = None
+    if verify:
+        plan = verification.recommend([{"path": item["path"], "status": "proposal"}], [])
+        if command_id and command_id != "auto":
+            known = {c["id"]: c for c in calipso_commands.list_commands()}
+            if command_id not in known:
+                raise HTTPException(status_code=400, detail="comando no permitido")
+            plan["commands"] = [{
+                "command_id": command_id,
+                "title": known[command_id]["title"],
+                "reason": "forzado desde propuesta",
+            }]
+            plan["summary"] = command_id
+        verification_result = verification.run_plan(
+            str(ROOT), plan, active_goal.get("id") if active_goal else None)
+    return {
+        "ok": True,
+        "path": item["path"],
+        "job": jobs.load(str(ROOT), job["id"]),
+        "goal": goals.active(str(ROOT)),
+        "verification": {
+            "job": verification_result["job"],
+            "status": verification_result["report"]["status"],
+            "returncode": 0 if verification_result["report"]["status"] == "done" else 1,
+        } if verification_result else None,
+    }
 
 
 @app.delete("/api/proposals/{change_id}")
@@ -463,6 +686,92 @@ def api_git_diff(path: str | None = None) -> dict:
                 content = "(archivo binario o no legible como texto)"
             text = f"Archivo nuevo o sin diff unstaged para {path}\n\n{content}"
     return {"path": path, "diff": text}
+
+
+# --------------------------------------------------------------------------
+# GITHUB REMOTO  (repos, issues/PRs, repo actual, flujo de contribucion)
+# Leer es libre; clonar/branch/fork/PR exigen confirm explicito (SPEC 11).
+# --------------------------------------------------------------------------
+
+def _gh_runner():
+    return calipso_github.default_runner(cwd=str(ROOT))
+
+
+@app.get("/api/github/overview")
+def api_github_overview() -> dict:
+    if not calipso_github.available():
+        return {"available": False, "reason": "gh no esta instalado",
+                "user": None, "repo": None}
+    gh = _gh_runner()
+    user = calipso_github.gh_user(gh)
+    overview = calipso_github.repo_overview(gh, calipso_github.git_runner(cwd=str(ROOT)))
+    return {
+        "available": True,
+        "authenticated": user["authenticated"],
+        "user": user,
+        "repo": overview,
+    }
+
+
+@app.get("/api/github/repos")
+def api_github_repos(limit: int = 10) -> dict:
+    if not calipso_github.available():
+        raise HTTPException(status_code=404, detail="gh no esta instalado")
+    repos = calipso_github.list_repos(_gh_runner(), limit=max(1, min(limit, 50)))
+    return {"repos": repos}
+
+
+@app.get("/api/github/assigned")
+def api_github_assigned(limit: int = 10) -> dict:
+    if not calipso_github.available():
+        raise HTTPException(status_code=404, detail="gh no esta instalado")
+    return calipso_github.assigned_items(_gh_runner(), limit=max(1, min(limit, 50)))
+
+
+@app.post("/api/github/contribute/plan")
+async def api_github_contribute_plan(request: Request) -> dict:
+    """Planifica una accion de contribucion SIN ejecutarla."""
+    data = await request.json()
+    action = data.get("action", "")
+    opts = data.get("opts") or {}
+    return calipso_github.plan_contribution(action, opts)
+
+
+@app.post("/api/github/contribute/run")
+async def api_github_contribute_run(request: Request) -> dict:
+    """Ejecuta una accion de contribucion solo con confirm=True (SPEC 11)."""
+    data = await request.json()
+    action = data.get("action", "")
+    opts = data.get("opts") or {}
+    if not data.get("confirm"):
+        raise HTTPException(status_code=403,
+                            detail="esta accion requiere confirmacion explicita")
+    plan = calipso_github.plan_contribution(action, opts)
+    if not plan.get("ok"):
+        raise HTTPException(status_code=400, detail=plan.get("error", "plan invalido"))
+    argv = plan["argv"]
+    exe0 = argv[0]
+    if exe0 == "gh":
+        exe = _cmd_exe("gh") or "gh"
+    elif exe0 == "git":
+        exe = shutil.which("git") or "git"
+    else:
+        raise HTTPException(status_code=400, detail="ejecutable no permitido")
+    run_cmd = [exe, *argv[1:]]
+    try:
+        proc = subprocess.run(
+            run_cmd, cwd=str(ROOT), text=True, capture_output=True,
+            encoding="utf-8", errors="replace", timeout=120)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "ok": proc.returncode == 0,
+        "action": action,
+        "command": plan["command"],
+        "code": proc.returncode,
+        "stdout": (proc.stdout or "").strip(),
+        "stderr": (proc.stderr or "").strip(),
+    }
 
 
 # --------------------------------------------------------------------------
@@ -581,24 +890,22 @@ def _http_up(url: str, timeout: float = 1.5) -> bool:
 @app.get("/api/harness/status")
 def api_harness_status() -> dict:
     cfg = calipso_config.load_config()
+    health = _connector_health(use_cache=False)
     return {
         "routing": cfg["routing"],
-        "subscription": {
-            "claude": _subscription_probe("claude"),
-            "codex": _subscription_probe("codex"),
-        },
-        "api": {
-            "base_url": cfg["api"]["base_url"],
-            "model": cfg["api"]["model"],
-            "up": _http_up(cfg["api"]["base_url"].replace("/v1/chat/completions", "/health")),
-        },
-        "local": {
-            "base_url": cfg["local"]["base_url"],
-            "model": cfg["local"]["model"],
-            "up": _http_up("http://localhost:11434/api/tags"),
-        },
+        "subscription": health["subscription"],
+        "api": health["api"],
+        "local": health["local"],
+        "limits": health["limits"],
         "classifier": cfg["classifier"],
     }
+
+
+@app.get("/api/connectors/health")
+def api_connectors_health() -> dict:
+    health = _connector_health(use_cache=False)
+    health["routing"] = calipso_connectors.routing_summary(str(ROOT), health)
+    return health
 
 
 @app.get("/api/subscriptions")
@@ -692,6 +999,8 @@ def api_subscription_login(client: str) -> dict:
 # --------------------------------------------------------------------------
 
 mem = Memory(project_root=str(ROOT))  # memoria hÃƒÂ­brida y por ÃƒÂ¡mbitos (global + proyecto)
+
+calipso_chronology.ensure()
 
 HELP_TEXT = (
     "Comandos de Calipso:\n"
@@ -875,29 +1184,28 @@ def _http_up_cached(url: str) -> bool:
     return _ttl_cached(f"up:{url}", 20.0, lambda: _http_up(url))
 
 
+def _connector_health(use_cache: bool = True) -> dict:
+    cfg = calipso_config.load_config()
+    api_health_url = cfg["api"]["base_url"].replace("/v1/chat/completions", "/health")
+    api_up = _http_up_cached(api_health_url) if use_cache else _http_up(api_health_url)
+    local_up = _http_up_cached("http://localhost:11434/api/tags") if use_cache else _http_up("http://localhost:11434/api/tags")
+    sub = {
+        "claude": _probe_cached("claude") if use_cache else _subscription_probe("claude"),
+        "codex": _probe_cached("codex") if use_cache else _subscription_probe("codex"),
+    }
+    return calipso_connectors.health_status(
+        cfg, costs.monthly_report(), sub, api_up, local_up)
+
+
 def _backend_availability() -> dict:
     """Mapa {backend_key: disponible} para el router por capacidades."""
-    cfg = calipso_config.load_config()
-    ollama_up = _http_up_cached("http://localhost:11434/api/tags")
-    api_up = _http_up_cached(
-        cfg["api"]["base_url"].replace("/v1/chat/completions", "/health"))
-    av: dict[str, bool] = {}
-    for key, b in capabilities.load_backends().items():
-        route = b.get("route")
-        if route == "local":
-            av[key] = ollama_up
-        elif route == "api":
-            av[key] = api_up
-        elif route == "subscription":
-            av[key] = _probe_cached(b.get("client")).get("ready", False)
-        else:
-            av[key] = False
-    return av
+    return calipso_connectors.backend_availability(
+        capabilities.load_backends(), _connector_health())
 
 
 def _backend_quota_low() -> dict:
-    # TODO (fase C): leer cuota/saldo real por backend. Por ahora, ninguno.
-    return {}
+    return calipso_connectors.backend_quota_low(
+        capabilities.load_backends(), _connector_health())
 
 
 def _decide(user_msg: str) -> tuple[dict, dict, list, dict]:
@@ -1066,7 +1374,8 @@ async def _run_agent_text(ws: WebSocket, inbox: asyncio.Queue, agent: dict,
 
 async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
                             features: dict, base_system: str,
-                            verdict: dict) -> tuple[str, dict, str | None]:
+                            verdict: dict,
+                            approval_required: bool = False) -> tuple[str, dict, str | None]:
     plan_obj = await asyncio.to_thread(_plan_dynamic_team, chat_msg, features)
     team = orchestrator.build_team(
         plan_obj, _backend_availability(), project_root=str(ROOT),
@@ -1083,10 +1392,14 @@ async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
     while True:
         todos = [{"id": i, "role": a.get("role"), "task": a.get("task"),
                   "persona": a.get("persona"), "model": a.get("model"),
+                  "skill": a.get("skill"), "skill_name": a.get("skill_name"),
                   "tier": a.get("tier"), "intensity": a.get("intensity"),
                   "status": "pending"} for i, a in enumerate(agents, start=1)]
         await ws.send_json({"type": "plan", "action": "propose", "todos": todos,
-                            "synthesis": team.get("synthesis", "")})
+                            "synthesis": team.get("synthesis", ""),
+                            "approval_required": approval_required})
+        if not approval_required:
+            break
         decision = await inbox.get()
         if decision is None:
             return "", {"plan": plan_obj, "agents": []}, None
@@ -1108,7 +1421,8 @@ async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
             session=sessions.active())
         agents = team.get("agents", []) or agents
 
-    await ws.send_json({"type": "plan", "action": "approved"})
+    await ws.send_json({"type": "plan", "action": "approved",
+                        "approval_required": approval_required})
     await ws.send_json({"type": "agent", "action": "team", "agents": agents})
     results: list[dict] = []
     queued_msg: str | None = None
@@ -1117,7 +1431,7 @@ async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
                             "status": "doing"})
         await ws.send_json({"type": "agent", "action": "start", "index": idx,
                             "agent": agent})
-        agent_system = orchestrator.agent_system(agent, base_system)
+        agent_system = orchestrator.agent_system(agent, base_system, chat_msg)
         try:
             output, queued = await _run_agent_text(
                 ws, inbox, agent, agent_system, agent["task"])
@@ -1255,7 +1569,7 @@ def _repo_brief() -> str:
             break
     files.sort()
     blocks = ["Archivos principales:\n" + "\n".join(f"- {f}" for f in files[:80])]
-    for name in ("AGENTS.md", "CALIPSO.md", "README.md", "SETUP.md"):
+    for name in ("AGENTS.md", "CALIPSO.md", "LIBRARY.md", "SPEC.md", "README.md", "SETUP.md"):
         p = ROOT / name
         if not p.exists() or not p.is_file():
             continue
@@ -1268,6 +1582,57 @@ def _repo_brief() -> str:
     return "\n\n".join(blocks)[:REPO_BRIEF_MAX]
 
 
+def _goal_context() -> str:
+    goal = goals.active(str(ROOT))
+    if not goal:
+        return ""
+    criteria = goal.get("criteria") or []
+    done = sum(1 for c in criteria if c.get("done"))
+    lines = [
+        "=== Meta activa ===",
+        f"id: {goal.get('id')}",
+        f"titulo: {goal.get('title')}",
+        f"estado: {goal.get('status')}",
+        f"objetivo: {goal.get('objective')}",
+        f"criterios: {done}/{len(criteria)} cumplidos",
+    ]
+    if criteria:
+        lines.append("criterios de listo:")
+        for item in criteria[:8]:
+            mark = "x" if item.get("done") else " "
+            lines.append(f"- [{mark}] {item.get('text', '')}")
+    subtasks = goal.get("subtasks") or []
+    if subtasks:
+        lines.append("subtareas:")
+        for item in subtasks[:8]:
+            lines.append(f"- {item.get('status', 'pending')}: {item.get('text', '')}")
+    evidence = goal.get("evidence") or []
+    if evidence:
+        lines.append("evidencia reciente:")
+        for item in evidence[-5:]:
+            lines.append(f"- {item.get('kind')}: {item.get('text')}")
+    blockers = goal.get("blockers") or []
+    if blockers:
+        lines.append("bloqueos:")
+        for item in blockers[-3:]:
+            lines.append(f"- {item.get('text')}")
+    return "\n".join(lines)
+
+
+def _goal_response(goal: dict) -> str:
+    criteria = "\n".join(
+        f"- [ ] {item.get('text', '')}" for item in (goal.get("criteria") or []))
+    subtasks = "\n".join(
+        f"- {item.get('text', '')}" for item in (goal.get("subtasks") or []))
+    return (
+        f"Listo. Active la meta: {goal.get('title')}\n\n"
+        f"Criterios de listo:\n{criteria}\n\n"
+        f"Primeras subtareas:\n{subtasks}\n\n"
+        "La voy a mantener como meta activa y voy a asociar trabajos, evidencia "
+        "y bloqueos futuros a ella. No la marco completa sin evidencia."
+    )
+
+
 def _build_context(user_msg: str, runtime: str, features: dict | None = None) -> str:
     """Contexto ordenado para caché (estable -> volátil) y presupuestado.
 
@@ -1276,24 +1641,20 @@ def _build_context(user_msg: str, runtime: str, features: dict | None = None) ->
     Just-in-time: los archivos del repo NO se precargan; se piden bajo demanda.
     """
     # --- prefijo estable (cacheable) ---
-    blocks = [SYSTEM]
     ident = _identity_doc()
-    if ident:
-        blocks.append("=== Constitucion de Calipso ===\n" + ident)
     core = mem.load_core()
-    if core:
-        blocks.append("=== Memoria nucleo ===\n" + core[:CONTEXT_CORE_MAX])
 
     # --- sufijo volátil ---
     recalled = [r for r in mem.recall(user_msg, n=8)
                 if r["score"] >= RECALL_MIN_SCORE][:RECALL_MAX]
-    if recalled:
-        lines = "\n".join(f"- ({r['score']}) {r['text']}" for r in recalled)
-        blocks.append("=== Recuerdos relevantes ===\n" + lines)
+    repo_brief = ""
     if features and features.get("needs_repo"):
-        blocks.append("=== Repo ===\n" + _repo_brief())
-    blocks.append(runtime)
-    return "\n\n".join(b for b in blocks if b)
+        repo_brief = _repo_brief()
+    goal_block = _goal_context()
+    return prompt_compiler.compile_context(
+        SYSTEM, identity=ident, core=core, recalled=recalled,
+        repo_brief=repo_brief, goal_block=goal_block, runtime=runtime,
+        features=features, core_limit=CONTEXT_CORE_MAX)
 
 
 def _chunks_for(route: str, system: str, user_msg: str, usage: dict,
@@ -1332,6 +1693,18 @@ def _subscription_invocation(client: str, system: str, user_msg: str,
         "Responde como Calipso. No digas que eres el backend usado."
     )
     prompt = f"Usuario: {user_msg}\nCalipso:"
+    temp_names: list[str] = []
+    if len(prompt) > 7000:
+        with tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", suffix=".prompt.md", delete=False,
+                dir=str(ROOT)) as f:
+            f.write(prompt)
+            prompt_name = f.name
+            temp_names.append(prompt_name)
+        prompt = (
+            "Lee el prompt completo desde este archivo local y responde la tarea "
+            f"como Calipso, sin copiar el archivo literalmente:\n{prompt_name}"
+        )
     cmd = [exe if i == 0 else arg.replace("{prompt}", prompt)
            for i, arg in enumerate(template)]
     temp_name = None
@@ -1341,6 +1714,7 @@ def _subscription_invocation(client: str, system: str, user_msg: str,
                 "w", encoding="utf-8", suffix=".md", delete=False) as f:
             f.write(system_prompt)
             temp_name = f.name
+            temp_names.append(temp_name)
         cmd = [exe]
         if model in ("haiku", "sonnet", "opus"):
             cmd += ["--model", model]  # elige el tier de Claude
@@ -1360,13 +1734,15 @@ def _subscription_invocation(client: str, system: str, user_msg: str,
     if client == "claude":
         env.pop("ANTHROPIC_API_KEY", None)
         env.pop("ANTHROPIC_AUTH_TOKEN", None)
-    return cmd, env, temp_name, output_name
+    return cmd, env, temp_names, output_name
 
 
-def _cleanup_subscription_files(temp_name: str | None, output_name: str | None) -> None:
-    if temp_name:
+def _cleanup_subscription_files(temp_name: str | list[str] | None,
+                                output_name: str | None) -> None:
+    temp_list = temp_name if isinstance(temp_name, list) else ([temp_name] if temp_name else [])
+    for name in temp_list:
         try:
-            pathlib.Path(temp_name).unlink(missing_ok=True)
+            pathlib.Path(name).unlink(missing_ok=True)
         except Exception:
             pass
     if output_name:
@@ -1415,6 +1791,16 @@ async def _run_subscription_text_live(
     proc = subprocess.Popen(
         cmd, cwd=str(ROOT), text=True, stdout=stdout_file,
         stderr=stderr_file, encoding="utf-8", errors="replace", env=env)
+    active_goal = goals.active(str(ROOT))
+    job = jobs.start(
+        "subscription_process", label, project_root=str(ROOT),
+        client=client, model=model,
+        goal_id=active_goal.get("id") if active_goal else None,
+        prompt_tokens=max(1, (len(system) + len(user_msg)) // 4))
+    if active_goal:
+        goals.add_evidence(
+            str(ROOT), active_goal["id"], "job",
+            f"Proceso iniciado: {label}", job_id=job["id"], status="running")
 
     def _read_partial() -> tuple[str, str]:
         for f in (stdout_file, stderr_file):
@@ -1434,6 +1820,7 @@ async def _run_subscription_text_live(
 
     try:
         await ws.send_json({"type": "process", "action": "start",
+                            "job_id": job["id"],
                             "label": label, "client": client, "model": model,
                             "prompt_tokens": max(1, (len(system) + len(user_msg)) // 4)})
         while proc.poll() is None:
@@ -1442,10 +1829,15 @@ async def _run_subscription_text_live(
                 partial, _ = _read_partial()
                 await ws.send_json({
                     "type": "process", "action": "running",
+                    "job_id": job["id"],
                     "label": label, "client": client, "model": model,
                     "elapsed": round(now - started),
                     "tokens": max(1, ((len(system) + len(user_msg)) + len(partial)) // 4),
                     "hint": "sigue corriendo; envia /stop para cancelar o escribe y lo atiendo al terminar"})
+                jobs.event(
+                    str(ROOT), job["id"], "running",
+                    elapsed=round(now - started),
+                    tokens=max(1, ((len(system) + len(user_msg)) + len(partial)) // 4))
                 last_notice = now
             if not inbox.empty():
                 msg = await inbox.get()
@@ -1461,7 +1853,17 @@ async def _run_subscription_text_live(
                         proc.kill()
                     partial, stderr = _read_partial()
                     await ws.send_json({"type": "process", "action": "stopped",
-                                        "label": label})
+                                        "job_id": job["id"], "label": label})
+                    jobs.update(str(ROOT), job["id"], status="cancelled")
+                    jobs.event(str(ROOT), job["id"], "stopped")
+                    if active_goal:
+                        goals.add_evidence(
+                            str(ROOT), active_goal["id"], "job",
+                            f"Proceso cancelado: {label}", job_id=job["id"], status="cancelled")
+                    if partial:
+                        jobs.write_artifact(str(ROOT), job["id"], "partial-output.txt", partial)
+                    if stderr:
+                        jobs.write_artifact(str(ROOT), job["id"], "stderr.txt", stderr)
                     if partial:
                         return partial + "\n\n...(proceso interrumpido)", None
                     if stderr:
@@ -1478,12 +1880,36 @@ async def _run_subscription_text_live(
         partial, stderr = _read_partial()
         if proc.returncode != 0:
             msg = (stderr or partial or "").strip()
+            jobs.update(str(ROOT), job["id"], status="failed", error=msg)
+            jobs.event(str(ROOT), job["id"], "failed", error=msg[:1000])
+            if active_goal:
+                goals.add_evidence(
+                    str(ROOT), active_goal["id"], "job",
+                    f"Proceso fallo: {label}", job_id=job["id"], status="failed")
+            if partial:
+                jobs.write_artifact(str(ROOT), job["id"], "partial-output.txt", partial)
+            if stderr:
+                jobs.write_artifact(str(ROOT), job["id"], "stderr.txt", stderr)
             raise RuntimeError(msg or f"{client} fallo con exit {proc.returncode}")
         text = partial
         elapsed = round(time.perf_counter() - started)
         await ws.send_json({"type": "process", "action": "done",
+                            "job_id": job["id"],
                             "label": label, "elapsed": elapsed,
                             "tokens": max(1, ((len(system) + len(user_msg)) + len(text)) // 4)})
+        jobs.update(
+            str(ROOT), job["id"], status="done", elapsed=elapsed,
+            tokens=max(1, ((len(system) + len(user_msg)) + len(text)) // 4))
+        jobs.event(str(ROOT), job["id"], "done", elapsed=elapsed)
+        if text:
+            jobs.write_artifact(str(ROOT), job["id"], "output.txt", text)
+        if stderr:
+            jobs.write_artifact(str(ROOT), job["id"], "stderr.txt", stderr)
+        if active_goal:
+            goals.add_evidence(
+                str(ROOT), active_goal["id"], "job",
+                f"Proceso terminado: {label}", job_id=job["id"], status="done",
+                artifact="output.txt" if text else None, elapsed=elapsed)
         return text, pending_msg
     finally:
         for f in (stdout_file, stderr_file):
@@ -1513,6 +1939,9 @@ async def ws_chat(ws: WebSocket) -> None:
         await ws.close(code=1008)  # polÃƒÂ­tica violada: sin token vÃƒÂ¡lido
         return
     await ws.accept()
+    active_goal = goals.active(str(ROOT))
+    if active_goal:
+        await ws.send_json({"type": "goal", "action": "active", "goal": active_goal})
     sentinel = object()
     inbox: asyncio.Queue = asyncio.Queue()
 
@@ -1528,6 +1957,7 @@ async def ws_chat(ws: WebSocket) -> None:
     try:
         while True:
             chat_id = chats.active_id()
+            attachment_ids: list[str] = []
             if pending is not None:
                 user_msg, pending = pending, None
             else:
@@ -1539,10 +1969,15 @@ async def ws_chat(ws: WebSocket) -> None:
                     if isinstance(packet, dict):
                         user_msg = str(packet.get("text") or "")
                         chat_id = packet.get("chat_id") or chat_id
+                        attachment_ids = [
+                            str(x) for x in (packet.get("attachment_ids") or [])
+                            if isinstance(x, str)
+                        ][:8]
                     else:
                         user_msg = raw
                 except Exception:
                     user_msg = raw
+                    attachment_ids = []
             user_msg = user_msg.strip()
             if not user_msg or user_msg == "/stop":
                 continue  # /stop en reposo no interrumpe nada
@@ -1556,11 +1991,37 @@ async def ws_chat(ws: WebSocket) -> None:
                 _switch_project(active_chat["project_path"])
                 await ws.send_json({"type": "project", "action": "changed",
                                     "name": ROOT.name, "path": str(ROOT)})
-            chats.append(chat_id, "user", user_msg)
+            chats.append(chat_id, "user", user_msg, {
+                "attachment_ids": attachment_ids,
+            } if attachment_ids else None)
             turn_started = time.perf_counter()
             fallbacks: list[dict] = []
             # avisa de inmediato que está pensando (los probes pueden tardar)
             await ws.send_json({"type": "thinking"})
+
+            goal_objective = goals.detect(user_msg)
+            if goal_objective:
+                goal = goals.create(str(ROOT), goal_objective)
+                reply = _goal_response(goal)
+                await ws.send_json({"type": "goal", "action": "active", "goal": goal})
+                await ws.send_json({"type": "chunk", "text": reply})
+                chats.append(chat_id, "assistant", reply, {
+                    "route": "goal",
+                    "goal_id": goal["id"],
+                })
+                current_chat = chats.get(chat_id)
+                if current_chat:
+                    await ws.send_json({"type": "chat", "action": "updated",
+                                        "chat": _chat_view(current_chat)})
+                await ws.send_json({"type": "done"})
+                try:
+                    await asyncio.to_thread(
+                        mem.remember,
+                        f"Pedro definio una meta: {goal_objective}\nCalipso creo Goal Mode: {goal['id']}",
+                        route="goal", kind="goal")
+                except Exception:
+                    pass
+                continue
 
             # 1) routing a nivel de MODELO (afinidad x costo x tier x intensidad)
             #    en un hilo: los probes de suscripción son síncronos y NO deben
@@ -1600,6 +2061,9 @@ async def ws_chat(ws: WebSocket) -> None:
             # 2) contexto (core + recuerdos) y 3) streaming
             runtime = _harness_context(verdict, route, model, note)
             system = _build_context(chat_msg, runtime, features)
+            attachment_context = attachments.context_block(str(ROOT), attachment_ids)
+            if attachment_context:
+                system += "\n\n" + attachment_context
             if web_material and (web_material["results"] or web_material["pages"]):
                 system += "\n\n" + calipso_web.context_block(web_material)
             usage: dict = {}
@@ -1612,10 +2076,13 @@ async def ws_chat(ws: WebSocket) -> None:
                         verdict, "orchestrator", model,
                         f"equipo dinamico sobre ruta base {route}")
                     system = _build_context(chat_msg, runtime, features)
+                    if attachment_context:
+                        system += "\n\n" + attachment_context
                     if web_material and (web_material["results"] or web_material["pages"]):
                         system += "\n\n" + calipso_web.context_block(web_material)
                     full, agent_team, queued = await _run_dynamic_team(
-                        ws, inbox, chat_msg, features, system, verdict)
+                        ws, inbox, chat_msg, features, system, verdict,
+                        approval_required=bool(directives.get("force_team")))
                     if queued:
                         pending = queued
                     used_route = "orchestrator"
@@ -1673,6 +2140,8 @@ async def ws_chat(ws: WebSocket) -> None:
                                     verdict, "subscription", model,
                                     f"fallback de suscripcion a {alternate}")
                                 system = _build_context(chat_msg, runtime, features)
+                                if attachment_context:
+                                    system += "\n\n" + attachment_context
                                 full, queued = await _run_subscription_text_live(
                                     ws, inbox, alternate, system, chat_msg, None,
                                     label=f"fallback via {alternate}")
@@ -1709,6 +2178,8 @@ async def ws_chat(ws: WebSocket) -> None:
                         model = _route_model_name("local")
                         runtime = _harness_context(verdict, "local", model, f"ruta {route} fallo; fallback local")
                         system = _build_context(chat_msg, runtime, features)
+                        if attachment_context:
+                            system += "\n\n" + attachment_context
                         gen, model = _chunks_for("local", system, chat_msg, usage)
                         while True:
                             if not inbox.empty():  # steering en el fallback local
@@ -1797,6 +2268,84 @@ def api_discover() -> dict:
 
 
 # --------------------------------------------------------------------------
+# RUTINAS / TIMERS  (reflect/learn/backup periodicos mientras el server vive)
+# --------------------------------------------------------------------------
+
+def _routine_handlers() -> dict:
+    """Mapea kind -> accion local segura. No escala a API ni abre red."""
+    def _reflect(_r):
+        mem.reflect()
+
+    def _learn(_r):
+        learning.learn()
+        learning.learn(project_root=str(ROOT), project=str(ROOT))
+
+    def _backup(_r):
+        calipso_backup.create_backup()
+
+    return {"reflect": _reflect, "learn": _learn, "backup": _backup}
+
+
+@app.get("/api/routines")
+def api_routines() -> dict:
+    return {"routines": calipso_routines.load(),
+            "backups": calipso_backup.list_backups()}
+
+
+@app.post("/api/routines")
+async def api_routines_add(request: Request) -> dict:
+    data = await request.json()
+    try:
+        return calipso_routines.add(
+            data.get("kind", ""), data.get("label", ""),
+            int(data.get("interval_minutes", 1440)),
+            enabled=bool(data.get("enabled", False)))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put("/api/routines/{routine_id}")
+async def api_routines_update(routine_id: str, request: Request) -> dict:
+    patch = await request.json()
+    updated = calipso_routines.update(routine_id, patch)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="rutina no encontrada")
+    return updated
+
+
+@app.delete("/api/routines/{routine_id}")
+def api_routines_delete(routine_id: str) -> dict:
+    if not calipso_routines.remove(routine_id):
+        raise HTTPException(status_code=404, detail="rutina no encontrada")
+    return {"ok": True}
+
+
+@app.post("/api/routines/{routine_id}/run")
+def api_routines_run(routine_id: str) -> dict:
+    """Corre una rutina ahora, ignorando el vencimiento (boton manual)."""
+    routine = calipso_routines.get(routine_id)
+    if routine is None:
+        raise HTTPException(status_code=404, detail="rutina no encontrada")
+    handler = _routine_handlers().get(routine["kind"])
+    if handler is None:
+        raise HTTPException(status_code=400, detail="kind sin handler")
+    now = datetime.datetime.now()
+    try:
+        handler(routine)
+        status = "ok"
+    except Exception as e:
+        status = f"error: {e}"
+    calipso_routines.mark_run(routine_id, now, status)
+    return {"ok": status == "ok", "status": status,
+            "routine": calipso_routines.get(routine_id)}
+
+
+@app.post("/api/backup")
+def api_backup() -> dict:
+    return calipso_backup.create_backup()
+
+
+# --------------------------------------------------------------------------
 # DEPENDENCIAS  (Calipso instala lo que necesita; no se queda bloqueada)
 # --------------------------------------------------------------------------
 
@@ -1804,6 +2353,81 @@ def api_discover() -> dict:
 def api_deps() -> dict:
     """Estado de las capacidades que dependen de paquetes (browser, etc.)."""
     return {"tools": deps.status()}
+
+
+def _launch_item(key: str, label: str, ok: bool, detail: str,
+                 action: str | None = None) -> dict:
+    return {
+        "key": key,
+        "label": label,
+        "ok": bool(ok),
+        "detail": detail,
+        "action": action or "",
+    }
+
+
+@app.get("/api/launch/checklist")
+def api_launch_checklist() -> dict:
+    """Checklist humano para saber si Calipso esta listo para uso diario."""
+    dep_status = deps.status()
+    health = _connector_health(use_cache=True)
+    subs = health.get("subscription", {})
+    any_subscription = any(v.get("ready") for v in subs.values())
+    any_backend = bool(
+        any_subscription or health.get("local", {}).get("ready") or health.get("api", {}).get("ready"))
+    manifest_ok = (WEB / "manifest.json").exists() and (WEB / "sw.js").exists()
+    launchers = {
+        "windows_bat": (ROOT / "Calipso.bat").exists(),
+        "windows_ps1": (ROOT / "Calipso.ps1").exists(),
+        "python": (ROOT / "launch_calipso.py").exists(),
+    }
+    items = [
+        _launch_item(
+            "server", "Servidor local", True,
+            "Calipso respondio a esta solicitud."),
+        _launch_item(
+            "project", "Proyecto activo", ROOT.exists(),
+            str(ROOT) if ROOT.exists() else "La ruta del proyecto no existe."),
+        _launch_item(
+            "security_token", "Token de recuperacion",
+            bool(os.environ.get("CALIPSO_TOKEN") or _TOKEN_FILE.exists()),
+            "Token disponible por entorno o archivo." if (
+                os.environ.get("CALIPSO_TOKEN") or _TOKEN_FILE.exists())
+            else "Falta token de recuperacion."),
+        _launch_item(
+            "totp", "Login TOTP", _TOTP_SECRET_FILE.exists(),
+            "Autenticador configurado." if _TOTP_SECRET_FILE.exists()
+            else "Abre /setup para escanear el QR.",
+            "/setup"),
+        _launch_item(
+            "pwa", "PWA celular", manifest_ok,
+            "Manifest y service worker presentes." if manifest_ok
+            else "Falta manifest.json o sw.js."),
+        _launch_item(
+            "browser", "Navegador real", bool(dep_status.get("browser", {}).get("ready")),
+            "Playwright/Chromium listo." if dep_status.get("browser", {}).get("ready")
+            else "Instala la capacidad browser desde dependencias."),
+        _launch_item(
+            "launchers", "Lanzadores", all(launchers.values()),
+            ", ".join(k for k, ok in launchers.items() if ok) or "Sin lanzadores."),
+        _launch_item(
+            "models", "Modelos disponibles", any_backend,
+            "Hay al menos una ruta lista." if any_backend
+            else "Revisa Ollama, LiteLLM o login de Claude/Codex."),
+        _launch_item(
+            "api_budget", "Budget API",
+            not bool(health.get("api", {}).get("blocked")),
+            health.get("api", {}).get("reason") or (
+                f"{health.get('api', {}).get('spent_usd', 0)}/"
+                f"{health.get('api', {}).get('limit_usd', 0)} USD usados")),
+    ]
+    ready = all(item["ok"] for item in items if item["key"] not in {"api_budget"})
+    return {
+        "ready": ready,
+        "summary": "Calipso listo para uso diario" if ready else "Calipso usable, con puntos por revisar",
+        "items": items,
+        "connectors": health,
+    }
 
 
 @app.post("/api/deps/install")
@@ -1844,6 +2468,14 @@ def api_learn(scope: str = "global") -> dict:
     if scope == "project":
         return learning.learn(project_root=str(ROOT), project=str(ROOT))
     return learning.learn()
+
+
+@app.get("/api/skills")
+def api_skills() -> dict:
+    return {"skills": [
+        {"id": key, "name": value["name"], "prompt": value["prompt"]}
+        for key, value in skills.REGISTRY.items()
+    ]}
 
 
 # --------------------------------------------------------------------------
@@ -1929,9 +2561,314 @@ def api_memory() -> dict:
     }
 
 
+def _core_files(scope_obj) -> list[dict]:
+    files = []
+    for path in sorted(scope_obj.core_dir.glob("*.md")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            text = ""
+        files.append({
+            "name": path.name,
+            "stem": path.stem,
+            "chars": len(text),
+            "preview": text[:2000],
+        })
+    return files
+
+
+@app.get("/api/memory/core")
+def api_memory_core() -> dict:
+    """Core markdown visible para el panel Memoria, sin exponer secretos."""
+    calipso_chronology.ensure()
+    return {
+        "global": {
+            "path": str(mem.glob.core_dir),
+            "files": _core_files(mem.glob),
+        },
+        "project": {
+            "path": str(mem.project.core_dir) if mem.project else "",
+            "files": _core_files(mem.project) if mem.project else [],
+        },
+    }
+
+
+@app.get("/api/memory/chronology")
+def api_memory_chronology() -> dict:
+    """Linea de tiempo global de Pedro, curada por bibliotecario."""
+    return {"chronology": calipso_chronology.load()}
+
+
+@app.get("/api/memory/inbox")
+def api_memory_inbox(status: str | None = "pending") -> dict:
+    return {
+        "proposals": librarian.list_proposals(str(ROOT), status),
+        "events": librarian.events(str(ROOT), 50),
+    }
+
+
+@app.post("/api/memory/inbox/proposals")
+def api_memory_propose(body: MemoryProposalBody) -> dict:
+    try:
+        proposal = librarian.propose(
+            str(ROOT), body.text, scope=body.scope, target=body.target,
+            rationale=body.rationale, source=body.source)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"proposal": proposal}
+
+
+@app.post("/api/memory/chronology/proposals")
+def api_memory_chronology_propose(body: ChronologyProposalBody) -> dict:
+    try:
+        text = calipso_chronology.format_entry(
+            body.text, topic=body.topic, date=body.date)
+        proposal = librarian.propose(
+            str(ROOT), text, scope="global", target=calipso_chronology.FILENAME,
+            rationale=body.rationale or "actualizacion de cronologia personal",
+            source={"kind": "chronology"})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"proposal": proposal, "chronology": calipso_chronology.load()}
+
+
+@app.post("/api/memory/inbox/suggest")
+def api_memory_suggest(body: MemorySuggestBody) -> dict:
+    proposals = librarian.suggest_from_text(str(ROOT), body.text, source=body.source)
+    return {"proposals": proposals}
+
+
+@app.put("/api/memory/inbox/proposals/{proposal_id}")
+def api_memory_update(proposal_id: str, body: MemoryProposalUpdateBody) -> dict:
+    proposal = librarian.update(
+        str(ROOT), proposal_id,
+        **body.dict(exclude_unset=True))
+    if not proposal:
+        raise HTTPException(status_code=404, detail="propuesta no existe")
+    return {"proposal": proposal}
+
+
+@app.post("/api/memory/inbox/proposals/{proposal_id}/accept")
+def api_memory_accept(proposal_id: str) -> dict:
+    proposal = librarian.accept(str(ROOT), proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=404, detail="propuesta no existe")
+    return {"proposal": proposal, "memory": api_memory()}
+
+
+@app.post("/api/memory/inbox/proposals/{proposal_id}/discard")
+def api_memory_discard(proposal_id: str, body: MemoryDiscardBody | None = None) -> dict:
+    proposal = librarian.discard(str(ROOT), proposal_id, body.reason if body else None)
+    if not proposal:
+        raise HTTPException(status_code=404, detail="propuesta no existe")
+    return {"proposal": proposal}
+
+
 @app.get("/api/telemetry")
 def api_telemetry(limit: int = 100) -> dict:
     return {"events": telemetry.recent(limit)}
+
+
+@app.get("/api/goals")
+def api_goals(limit: int = 50) -> dict:
+    return {
+        "active": goals.active(str(ROOT)),
+        "goals": goals.list_goals(str(ROOT), limit),
+    }
+
+
+@app.post("/api/goals")
+def api_goal_create(body: GoalBody) -> dict:
+    if not body.objective.strip():
+        raise HTTPException(status_code=400, detail="falta objective")
+    goal = goals.create(
+        str(ROOT), body.objective, title=body.title,
+        criteria=body.criteria, subtasks=body.subtasks,
+        make_active=body.make_active)
+    return {"goal": goal}
+
+
+@app.get("/api/goals/{goal_id}")
+def api_goal(goal_id: str) -> dict:
+    goal = goals.load(str(ROOT), goal_id)
+    if not goal:
+        raise HTTPException(status_code=404, detail="meta no existe")
+    return {"goal": goal, "events": goals.events(str(ROOT), goal_id)}
+
+
+@app.put("/api/goals/{goal_id}")
+def api_goal_update(goal_id: str, body: GoalUpdateBody) -> dict:
+    changes = body.dict(exclude_unset=True)
+    make_active = changes.pop("active", None)
+    try:
+        goal = goals.update(str(ROOT), goal_id, **changes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not goal:
+        raise HTTPException(status_code=404, detail="meta no existe")
+    if make_active is True:
+        goals.set_active(str(ROOT), goal_id)
+        goal = goals.load(str(ROOT), goal_id) or goal
+    elif make_active is False:
+        active = goals.active(str(ROOT))
+        if active and active.get("id") == goal_id:
+            goals.set_active(str(ROOT), None)
+    return {"goal": goal, "active": goals.active(str(ROOT))}
+
+
+@app.post("/api/goals/{goal_id}/evidence")
+def api_goal_evidence(goal_id: str, body: GoalEvidenceBody) -> dict:
+    goal = goals.add_evidence(
+        str(ROOT), goal_id, body.kind, body.text, **(body.data or {}))
+    if not goal:
+        raise HTTPException(status_code=404, detail="meta no existe")
+    return {"goal": goal}
+
+
+@app.post("/api/goals/{goal_id}/advance")
+def api_goal_advance(goal_id: str) -> dict:
+    result = developer.advance_goal(str(ROOT), goal_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="meta no existe")
+    return result
+
+
+@app.put("/api/goals/{goal_id}/criteria/{criterion_id}")
+def api_goal_criterion(goal_id: str, criterion_id: str, body: GoalCriterionBody) -> dict:
+    try:
+        goal = goals.set_criterion(
+            str(ROOT), goal_id, criterion_id, body.done, body.evidence)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="criterio no existe")
+    if not goal:
+        raise HTTPException(status_code=404, detail="meta no existe")
+    return {"goal": goal}
+
+
+@app.put("/api/goals/{goal_id}/subtasks/{subtask_id}")
+def api_goal_subtask(goal_id: str, subtask_id: str, body: GoalSubtaskBody) -> dict:
+    try:
+        goal = goals.set_subtask(str(ROOT), goal_id, subtask_id, body.status)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="subtarea no existe")
+    if not goal:
+        raise HTTPException(status_code=404, detail="meta no existe")
+    return {"goal": goal}
+
+
+@app.get("/api/jobs")
+def api_jobs(limit: int = 50) -> dict:
+    return {"jobs": jobs.list_jobs(str(ROOT), limit)}
+
+
+@app.get("/api/jobs/{job_id}")
+def api_job(job_id: str) -> dict:
+    job = jobs.load(str(ROOT), job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job no existe")
+    return {
+        "job": job,
+        "events": jobs.events(str(ROOT), job_id),
+        "artifacts": jobs.artifacts(str(ROOT), job_id),
+    }
+
+
+@app.get("/api/jobs/{job_id}/artifacts/{name}")
+def api_job_artifact(job_id: str, name: str) -> Response:
+    if not jobs.load(str(ROOT), job_id):
+        raise HTTPException(status_code=404, detail="job no existe")
+    try:
+        data = jobs.read_artifact(str(ROOT), job_id, name)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="artifact no existe")
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc))
+    content_type = "text/plain; charset=utf-8"
+    if name.endswith(".json"):
+        content_type = "application/json"
+    elif name.endswith(".html"):
+        content_type = "text/html; charset=utf-8"
+    return Response(data, media_type=content_type)
+
+
+@app.get("/api/commands")
+def api_commands() -> dict:
+    return {"commands": calipso_commands.list_commands()}
+
+
+def _verification_inputs() -> tuple[list[dict], list[dict]]:
+    try:
+        status = api_git_status()
+        files = status.get("files") or []
+    except Exception:
+        files = []
+    proposals = [
+        {k: v for k, v in item.items() if k != "content"}
+        for item in PENDING_CHANGES.values()
+    ]
+    return files, proposals
+
+
+@app.get("/api/verify/recommend")
+def api_verify_recommend() -> dict:
+    files, proposals = _verification_inputs()
+    return {"plan": verification.recommend(files, proposals)}
+
+
+@app.post("/api/verify/run")
+async def api_verify_run(body: VerificationRunBody) -> dict:
+    files, proposals = _verification_inputs()
+    if body.files is not None:
+        files = body.files
+    if body.proposals is not None:
+        proposals = body.proposals
+    plan = verification.recommend(files, proposals)
+    if body.commands is not None:
+        plan["commands"] = body.commands
+        plan["summary"] = " + ".join(str(c.get("command_id")) for c in body.commands)
+    goal_id = body.goal_id
+    if not goal_id:
+        active_goal = goals.active(str(ROOT))
+        goal_id = active_goal.get("id") if active_goal else None
+    result = await asyncio.to_thread(verification.run_plan, str(ROOT), plan, goal_id)
+    return {"plan": plan, **result, "goal": goals.load(str(ROOT), goal_id) if goal_id else None}
+
+
+@app.post("/api/commands/run")
+async def api_command_run(body: CommandRunBody) -> dict:
+    goal_id = body.goal_id
+    if not goal_id:
+        active_goal = goals.active(str(ROOT))
+        goal_id = active_goal.get("id") if active_goal else None
+    try:
+        result = await asyncio.to_thread(
+            calipso_commands.run, str(ROOT), body.command_id, goal_id, body.timeout)
+    except KeyError:
+        raise HTTPException(status_code=400, detail="comando no permitido")
+    return {
+        "job": result["job"],
+        "status": result["status"],
+        "returncode": result["returncode"],
+        "stdout_preview": (result.get("stdout") or "")[-2000:],
+        "stderr_preview": (result.get("stderr") or "")[-2000:],
+        "goal": goals.load(str(ROOT), goal_id) if goal_id else None,
+    }
+
+
+async def _routines_ticker() -> None:
+    """Corre rutinas vencidas mientras el server este vivo. Local-only."""
+    handlers = _routine_handlers()
+    while True:
+        try:
+            await asyncio.sleep(60)
+            now = datetime.datetime.now()
+            ran = await asyncio.to_thread(calipso_routines.run_due, now, handlers)
+            for r in ran:
+                print(f"[calipso] rutina {r['kind']} -> {r['status']}")
+        except asyncio.CancelledError:  # pragma: no cover
+            break
+        except Exception:
+            continue
 
 
 @app.on_event("startup")
@@ -1943,11 +2880,25 @@ async def _startup_warm() -> None:
         await asyncio.to_thread(_backend_availability)  # pre-calienta el cache de probes
     except Exception:
         pass
+    try:
+        asyncio.create_task(_routines_ticker())
+    except Exception:
+        pass
 
 
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(WEB / "index.html")
+
+
+@app.get("/manifest.json")
+def manifest() -> FileResponse:
+    return FileResponse(WEB / "manifest.json", media_type="application/manifest+json")
+
+
+@app.get("/sw.js")
+def service_worker() -> FileResponse:
+    return FileResponse(WEB / "sw.js", media_type="application/javascript")
 
 
 # EstÃƒÂ¡ticos (por si aÃƒÂ±adimos assets locales: monaco vendorizado, iconos, etc.)

@@ -46,10 +46,15 @@ def main() -> int:
     # cada agente tiene persona, modelo, intensidad
     check("agentes con persona+modelo+intensidad",
           all(a.get("persona") and a.get("model") and a.get("intensity") for a in team["agents"]))
+    check("agentes con skill interno",
+          all(a.get("skill") and a.get("skill_name") for a in team["agents"]))
 
     # system prompt incorpora rol y quirk
-    sysp = orch.agent_system(prog, "Eres parte de Calipso.")
+    sysp = orch.agent_system(prog, "Eres parte de Calipso.", "haz el cambio")
     check("system del agente incluye rol", "programador" in sysp and "limpio" in sysp)
+    check("system del agente incluye skill", "Skill:" in sysp)
+    check("system del agente incluye brief interno",
+          "Brief interno del agente" in sysp and "haz el cambio" in sysp)
 
     # fallback: planner vacio -> 1 agente generico
     p2 = orch.plan("hola", lambda _: {"agents": []})
