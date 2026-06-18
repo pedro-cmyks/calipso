@@ -142,6 +142,111 @@ ALLOWLIST: dict[str, dict[str, Any]] = {
         "args": ["{python}", "test_prompt_compiler.py"],
         "timeout": 120,
     },
+    "test_streaming": {
+        "title": "Probar streaming",
+        "description": "Ejecuta test_streaming.py.",
+        "args": ["{python}", "test_streaming.py"],
+        "timeout": 120,
+    },
+    "test_capabilities": {
+        "title": "Probar ruteo de modelos",
+        "description": "Ejecuta test_capabilities.py.",
+        "args": ["{python}", "test_capabilities.py"],
+        "timeout": 120,
+    },
+    "test_memory": {
+        "title": "Probar memoria hibrida",
+        "description": "Ejecuta test_memory.py (requiere Ollama con bge-m3).",
+        "args": ["{python}", "test_memory.py"],
+        "timeout": 180,
+    },
+    "test_orchestrator": {
+        "title": "Probar orquestador dinamico",
+        "description": "Ejecuta test_orchestrator.py.",
+        "args": ["{python}", "test_orchestrator.py"],
+        "timeout": 120,
+    },
+    "test_routines": {
+        "title": "Probar rutinas y backup",
+        "description": "Ejecuta test_routines.py.",
+        "args": ["{python}", "test_routines.py"],
+        "timeout": 120,
+    },
+    "test_github": {
+        "title": "Probar conector GitHub",
+        "description": "Ejecuta test_github.py.",
+        "args": ["{python}", "test_github.py"],
+        "timeout": 120,
+    },
+    "test_doclinks": {
+        "title": "Probar validador de links",
+        "description": "Ejecuta test_doclinks.py.",
+        "args": ["{python}", "test_doclinks.py"],
+        "timeout": 60,
+    },
+    "test_sessions": {
+        "title": "Probar sesiones y rosters",
+        "description": "Ejecuta test_sessions.py.",
+        "args": ["{python}", "test_sessions.py"],
+        "timeout": 120,
+    },
+    "test_learning": {
+        "title": "Probar aprendizaje y overrides",
+        "description": "Ejecuta test_learning.py.",
+        "args": ["{python}", "test_learning.py"],
+        "timeout": 120,
+    },
+    "test_all": {
+        "title": "Correr todos los tests",
+        "description": "Corre la suite completa de scripts de test (excluye test_memory que requiere Ollama vivo).",
+        "args": [
+            "{python}", "-c",
+            (
+                "import subprocess, sys\n"
+                "tests = [\n"
+                "  'test_streaming.py','test_capabilities.py','test_orchestrator.py',\n"
+                "  'test_skills.py','test_jobs.py','test_goals.py','test_developer.py',\n"
+                "  'test_commands.py','test_verification.py','test_librarian.py',\n"
+                "  'test_connectors.py','test_launch.py','test_prompt_compiler.py',\n"
+                "  'test_proposals.py','test_attachments.py','test_sessions.py',\n"
+                "  'test_learning.py','test_routines.py','test_github.py','test_doclinks.py',\n"
+                "]\n"
+                "failed=[]\n"
+                "for t in tests:\n"
+                "  r=subprocess.run([sys.executable,t],capture_output=True,text=True)\n"
+                "  status='OK' if r.returncode==0 else 'FAIL'\n"
+                "  print(f'[{status}] {t}')\n"
+                "  if r.returncode!=0: failed.append(t); print(r.stdout[-400:])\n"
+                "print(f'\\n{len(tests)-len(failed)}/{len(tests)} OK')\n"
+                "sys.exit(len(failed))\n"
+            ),
+        ],
+        "timeout": 300,
+    },
+    "git_status": {
+        "title": "Git status",
+        "description": "Muestra el estado actual del repositorio (archivos modificados, staged, untracked).",
+        "args": ["git", "status"],
+        "timeout": 10,
+    },
+    "git_diff": {
+        "title": "Git diff",
+        "description": "Muestra los cambios sin stagear en el repositorio.",
+        "args": ["git", "diff"],
+        "timeout": 10,
+    },
+    "git_diff_staged": {
+        "title": "Git diff staged",
+        "description": "Muestra los cambios ya en staging area (listos para commit).",
+        "args": ["git", "diff", "--staged"],
+        "timeout": 10,
+    },
+    "git_log": {
+        "title": "Git log reciente",
+        "description": "Muestra los ultimos 10 commits del repositorio.",
+        "args": ["git", "log", "--oneline", "-10"],
+        "timeout": 10,
+    },
 }
 
 
