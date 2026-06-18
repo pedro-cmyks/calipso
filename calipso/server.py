@@ -2733,6 +2733,53 @@ def api_goal_advance(goal_id: str) -> dict:
     return result
 
 
+class DraftBody(BaseModel):
+    file_path: str
+
+
+@app.post("/api/goals/{goal_id}/draft")
+async def api_goal_draft(goal_id: str, body: DraftBody) -> dict:
+    brief = developer.draft_brief(str(ROOT), goal_id, body.file_path)
+    if not brief:
+        raise HTTPException(status_code=404, detail="meta sin subtarea activa o archivo no editable")
+
+    job = brief["job"]
+    try:
+        raw = await asyncio.to_thread(
+            _run_subscription_text,
+            "claude", brief["system"], brief["user_msg"], "sonnet")
+        new_content = developer._strip_fences(raw)
+    except Exception as exc:
+        jobs.update(str(ROOT), job["id"], status="failed", error=str(exc))
+        raise HTTPException(status_code=502, detail=f"agente fallo: {exc}") from exc
+
+    # Registrar propuesta
+    change_id = uuid.uuid4().hex[:12]
+    item = {
+        "id": change_id,
+        "path": body.file_path,
+        "source": f"goal_draft:{goal_id}",
+        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+    }
+    PENDING_CHANGES[change_id] = {**item, "content": new_content}
+    diff = _proposal_diff(body.file_path, new_content)
+
+    jobs.write_artifact(str(ROOT), job["id"], "draft.md", new_content)
+    jobs.write_artifact(str(ROOT), job["id"], "draft.diff", diff)
+    jobs.update(str(ROOT), job["id"], status="done",
+                proposal_id=change_id, artifact="draft.diff")
+    goals.add_evidence(
+        str(ROOT), goal_id, "proposal",
+        f"Borrador generado para {body.file_path} (propuesta {change_id})",
+        job_id=job["id"], artifact="draft.diff")
+
+    return {
+        "proposal": {**item, "diff": diff},
+        "job": jobs.load(str(ROOT), job["id"]),
+        "subtask": brief["subtask"],
+    }
+
+
 @app.put("/api/goals/{goal_id}/criteria/{criterion_id}")
 def api_goal_criterion(goal_id: str, criterion_id: str, body: GoalCriterionBody) -> dict:
     try:
