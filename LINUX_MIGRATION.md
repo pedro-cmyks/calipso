@@ -86,13 +86,18 @@ python3 --version
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install chromadb ollama playwright litellm
+python -m pip install chromadb ollama playwright litellm fastapi "uvicorn[standard]" pyotp qrcode pillow
 python -m playwright install chromium
 ```
 
 Arrancar Calipso:
 
 ```bash
+# Opcion 1: lanzador (recomendado, activa venv y abre navegador)
+./calipso.sh
+
+# Opcion 2: manual
+source .venv/bin/activate
 python calipso/server.py
 ```
 
