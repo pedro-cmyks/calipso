@@ -1204,15 +1204,19 @@ def _subscription_probe(client: str | None) -> dict:
         return {"installed": True, "ready": False, "path": exe, "error": str(e)}
 
 
+def _npm_install_cmd(pkg: str) -> list[str]:
+    npm = shutil.which("npm.cmd") or shutil.which("npm") or "npm"
+    return [npm, "install", "-g", pkg]
+
 SUBSCRIPTION_CONNECTORS = {
     "claude": {
-        "install": ["npm.cmd", "install", "-g", "@anthropic-ai/claude-code@latest"],
-        "login": ["claude.cmd", "auth", "login"],
+        "install": _npm_install_cmd("@anthropic-ai/claude-code@latest"),
+        "login": [shutil.which("claude.cmd") or shutil.which("claude") or "claude", "auth", "login"],
         "docs": "https://code.claude.com/docs/en/setup",
     },
     "codex": {
-        "install": ["npm.cmd", "install", "-g", "@openai/codex"],
-        "login": ["codex.cmd", "login"],
+        "install": _npm_install_cmd("@openai/codex@latest"),
+        "login": [shutil.which("codex.cmd") or shutil.which("codex") or "codex", "login"],
         "docs": "https://developers.openai.com/codex/cli",
     },
 }
@@ -2677,6 +2681,28 @@ async def api_browser_screenshot(url: str, full: bool = False):
 def api_updates() -> dict:
     """Versiones de CLIs (+ si hay update en npm) y modelos nuevos descubiertos."""
     return discovery.updates()
+
+
+@app.post("/api/updates/run")
+async def api_updates_run(request: Request) -> dict:
+    """Ejecuta el comando de instalación para actualizar un CLI (claude o codex)."""
+    body = await request.json()
+    cli = body.get("cli", "")
+    connector = SUBSCRIPTION_CONNECTORS.get(cli)
+    if not connector:
+        raise HTTPException(status_code=404, detail="CLI no soportado")
+    cmd = connector.get("install")
+    if not cmd:
+        raise HTTPException(status_code=400, detail="sin comando de instalación")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        return {
+            "ok": result.returncode == 0,
+            "stdout": result.stdout[-1000:],
+            "stderr": result.stderr[-500:],
+        }
+    except Exception as e:
+        return {"ok": False, "stderr": str(e)}
 
 
 @app.post("/api/learn")
