@@ -3203,13 +3203,21 @@ async def api_transcribe(audio: UploadFile = File(...)) -> dict:
         f.write(data)
         tmp = f.name
     try:
-        model = await _get_whisper()
+        try:
+            model = await _get_whisper()
+        except ImportError:
+            return {"text": "", "error": "faster-whisper no instalado — corre: pip install faster-whisper"}
         segments, info = await asyncio.to_thread(
             lambda: model.transcribe(tmp, beam_size=5, language=None, vad_filter=True))
         text = " ".join(s.text.strip() for s in segments).strip()
         return {"text": text, "language": info.language}
+    except Exception as e:
+        return {"text": "", "error": str(e)}
     finally:
-        os.unlink(tmp)
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
 
 
 async def _routines_ticker() -> None:

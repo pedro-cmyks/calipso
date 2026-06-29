@@ -398,7 +398,7 @@
         <input id="attachInput" type="file" style="display:none" multiple />
         <div id="contextPill" title="Proyecto actual">proyecto</div>
         <textarea id="input" placeholder="Hablale a Calipso...  (Enter envia)"></textarea>
-        <button id="mic" title="Grabar nota de voz (mantén para grabar)">🎙</button>
+        <button id="mic" title="Clic para grabar">🎤</button>
         <button id="stop" title="Detener generacion" style="display:none">⏹ Parar</button>
         <button id="send" title="Enviar (Enter)">Enviar</button>
       </div>
@@ -2485,19 +2485,26 @@ connect();
     try {
       const r = await fetch("/api/transcribe", { method: "POST", body: fd });
       const j = await r.json();
-      const texto = (j.text || "").trim();
-      if (texto) {
-        input.value += (input.value && !input.value.endsWith(" ") ? " " : "") + texto;
-        autosizeInput();
-        input.focus();
+      if (j.error) {
+        micBtn.title = j.error;
+        addMsg("meta", "mic: " + j.error);
       } else {
-        micBtn.title = "No se detectó voz — intenta de nuevo";
+        const texto = (j.text || "").trim();
+        if (texto) {
+          input.value += (input.value && !input.value.endsWith(" ") ? " " : "") + texto;
+          autosizeInput();
+          input.focus();
+        } else {
+          micBtn.title = "No se detectó voz — intenta de nuevo";
+        }
       }
     } catch(e) {
-      micBtn.title = "Error en transcripción: " + e.message;
+      const msg = "Error en transcripción: " + e.message;
+      micBtn.title = msg;
+      addMsg("meta", "mic: " + msg);
       console.error("transcripción falló", e);
     }
-    micBtn.textContent = "🎙";
+    micBtn.textContent = "🎤";
     setTimeout(() => { micBtn.title = "Clic para grabar"; }, 3000);
   }
 })();
