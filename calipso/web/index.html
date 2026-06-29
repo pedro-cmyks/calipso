@@ -296,6 +296,7 @@
     <button class="toolbtn" id="sessionBtn" title="Elenco de agentes de la sesion">Sesion</button>
     <button class="toolbtn" id="webBtn" title="Preview de navegacion web">Web</button>
     <button class="toolbtn" id="memoryBtn" title="Bandeja del bibliotecario">Memoria</button>
+    <button class="toolbtn" id="pluginsBtn" title="Plugins de Claude Code">Plugins</button>
     <span class="status" id="status">listo</span>
   </header>
   <div id="goalBar">
@@ -481,6 +482,26 @@
     </div>
     <div id="webBody"><div class="hint">Cuando Calipso busque en la web, aqui veras lo que consulto y leyo.</div></div>
   </section>
+  <section class="drawer" id="pluginsPanel" aria-label="Plugins">
+    <div class="drawer-head">
+      <strong>Plugins</strong>
+      <span class="proj">Claude Code</span>
+      <span class="spacer"></span>
+      <button class="toolbtn" id="pluginsRefresh">Actualizar</button>
+      <button class="toolbtn" id="closePlugins">Cerrar</button>
+    </div>
+    <div id="pluginsBody" style="padding:12px;overflow-y:auto;flex:1;">
+      <div style="display:flex;gap:8px;margin-bottom:12px;">
+        <input id="pluginSearch" placeholder="Buscar en catálogo…" style="flex:1;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-size:13px;" />
+        <button id="pluginSearchBtn" class="toolbtn primary" style="white-space:nowrap;">Buscar</button>
+      </div>
+      <div class="hint">Instalados</div>
+      <div id="pluginsInstalled" class="connector-list"></div>
+      <div class="hint" style="margin-top:14px;">Catálogo <span id="pluginCatalogCount" style="color:var(--muted);font-size:11px;"></span></div>
+      <div id="pluginsCatalog" class="connector-list"></div>
+    </div>
+  </section>
+
   <section class="drawer" id="memoryPanel" aria-label="Memoria">
     <div class="drawer-head">
       <strong>Bibliotecario</strong>
@@ -977,6 +998,78 @@ document.getElementById("sessNew").onclick = async () => {
 const webPanel = document.getElementById("webPanel");
 document.getElementById("webBtn").onclick = () => webPanel.classList.add("open");
 document.getElementById("closeWeb").onclick = () => webPanel.classList.remove("open");
+// ── Panel de Plugins ──────────────────────────────────────────────────────
+const pluginsPanel = document.getElementById("pluginsPanel");
+document.getElementById("pluginsBtn").onclick = () => { pluginsPanel.classList.add("open"); loadPlugins(); };
+document.getElementById("closePlugins").onclick = () => pluginsPanel.classList.remove("open");
+document.getElementById("pluginsRefresh").onclick = () => loadPlugins(document.getElementById("pluginSearch").value);
+document.getElementById("pluginSearchBtn").onclick = () => loadPlugins(document.getElementById("pluginSearch").value);
+document.getElementById("pluginSearch").addEventListener("keydown", e => { if (e.key === "Enter") loadPlugins(e.target.value); });
+
+async function loadPlugins(search = "") {
+  const inst = document.getElementById("pluginsInstalled");
+  const cat  = document.getElementById("pluginsCatalog");
+  const cnt  = document.getElementById("pluginCatalogCount");
+  inst.innerHTML = "<div class='hint'>Cargando…</div>";
+  cat.innerHTML  = "";
+
+  try {
+    const [ri, rc] = await Promise.all([
+      fetch("/api/plugins").then(r => r.json()),
+      fetch(`/api/plugins/catalog?search=${encodeURIComponent(search)}&limit=60`).then(r => r.json()),
+    ]);
+
+    // Instalados
+    inst.innerHTML = "";
+    if (!ri.plugins.length) { inst.innerHTML = "<div class='hint'>Sin plugins instalados.</div>"; }
+    for (const p of ri.plugins) {
+      const el = document.createElement("div");
+      el.className = "side-item";
+      el.style = "display:flex;align-items:center;gap:8px;";
+      el.innerHTML = `<span style="flex:1"><b style="font-size:13px">${p.name}</b> <span style="color:var(--muted);font-size:11px">v${p.version} · ${p.marketplace}</span></span>
+        <span style="font-size:11px;color:var(--accent2);padding:2px 7px;border:1px solid var(--accent2);border-radius:999px;">instalado</span>`;
+      inst.appendChild(el);
+    }
+
+    // Catálogo
+    const all = rc.plugins;
+    cnt.textContent = `(${all.length} resultado${all.length !== 1 ? "s" : ""})`;
+    cat.innerHTML = "";
+    for (const p of all) {
+      const el = document.createElement("div");
+      el.className = "side-item";
+      el.style = "display:flex;align-items:flex-start;gap:8px;";
+      const badge = p.installed
+        ? `<span style="font-size:11px;color:var(--accent2);white-space:nowrap;padding:3px 8px;border:1px solid var(--accent2);border-radius:999px;">✓ instalado</span>`
+        : `<button data-plugin="${p.name}" class="plugin-install-btn toolbtn primary" style="white-space:nowrap;font-size:12px;padding:3px 10px;">Instalar</button>`;
+      el.innerHTML = `<div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:600">${p.name}
+            ${p.category ? `<span style="color:var(--muted);font-size:10px;margin-left:4px">${p.category}</span>` : ""}
+          </div>
+          ${p.author ? `<div style="font-size:11px;color:var(--muted)">${p.author}</div>` : ""}
+          ${p.description ? `<div style="font-size:12px;color:var(--text);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${p.description.replace(/"/g,'&quot;')}">${p.description.slice(0,100)}${p.description.length>100?"…":""}</div>` : ""}
+        </div>${badge}`;
+      cat.appendChild(el);
+    }
+
+    // Botones de instalar
+    cat.querySelectorAll(".plugin-install-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const name = btn.dataset.plugin;
+        btn.disabled = true; btn.textContent = "Instalando…";
+        const r = await fetch("/api/plugins/install", {method:"POST",
+          headers:{"Content-Type":"application/json"}, body: JSON.stringify({name})});
+        const j = await r.json();
+        if (j.ok) { btn.textContent = "✓"; btn.style.background = "var(--accent2)"; btn.style.color="#000"; }
+        else { btn.textContent = "Error"; btn.title = j.error || j.stderr || "fallo"; btn.disabled = false; }
+        setTimeout(() => loadPlugins(document.getElementById("pluginSearch").value), 1500);
+      });
+    });
+  } catch(e) {
+    inst.innerHTML = `<div class='hint'>Error: ${e.message}</div>`;
+  }
+}
+
 const memoryPanel = document.getElementById("memoryPanel");
 document.getElementById("memoryBtn").onclick = () => { memoryPanel.classList.add("open"); loadMemoryInbox(); };
 document.getElementById("closeMemory").onclick = () => memoryPanel.classList.remove("open");

@@ -2683,6 +2683,31 @@ def api_updates() -> dict:
     return discovery.updates()
 
 
+@app.get("/api/plugins")
+def api_plugins_list() -> dict:
+    """Plugins instalados en Claude Code."""
+    from calipso import plugins as calipso_plugins
+    return {"plugins": calipso_plugins.list_installed()}
+
+
+@app.get("/api/plugins/catalog")
+def api_plugins_catalog(search: str = "", limit: int = 50) -> dict:
+    """Catálogo de plugins disponibles en el marketplace."""
+    from calipso import plugins as calipso_plugins
+    return {"plugins": calipso_plugins.list_catalog(search=search, limit=limit)}
+
+
+@app.post("/api/plugins/install")
+async def api_plugins_install(request: Request) -> dict:
+    """Instala un plugin via claude -p '/plugin <nombre>'."""
+    from calipso import plugins as calipso_plugins
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="falta name")
+    return await asyncio.to_thread(calipso_plugins.install, name)
+
+
 @app.post("/api/updates/run")
 async def api_updates_run(request: Request) -> dict:
     """Ejecuta el comando de instalación para actualizar un CLI (claude o codex)."""
