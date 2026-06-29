@@ -2239,10 +2239,24 @@ function connect() {
         if (m.job_id) wi.onclick = () => showJob(m.job_id);
         addMsg("meta", `${m.label || "proceso"} iniciado`);
       } else if (m.action === "running") {
-        const title = `${m.label || "proceso"} corriendo - ${m.elapsed || 0}s - ${m.tokens || "?"} tokens aprox`;
+        const title = `${m.label || "proceso"} — ${m.elapsed || 0}s · ${m.tokens || "?"} tokens`;
         const wi = workItem(key, m.label || "proceso", `${m.elapsed || 0}s - ${m.tokens || "?"} tokens`);
         if (m.job_id) wi.onclick = () => showJob(m.job_id);
-        updateDetail(el, title, `sigue corriendo: ${m.elapsed || 0}s, ${m.tokens || "?"} tokens aprox`);
+        updateDetail(el, title, "");
+        if (m.partial && el) {
+          let termPre = el.querySelector(".terminal-stream");
+          if (!termPre) {
+            termPre = document.createElement("pre");
+            termPre.className = "terminal-stream";
+            termPre.style.cssText = "margin-top:6px;font-family:'JetBrains Mono',monospace;font-size:11px;"
+              + "max-height:220px;overflow-y:auto;color:var(--text);opacity:0.8;"
+              + "white-space:pre-wrap;word-break:break-all;border-top:1px solid var(--border);padding-top:6px;";
+            el.appendChild(termPre);
+          }
+          termPre.textContent = m.partial;
+          termPre.scrollTop = termPre.scrollHeight;
+          if (!el.open) el.open = true;
+        }
       } else if (m.action === "queued") {
         updateDetail(el, `${m.label || "proceso"} corriendo`, m.hint || "mensaje recibido; queda en cola");
         addMsg("meta", m.hint || "mensaje recibido; queda en cola");

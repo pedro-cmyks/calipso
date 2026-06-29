@@ -102,8 +102,20 @@ REGISTRY: dict[str, dict] = {
 }
 
 # Personas para modelos descubiertos sin entrada propia.
-PERSONA_POOL = ["Tales", "Heraclito", "Parmenides", "Zenon", "Pitagoras",
-                "Anaximandro", "Empedocles", "Protagoras", "Gorgias", "Anaxagoras"]
+PERSONA_POOL = [
+    # filósofos griegos
+    "Tales", "Heraclito", "Parmenides", "Zenon", "Pitagoras",
+    "Anaximandro", "Empedocles", "Protagoras", "Gorgias", "Anaxagoras",
+    # científicos y matemáticos
+    "Gauss", "Euler", "Fourier", "Lovelace", "Turing", "Noether",
+    "Curie", "Feynman", "Ramanujan", "Shannon",
+    # exploradores y cartógrafos
+    "Magallanes", "Ibn Battuta", "Humboldt", "Mercator", "Vespucio",
+    # filósofos y pensadores de otras culturas
+    "Avicena", "Averroes", "Nagarjuna", "Zhuangzi", "Ibn Rushd",
+    # inventores
+    "Tesla", "Babbage", "Hopper", "Watt", "Gutenberg",
+]
 
 WEIGHTS = {"capability": 1.0, "cost": 0.25, "speed": 0.2, "quota": 0.6, "tier": 0.15}
 

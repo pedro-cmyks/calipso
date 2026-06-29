@@ -107,6 +107,9 @@ def pick_model(tier: str, task_type: str, available: dict,
 def build_team(plan_obj: dict, available: dict, project_root: str | None = None,
                session: dict | None = None) -> dict:
     """Convierte el plan en un equipo concreto: cada agente con su MODELO real."""
+    import random
+    from calipso.capabilities import PERSONA_POOL
+    used_personas: set[str] = set()
     agents = []
     for a in plan_obj.get("agents", []):
         picked = pick_model(a["tier"], a["type"], available, project_root)
@@ -116,6 +119,12 @@ def build_team(plan_obj: dict, available: dict, project_root: str | None = None,
         persona = m.get("persona", key)
         if session:
             persona = (session.get("agents", {}).get(key, {}).get("name")) or persona
+        # Si ya usamos este nombre en el equipo, elegir uno diferente al azar
+        if persona in used_personas:
+            pool = [p for p in PERSONA_POOL if p not in used_personas]
+            if pool:
+                persona = random.choice(pool)
+        used_personas.add(persona)
         skill_id = skills.infer(a)
         agents.append({
             "persona": persona, "role": a["role"], "task": a["task"],

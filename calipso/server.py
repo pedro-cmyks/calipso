@@ -2013,7 +2013,7 @@ async def _run_subscription_text_live(
                             "prompt_tokens": max(1, (len(system) + len(user_msg)) // 4)})
         while proc.poll() is None:
             now = time.perf_counter()
-            if now - last_notice >= 5:
+            if now - last_notice >= 2:
                 partial, _ = _read_partial()
                 await ws.send_json({
                     "type": "process", "action": "running",
@@ -2021,6 +2021,7 @@ async def _run_subscription_text_live(
                     "label": label, "client": client, "model": model,
                     "elapsed": round(now - started),
                     "tokens": max(1, ((len(system) + len(user_msg)) + len(partial)) // 4),
+                    "partial": partial[-3000:] if partial else "",
                     "hint": "sigue corriendo; envia /stop para cancelar o escribe y lo atiendo al terminar"})
                 jobs.event(
                     str(ROOT), job["id"], "running",
