@@ -160,12 +160,6 @@ ALLOWLIST: dict[str, dict[str, Any]] = {
         "args": ["{python}", "test_memory.py"],
         "timeout": 180,
     },
-    "test_orchestrator": {
-        "title": "Probar orquestador dinamico",
-        "description": "Ejecuta test_orchestrator.py.",
-        "args": ["{python}", "test_orchestrator.py"],
-        "timeout": 120,
-    },
     "test_routines": {
         "title": "Probar rutinas y backup",
         "description": "Ejecuta test_routines.py.",

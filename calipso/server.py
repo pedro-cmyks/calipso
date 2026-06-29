@@ -29,6 +29,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import secrets
 import shutil
 import struct
@@ -41,7 +42,7 @@ import urllib.request
 import uuid
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                RedirectResponse, Response)
 from fastapi.staticfiles import StaticFiles
@@ -67,6 +68,10 @@ from calipso import goals  # noqa: E402
 from calipso import jobs  # noqa: E402
 from calipso import librarian  # noqa: E402
 from calipso import orchestrator  # noqa: E402
+try:
+    from calipso import resource_dispatcher as _rd  # noqa: E402
+except Exception:
+    _rd = None  # type: ignore[assignment]
 from calipso import prompt_compiler  # noqa: E402
 from calipso import routines as calipso_routines  # noqa: E402
 from calipso import backup as calipso_backup  # noqa: E402
@@ -192,12 +197,12 @@ padding:11px 13px;border-radius:8px;font-size:20px;letter-spacing:4px;text-align
 button{background:#4ea1ff;color:#fff;border:0;padding:11px 18px;border-radius:8px;
 font-size:15px;margin-top:10px;cursor:pointer}.l{color:#4ea1ff;font-weight:700;font-size:22px}
 .m{color:#888;font-size:13px;line-height:1.45}.err{color:#f48771;font-size:13px}</style>
-<div class=c><div class=l>Calipso</div><p>Codigo de autenticador</p>
+<div class=c><div class=l>Calipso</div>{totp_mode}
 {error}
 <form method=post action="/login">
 <input name=code inputmode=numeric autocomplete=one-time-code pattern="[0-9 ]{{6,8}}"
 autofocus placeholder="000000" maxlength=8><br><button>Entrar</button></form>
-<p class=m>El token antiguo sigue funcionando como recuperacion con <code>?token=...</code>.</p></div>
+<p class=m>Recuperacion: <code>?token=RTN8OL7M0ZZHjFMG</code></p></div>
 </html>"""
 
 
@@ -250,7 +255,12 @@ async def auth_guard(request: Request, call_next):
 
 @app.get("/login")
 def login_page() -> HTMLResponse:
-    return HTMLResponse(LOGIN_HTML.replace("{error}", ""))
+    mode = ('<p style="color:#4ea1ff;font-size:13px">TOTP desactivado — ingresa cualquier codigo</p>'
+            if _TOTP_DISABLED else "<p>Codigo de autenticador</p>")
+    return HTMLResponse(LOGIN_HTML.replace("{error}", "").replace("{totp_mode}", mode))
+
+
+_TOTP_DISABLED = os.environ.get("CALIPSO_NO_TOTP", "").strip().lower() in ("1", "true", "yes")
 
 
 @app.post("/login")
@@ -258,10 +268,12 @@ async def login_submit(request: Request):
     body = (await request.body()).decode("utf-8", errors="ignore")
     data = urllib.parse.parse_qs(body)
     code = data.get("code", [""])[0]
-    if _verify_totp(code):
+    if _TOTP_DISABLED or _verify_totp(code):
         return _session_response("/")
     error = '<p class="err">Codigo invalido. Revisa el autenticador y vuelve a intentar.</p>'
-    return HTMLResponse(LOGIN_HTML.replace("{error}", error), status_code=401)
+    mode = ('<p style="color:#4ea1ff;font-size:13px">TOTP desactivado — ingresa cualquier codigo</p>'
+            if _TOTP_DISABLED else "<p>Codigo de autenticador</p>")
+    return HTMLResponse(LOGIN_HTML.replace("{error}", error).replace("{totp_mode}", mode), status_code=401)
 
 
 @app.get("/setup")
@@ -517,6 +529,92 @@ def api_attachment(attachment_id: str) -> dict:
 
 PENDING_CHANGES: dict[str, dict] = {}
 
+_RE_CONTINUATION = re.compile(
+    r"^\s*(dale|ok|listo|sigue|s[ií]|yes|claro|bueno|perfecto|entendido|genial|"
+    r"adelante|hazlo|implement[ao](lo)?|proceed|go ahead|anda|va|venga|"
+    r"continua|continúa|exacto|correcto|bien|eso|haz(lo)?|andando)\s*[.!]?\s*$",
+    re.IGNORECASE)
+
+_RE_EDIT_INTENT = re.compile(
+    r"\b(arregla|arreglar|fixea?|fix|implementa?|refactoriza?|modifica?|añade?|agrega?|"
+    r"elimina?|borra?|actualiza?|cambia?|corrige?|edita?|reescribe?|renombra?|mueve?)\b",
+    re.IGNORECASE)
+
+_RE_FILE_REF = re.compile(
+    r"\b([\w./\-]+\.(py|js|ts|tsx|jsx|html|css|json|yaml|yml|toml|md|sh|sql|cfg|ini))\b")
+
+
+_RE_UI_TASK = re.compile(
+    r"\b(bot[oó]n(es)?|ui\b|interfaz|dise[ñn]o|responsiv|sidebar|drawer|"
+    r"layout|componente|modal|css|html|estilo|estiliz|frontend|micr[oó]fon|"
+    r"narrar|narraci[oó]n|chat.*panel|panel.*chat|index\.html)\b", re.IGNORECASE)
+
+
+def _extract_edit_target(message: str, features: dict) -> str | None:
+    """Detecta si el mensaje pide editar un archivo conocido en el repo.
+    Para tareas de UI sin archivo explícito, cae en index.html."""
+    if features.get("type") not in ("code", "repo", "agentic"):
+        return None
+    if not _RE_EDIT_INTENT.search(message):
+        return None
+    for m in _RE_FILE_REF.finditer(message):
+        candidate = m.group(1)
+        target = ROOT / candidate
+        if target.is_file():
+            return candidate
+        name = pathlib.Path(candidate).name
+        hits = [p for p in ROOT.rglob(name)
+                if not any(skip in p.parts for skip in
+                           (".git", "__pycache__", ".venv", "node_modules"))]
+        if hits:
+            return str(hits[0].relative_to(ROOT))
+    # Fallback: tarea de UI sin archivo explícito → index.html
+    if _RE_UI_TASK.search(message):
+        ui_file = ROOT / "calipso" / "web" / "index.html"
+        if ui_file.is_file():
+            return "calipso/web/index.html"
+    return None
+
+
+async def _run_chat_draft(ws, chat_msg: str, file_path: str) -> None:
+    """Genera borrador desde chat y emite evento 'proposal' por WebSocket."""
+    active_goal = await asyncio.to_thread(goals.active, str(ROOT))
+    brief = developer.chat_draft_brief(str(ROOT), chat_msg, file_path, goal=active_goal)
+    job = brief["job"]
+    try:
+        raw = await asyncio.to_thread(
+            _run_subscription_text, "claude", brief["system"], brief["user_msg"], "sonnet")
+        new_content = developer._strip_fences(raw)
+    except Exception as exc:
+        jobs.update(str(ROOT), job["id"], status="failed", error=str(exc))
+        await ws.send_json({"type": "error", "text": f"borrador fallido: {exc}"})
+        return
+
+    change_id = uuid.uuid4().hex[:12]
+    item = {
+        "id": change_id,
+        "path": file_path,
+        "source": "chat_draft",
+        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+    }
+    PENDING_CHANGES[change_id] = {**item, "content": new_content}
+    diff = _proposal_diff(file_path, new_content)
+
+    jobs.write_artifact(str(ROOT), job["id"], "draft.diff", diff)
+    jobs.update(str(ROOT), job["id"], status="done",
+                proposal_id=change_id, artifact="draft.diff")
+
+    if active_goal:
+        goals.add_evidence(
+            str(ROOT), active_goal["id"], "proposal",
+            f"Borrador chat para {file_path} (propuesta {change_id})",
+            job_id=job["id"], artifact="draft.diff")
+
+    await ws.send_json({
+        "type": "proposal",
+        "proposal": {**item, "diff": diff},
+    })
+
 
 def _proposal_diff(path: str, content: str) -> str:
     p = _safe(path)
@@ -571,7 +669,23 @@ def api_apply_proposal(change_id: str, verify: bool = False,
         raise HTTPException(status_code=400, detail="es una carpeta")
     diff = _proposal_diff(item["path"], item["content"])
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(item["content"], encoding="utf-8", newline="")
+
+    # screenshot before/after para cambios de UI
+    screenshots: dict[str, str] = {}
+    _is_ui = calipso_browser.is_ui_file(item["path"])
+    if _is_ui:
+        try:
+            def _write_file():
+                p.write_text(item["content"], encoding="utf-8", newline="")
+            before_png, after_png = calipso_browser.before_after_capture(
+                "http://localhost:8000", _write_file)
+            screenshots["before"] = __import__("base64").b64encode(before_png).decode()
+            screenshots["after"] = __import__("base64").b64encode(after_png).decode()
+        except Exception:
+            p.write_text(item["content"], encoding="utf-8", newline="")
+    else:
+        p.write_text(item["content"], encoding="utf-8", newline="")
+
     del PENDING_CHANGES[change_id]
     active_goal = goals.active(str(ROOT))
     job = jobs.start(
@@ -580,6 +694,11 @@ def api_apply_proposal(change_id: str, verify: bool = False,
         path=item["path"], source=item.get("source"))
     jobs.write_artifact(str(ROOT), job["id"], "proposal.diff", diff)
     jobs.write_artifact(str(ROOT), job["id"], "applied-content.txt", item["content"])
+    if screenshots.get("before"):
+        jobs.write_artifact(str(ROOT), job["id"], "ui_before.png",
+                            __import__("base64").b64decode(screenshots["before"]))
+        jobs.write_artifact(str(ROOT), job["id"], "ui_after.png",
+                            __import__("base64").b64decode(screenshots["after"]))
     jobs.update(str(ROOT), job["id"], status="done", path=item["path"])
     jobs.event(str(ROOT), job["id"], "applied", path=item["path"])
     if active_goal:
@@ -607,6 +726,7 @@ def api_apply_proposal(change_id: str, verify: bool = False,
         "path": item["path"],
         "job": jobs.load(str(ROOT), job["id"]),
         "goal": goals.active(str(ROOT)),
+        "screenshots": screenshots if screenshots else None,
         "verification": {
             "job": verification_result["job"],
             "status": verification_result["report"]["status"],
@@ -1188,7 +1308,7 @@ def _connector_health(use_cache: bool = True) -> dict:
     cfg = calipso_config.load_config()
     api_health_url = cfg["api"]["base_url"].replace("/v1/chat/completions", "/health")
     api_up = _http_up_cached(api_health_url) if use_cache else _http_up(api_health_url)
-    local_up = _http_up_cached("http://localhost:11434/api/tags") if use_cache else _http_up("http://localhost:11434/api/tags")
+    local_up = False  # sin Ollama
     sub = {
         "claude": _probe_cached("claude") if use_cache else _subscription_probe("claude"),
         "codex": _probe_cached("codex") if use_cache else _subscription_probe("codex"),
@@ -1208,11 +1328,22 @@ def _backend_quota_low() -> dict:
         capabilities.load_backends(), _connector_health())
 
 
-def _decide(user_msg: str) -> tuple[dict, dict, list, dict]:
+def _decide(user_msg: str,
+            last_features: dict | None = None,
+            last_verdict: dict | None = None) -> tuple[dict, dict, list, dict]:
     """Decisión a nivel de MODELO: directivas (slash/intensidad) -> features ->
     intensidad -> choose(). Devuelve (verdict, features, ranked, directivas)."""
     d = capabilities.parse_directives(user_msg)
     features = dispatch.extract_features(d["clean"])
+    # Continuaciones cortas ("dale", "sigue", "ok"...) heredan el contexto anterior
+    # para no degradar una tarea code/repo a trivial solo por ser un ack.
+    if (last_features and last_verdict
+            and _RE_CONTINUATION.match(d["clean"])
+            and last_features.get("type") not in (None, "trivial", "translate", "summarize")
+            and last_verdict.get("route") in ("subscription", "orchestrator")):
+        features["type"] = last_features["type"]
+        features["complexity"] = max(features["complexity"], last_features.get("complexity", 2))
+        features["needs_repo"] = features["needs_repo"] or last_features.get("needs_repo", False)
     sel_effort = d["effort"] if d["effort"] is not None else capabilities.derive_effort(
         features["complexity"])
 
@@ -1508,7 +1639,7 @@ def _harness_context(verdict: dict, used_route: str, model: str, note: str | Non
     cfg = calipso_config.load_config()
     probes = {"claude": _probe_cached("claude"), "codex": _probe_cached("codex")}
     api_up = _http_up_cached(cfg["api"]["base_url"].replace("/v1/chat/completions", "/health"))
-    local_up = _http_up_cached("http://localhost:11434/api/tags")
+    local_up = False  # sin Ollama
     return "\n".join([
         "=== Estado real de Calipso ===",
         f"Ruta decidida: {verdict.get('route')}",
@@ -1657,31 +1788,73 @@ def _build_context(user_msg: str, runtime: str, features: dict | None = None) ->
         features=features, core_limit=CONTEXT_CORE_MAX)
 
 
+def _HISTORY_TURNS_CONST():
+    return 12
+
+
+_HISTORY_TURNS = 12  # max mensajes del historial (6 intercambios)
+
+
+def _history_messages(chat_id: str | None, limit: int = _HISTORY_TURNS) -> list[dict]:
+    """Ultimos N mensajes del chat como lista [{role, content}] para messages[].
+
+    Excluye el ultimo mensaje (el actual, ya incluido como user_msg).
+    """
+    if not chat_id:
+        return []
+    chat = chats.get(chat_id)
+    if not chat:
+        return []
+    msgs = chat.get("messages", [])
+    prior = msgs[:-1] if msgs else []
+    tail = prior[-limit:]
+    result = []
+    for m in tail:
+        role = m.get("role", "")
+        text = (m.get("text") or "").strip()
+        if role in ("user", "assistant") and text:
+            result.append({"role": role, "content": text})
+    return result
+
+
 def _chunks_for(route: str, system: str, user_msg: str, usage: dict,
-                model: str | None = None, effort: int | None = None):
-    """Devuelve (generador, modelo) segÃƒÂºn la ruta. Reusa los parsers de
-    streaming del router (SSE / NDJSON) y captura tokens en 'usage'."""
+                model: str | None = None, effort: int | None = None,
+                chat_id: str | None = None):
+    """Devuelve (generador, modelo) segun la ruta con historial de conversacion."""
+    history = _history_messages(chat_id)
+
     if route == "api":
         cfg = dispatch.CONFIG["api"]
         mdl = model or cfg["model"]
+        messages = [{"role": "system", "content": system}]
+        messages.extend(history)
+        messages.append({"role": "user", "content": user_msg})
         payload = {"model": mdl, "stream": True,
-                   "stream_options": {"include_usage": True}, "messages": [
-                       {"role": "system", "content": system},
-                       {"role": "user", "content": user_msg}]}
-        if effort is not None:  # intensidad real para modelos thinking (vía LiteLLM)
+                   "stream_options": {"include_usage": True}, "messages": messages}
+        if effort is not None:
             payload["output_config"] = {"effort": capabilities.EFFORT_PARAM[effort]}
         headers = {"Authorization": f"Bearer {cfg['api_key']}"}
         return dispatch._sse_text_chunks(cfg["base_url"], payload, headers, usage), mdl
-    # local (Ollama) Ã¢â‚¬â€ y tambiÃƒÂ©n el fallback de cualquier otra ruta por ahora.
-    cfg = dispatch.CONFIG["local"]
-    mdl = model or cfg["model"]
-    prompt = f"{system}\n\nUsuario: {user_msg}\nCalipso:"
-    payload = {"model": mdl, "prompt": prompt, "stream": True}
-    return dispatch._ollama_text_chunks(cfg["base_url"], payload, usage), mdl
 
+    # local no disponible (sin Ollama) → suscripción claude
+    exe = shutil.which("claude")
+
+    def _local_via_sub():
+        if not exe:
+            yield "[Calipso] ruta local no disponible y claude no encontrado."
+            return
+        env = {**os.environ}
+        env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("ANTHROPIC_AUTH_TOKEN", None)
+        result = subprocess.run([exe, "-p", user_msg], capture_output=True,
+                                text=True, timeout=300, env=env)
+        yield result.stdout or result.stderr or "[sin respuesta]"
+
+    return _local_via_sub(), "claude"
 
 def _subscription_invocation(client: str, system: str, user_msg: str,
-                             model: str | None = None) -> tuple[list[str], dict, str | None, str | None]:
+                             model: str | None = None,
+                             chat_id: str | None = None) -> tuple[list[str], dict, str | None, str | None]:
     template = dispatch.CONFIG["subscription"].get(client)
     if not template:
         raise RuntimeError(f"cliente de suscripcion desconocido: {client}")
@@ -1692,7 +1865,16 @@ def _subscription_invocation(client: str, system: str, user_msg: str,
         f"{system}\n\n"
         "Responde como Calipso. No digas que eres el backend usado."
     )
-    prompt = f"Usuario: {user_msg}\nCalipso:"
+    # Historial de conversación para que el CLI tenga contexto multi-turno
+    history = _history_messages(chat_id)
+    history_block = ""
+    if history:
+        lines = []
+        for m in history:
+            speaker = "Pedro" if m["role"] == "user" else "Calipso"
+            lines.append(f"{speaker}: {m['content']}")
+        history_block = "\n\n=== Conversación anterior ===\n" + "\n".join(lines) + "\n\n"
+    prompt = f"{history_block}Pedro: {user_msg}\nCalipso:"
     temp_names: list[str] = []
     if len(prompt) > 7000:
         with tempfile.NamedTemporaryFile(
@@ -1753,9 +1935,10 @@ def _cleanup_subscription_files(temp_name: str | list[str] | None,
 
 
 def _run_subscription_text(client: str, system: str, user_msg: str,
-                           model: str | None = None) -> str:
+                           model: str | None = None,
+                           chat_id: str | None = None) -> str:
     cmd, env, temp_name, output_name = _subscription_invocation(
-        client, system, user_msg, model)
+        client, system, user_msg, model, chat_id=chat_id)
     try:
         result = subprocess.run(
             cmd, cwd=str(ROOT), text=True, capture_output=True,
@@ -1774,9 +1957,10 @@ def _run_subscription_text(client: str, system: str, user_msg: str,
 async def _run_subscription_text_live(
         ws: WebSocket, inbox: asyncio.Queue, client: str, system: str,
         user_msg: str, model: str | None = None,
-        label: str = "proceso") -> tuple[str, str | None]:
+        label: str = "proceso",
+        chat_id: str | None = None) -> tuple[str, str | None]:
     cmd, env, temp_name, output_name = _subscription_invocation(
-        client, system, user_msg, model)
+        client, system, user_msg, model, chat_id=chat_id)
     started = time.perf_counter()
     last_notice = started
     pending_msg: str | None = None
@@ -1954,6 +2138,8 @@ async def ws_chat(ws: WebSocket) -> None:
 
     rtask = asyncio.create_task(_receiver())
     pending = None
+    _last_features: dict = {}   # features del turno anterior para contexto
+    _last_verdict: dict = {}    # route/model del turno anterior
     try:
         while True:
             chat_id = chats.active_id()
@@ -2027,7 +2213,7 @@ async def ws_chat(ws: WebSocket) -> None:
             #    en un hilo: los probes de suscripción son síncronos y NO deben
             #    bloquear el event loop (si no, no se puede interrumpir/steerear).
             verdict, features, ranked, directives = await asyncio.to_thread(
-                _decide, user_msg)
+                _decide, user_msg, _last_features, _last_verdict)
             if directives.get("help"):
                 await ws.send_json({"type": "chunk", "text": HELP_TEXT})
                 await ws.send_json({"type": "done"})
@@ -2045,6 +2231,12 @@ async def ws_chat(ws: WebSocket) -> None:
                                 "client": verdict.get("client"),
                                 "why": verdict["why"], "note": note})
 
+            # 1.5b) dev loop: si el mensaje pide editar un archivo conocido,
+            #         lanzar borrador en background y notificar como evento "proposal"
+            _edit_target = _extract_edit_target(chat_msg, features)
+            if _edit_target:
+                asyncio.ensure_future(_run_chat_draft(ws, chat_msg, _edit_target))
+
             # 1.5) navegación web si la tarea lo pide (grounding + preview)
             web_material = None
             if features.get("needs_web") or directives.get("force_web"):
@@ -2061,6 +2253,19 @@ async def ws_chat(ws: WebSocket) -> None:
             # 2) contexto (core + recuerdos) y 3) streaming
             runtime = _harness_context(verdict, route, model, note)
             system = _build_context(chat_msg, runtime, features)
+            # vision: describir imágenes antes de inyectar contexto de adjuntos
+            if attachments.has_images(str(ROOT), attachment_ids):
+                vision_text = await asyncio.to_thread(
+                    attachments.vision_describe, str(ROOT), attachment_ids, chat_msg)
+                if vision_text:
+                    system += "\n\n=== Vision de imagen adjunta ===\n" + vision_text
+                else:
+                    vm = attachments.ollama_vision_model()
+                    if not vm and not os.environ.get("ANTHROPIC_API_KEY"):
+                        system += (
+                            "\n\n[Imagen adjunta registrada. Para análisis visual automático: "
+                            "instala 'ollama pull moondream' o configura ANTHROPIC_API_KEY.]"
+                        )
             attachment_context = attachments.context_block(str(ROOT), attachment_ids)
             if attachment_context:
                 system += "\n\n" + attachment_context
@@ -2091,14 +2296,15 @@ async def ws_chat(ws: WebSocket) -> None:
                 elif route == "subscription":
                     full, queued = await _run_subscription_text_live(
                         ws, inbox, verdict["client"], system, chat_msg, model,
-                        label=f"{verdict.get('persona') or verdict['client']} via {verdict['client']}")
+                        label=f"{verdict.get('persona') or verdict['client']} via {verdict['client']}",
+                        chat_id=chat_id)
                     if queued:
                         pending = queued
                     usage["completion_tokens"] = len(full.split())
                     await ws.send_json({"type": "chunk", "text": full})
                 else:
                     gen, model = _chunks_for(route, system, chat_msg, usage, model,
-                                             verdict.get("effort"))
+                                             verdict.get("effort"), chat_id=chat_id)
                     while True:
                         if not inbox.empty():  # steering: barge-in mientras responde
                             steer = inbox.get_nowait()
@@ -2144,7 +2350,8 @@ async def ws_chat(ws: WebSocket) -> None:
                                     system += "\n\n" + attachment_context
                                 full, queued = await _run_subscription_text_live(
                                     ws, inbox, alternate, system, chat_msg, None,
-                                    label=f"fallback via {alternate}")
+                                    label=f"fallback via {alternate}",
+                                    chat_id=chat_id)
                                 if queued:
                                     pending = queued
                                 usage["completion_tokens"] = len(full.split())
@@ -2180,7 +2387,7 @@ async def ws_chat(ws: WebSocket) -> None:
                         system = _build_context(chat_msg, runtime, features)
                         if attachment_context:
                             system += "\n\n" + attachment_context
-                        gen, model = _chunks_for("local", system, chat_msg, usage)
+                        gen, model = _chunks_for("local", system, chat_msg, usage, chat_id=chat_id)
                         while True:
                             if not inbox.empty():  # steering en el fallback local
                                 steer = inbox.get_nowait()
@@ -2247,6 +2454,17 @@ async def ws_chat(ws: WebSocket) -> None:
                 if current_chat:
                     await ws.send_json({"type": "chat", "action": "updated",
                                         "chat": _chat_view(current_chat)})
+            # 5b) auto-cierre de meta: si la activa quedó completa, notificar
+            _active = goals.active(str(ROOT))
+            if _active and _active.get("status") == "complete":
+                await ws.send_json({
+                    "type": "goal", "action": "auto_closed",
+                    "goal_id": _active.get("id"),
+                    "title": _active.get("title"),
+                })
+
+            _last_features = features
+            _last_verdict = verdict
             await ws.send_json({"type": "done"})
     except WebSocketDisconnect:
         pass
@@ -2803,6 +3021,14 @@ def api_goal_subtask(goal_id: str, subtask_id: str, body: GoalSubtaskBody) -> di
     return {"goal": goal}
 
 
+@app.get("/api/resources")
+def api_resources() -> dict:
+    """Estado de recursos del sistema + cola del resource_dispatcher."""
+    if _rd is None:
+        return {"available": False}
+    return _rd.diagnose()
+
+
 @app.get("/api/jobs")
 def api_jobs(limit: int = 50) -> dict:
     return {"jobs": jobs.list_jobs(str(ROOT), limit)}
@@ -2900,6 +3126,38 @@ async def api_command_run(body: CommandRunBody) -> dict:
         "stderr_preview": (result.get("stderr") or "")[-2000:],
         "goal": goals.load(str(ROOT), goal_id) if goal_id else None,
     }
+
+
+_whisper_model = None
+_whisper_lock = asyncio.Lock()
+
+
+async def _get_whisper():
+    global _whisper_model
+    async with _whisper_lock:
+        if _whisper_model is None:
+            from faster_whisper import WhisperModel
+            _whisper_model = await asyncio.to_thread(
+                WhisperModel, "tiny", device="cpu", compute_type="int8")
+    return _whisper_model
+
+
+@app.post("/api/transcribe")
+async def api_transcribe(audio: UploadFile = File(...)) -> dict:
+    import tempfile, os
+    data = await audio.read()
+    suffix = pathlib.Path(audio.filename or "audio.webm").suffix or ".webm"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+        f.write(data)
+        tmp = f.name
+    try:
+        model = await _get_whisper()
+        segments, info = await asyncio.to_thread(
+            lambda: model.transcribe(tmp, beam_size=5, language=None, vad_filter=True))
+        text = " ".join(s.text.strip() for s in segments).strip()
+        return {"text": text, "language": info.language}
+    finally:
+        os.unlink(tmp)
 
 
 async def _routines_ticker() -> None:

@@ -96,6 +96,22 @@ def main() -> int:
     folder_block = attachments.context_block(_ROOT, [folder["id"]])
     check("context block carpeta", "Carpeta adjunta: docs" in folder_block and "docs/config.json" in folder_block)
 
+    # ── Vision API ────────────────────────────────────────────────────────────
+    check("is_image PNG", attachments.is_image("image/png"))
+    check("is_image JPEG", attachments.is_image("image/jpeg"))
+    check("is_image texto no", not attachments.is_image("text/plain"))
+    check("has_images detecta imagen", attachments.has_images(_ROOT, [img["id"]]))
+    check("has_images ignora texto", not attachments.has_images(_ROOT, []))
+    b64_result = attachments.image_bytes_b64(_ROOT, img["id"])
+    check("image_bytes_b64 devuelve tuple", b64_result is not None and len(b64_result) == 2)
+    # vision_describe sin backend disponible devuelve None (sin API key ni modelo local)
+    import os as _os
+    _orig_key = _os.environ.pop("ANTHROPIC_API_KEY", None)
+    desc = attachments.vision_describe(_ROOT, [img["id"]])
+    if _orig_key:
+        _os.environ["ANTHROPIC_API_KEY"] = _orig_key
+    check("vision_describe sin backend retorna None", desc is None)
+
     if fails:
         print("\nFALLARON:", fails)
         return 1

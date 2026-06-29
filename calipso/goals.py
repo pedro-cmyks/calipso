@@ -296,7 +296,9 @@ def set_criterion(project_root: str | None, goal_id: str, criterion_id: str,
         })
     _write(project_root, goal)
     event(project_root, goal_id, "criterion", criterion_id=criterion_id, done=bool(done))
-    return goal
+    # Auto-cierre si todos los criterios quedaron completos
+    closed = check_auto_close(project_root, goal_id)
+    return closed if closed else goal
 
 
 def set_subtask(project_root: str | None, goal_id: str, subtask_id: str,
@@ -314,6 +316,10 @@ def set_subtask(project_root: str | None, goal_id: str, subtask_id: str,
     found["status"] = status
     _write(project_root, goal)
     event(project_root, goal_id, "subtask", subtask_id=subtask_id, status=status)
+    if status == "done":
+        closed = check_auto_close(project_root, goal_id)
+        if closed:
+            return closed
     return goal
 
 
@@ -380,6 +386,38 @@ def remove_item(project_root: str | None, goal_id: str, kind: str,
     goal[key] = kept
     _write(project_root, goal)
     event(project_root, goal_id, "item_removed", kind=key, item_id=item_id)
+    return goal
+
+
+def check_auto_close(project_root: str | None, goal_id: str) -> dict[str, Any] | None:
+    """Cierra automáticamente la meta si todos los criterios tienen done=True.
+
+    Devuelve la meta actualizada si fue cerrada, o None si no se cerró.
+    Solo actúa sobre metas en estado activo (no final ni ya cerradas).
+    """
+    goal = load(project_root, goal_id)
+    if not goal:
+        return None
+    if goal.get("status") in FINAL_STATES:
+        return None
+    criteria = goal.get("criteria") or []
+    if not criteria:
+        return None
+    if not all(c.get("done") for c in criteria):
+        return None
+
+    goal["status"] = "complete"
+    current = active(project_root)
+    if current and current.get("id") == goal_id:
+        set_active(project_root, None)
+    goal.setdefault("evidence", []).append({
+        "ts": _now(),
+        "kind": "auto_close",
+        "text": f"Meta cerrada automáticamente: todos los criterios ({len(criteria)}) completados.",
+    })
+    _write(project_root, goal)
+    event(project_root, goal_id, "auto_closed",
+          criteria_done=len(criteria), title=goal.get("title"))
     return goal
 
 

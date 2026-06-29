@@ -37,6 +37,7 @@ def main() -> int:
 
     contract = prompt_compiler.internal_contract({"needs_repo": True, "needs_web": True})
     check("marca repo y web", "Repo requerido: si. Web requerida: si." in contract, fails)
+    check("contrato multilingue", "idioma" in contract and "mismo idioma" in contract, fails)
     brief = prompt_compiler.agent_brief({
         "role": "revisor",
         "persona": "Heraclito",

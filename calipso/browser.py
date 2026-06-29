@@ -60,6 +60,59 @@ def screenshot(url: str, path: str | None = None, full_page: bool = True,
     return png
 
 
+_UI_EXTS = {".html", ".css", ".js"}
+
+
+def is_ui_file(file_path: str) -> bool:
+    """True si el archivo afecta la UI de Calipso (web/)."""
+    p = pathlib.Path(file_path)
+    return p.suffix in _UI_EXTS and "web" in p.parts
+
+
+def before_after_capture(
+    url: str,
+    apply_fn,
+    width: int = 1280,
+    height: int = 900,
+    timeout: int = 20000,
+    settle_ms: int = 800,
+) -> tuple[bytes, bytes]:
+    """Captura before/after de la UI al aplicar un cambio.
+
+    apply_fn() escribe el archivo a disco. La URL debe estar corriendo antes de llamar.
+    Devuelve (before_png, after_png).
+    """
+    import time as _time
+    _ensure()
+    from playwright.sync_api import sync_playwright
+
+    def _snap(page) -> bytes:
+        try:
+            page.goto(url, wait_until="load", timeout=timeout)
+        except Exception:
+            pass
+        return page.screenshot(full_page=False)
+
+    def _run() -> tuple[bytes, bytes]:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page(viewport={"width": width, "height": height})
+            before = _snap(page)
+            apply_fn()
+            _time.sleep(settle_ms / 1000)
+            after = _snap(page)
+            browser.close()
+        return before, after
+
+    try:
+        return _run()
+    except Exception as exc:
+        if not _needs_browser_install(exc):
+            raise
+        deps.ensure("browser", run_post=True)
+        return _run()
+
+
 def render(url: str, timeout: int = 25000, max_chars: int = 6000) -> str:
     """Texto de la pagina ya renderizada, con JS ejecutado."""
     _ensure()

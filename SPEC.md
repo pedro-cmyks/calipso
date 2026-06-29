@@ -391,7 +391,11 @@ probarlo desde el iPhone.
 - Editor Monaco y explorador.
 - Cambio de proyecto.
 - Historial de chats por proyecto.
-- Ruteo por modelo/capacidad/intensidad.
+- Ruteo por modelo/capacidad/intensidad con scoring calibrado.
+- Multilingüismo: Calipso detecta el idioma de cada turno y responde en ese idioma;
+  entiende oraciones mixtas y usa bge-m3 (multilingual) para embeddings de memoria.
+- Narración local: botón "Narrar" en cada respuesta + toggle auto-narrar;
+  Web Speech API (cero deps, usa voces del sistema, detecta idioma automáticamente).
 - Memoria hibrida global/proyecto.
 - Perfil global de Pedro y cronologia personal curada.
 - Bibliotecario activo con inbox, propuestas, aceptar/descartar y core visible.
@@ -404,6 +408,7 @@ probarlo desde el iPhone.
 - Skills internos.
 - Auto-plan vs `/plan` revisable.
 - Goal Mode persistente con Goal Bar, criterios, subtareas y evidencia.
+- Developer Loop: `advance_goal` + `draft_brief` + propuesta de diff aplicable.
 - Jobs persistentes y panel Trabajo.
 - Runner allowlist para verificaciones seguras.
 - Verificacion fuerte v0 por tipo de cambio.
@@ -491,9 +496,11 @@ probarlo desde el iPhone.
 ### Futuras
 
 - Multi-PC federado.
-- Voz multilingue.
+- Voz de alta calidad local (Piper TTS — upgrade a Web Speech API ya implementado).
 - Imagenes: decidir buscar vs generar.
+- Transcripcion de audio/video local (Whisper).
 - Workflows compartibles como skills instalables.
+- Modo copiloto silencioso: watch del repo y sugerencias no invasivas.
 
 ## 8. Arquitectura objetivo
 

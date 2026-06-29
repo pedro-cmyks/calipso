@@ -207,3 +207,51 @@ def draft_brief(
         "subtask": subtask,
         "job": job,
     }
+
+
+def chat_draft_brief(
+    project_root: str | None,
+    message: str,
+    file_path: str,
+    goal: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Brief para borrador iniciado desde chat sin meta obligatoria.
+
+    Devuelve {system, user_msg, path, current_content, job}.
+    Si hay meta activa se incluye su contexto; si no, solo el mensaje y el archivo.
+    """
+    root = pathlib.Path(project_root or ".")
+    target = root / file_path
+    current = ""
+    if target.exists() and target.is_file():
+        try:
+            current = target.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            current = "[archivo binario — no editable]"
+
+    goal_ctx = ""
+    if goal:
+        criteria = "\n".join(
+            f"- [{'x' if c.get('done') else ' '}] {c.get('text', '')}"
+            for c in goal.get("criteria") or [])
+        goal_ctx = f"\nMeta activa: {goal.get('title')}\nCriterios:\n{criteria}\n"
+
+    user_msg = (
+        f"Pedido: {message}\n"
+        f"{goal_ctx}\n"
+        f"Archivo a editar: {file_path}\n\n"
+        f"Contenido actual:\n```\n{current}\n```\n\n"
+        "Devuelve el contenido completo del archivo con los cambios necesarios."
+    )
+
+    job = jobs.start(
+        "chat_draft", f"Borrador chat: {file_path}",
+        project_root=project_root, file_path=file_path)
+
+    return {
+        "system": _DRAFT_SYSTEM,
+        "user_msg": user_msg,
+        "path": file_path,
+        "current_content": current,
+        "job": job,
+    }

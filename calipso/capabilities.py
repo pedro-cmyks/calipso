@@ -255,7 +255,7 @@ def score_model(features: dict, effort: int, m: dict,
         + WEIGHTS["speed"] * m.get("speed", 0.5)
         - (WEIGHTS["quota"] if quota_low else 0.0)
     )
-    if effort <= 1:  # tareas livianas: penaliza el overkill de tier alto
+    if effort == 0:  # solo fast: penaliza el overkill de tier alto
         score -= WEIGHTS["tier"] * TIER_RANK.get(m.get("tier", "mid"), 1)
     return round(score, 4)
 

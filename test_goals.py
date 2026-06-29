@@ -50,6 +50,33 @@ def main() -> int:
     goals.update(project, goal["id"], status="complete")
     check("complete limpia activa", goals.active(project) is None)
 
+    # ── check_auto_close ─────────────────────────────────────────────────────
+    p2 = tempfile.mkdtemp(prefix="calipso_autoclose_")
+    g2 = goals.create(p2, "test auto cierre", criteria=["c a", "c b"])
+    check("autoclose no cierra con criterios pendientes",
+          goals.check_auto_close(p2, g2["id"]) is None)
+    # marcar primer criterio — no cierra todavía
+    goals.set_criterion(p2, g2["id"], "c1", True)
+    check("autoclose no cierra con un criterio pendiente",
+          goals.load(p2, g2["id"])["status"] == "active")
+    # marcar todos los criterios — debe cerrar automáticamente
+    result = goals.set_criterion(p2, g2["id"], "c2", True)
+    check("autoclose cierra al completar todos",
+          result and result["status"] == "complete")
+    check("autoclose limpia activa", goals.active(p2) is None)
+    check("autoclose agrega evidencia",
+          any(e.get("kind") == "auto_close" for e in (result or {}).get("evidence", [])))
+    evs2 = goals.events(p2, g2["id"])
+    check("autoclose emite evento", any(e.get("action") == "auto_closed" for e in evs2))
+    # check_auto_close sobre meta ya cerrada no hace nada
+    check("autoclose idempotente en meta cerrada",
+          goals.check_auto_close(p2, g2["id"]) is None)
+    # meta sin criterios no se auto-cierra
+    p3 = tempfile.mkdtemp(prefix="calipso_autoclose2_")
+    g3 = goals.create(p3, "sin criterios", criteria=[])
+    check("autoclose no cierra meta sin criterios",
+          goals.check_auto_close(p3, g3["id"]) is None)
+
     if fails:
         print("\nFALLARON:", fails)
         return 1

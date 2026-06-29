@@ -16,6 +16,14 @@ import pathlib
 import uuid
 from typing import Any
 
+IMAGE_MIMES = {
+    "image/png", "image/jpeg", "image/jpg", "image/gif",
+    "image/webp", "image/bmp", "image/tiff",
+}
+_ANTHROPIC_VISION_MIMES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+_OLLAMA_VISION_NAMES = {"llava", "moondream", "bakllava", "llava-phi3", "minicpm-v",
+                         "llava-llama3", "qwen2-vl", "llama3.2-vision"}
+
 CALIPSO_HOME = pathlib.Path(os.environ.get(
     "CALIPSO_HOME", os.path.expanduser("~/.calipso")))
 
@@ -187,6 +195,117 @@ def list_attachments(project_root: str | None = None,
         except Exception:
             continue
     return out
+
+
+def is_image(mime: str | None) -> bool:
+    return bool(mime) and mime.split(";")[0].strip().lower() in IMAGE_MIMES
+
+
+def image_bytes_b64(project_root: str | None, attachment_id: str) -> tuple[str, str] | None:
+    """Devuelve (base64_str, media_type) para adjuntos de imagen, o None si no es imagen."""
+    meta = load(project_root, attachment_id)
+    if not meta or not is_image(meta.get("mime")):
+        return None
+    d = _attachment_dir(project_root, attachment_id)
+    raw_path = d / "content.bin"
+    if not raw_path.exists():
+        raw_path = d / "content.txt"
+        if not raw_path.exists():
+            return None
+    try:
+        raw = raw_path.read_bytes()
+        b64 = base64.b64encode(raw).decode("ascii")
+        media_type = (meta.get("mime") or "image/png").split(";")[0].strip()
+        return b64, media_type
+    except Exception:
+        return None
+
+
+def has_images(project_root: str | None, ids: list[str]) -> bool:
+    for aid in ids:
+        meta = load(project_root, aid)
+        if meta and is_image(meta.get("mime")):
+            return True
+    return False
+
+
+def ollama_vision_model() -> str | None:
+    return None
+
+
+def vision_describe(project_root: str | None, ids: list[str],
+                    question: str = "Describe en detalle lo que ves en esta imagen.") -> str | None:
+    """Describe imagen(es) con el motor de visión disponible.
+    Prioridad: SDK Anthropic (ANTHROPIC_API_KEY) > Ollama vision model.
+    Devuelve texto con la descripción, o None si no hay capacidad de visión."""
+    image_ids = [aid for aid in ids
+                 if (m := load(project_root, aid)) and is_image(m.get("mime"))]
+    if not image_ids:
+        return None
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if api_key:
+        return _vision_anthropic(project_root, image_ids, question, api_key)
+
+    vm = ollama_vision_model()
+    if vm:
+        return _vision_ollama(project_root, image_ids, question, vm)
+
+    return None
+
+
+def _vision_anthropic(project_root: str | None, image_ids: list[str],
+                      question: str, api_key: str) -> str | None:
+    try:
+        import anthropic as _ant
+        client = _ant.Anthropic(api_key=api_key)
+        content: list = []
+        for aid in image_ids:
+            result = image_bytes_b64(project_root, aid)
+            if not result:
+                continue
+            b64, media_type = result
+            if media_type not in _ANTHROPIC_VISION_MIMES:
+                continue
+            content.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": b64},
+            })
+        if not content:
+            return None
+        content.append({"type": "text", "text": question})
+        msg = client.messages.create(
+            model="claude-opus-4-5",
+            max_tokens=1024,
+            messages=[{"role": "user", "content": content}],
+        )
+        return msg.content[0].text if msg.content else None
+    except Exception as e:
+        return f"[vision SDK error: {e}]"
+
+
+def _vision_ollama(project_root: str | None, image_ids: list[str],
+                   question: str, model: str) -> str | None:
+    try:
+        import urllib.request as _ur, json as _j
+        images_b64 = []
+        for aid in image_ids:
+            result = image_bytes_b64(project_root, aid)
+            if result:
+                images_b64.append(result[0])
+        if not images_b64:
+            return None
+        payload = _j.dumps({
+            "model": model, "prompt": question,
+            "images": images_b64, "stream": False,
+        }).encode()
+        req = _ur.Request("http://localhost:11434/api/generate", data=payload,
+                          method="POST")
+        req.add_header("Content-Type", "application/json")
+        with _ur.urlopen(req, timeout=60) as r:
+            return _j.loads(r.read()).get("response", "").strip() or None
+    except Exception as e:
+        return f"[vision Ollama error: {e}]"
 
 
 def context_block(project_root: str | None, ids: list[str],

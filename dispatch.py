@@ -37,6 +37,11 @@ except Exception:
     dispatch_config = None
     load_config = None
 
+try:
+    from calipso import resource_dispatcher as _rd
+except Exception:
+    _rd = None  # type: ignore[assignment]
+
 # ----------------------------------------------------------------------------
 # CONFIGURACIÓN  (ajusta a tu entorno)
 # ----------------------------------------------------------------------------
@@ -59,17 +64,6 @@ CONFIG = {
         "model": "deepseek-chat",        # modelo por defecto para la ruta API
     },
 
-    # --- Boca LOCAL (Ollama) ---
-    "local": {
-        "base_url": "http://localhost:11434/api/generate",
-        "model": "qwen2.5:7b",           # modelo de ejecución local
-    },
-
-    # --- Clasificador (también Ollama, modelo pequeño y rápido) ---
-    "classifier": {
-        "base_url": "http://localhost:11434/api/generate",
-        "model": "qwen2.5:3b",
-    },
 }
 
 if dispatch_config:
@@ -77,7 +71,7 @@ if dispatch_config:
 
 # Ruta a la que caemos si el clasificador local falla. "local" para no escalar
 # a una API de pago por accidente (privacidad/coste).
-SAFE_FALLBACK = "local"
+SAFE_FALLBACK = "subscription"
 
 # Log de decisiones (JSONL). Sirve para afinar luego los regex con datos reales.
 # Se puede desactivar con --no-log o DISPATCH_NO_LOG=1.
@@ -92,13 +86,15 @@ LOG_PROMPT_MAX = 500  # se trunca el prompt guardado (privacidad/tamaño)
 # Palabras que sugieren tarea de CÓDIGO pesada e interactiva -> suscripción.
 CODE_HEAVY = re.compile(
     r"\b(refactor|refactoriza|implementa|debug|depura|test|tests|"
-    r"arregla|build|compila|migra|repositorio|repo|pull request|stack trace)\b",
+    r"arregla|build|compila|migra|repositorio|repo|pull request|stack trace|"
+    r"bot[oó]n(es)?|ui\b|interfaz|dise[ñn]o|responsiv|sidebar|drawer|layout|"
+    r"componente|modal|css|html|estilo|estiliz|frontend|front.end|micr[oó]fon)\b",
     re.IGNORECASE,
 )
 
 # Palabras que sugieren tarea TRIVIAL / privada -> local.
 TRIVIAL = re.compile(
-    r"\b(resume|resumen|traduce|traducir|reformula|clasifica|"
+    r"\b(resumen|traduce|traducir|reformula|clasifica|"
     r"corrige ortograf|formatea|lista|extrae)\b",
     re.IGNORECASE,
 )
@@ -113,7 +109,7 @@ CHEAP_REASONING = re.compile(
 # Pistas extra para extraer FEATURES (no solo la ruta) que alimentan el router
 # por puntaje de capacidades.
 PRIVATE = re.compile(
-    r"\b(privado|confidencial|secreto|contrase|password|personal|sensible|"
+    r"\b(privado|confidencial|secreto|contraseñas?|password|personales?|sensible|"
     r"no comparta|no compartas)\b", re.IGNORECASE)
 REPO = re.compile(
     r"\b(repo|repositorio|pull request|build|compila|migra|despliega|deploy|"
@@ -122,9 +118,9 @@ WRITING = re.compile(
     r"\b(escribe|redacta|redactar|borrador|draft|correo|email|carta|post|"
     r"art[ií]culo)\b", re.IGNORECASE)
 TRANSLATE = re.compile(r"\b(traduce|traducir|traducci)\b", re.IGNORECASE)
-SUMMARIZE = re.compile(r"\b(resume|resumen|resumir|sintetiza)\b", re.IGNORECASE)
+SUMMARIZE = re.compile(r"\b(resumen|resumir|sintetiza)\b", re.IGNORECASE)
 AGENTIC = re.compile(
-    r"\b(ejecuta|corre los tests|automatiza|agente|herramienta|run )\b",
+    r"\b(ejecuta|corre los tests|automatiza|agente|herramienta|run)\b",
     re.IGNORECASE)
 WEB = re.compile(
     r"\b(busca|b[uú]scame|googlea|noticias?|actualidad|hoy|[uú]ltim[ao]s?|"
@@ -155,26 +151,6 @@ def _estimate_complexity(prompt: str, task_type: str | None) -> int:
     return max(1, min(5, base))
 
 
-def _classify_features_llm(prompt: str) -> dict | None:
-    cfg = CONFIG["classifier"]
-    payload = {
-        "model": cfg["model"],
-        "prompt": f"{FEATURES_SYSTEM}\n\nPETICIÓN:\n{prompt}\n\nJSON:",
-        "stream": False, "format": "json", "options": {"temperature": 0},
-    }
-    try:
-        raw = _http_post_json(cfg["base_url"], payload)
-        data = json.loads(raw.get("response", "{}"))
-        t = data.get("type")
-        comp = data.get("complexity", 2)
-        return {
-            "type": t if t in VALID_TYPES else "reasoning",
-            "complexity": int(comp) if str(comp).isdigit() else 2,
-            "private": bool(data.get("private", False)),
-            "needs_repo": bool(data.get("needs_repo", False)),
-        }
-    except Exception:
-        return None
 
 
 def extract_features(prompt: str) -> dict:
@@ -202,12 +178,8 @@ def extract_features(prompt: str) -> dict:
     elif CHEAP_REASONING.search(p):
         feat["type"] = "analysis" if re.search(r"\banaliza", p, re.IGNORECASE) else "reasoning"
 
-    if feat["type"] is None:  # reglas no decidieron -> clasificador local
-        llm = _classify_features_llm(p)
-        if llm:
-            feat.update(llm)
-        else:
-            feat["type"] = "reasoning"
+    if feat["type"] is None:
+        feat["type"] = "reasoning"
     feat["complexity"] = _estimate_complexity(p, feat["type"])
     return feat
 
@@ -230,13 +202,17 @@ def decide_by_rules(prompt: str) -> dict | None:
     sub_client = routing.get("subscription_client", "claude")
     subscription_first = routing.get("policy", "subscription_first") == "subscription_first"
 
+    if PRIVATE.search(p):
+        return {"route": "subscription", "client": sub_client,
+                "why": "datos privados/sensibles; suscripcion local sin API"}
+
     if CODE_HEAVY.search(p):
         return {"route": "subscription", "client": sub_client,
                 "why": "tarea de código pesada"}
 
     if TRIVIAL.search(p):
-        return {"route": "local", "client": None,
-                "why": "tarea trivial/privada (local aunque sea larga)"}
+        return {"route": "subscription", "client": sub_client,
+                "why": "tarea trivial; suscripcion (sin Ollama local)"}
 
     if CHEAP_REASONING.search(p):
         if subscription_first:
@@ -268,36 +244,10 @@ CLASSIFIER_SYSTEM = (
 
 
 def decide_by_model(prompt: str) -> dict:
-    cfg = CONFIG["classifier"]
-    full = (
-        f"{CLASSIFIER_SYSTEM}\n\nPETICIÓN:\n{prompt}\n\nJSON:"
-    )
-    payload = {
-        "model": cfg["model"],
-        "prompt": full,
-        "stream": False,
-        "format": "json",      # Ollama fuerza salida JSON válida
-        "options": {"temperature": 0},
-    }
-    try:
-        raw = _http_post_json(cfg["base_url"], payload)
-        text = raw.get("response", "{}")
-        data = json.loads(text)
-        # Normaliza
-        route = data.get("route", "api")
-        if route not in ("subscription", "api", "local"):
-            route = "api"
-        client = data.get("client")
-        if client in ("null", "", None):
-            client = "claude" if route == "subscription" else None
-        return {"route": route, "client": client, "source": "model",
-                "why": data.get("why", "decisión del clasificador")}
-    except Exception as e:
-        # Fallback SEGURO: nunca escalar a una API de pago en silencio si el
-        # clasificador local falla (privacidad/coste). Caemos a LOCAL; si Ollama
-        # también está caído, run_local() fallará de forma visible, no oculta.
-        return {"route": SAFE_FALLBACK, "client": None, "source": "fallback",
-                "why": f"clasificador falló ({e}); fallback seguro a {SAFE_FALLBACK}"}
+    routing = (load_config() if load_config else {}).get("routing", {})
+    sub_client = routing.get("subscription_client", "claude")
+    return {"route": "subscription", "client": sub_client, "source": "rules",
+            "why": "reglas no decidieron; suscripcion por defecto"}
 
 
 def route(prompt: str, forced: str | None) -> dict:
@@ -377,19 +327,11 @@ def run_api(prompt: str, stream: bool = True) -> int:
 
 
 def run_local(prompt: str, stream: bool = True) -> int:
-    """Ejecuta en Ollama local."""
-    cfg = CONFIG["local"]
-    payload = {"model": cfg["model"], "prompt": prompt, "stream": stream}
-    print(f"[dispatcher] -> LOCAL vía Ollama ({cfg['model']})\n", file=sys.stderr)
-    if stream:
-        return _emit(_ollama_text_chunks(cfg["base_url"], payload), "local")
-    try:
-        data = _http_post_json(cfg["base_url"], payload)
-        print(data.get("response", ""))
-        return 0
-    except Exception as e:
-        print(f"[error] local falló: {e}", file=sys.stderr)
-        return 1
+    """Local no disponible (sin Ollama); redirige a suscripción."""
+    print("[dispatcher] ruta local no disponible → suscripción", file=sys.stderr)
+    routing = (load_config() if load_config else {}).get("routing", {})
+    client = routing.get("subscription_client", "claude")
+    return run_subscription(prompt, client)
 
 
 # ----------------------------------------------------------------------------
@@ -469,10 +411,7 @@ def _sse_text_chunks(url: str, payload: dict, headers: dict | None = None,
 
 
 def _ollama_text_chunks(url: str, payload: dict, usage: dict | None = None):
-    """Trozos de texto de un stream NDJSON de Ollama (campo 'response').
-
-    Si se pasa 'usage', se rellena con prompt_eval_count/eval_count del chunk final.
-    """
+    """Trozos de texto de un stream NDJSON de Ollama (campo 'response')."""
     resp = _http_post_stream(url, payload)
     try:
         for raw in resp:
@@ -484,6 +423,34 @@ def _ollama_text_chunks(url: str, payload: dict, usage: dict | None = None):
             except json.JSONDecodeError:
                 continue
             piece = obj.get("response", "")
+            if piece:
+                yield piece
+            if obj.get("done"):
+                if usage is not None:
+                    usage["prompt_tokens"] = obj.get("prompt_eval_count", 0)
+                    usage["completion_tokens"] = obj.get("eval_count", 0)
+                break
+    finally:
+        resp.close()
+
+
+def _ollama_chat_chunks(url: str, payload: dict, usage: dict | None = None):
+    """Trozos de texto de un stream NDJSON de Ollama /api/chat (campo message.content).
+
+    Usa el endpoint de chat que acepta messages[] con historial estructurado.
+    """
+    chat_url = url.replace("/api/generate", "/api/chat")
+    resp = _http_post_stream(chat_url, payload)
+    try:
+        for raw in resp:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            piece = (obj.get("message") or {}).get("content", "")
             if piece:
                 yield piece
             if obj.get("done"):

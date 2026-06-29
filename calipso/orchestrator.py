@@ -19,6 +19,10 @@ from __future__ import annotations
 from calipso import capabilities
 from calipso import prompt_compiler
 from calipso import skills
+try:
+    from calipso import resource_dispatcher as _rd
+except Exception:
+    _rd = None  # type: ignore[assignment]
 
 PLANNER_SYSTEM = (
     "Eres el planificador de Calipso. Descompón la PETICIÓN en un EQUIPO PEQUEÑO "
@@ -68,7 +72,26 @@ def plan(request: str, llm_json) -> dict:
 
 def pick_model(tier: str, task_type: str, available: dict,
                project_root: str | None = None):
-    """El mejor modelo DISPONIBLE para ese tier+tarea (prefiere el tier pedido)."""
+    """El mejor modelo DISPONIBLE para ese tier+tarea (prefiere el tier pedido).
+
+    Si resource_dispatcher está activo, filtra modelos locales sin RAM suficiente
+    antes de elegir.
+    """
+    if _rd is not None:
+        try:
+            snap = _rd.ResourceSnapshot.take()
+            # Descarta modelos locales que no tienen RAM suficiente ahora mismo.
+            patched = dict(available)
+            for key, m in capabilities.load_backends(project_root).items():
+                if m.get("route") == "local" and patched.get(key):
+                    model_name = m.get("model", "")
+                    dec = _rd.gate(model_name, route="local", snap=snap)
+                    if dec.action in ("reroute", "defer"):
+                        patched[key] = False
+            available = patched
+        except Exception:
+            pass  # si falla el diagnóstico, continúa sin filtrar
+
     backends = capabilities.load_backends(project_root)
     cands = [(k, m) for k, m in backends.items() if available.get(k)]
     if not cands:
