@@ -26,3 +26,7 @@ Thumbs.db
 
 # Temporary archives/artifacts
 files.zip
+
+# Rust / Tauri build artifacts
+target/
+src-tauri/target/
