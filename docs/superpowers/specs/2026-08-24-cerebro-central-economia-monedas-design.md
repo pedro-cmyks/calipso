@@ -156,6 +156,15 @@ Dos carriles:
 
 **Frontera de entrada:** las señales externas que alimentan la invariante 10 y los criterios de muerte (ventas, consultas, clics, impresiones) entran como eventos tipados del libro exterior. En el primer corte la ingesta es manual: Pedro las carga o confirma en la sesión semanal — igual que las acuñaciones (invariante 4). Conectores automáticos son spec futuro (sección 12).
 
+**El reloj (clock-in): la frontera de entrada del tiempo.** El tiempo de Pedro entra al sistema por un reloj de fichaje: `clock in <categoría>` / `clock out`, de un toque, desde la UI o por comando. Categorías tipadas y su efecto en el libro:
+
+- `fabrica:<compuerta|trabajo>` — servir firmas y trabajo productivo de la fábrica que necesita a Pedro: revisar, llamar gente, contratar, verificar una compra, un gasto o un entregable. El clock-out es **el evento que dispara el cobro** de la sección 3.2: se cobra el tiempo real medido (fracción mínima de 30 minutos), no la estimación.
+- `personal:<departamento>` — Atlas, la mejora de Calipso, el CRM del trabajo, etc. Consume reserva personal de PT y genera el apunte de costo de oportunidad.
+- `empleo` — horas del trabajo, a los libros personales. Con horas reales, la línea del empleo deja de ser teórica: el tablero la recalcula como 2.500 / horas medidas del mes.
+- `tuning` — calibración; registro sin PT.
+
+El cierre semanal concilia plan contra hecho: la cuota firmable es el plan, el reloj es la realidad, y la diferencia se reporta. Un clock-in sin cerrar al llegar el cierre pide conciliación manual en la sesión — nunca se inventa una duración.
+
 ## 10. Las dos zonas del mapa
 
 ### 10.0 Primer corte de la fábrica: dos competidores
@@ -169,7 +178,7 @@ Uno tiene ingreso a la vista, el otro no: la competencia entre ambos es el caso 
 
 ### 10.1 La zona personal de Pedro
 
-El mismo mapa tiene una segunda zona: los **departamentos personales**, financiados por Pedro desde su cuenta (transferencia, salida 3 de la sección 3.2). Mismo kernel de libro, misma estructura (billetera, plantel, memoria, perillas), pero **no compiten** (invariante 12) — son el staff y los proyectos de Pedro: el departamento de finanzas personales (primer corte), y los que Pedro abra después para proyectos de su trabajo o proyectos propios como Atlas (que como departamento concreto sigue siendo el puente de la sección 12; lo que este spec deja listo es el mecanismo para abrirlo).
+El mismo mapa tiene una segunda zona: los **departamentos personales**, financiados por Pedro desde su cuenta (transferencia, salida 3 de la sección 3.2). Mismo kernel de libro, misma estructura (billetera, plantel, memoria, perillas), pero **no compiten** (invariante 12) — son el staff y los proyectos de Pedro: el departamento de finanzas personales (primer corte), y los que Pedro abra después para proyectos de su trabajo (como el CRM que está diseñando) o proyectos propios (Atlas — que como departamento concreto sigue siendo el puente de la sección 12 —, la mejora de Calipso misma). Lo que este spec deja listo es el mecanismo para abrirlos; el reloj (sección 9) ya los registra como categorías `personal:<departamento>` desde el día uno.
 
 Reglas de la zona personal:
 
@@ -204,7 +213,8 @@ Reglas de la zona personal:
 - El kernel de economía se desarrolla con **pytest de verdad** (como `test_resource_dispatcher.py`, no como los scripts `test_*.py` con `main()`).
 - Tests de propiedades del libro: transferencias suman cero por divisa; ninguna acuñación sin evento de frontera con evidencia o firma, siempre con subtipo; el numerador del tipo de cambio y de la eficiencia solo toma subtipo venta; ninguna emisión de PT fuera de la cuota firmable; los PT expiran al cierre y los expirados no cuentan como consumidos; el cobro de una firma ocurre solo al servirse y las reservas no servidas se liberan al cierre; el tipo de cambio es reproducible desde el libro (misma historia, mismo número), respeta la banda de variación y se mantiene cuando la ventana no tiene consumo; el consumo personal de PT queda fuera del cálculo; los pagos por PT terminan en la cuenta de Pedro y sus cuatro salidas validan saldo; balances siempre derivables; ninguna compra ni transferencia sin reserva previa suficiente (sin sobregiro, en ambas divisas); congelado no puede comprar ni recibir transferencias internas, presupuesto ni financiación — **salvo el asiento de rescate firmado**; las cartas de sistema se pagan del presupuesto de PT de dirección; un departamento personal no puede comprar capacidad, API, PT ni goteo de la fábrica; el umbral de mandato se evalúa sobre el acumulado por departamento y período; los libros personales rechazan todo acceso que no sea del departamento de finanzas personales.
 - **Simulación de ciclo completo** con departamentos sintéticos y reloj acelerado: N períodos con gastos, una venta externa simulada (y el tipo de cambio subiendo en respuesta, dentro de su banda), una inyección de capital que NO mueve el tipo de cambio, una quiebra con intento de rescate colusivo (debe fallar), un rescate firmado desde la cuenta de Pedro (debe pasar como única excepción), un congelado ejecutando su salida (b) con adelanto de dirección, un circuit breaker de renovación disparado y un cierre con liquidación por prelación — sin intervención manual.
-- Criterio de aceptación del primer corte: un ciclo semanal completo real — propuestas, asignación, gasto medido, cola de sesión armada y firmada por Pedro, cierre de período con balances correctos en ambas divisas y libros personales al día — con los dos departamentos competidores vivos y el departamento de finanzas personales operando.
+- Tests del reloj: un cobro de firma exige clock-in/clock-out de categoría `fabrica`; el tiempo cobrado es el medido con fracción mínima; un clock-in huérfano al cierre queda en estado de conciliación y no genera cobro; las categorías `personal` y `empleo` nunca mueven monedas de la fábrica.
+- Criterio de aceptación del primer corte: un ciclo semanal completo real — propuestas, asignación, gasto medido, horas fichadas con el reloj, cola de sesión armada y firmada por Pedro, cierre de período con balances correctos en ambas divisas, conciliación plan-contra-hecho y libros personales al día — con los dos departamentos competidores vivos y el departamento de finanzas personales operando.
 
 ## 14. Criterios de éxito
 
