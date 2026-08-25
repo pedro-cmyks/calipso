@@ -53,6 +53,18 @@ class Bus:
             raise ErrorBus(
                 f"criterio de muerte invalido (claves {_CLAVES_CRITERIO}): "
                 f"{criterio!r}")
+        for clave, valor in criterio.items():
+            if not (isinstance(valor, int) and not isinstance(valor, bool)
+                    and valor > 0):
+                raise ErrorBus(f"criterio con valor invalido: {clave}={valor!r}")
+        if not (isinstance(presupuesto_mm, int) and not isinstance(presupuesto_mm, bool)
+                and presupuesto_mm > 0):
+            raise ErrorBus(
+                f"presupuesto_mm debe ser entero positivo: {presupuesto_mm!r}")
+        if not (isinstance(retorno_mm, int) and not isinstance(retorno_mm, bool)
+                and retorno_mm > 0):
+            raise ErrorBus(
+                f"retorno_mm debe ser entero positivo: {retorno_mm!r}")
         self._apilar({"ts": ts, "semana": semana, "evento": "alta", "id": id,
                       "departamento": departamento_cuenta, "titulo": titulo,
                       "presupuesto_mm": presupuesto_mm,

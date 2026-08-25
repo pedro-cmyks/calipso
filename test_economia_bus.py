@@ -56,6 +56,19 @@ def test_alta_estado_y_persistencia(tmp_path, entorno):
         b2.estado("fantasma")
 
 
+def test_alta_valida_valores(entorno):
+    k, m, b = entorno
+    with pytest.raises(bus_mod.ErrorBus):
+        b.alta(TS, "2026-W30", "v1", "dep:a", "malo", 100_000, 300_000,
+               {"gasto_max_mm": "abc"})
+    with pytest.raises(bus_mod.ErrorBus):
+        b.alta(TS, "2026-W30", "v2", "dep:a", "malo", 100_000, 300_000,
+               {"semanas_max": -5})
+    with pytest.raises(bus_mod.ErrorBus):
+        b.alta(TS, "2026-W30", "v3", "dep:a", "malo", 0, 300_000,
+               {"gasto_max_mm": 50_000})
+
+
 def test_financiar_transfiere_y_marca(entorno):
     k, m, b = entorno
     _semana_op(k, "2026-W30")
