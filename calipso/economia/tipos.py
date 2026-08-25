@@ -83,9 +83,13 @@ class Asiento:
             if not self.detalle.get("evidencia"):
                 raise AsientoInvalido("acunacion exige detalle['evidencia'] (invariante 4)")
         elif t is TipoAsiento.DESTRUCCION:
+            if self.divisa is not Divisa.MONEDA:
+                raise AsientoInvalido("destruccion es solo en monedas: el PT tiene su propio tipo, expiracion_pt")
             if not self.origen or self.destino:
                 raise AsientoInvalido("destruccion: origen si, destino no")
         elif t in (TipoAsiento.TRANSFERENCIA, TipoAsiento.EJECUCION_RESERVA):
+            if t is TipoAsiento.TRANSFERENCIA and self.divisa is not Divisa.MONEDA:
+                raise AsientoInvalido("transferencia es solo en monedas: el PT se emite, consume y expira con sus propios tipos")
             if not self.origen or not self.destino or self.origen == self.destino:
                 raise AsientoInvalido(f"{t.value}: origen y destino distintos requeridos")
             if t is TipoAsiento.EJECUCION_RESERVA:
@@ -113,6 +117,8 @@ class Asiento:
             d = self.detalle
             if not d.get("acreedor") or not d.get("deudor"):
                 raise AsientoInvalido("acreencia exige detalle acreedor y deudor")
+            if not self.ref:
+                raise AsientoInvalido("acreencia exige ref")
 
     def a_json(self) -> str:
         d = asdict(self)

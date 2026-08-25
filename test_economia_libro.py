@@ -220,3 +220,83 @@ def test_apunte_y_acreencia_no_mueven_saldos(tmp_path):
     s = bal.saldos(lb.asientos())
     assert s[(t.TESORO, t.Divisa.MONEDA)] == 10_000
     assert ("dep:a", t.Divisa.MONEDA) not in s
+
+
+def test_append_tras_truncado_sobrevive_recargas(tmp_path):
+    """Un torn tail no solo se tolera: se repara, para que el proximo
+    append no se le pegue encima y la vuelva corrupta para siempre."""
+    lb = _libro(tmp_path)
+    a1 = _acuna(lb, 1_000)
+    ruta = tmp_path / "libro.jsonl"
+    with ruta.open("a", encoding="utf-8") as f:
+        f.write('{"seq": 2, "ts": "2026-08-2')  # fragmento nunca valido, sin \n
+
+    lb2 = _libro(tmp_path)  # tolera y repara
+    assert lb2.asientos() == [a1]
+
+    a2 = lb2.append(ts="2026-08-24T09:01:00", semana="2026-W35",
+                    tipo=t.TipoAsiento.DESTRUCCION, divisa=t.Divisa.MONEDA,
+                    monto=100, origen=t.TESORO)
+    assert a2.seq == 2
+
+    lb3 = _libro(tmp_path)  # recarga: ambos asientos presentes
+    assert lb3.asientos() == [a1, a2]
+
+    a3 = lb3.append(ts="2026-08-24T09:02:00", semana="2026-W35",
+                    tipo=t.TipoAsiento.DESTRUCCION, divisa=t.Divisa.MONEDA,
+                    monto=50, origen=t.TESORO)
+    assert a3.seq == 3
+
+    lb4 = _libro(tmp_path)
+    assert lb4.asientos() == [a1, a2, a3]
+
+
+def test_detalle_con_separadores_unicode_no_corrompe(tmp_path):
+    """U+2028/U+2029/U+0085 dentro de un detalle no deben partir el
+    splitlines() de la carga: solo '\\n' es separador de linea."""
+    lb = _libro(tmp_path)
+    rara = "linea rara    y  fin"
+    a1 = lb.append(ts="2026-08-24T09:00:00", semana="2026-W35",
+                   tipo=t.TipoAsiento.APUNTE, divisa=t.Divisa.MONEDA,
+                   monto=1, detalle={"nota": rara})
+    a2 = lb.append(ts="2026-08-24T09:01:00", semana="2026-W35",
+                   tipo=t.TipoAsiento.APUNTE, divisa=t.Divisa.MONEDA,
+                   monto=2, detalle={"nota": "normal"})
+    lb2 = _libro(tmp_path)
+    assert lb2.asientos() == [a1, a2]
+    assert lb2.asientos()[0].detalle["nota"] == rara
+
+
+def test_transferencia_y_destruccion_en_pt_son_invalidas():
+    """Todo movimiento de PT tiene tipo dedicado (emision/consumo/expiracion):
+    transferencia y destruccion son solo de moneda."""
+    with pytest.raises(t.AsientoInvalido):
+        t.Asiento(seq=1, ts="2026-08-24T10:00:00", semana="2026-W35",
+                  tipo=t.TipoAsiento.TRANSFERENCIA, divisa=t.Divisa.PT,
+                  monto=1_000, origen=t.POOL_PT_FABRICA,
+                  destino=t.CUENTA_PEDRO).validar()
+    with pytest.raises(t.AsientoInvalido):
+        t.Asiento(seq=1, ts="2026-08-24T10:00:00", semana="2026-W35",
+                  tipo=t.TipoAsiento.DESTRUCCION, divisa=t.Divisa.PT,
+                  monto=1_000, origen=t.POOL_PT_FABRICA).validar()
+
+
+def test_acreencia_sin_ref_es_invalida():
+    with pytest.raises(t.AsientoInvalido):
+        t.Asiento(seq=1, ts="2026-08-24T10:00:00", semana="2026-W35",
+                  tipo=t.TipoAsiento.ACREENCIA, divisa=t.Divisa.MONEDA,
+                  monto=1_000,
+                  detalle={"acreedor": t.DIRECCION, "deudor": "dep:a"}).validar()
+
+
+def test_mutar_detalle_del_llamador_no_toca_el_libro(tmp_path):
+    """append() aisla el detalle: mutar el dict del llamador despues no
+    desincroniza la memoria del disco."""
+    lb = _libro(tmp_path)
+    detalle = {"nota": "original"}
+    lb.append(ts="2026-08-24T09:00:00", semana="2026-W35",
+              tipo=t.TipoAsiento.APUNTE, divisa=t.Divisa.MONEDA,
+              monto=1, detalle=detalle)
+    detalle["nota"] = "mutado"
+    detalle["extra"] = "colado"
+    assert lb.asientos()[0].detalle == {"nota": "original"}
