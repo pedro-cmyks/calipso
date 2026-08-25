@@ -65,7 +65,7 @@ Una función pura `ciudad(asientos, registro, bus, cola, suscripciones, semana) 
 | `ancho` (1-4) | bucket del peso: `<10k`→1, `<100k`→2, `<1M`→3, resto→4 |
 | `tipo` | `cable` si los extremos están en zonas distintas (fábrica ↔ personal), `calle` si comparten zona |
 
-**Unidad**: un trabajo vivo, con `id`, `dueno`, `gastado_mm` y `origen`/`destino` cuando el trabajo mueve plata entre dos edificios (la unidad camina por esa calle). Sin destino, orbita su edificio.
+**Unidad**: un trabajo vivo, con `id`, `dueno`, `gastado_mm` y `hacia` — el departamento que más cofinanció el trabajo sin ser su dueño, o `null` si no hay ninguno. La unidad camina por esa calle; sin `hacia`, orbita el edificio de su dueño.
 
 **Aviso**: una compuerta o carta pendiente, con `id`, `sobre` (el edificio), `tipo` y `monedas_en_juego_mm` para que el cliente ordene por importancia.
 
