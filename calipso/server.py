@@ -3251,7 +3251,8 @@ except Exception:  # economia no disponible: los endpoints responden inactivo
     _EcoPagador = None
     _eco_bus = _eco_cola = _eco_op = _eco_personal = _eco_reloj = _eco_candado = None
 
-_ECO_BASE = pathlib.Path(os.path.expanduser("~/.calipso"))
+_ECO_BASE = pathlib.Path(os.environ.get(
+    "CALIPSO_HOME", os.path.expanduser("~/.calipso")))
 
 
 def _economia():
@@ -3288,16 +3289,36 @@ class EcoRelojInBody(BaseModel):
     ref: str | None = None
 
 
+class EcoCierreBody(BaseModel):
+    presupuesto_direccion_mm: int = 0
+
+
+class EcoAbrirBody(BaseModel):
+    cuota_firmable_mpt: int
+    reserva_personal_mpt: int = 0
+
+
+class EcoConciliarBody(BaseModel):
+    ts_in: str
+    minutos: int
+
+
 @app.get("/api/economia/tablero")
 def api_eco_tablero() -> dict:
-    eco = _economia()
-    if not eco:
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
+    if not p0:
         return {"activa": False}
-    m = eco["pagador"].mercado_fresco()  # lector fresco, sin candado
     _, semana = _eco_ahora()
-    tab = _eco_personal.tablero(m.k, m.registro, m.suscripciones,
-                                eco["reloj"], eco["personal"], semana)
-    return {"activa": True, "tablero": tab}
+    # lector serializado: el libro se repara truncando, no se lee a medio
+    # escribir (una lectura concurrente con un append de dispatch podria
+    # comerse un asiento recien escrito)
+    with _eco_candado(p0.ruta_libro):
+        eco = _economia()
+        m = eco["pagador"].mercado_fresco()
+        tab = _eco_personal.tablero(m.k, m.registro, m.suscripciones,
+                                    eco["reloj"], eco["personal"], semana)
+        pendientes = len(eco["pagador"].pendientes())
+    return {"activa": True, "tablero": tab, "pendientes": pendientes}
 
 
 @app.get("/api/economia/cola")
@@ -3362,7 +3383,7 @@ def api_eco_reloj_out() -> dict:
 
 
 @app.post("/api/economia/cierre")
-def api_eco_cierre() -> dict:
+def api_eco_cierre(body: EcoCierreBody) -> dict:
     p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
     if not p0:
         return {"activa": False}
@@ -3371,11 +3392,38 @@ def api_eco_cierre() -> dict:
         eco = _economia()  # fresco BAJO el candado (reentrante adentro)
         res = _eco_op.cerrar_semana_operativa(
             eco["pagador"].mercado_fresco(), eco["bus"], eco["cola"],
-            ts, semana)
+            ts, semana,
+            presupuesto_direccion_mm=body.presupuesto_direccion_mm)
         aplicados = eco["pagador"].reintentar_pendientes()
     return {"ok": True, "expiradas": res["expiradas"],
             "informes_ciclo": res["informes_ciclo"],
             "pendientes_aplicados": aplicados}
+
+
+@app.post("/api/economia/abrir")
+def api_eco_abrir(body: EcoAbrirBody) -> dict:
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
+    if not p0:
+        return {"activa": False}
+    ts, semana = _eco_ahora()
+    with _eco_candado(p0.ruta_libro):
+        eco = _economia()  # fresco BAJO el candado
+        _eco_op.abrir_semana(eco["pagador"].mercado_fresco().k, ts, semana,
+                             body.cuota_firmable_mpt,
+                             body.reserva_personal_mpt)
+    return {"ok": True, "semana": semana}
+
+
+@app.post("/api/economia/reloj/conciliar")
+def api_eco_reloj_conciliar(body: EcoConciliarBody) -> dict:
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
+    if not p0:
+        return {"activa": False}
+    ts, semana = _eco_ahora()
+    with _eco_candado(p0.ruta_libro):
+        eco = _economia()  # fresco BAJO el candado
+        eco["reloj"].conciliar(ts, semana, body.ts_in, body.minutos)
+    return {"ok": True}
 
 
 @app.on_event("startup")
