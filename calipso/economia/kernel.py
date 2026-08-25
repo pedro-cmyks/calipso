@@ -56,12 +56,13 @@ class Kernel:
             subtipo=subtipo.value, detalle={"evidencia": evidencia})
 
     def destruir(self, ts: str, semana: str, origen: str, monto: int,
-                 motivo: str, ref: str | None = None) -> Asiento:
+                 motivo: str, ref: str | None = None,
+                 detalle_extra: dict | None = None) -> Asiento:
         self._exigir(origen, monto)
         return self._append(
             ts=ts, semana=semana, tipo=TipoAsiento.DESTRUCCION,
             divisa=Divisa.MONEDA, monto=monto, origen=origen, ref=ref,
-            detalle={"motivo": motivo})
+            detalle={"motivo": motivo} | (detalle_extra or {}))
 
     def transferir(self, ts: str, semana: str, origen: str, destino: str,
                    monto: int, motivo: str, ref: str | None = None,
@@ -72,6 +73,13 @@ class Kernel:
             ts=ts, semana=semana, tipo=TipoAsiento.TRANSFERENCIA,
             divisa=Divisa.MONEDA, monto=monto, origen=origen,
             destino=destino, ref=ref, detalle=detalle)
+
+    def apuntar(self, ts: str, semana: str, monto: int,
+                detalle: dict) -> Asiento:
+        """Apunte informativo: no mueve saldos (los pliegues lo ignoran)."""
+        return self._append(
+            ts=ts, semana=semana, tipo=TipoAsiento.APUNTE,
+            divisa=Divisa.MONEDA, monto=monto, detalle=detalle)
 
     # -- escrow ------------------------------------------------------------
     def _reserva(self, ref: str) -> tuple[str, int]:
