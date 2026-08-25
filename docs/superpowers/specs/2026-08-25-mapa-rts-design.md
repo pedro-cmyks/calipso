@@ -177,6 +177,16 @@ Sonido; edición manual del mapa (mover edificios a mano contradice la invariant
 - **Frontera**: los endpoints responden `{"activa": false}` sin economía; el WS reconecta; el mapa sobrevive a que el pulso se caiga.
 - **Cliente**: test del generador de sprites (mismo modelo, mismo bitmap) y de la cámara (volarA converge). El render fino se valida a ojo, no con tests.
 
+## 12 bis. Pendientes conocidos del Plan 1
+
+Tres cosas quedaron medidas y ruladas afuera del Plan 1. Se anotan acá porque los Planes 2 y 3 construyen sobre este modelo y tienen que saberlas.
+
+- **El costo cuadrático de la cola.** `cola.pendientes()` es O(E²) en los eventos de la cola y vive en `calipso/economia/cola.py`, fuera del mapa. El modelo lo llama ahora una sola vez por derivación en vez de dos, lo que bajó el costo a la mitad (613 → 321 ms con 4.995 eventos), pero sigue siendo medio segundo de candado tomado por refresco en una economía de un año. La corrección va en la economía, no en el mapa.
+- **El anclaje exacto tiene una excepción.** Un departamento registrado que **nunca apareció en el libro** comparte `orden` con todos los demás que tampoco aparecieron, y ese valor crece cuando aparece cualquier cuenta nueva. Un edificio así sí se mueve al nacer otro departamento (medido: 5,8 unidades). Los que ya transaron alguna vez —o sea, todos los que importan— no se mueven nunca.
+- **La colocación no converge del todo a 300 iteraciones.** No afecta ninguna garantía declarada y `ITERACIONES` es una constante fija, así que el determinismo se mantiene entero. Subirla a 4.000 costaría medio segundo con 36 edificios.
+
+Medida de techo: a 71 edificios la derivación tarda 162 ms y la distancia mínima entre dos edificios es 25,8, contra un umbral de 20.
+
 ## 13. Criterios de éxito
 
 - Pedro abre `/fabrica` en el teléfono y en treinta segundos sabe si la fábrica está bien o mal, sin leer un número.
