@@ -8,6 +8,7 @@ from calipso.economia import departamentos as deps
 from calipso.economia import tipos as t
 from calipso.economia.kernel import Kernel
 from calipso.economia.libro import Libro
+from calipso.mapa import urbanismo as urb
 
 
 @pytest.fixture
@@ -29,15 +30,34 @@ def cliente(tmp_path, monkeypatch):
 
 
 def test_ciudad_responde_con_coordenadas(cliente):
+    """Coordenadas de verdad: no alcanza con que sean enteros. Un urbanismo
+    borrado devuelve todo en el origen y eso tiene que fallar aca."""
     r = cliente.get("/api/mapa/ciudad")
     assert r.status_code == 200
     body = r.json()
     assert body["activa"] is True
-    edis = {e["id"]: e for e in body["ciudad"]["edificios"]}
+    modelo = body["ciudad"]
+    edis = {e["id"]: e for e in modelo["edificios"]}
     assert edis["dep:mercado"]["saldo_mm"] == 50_000
     assert edis["dep:mercado"]["tamano"] == 3
-    for e in edis.values():
-        assert isinstance(e["x"], int) and isinstance(e["y"], int)
+    puntos = [(e["x"], e["y"]) for e in edis.values()]
+    assert all(isinstance(x, int) and isinstance(y, int) for x, y in puntos)
+    assert len(set(puntos)) == len(puntos)   # nadie encimado
+    assert sum(1 for p in puntos if p == (0, 0)) == 1  # solo el ancla
+    # y son EXACTAMENTE las que da el urbanismo sobre este mismo modelo
+    esperadas = urb.urbanizar(modelo["edificios"], modelo["calles"])
+    assert {e["id"]: (e["x"], e["y"]) for e in modelo["edificios"]} == esperadas
+
+
+def test_el_endpoint_entrega_los_campos_que_el_cliente_gasta(cliente):
+    """Spec 7: la tarjeta del edificio muestra saldo, gasto del ciclo,
+    ventas de la ventana y eficiencia."""
+    edis = {e["id"]: e for e in
+            cliente.get("/api/mapa/ciudad").json()["ciudad"]["edificios"]}
+    m = edis["dep:mercado"]
+    assert m["gasto_ciclo_mm"] == 0 and m["ventas_ventana_mm"] == 0
+    # el endpoint SI alcanza el estado de suscripciones: no va en None
+    assert m["eficiencia_pormil"] == 0
 
 
 def test_ciudad_es_estable_entre_llamadas(cliente):
@@ -45,6 +65,9 @@ def test_ciudad_es_estable_entre_llamadas(cliente):
     uno = cliente.get("/api/mapa/ciudad").json()
     dos = cliente.get("/api/mapa/ciudad").json()
     assert uno["ciudad"]["edificios"] == dos["ciudad"]["edificios"]
+    # ... y lo que se compara no es una lista de ceros
+    puntos = {(e["x"], e["y"]) for e in uno["ciudad"]["edificios"]}
+    assert len(puntos) == len(uno["ciudad"]["edificios"]) > 1
 
 
 def test_sin_economia_responde_inactiva(tmp_path, monkeypatch):
