@@ -62,6 +62,50 @@ def test_la_zona_personal_queda_agrupada_y_aparte():
     assert entre_personales < cruzada
 
 
+def test_zona_personal_se_agrupa_a_escala_realista():
+    """multizona es el camino de produccion (fabrica + personal), no un
+    caso de borde: doce departamentos de fabrica y tres personales."""
+    edis = [_edi(f"dep:{n}", n) for n in range(12)]
+    edis += [_edi(f"personal:{n}", 12 + n, zona="personal") for n in range(3)]
+    pos = urb.urbanizar(edis, [])
+    ids = sorted(pos)
+    for i, x in enumerate(ids):
+        for y in ids[i + 1:]:
+            assert _dist(pos, x, y) > 20
+    personales = [e["id"] for e in edis if e["zona"] == "personal"]
+    fabrica = [e["id"] for e in edis if e["zona"] != "personal"]
+    pares_personales = [(a, b) for i, a in enumerate(personales)
+                         for b in personales[i + 1:]]
+    pares_cruzados = [(a, b) for a in personales for b in fabrica]
+    media_personal = sum(_dist(pos, a, b) for a, b in pares_personales) \
+        / len(pares_personales)
+    media_cruzada = sum(_dist(pos, a, b) for a, b in pares_cruzados) \
+        / len(pares_cruzados)
+    assert media_personal < media_cruzada
+
+
+def test_zona_personal_se_agrupa_con_reparto_desparejo():
+    """caso senalado por la revision como no confirmado: un solo edificio
+    de fabrica contra seis personales."""
+    edis = [_edi("dep:0", 0)]
+    edis += [_edi(f"personal:{n}", 1 + n, zona="personal") for n in range(6)]
+    pos = urb.urbanizar(edis, [])
+    ids = sorted(pos)
+    for i, x in enumerate(ids):
+        for y in ids[i + 1:]:
+            assert _dist(pos, x, y) > 20
+    personales = [e["id"] for e in edis if e["zona"] == "personal"]
+    fabrica = [e["id"] for e in edis if e["zona"] != "personal"]
+    pares_personales = [(a, b) for i, a in enumerate(personales)
+                         for b in personales[i + 1:]]
+    pares_cruzados = [(a, b) for a in personales for b in fabrica]
+    media_personal = sum(_dist(pos, a, b) for a, b in pares_personales) \
+        / len(pares_personales)
+    media_cruzada = sum(_dist(pos, a, b) for a, b in pares_cruzados) \
+        / len(pares_cruzados)
+    assert media_personal < media_cruzada
+
+
 def test_un_departamento_nuevo_no_reacomoda_la_ciudad():
     """Anclaje por antiguedad: la ciudad crece hacia afuera."""
     viejos = [_edi("dep:a", 0), _edi("dep:b", 1), _edi("dep:c", 2)]

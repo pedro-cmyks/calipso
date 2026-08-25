@@ -51,7 +51,8 @@ def urbanizar(edificios: list[dict], calles: list[dict],
     ids = sorted(pos)
     vel = {i: [0.0, 0.0] for i in ids}
     aristas = [(a["a"], a["b"], REPOSO[min(4, max(1, a["ancho"]))])
-               for a in calles if a["a"] in pos and a["b"] in pos]
+               for a in sorted(calles, key=lambda a: (a["a"], a["b"]))
+               if a["a"] in pos and a["b"] in pos]
     # el resorte de pertenencia solo entra en juego si hay mas de una zona:
     # con una sola zona (el caso mono-departamento tipico) su ausencia deja
     # el resto de la fisica intacta.
