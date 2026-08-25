@@ -42,3 +42,23 @@ def test_destruir_valida_disponible(k):
 def test_destruir_de_cuenta_vacia_falla(k):
     with pytest.raises(SinSaldo):
         k.destruir(TS, W, "dep:fantasma", 1, motivo="api")
+
+
+def test_transferir_mueve_y_valida_disponible(k):
+    _capital(k, 100_000)
+    k.transferir(TS, W, t.TESORO, "dep:mercado", 40_000, motivo="presupuesto")
+    assert k.saldo(t.TESORO) == 60_000
+    assert k.saldo("dep:mercado") == 40_000
+    with pytest.raises(SinSaldo):
+        k.transferir(TS, W, t.TESORO, "dep:mercado", 60_001, motivo="presupuesto")
+
+
+@pytest.mark.skip(reason="reservar llega en task 6")
+def test_transferir_respeta_reservas(k):
+    """Sin sobregiro es contra DISPONIBLE, no contra saldo (invariante 7)."""
+    _capital(k, 100_000, destino="dep:a")
+    k.reservar(TS, W, "dep:a", 70_000, ref="res-1")
+    with pytest.raises(SinSaldo):
+        k.transferir(TS, W, "dep:a", "dep:b", 40_000, motivo="servicio")
+    k.transferir(TS, W, "dep:a", "dep:b", 30_000, motivo="servicio")
+    assert k.saldo("dep:b") == 30_000

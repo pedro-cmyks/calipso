@@ -53,3 +53,13 @@ class Kernel:
             ts=ts, semana=semana, tipo=TipoAsiento.DESTRUCCION,
             divisa=Divisa.MONEDA, monto=monto, origen=origen, ref=ref,
             detalle={"motivo": motivo})
+
+    def transferir(self, ts: str, semana: str, origen: str, destino: str,
+                   monto: int, motivo: str, ref: str | None = None,
+                   detalle_extra: dict | None = None) -> Asiento:
+        self._exigir(origen, monto)
+        detalle = {"motivo": motivo} | (detalle_extra or {})
+        return self.libro.append(
+            ts=ts, semana=semana, tipo=TipoAsiento.TRANSFERENCIA,
+            divisa=Divisa.MONEDA, monto=monto, origen=origen,
+            destino=destino, ref=ref, detalle=detalle)
