@@ -61,14 +61,17 @@ def test_cierre_semanal_asigna_declara_y_cierra(entorno):
     assert c2.quiebras == []
 
 
-def test_carta_de_mandato_cuando_presupuesto_excede(entorno):
+def test_perilla_de_pedro_no_pasa_por_mandato(entorno):
     k, m, b = entorno
     m.registro.ajustar("a", presupuesto_semanal_mm=150_000)  # > umbral 100k
     _semana(k, "2026-W30")
     c = cierre.cerrar_semana_economia(m, b, TS, "2026-W30")
-    assert any(carta["tipo"] == "mandato" and carta["departamento"] == "dep:a"
-               for carta in c.cartas)
-    assert k.saldo("dep:a") == 0  # no se asigno sin firma
+    assert not any(carta["tipo"] == "mandato" for carta in c.cartas)
+    assert k.saldo("dep:a") == 150_000  # la perilla asigna sin pasar por el mandato
+    asiento = next(a for a in k.libro.asientos()
+                   if a.detalle.get("motivo") == "presupuesto"
+                   and a.destino == "dep:a")
+    assert asiento.detalle["firma"]["tipo"] == "perilla_pedro"
 
 
 def test_carta_de_cierre_departamental(entorno):
@@ -92,6 +95,21 @@ def test_carta_de_cierre_departamental(entorno):
     assert afectados == ["dep:b"]
 
 
+def test_carta_de_cierre_con_primera_semana_no_operativa(entorno):
+    """FIX I9: una primera semana no operativa no exime de la carta."""
+    k, m, b = entorno
+    k.acunar(TS, "2026-W28", "dep:a", 10_000, t.SubtipoAcunacion.CAPITAL,
+             {"tipo": "firma_pedro"})  # semana sin emision de PT
+    semanas = ["2026-W30", "2026-W31", "2026-W32"]
+    for sem in semanas:
+        _semana(k, sem)
+        c = cierre.cerrar_semana_economia(m, b, TS, sem,
+                                          ventana_carta_cierre=3)
+    afectados = [carta["departamento"] for carta in c.cartas
+                 if carta["tipo"] == "cierre_departamento"]
+    assert "dep:a" in afectados
+
+
 def _ciclo_completo(k, m, b, semanas, unidades_por_semana=0):
     for sem in semanas:
         _semana(k, sem)
@@ -112,11 +130,16 @@ def test_cierre_de_ciclo_renueva_automatico_si_no_es_rojo(entorno):
     informes = cierre.cerrar_ciclo(m, TS, "2026-W33")
     inf = informes[0]
     assert inf["rojo"] is False and inf["renovada"] is True
-    assert k.saldo(t.TESORO) == tesoro_antes - 100_000
+    assert "eficiencia_pormil" in inf
+    # FIX I6: la renovacion sale de direccion; direccion ya tenia la
+    # recaudacion del ciclo (80_000), asi que el tesoro solo repone la
+    # diferencia hasta el costo mensual (100_000 - 80_000 = 20_000)
+    assert k.saldo(t.TESORO) == tesoro_antes - 20_000
+    assert k.saldo(t.DIRECCION) == 0  # 80_000 + 20_000 - 100_000
     # idempotencia: un reintento no destruye el tesoro dos veces
     informes_bis = cierre.cerrar_ciclo(m, TS, "2026-W33")
     assert informes_bis[0]["renovada"] is True
-    assert k.saldo(t.TESORO) == tesoro_antes - 100_000
+    assert k.saldo(t.TESORO) == tesoro_antes - 20_000
 
 
 def test_circuit_breaker_tras_dos_ciclos_rojos_sin_atender(entorno):
@@ -133,6 +156,40 @@ def test_circuit_breaker_tras_dos_ciclos_rojos_sin_atender(entorno):
     informes_3 = cierre.cerrar_ciclo(m, TS, "2026-W37",
                                      firmas={"claude_max": {"tipo": "firma_pedro"}})
     assert informes_3[0]["renovada"] is True
+
+
+def test_carta_atendida_desarma_el_breaker(entorno):
+    k, m, b = entorno
+    semanas = [f"2026-W{n}" for n in range(30, 38)]  # 2 ciclos, sin compras
+    _ciclo_completo(k, m, b, semanas)
+    cierre.cerrar_ciclo(m, TS, "2026-W33")
+    informes = cierre.cerrar_ciclo(
+        m, TS, "2026-W37",
+        cartas_atendidas=frozenset({"renovacion:claude_max"}))
+    inf = informes[0]
+    assert inf["requiere_firma"] is False and inf["renovada"] is True
+
+
+def test_renovacion_con_tesoro_agotado(tmp_path):
+    """FIX I6/I8b: si ni el tesoro puede reponer a direccion, se informa
+    en vez de reventar con un SinSaldo crudo."""
+    k = Kernel(Libro(tmp_path / "libro.jsonl"))
+    r = deps.Registro(tmp_path / "departamentos.json")
+    r.alta(deps.Departamento("a", deps.ZONA_FABRICA,
+                             presupuesto_semanal_mm=0,  # no toca el tesoro
+                             techo_api_ciclo_mm=500_000))
+    m = mkt.Mercado(k, r, SUS)
+    b = bus_mod.Bus(tmp_path / "bus.jsonl")
+    k.acunar(TS, "2026-W30", t.TESORO, 50_000,
+             t.SubtipoAcunacion.CAPITAL, {"tipo": "firma_pedro"})
+    semanas = ["2026-W30", "2026-W31", "2026-W32", "2026-W33"]
+    for sem in semanas:
+        _semana(k, sem)
+        cierre.cerrar_semana_economia(m, b, TS, sem)
+    informes = cierre.cerrar_ciclo(m, TS, "2026-W33")
+    inf = informes[0]
+    assert inf["tesoro_insuficiente"] is True
+    assert inf["renovada"] is False
 
 
 def test_ciclo_incompleto_no_renueva(entorno):

@@ -11,12 +11,14 @@ Las cartas son datos devueltos; la cola que las presenta es del Plan 3.
 """
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass
 
 from . import bus as bus_mod
 from . import capacidad as cap
 from . import departamentos as deps
 from . import direccion
+from . import eficiencia
 from . import pt
 from .kernel import SinSaldo
 from .mercado import Mercado
@@ -87,9 +89,14 @@ def cerrar_semana_economia(mercado: Mercado, bus: bus_mod.Bus, ts: str,
         if ya >= dep.presupuesto_semanal_mm:
             continue  # idempotencia: un reintento del cierre no paga dos veces
         try:
-            direccion.asignar_presupuesto(mercado, ts, semana, dep.cuenta,
-                                          dep.presupuesto_semanal_mm - ya,
-                                          umbral_mm=umbral_mandato_mm)
+            # FIX I7 (spec-owner ruling): la perilla de Pedro (el
+            # presupuesto_semanal_mm configurado por el mismo Pedro) no
+            # pasa por el mandato — se firma con su propio origen auditable.
+            direccion.asignar_presupuesto(
+                mercado, ts, semana, dep.cuenta,
+                dep.presupuesto_semanal_mm - ya, umbral_mm=umbral_mandato_mm,
+                firma={"tipo": "perilla_pedro",
+                       "perilla": "presupuesto_semanal_mm"})
         except direccion.ErrorDireccion:
             cartas.append({"tipo": "mandato", "departamento": dep.cuenta,
                            "monto": dep.presupuesto_semanal_mm})
@@ -107,9 +114,16 @@ def cerrar_semana_economia(mercado: Mercado, bus: bus_mod.Bus, ts: str,
         if dep.zona != deps.ZONA_FABRICA:
             continue
         primera = _primera_semana(asientos, dep.cuenta)
-        if primera is None or primera not in ops:
+        if primera is None:
             continue
-        if len(ops) - ops.index(primera) < ventana_carta_cierre:
+        # FIX I9: una primera semana no operativa (p.ej. capital acuñado
+        # antes de la primera emision de PT) no exime de la carta — se
+        # ubica su posicion entre las semanas operativas en vez de exigir
+        # pertenencia exacta.
+        idx = bisect.bisect_left(ops, primera)
+        if idx >= len(ops):
+            continue
+        if len(ops) - idx < ventana_carta_cierre:
             continue  # todavia no vivio la ventana completa
         cuentas = {dep.cuenta} | {bus_mod.cuenta_trabajo(id)
                                   for id, d in duenos.items()
@@ -159,15 +173,34 @@ def cerrar_ciclo(mercado: Mercado, ts: str, semana: str,
                           and a.ref == carta_id and a.semana in semanas
                           for a in asientos)
         renovada = ya_renovada
+        tesoro_insuficiente = False
         if not requiere_firma and not ya_renovada:
-            detalle = {"firma": firmas[nombre]} if firmas.get(nombre) else None
-            k.destruir(ts, semana, TESORO, sus.costo_mensual_mm,
-                       motivo="renovacion", ref=carta_id,
-                       detalle_extra=detalle)
-            renovada = True
+            # FIX I6 (spec-owner ruling): la renovacion se paga DESDE
+            # DIRECCION, no directo del tesoro — el tesoro solo repone lo
+            # que falte para cubrir el costo del mes. Si ni el tesoro
+            # alcanza, no revienta con un SinSaldo crudo: se informa
+            # (FIX I8b) y se sigue con la siguiente suscripcion.
+            falta = sus.costo_mensual_mm - k.disponible(DIRECCION)
+            if falta > 0:
+                try:
+                    k.transferir(ts, semana, TESORO, DIRECCION, falta,
+                                 motivo="reposicion_direccion", ref=carta_id)
+                except SinSaldo:
+                    tesoro_insuficiente = True
+            if not tesoro_insuficiente:
+                detalle = {"firma": firmas[nombre]} if firmas.get(nombre) else None
+                k.destruir(ts, semana, DIRECCION, sus.costo_mensual_mm,
+                           motivo="renovacion", ref=carta_id,
+                           detalle_extra=detalle)
+                renovada = True
         informes.append({"suscripcion": nombre, "recaudacion_mm": recaudado,
                          "costo_fabrica_mm": sus.costo_fabrica_mm,
                          "rojo": rojo, "rojos_consecutivos": rojos,
                          "renovada": renovada,
-                         "requiere_firma": requiere_firma})
+                         "requiere_firma": requiere_firma,
+                         "tesoro_insuficiente": tesoro_insuficiente,
+                         # FIX I8a: eficiencia de la suscripcion en el
+                         # ciclo (cortes por departamento llegan con Plan 3)
+                         "eficiencia_pormil": eficiencia.eficiencia_suscripcion(
+                             asientos, sus, semanas, mercado.suscripciones)})
     return informes
