@@ -13,7 +13,7 @@ import pathlib
 
 from . import capacidad as cap
 from . import departamentos as deps
-from .mercado import Mercado
+from .mercado import ErrorMercado, Mercado
 from .tipos import Asiento, TipoAsiento
 
 _CLAVES_CRITERIO = {"gasto_max_mm", "semanas_max"}
@@ -47,6 +47,8 @@ class Bus:
     def alta(self, ts: str, semana: str, id: str, departamento_cuenta: str,
              titulo: str, presupuesto_mm: int, retorno_mm: int,
              criterio: dict) -> None:
+        if not id or ":" in id:
+            raise ErrorBus(f"id invalido: {id!r}")
         if any(e["id"] == id for e in self._eventos):
             raise ErrorBus(f"propuesta repetida: {id}")
         if not criterio or not set(criterio) <= _CLAVES_CRITERIO:
@@ -94,15 +96,34 @@ class Bus:
         return [i for i in self.ids() if self.estado(i) == "financiada"]
 
     def marcar(self, ts: str, semana: str, id: str, evento: str) -> None:
-        self._eventos_de(id)  # debe existir
+        estado = self.estado(id)  # tambien exige que exista
+        if evento not in _TRANSICIONES.get(estado, frozenset()):
+            raise ErrorBus(f"transicion invalida: {estado} -> {evento}")
         self._apilar({"ts": ts, "semana": semana, "evento": evento, "id": id})
+
+
+_TRANSICIONES = {
+    "alta": frozenset({"financiada"}),
+    "financiada": frozenset({"muerta"}),
+    "muerta": frozenset({"liquidada"}),
+}
 
 
 def financiar(mercado: Mercado, bus: Bus, ts: str, semana: str, id: str,
               financiador_cuenta: str, mm: int) -> Asiento:
     if bus.estado(id) not in ("alta", "financiada"):
         raise ErrorBus(f"propuesta no financiable en estado {bus.estado(id)}")
+    # puerta de origen (FIX C1): solo un departamento de fabrica registrado
+    # puede financiar; el tesoro y cuentas fantasma quedan afuera.
+    try:
+        dep = mercado.dep_por_cuenta(financiador_cuenta)
+    except ErrorMercado:
+        raise ErrorBus(f"financiador invalido: {financiador_cuenta}") from None
+    if dep.zona != deps.ZONA_FABRICA:
+        raise ErrorBus("solo departamentos de fabrica financian propuestas")
     asientos = mercado.k.libro.asientos()
+    if semana not in cap.semanas_operativas(asientos):
+        raise ErrorBus(f"semana no operativa: {semana}")
     dueno = bus.datos(id)["departamento"]
     if deps.es_congelado(asientos, dueno):
         raise ErrorBus(
@@ -158,7 +179,12 @@ def evaluar_y_liquidar_muertos(mercado: Mercado, bus: Bus, ts: str,
                 ops, datos["semana_financiada"], semana) > criterio["semanas_max"]
         if not muere:
             continue
-        bus.marcar(ts, semana, id, "muerta")
+        # FIX I1: primero las devoluciones, despues las marcas. Un crash a
+        # mitad de las transferencias deja la propuesta en "financiada"; la
+        # proxima evaluacion vuelve a detectar la muerte y reintenta desde
+        # el saldo remanente (el guard "parte > 0" evita duplicar lo ya
+        # devuelto), y solo entonces las marcas aterrizan. Idempotente por
+        # construccion.
         cuenta = cuenta_trabajo(id)
         saldo = mercado.k.saldo(cuenta)
         aportado = aportes(asientos, id)
@@ -174,6 +200,7 @@ def evaluar_y_liquidar_muertos(mercado: Mercado, bus: Bus, ts: str,
                 mercado.k.transferir(ts, semana, cuenta, fin, parte,
                                      motivo="liquidacion_trabajo")
                 devuelto += parte
+        bus.marcar(ts, semana, id, "muerta")
         bus.marcar(ts, semana, id, "liquidada")
         muertos.append(id)
     return muertos

@@ -141,6 +141,70 @@ def test_muere_por_semanas(entorno):
     assert k.saldo("dep:a") == 50_000  # todo devuelto: no gasto nada
 
 
+def test_tesoro_no_financia_sin_mandato(entorno):
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    b.alta(TS, "2026-W30", "p1", "dep:a", "radar", 100_000, 300_000, CRITERIO)
+    with pytest.raises(bus_mod.ErrorBus):
+        bus_mod.financiar(m, b, TS, "2026-W30", "p1",
+                          financiador_cuenta=t.TESORO, mm=10_000)
+
+
+def test_financiar_exige_semana_operativa(entorno):
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 100_000, "dep:a")
+    b.alta(TS, "2026-W30", "p1", "dep:a", "radar", 100_000, 300_000, CRITERIO)
+    with pytest.raises(bus_mod.ErrorBus):
+        bus_mod.financiar(m, b, TS, "2026-W99", "p1", "dep:a", 10_000)
+
+
+def test_liquidacion_reanudable(entorno):
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 100_000, "dep:a")
+    b.alta(TS, "2026-W30", "p1", "dep:a", "radar", 100_000, 300_000,
+           {"gasto_max_mm": 25_000})
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", "dep:a", 50_000)
+    k.destruir(TS, "2026-W30", "trabajo:p1", 30_000, motivo="api",
+               ref="trabajo:p1")  # 30k > 25k: muerto
+    muertos = bus_mod.evaluar_y_liquidar_muertos(m, b, TS, "2026-W30")
+    assert muertos == ["p1"]
+    assert b.estado("p1") == "liquidada"
+    assert k.saldo("trabajo:p1") == 0
+    saldo_a = k.saldo("dep:a")
+    # segunda pasada: idempotente, ya no esta "financiada" asi que no
+    # vuelve a intentar transferir ni a re-marcar.
+    assert bus_mod.evaluar_y_liquidar_muertos(m, b, TS, "2026-W30") == []
+    assert k.saldo("dep:a") == saldo_a
+
+
+def test_marcar_transiciones_ilegales(entorno):
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 100_000, "dep:a")
+    b.alta(TS, "2026-W30", "p1", "dep:a", "radar", 100_000, 300_000,
+           {"gasto_max_mm": 10_000})
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", "dep:a", 50_000)
+    b.marcar(TS, "2026-W30", "p1", "muerta")
+    b.marcar(TS, "2026-W30", "p1", "liquidada")
+    with pytest.raises(bus_mod.ErrorBus):
+        b.marcar(TS, "2026-W30", "p1", "financiada")  # sobre una liquidada
+    b.alta(TS, "2026-W30", "p2", "dep:a", "radar2", 50_000, 100_000,
+           {"gasto_max_mm": 10_000})
+    bus_mod.financiar(m, b, TS, "2026-W30", "p2", "dep:a", 20_000)
+    with pytest.raises(bus_mod.ErrorBus):
+        b.marcar(TS, "2026-W30", "p2", "liquidada")  # salta "muerta"
+
+
+def test_alta_valida_id(entorno):
+    k, m, b = entorno
+    with pytest.raises(bus_mod.ErrorBus):
+        b.alta(TS, "2026-W30", "", "dep:a", "malo", 1, 1, CRITERIO)
+    with pytest.raises(bus_mod.ErrorBus):
+        b.alta(TS, "2026-W30", "trabajo:p1", "dep:a", "malo", 1, 1, CRITERIO)
+
+
 def test_vivo_no_se_liquida(entorno):
     k, m, b = entorno
     _semana_op(k, "2026-W30")
