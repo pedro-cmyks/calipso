@@ -1,5 +1,5 @@
 # test_economia_pt.py
-"""Tests de la divisa PT: emision, consumo y expiracion."""
+"""Tests de la divisa PT: emision, consumo, expiracion y tipo de cambio."""
 import pytest
 
 from calipso.economia import pt
@@ -69,6 +69,19 @@ def test_expirar_deja_pools_en_cero_y_registra(k):
     assert k.saldo(t.POOL_PT_PERSONAL, t.Divisa.PT) == 0
     montos = {a.origen: a.monto for a in expirados}
     assert montos == {t.POOL_PT_FABRICA: 2_000, t.POOL_PT_PERSONAL: 1_000}
+
+
+def test_consumir_monto_no_positivo_es_error_pt(k):
+    pt.emitir_semana(k, TS, "2026-W35", 4_000, 0)
+    with pytest.raises(pt.ErrorPT):
+        pt.consumir_fabrica(k, TS, "2026-W35", 0, ref="f-1", pagador="dep:a")
+    with pytest.raises(pt.ErrorPT):
+        pt.consumir_fabrica(k, TS, "2026-W35", -5, ref="f-1", pagador="dep:a")
+
+
+def test_emitir_cuota_cero_es_error_pt(k):
+    with pytest.raises(pt.ErrorPT):
+        pt.emitir_semana(k, TS, "2026-W35", 0, 0)
 
 
 def _venta(k, monto_mm, semana):

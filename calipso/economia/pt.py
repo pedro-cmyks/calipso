@@ -24,6 +24,11 @@ def _ya_emitida(k: Kernel, semana: str) -> bool:
 
 def emitir_semana(k: Kernel, ts: str, semana: str, cuota_firmable_mpt: int,
                   reserva_personal_mpt: int) -> list[Asiento]:
+    if not isinstance(cuota_firmable_mpt, int) \
+            or isinstance(cuota_firmable_mpt, bool) \
+            or cuota_firmable_mpt <= 0:
+        raise ErrorPT("una semana sin horas firmables no se emite: "
+                      "cuota_firmable_mpt debe ser > 0")
     if not 0 <= reserva_personal_mpt <= cuota_firmable_mpt:
         raise ErrorPT("reserva personal fuera de rango [0, cuota]")
     if _ya_emitida(k, semana):
@@ -47,6 +52,9 @@ def emitir_semana(k: Kernel, ts: str, semana: str, cuota_firmable_mpt: int,
 
 def _consumir(k: Kernel, ts: str, semana: str, pool: str, monto_mpt: int,
               ref: str | None, detalle: dict) -> Asiento:
+    if not isinstance(monto_mpt, int) or isinstance(monto_mpt, bool) \
+            or monto_mpt <= 0:
+        raise ErrorPT(f"monto_mpt debe ser entero positivo: {monto_mpt!r}")
     if monto_mpt > k.saldo(pool, Divisa.PT):
         raise ErrorPT(f"pool {pool}: pide {monto_mpt}, "
                       f"hay {k.saldo(pool, Divisa.PT)}")
