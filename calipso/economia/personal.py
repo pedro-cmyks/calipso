@@ -14,7 +14,7 @@ from . import capacidad as cap
 from . import departamentos as deps
 from . import pt
 from .kernel import Kernel
-from .tipos import CUENTA_PEDRO, TESORO, TipoAsiento
+from .tipos import CUENTA_PEDRO, DIRECCION, TESORO, TipoAsiento
 
 SUELDO_MENSUAL_MM = 2_500_000
 
@@ -73,11 +73,14 @@ def tablero(k: Kernel, registro: deps.Registro, suscripciones: dict,
     minutos = reloj.minutos_por_categoria(ops[-4:]) if ops else {}
     reserva_usada = {nombre: cap.consumo_personal(asientos, nombre, ops[-4:])
                      for nombre in suscripciones} if ops else {}
+    ventana = ops[-4:] if ops else None
     costo_op = sum(a.monto for a in asientos
                    if a.tipo is TipoAsiento.APUNTE
-                   and a.detalle.get("nota") == "costo_oportunidad")
+                   and a.detalle.get("nota") == "costo_oportunidad"
+                   and (ventana is None or a.semana in ventana))
     return {
         "tesoro_mm": k.saldo(TESORO),
+        "direccion_mm": k.saldo(DIRECCION),
         "cuenta_pedro_mm": k.saldo(CUENTA_PEDRO),
         "tipo_cambio_mm": pt.tipo_de_cambio(asientos, semana) if ops else 5_000,
         "linea_empleo_mm": linea_empleo_mm_por_hora(

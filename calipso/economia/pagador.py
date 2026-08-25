@@ -13,6 +13,7 @@ ts/semana reales.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import sys
 
@@ -45,8 +46,8 @@ class Pagador:
 
     @staticmethod
     def desde_entorno(base: pathlib.Path | None = None) -> "Pagador | None":
-        raiz = pathlib.Path(base) if base else \
-            pathlib.Path(pathlib.Path.home() / ".calipso")
+        raiz = pathlib.Path(base) if base else pathlib.Path(
+            os.environ.get("CALIPSO_HOME", os.path.expanduser("~/.calipso")))
         p = Pagador(raiz / "economia")
         if not (p.ruta_libro.exists() and p.ruta_registro.exists()
                 and p.ruta_sus.exists()):
