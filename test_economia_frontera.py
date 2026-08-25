@@ -398,3 +398,41 @@ def test_tablero_consolida(entorno, reloj):
     assert tab["tipo_cambio_mm"] == 5_000
     assert tab["departamentos"]["dep:a"] == {"saldo_mm": 0,
                                              "congelado": False}
+
+
+from calipso.economia import operacion as op_mod
+
+
+def test_semana_iso():
+    assert op_mod.semana_iso("2026-08-25") == "2026-W35"
+    assert op_mod.semana_iso("2026-01-01") == "2026-W01"
+
+
+def test_cerrar_semana_operativa_orquesta_todo(entorno, cola):
+    k, m, b, _ = entorno
+    m.registro.ajustar("a", presupuesto_semanal_mm=10_000)
+    _capital(k, 1_200_000, t.TESORO)
+    op_mod.abrir_semana(k, TS, "2026-W30", 4_000, 0)
+    _capital(k, 20_000, "dep:a")
+    cola.encolar(k, TS, "2026-W30", "c1", "dep:a", "sin atender",
+                 tipo="contacto", obligatoria=True, mpt_estimado=500,
+                 monedas_en_juego=1_000)
+    res = op_mod.cerrar_semana_operativa(m, b, cola, TS, "2026-W30")
+    assert res["expiradas"] == ["c1"]
+    assert cola.estado("c1") == "expirada"
+    assert k.saldo("dep:a") == 30_000  # presupuesto asignado
+    assert res["informes_ciclo"] == []  # fraccion 25, no cierra ciclo
+    # la emision de W30 expiro en el cierre de pt
+    assert k.saldo(t.POOL_PT_FABRICA, t.Divisa.PT) == 0
+
+
+def test_ciclo_completo_encola_carta_de_renovacion(entorno, cola):
+    k, m, b, _ = entorno
+    _capital(k, 1_200_000, t.TESORO)
+    semanas = ["2026-W30", "2026-W31", "2026-W32", "2026-W33"]
+    for sem in semanas:
+        op_mod.abrir_semana(k, TS, sem, 4_000, 0)
+        res = op_mod.cerrar_semana_operativa(m, b, cola, TS, sem)
+    # W33 cierra el ciclo 0: sin recaudacion -> rojo 1, renueva automatico
+    assert len(res["informes_ciclo"]) == 1
+    assert res["informes_ciclo"][0]["renovada"] is True
