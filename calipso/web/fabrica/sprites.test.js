@@ -96,6 +96,27 @@ test("la grieta es una sola linea continua, no salpicadura", () => {
   }
 });
 
+test("la grieta zigzaguea de a un pixel, no salta", () => {
+  // sin esto, un paso de cinco pixeles por fila pasaria por "continua":
+  // el test de arriba solo mira que no falte ninguna fila
+  const s = edificioSprite(edi({estado: "congelado", tamano: 9}));
+  const xs = [];
+  s.pix.forEach((v, i) => {
+    if (v === GRIETA) xs.push([Math.floor(i / s.ancho), i % s.ancho]);
+  });
+  xs.sort((a, b) => a[0] - b[0]);
+  assert.ok(xs.length > 3, "no hay grieta que medir");
+  let pasos = 0;
+  for (let i = 1; i < xs.length; i++) {
+    const d = Math.abs(xs[i][1] - xs[i - 1][1]);
+    // cero es legitimo: es la grieta apoyada contra el borde, que no puede
+    // seguir avanzando para ese lado
+    assert.ok(d <= 1, `salto de ${d} en la fila ${xs[i][0]}`);
+    if (d === 1) pasos++;
+  }
+  assert.ok(pasos > 0, "la grieta es una linea recta, no zigzaguea");
+});
+
 test("dos edificios distintos no prenden el mismo patron de ventanas", () => {
   const a = edificioSprite(edi({id: "dep:atlas"}));
   const b = edificioSprite(edi({id: "dep:mercado"}));
