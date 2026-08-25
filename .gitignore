@@ -30,3 +30,7 @@ files.zip
 # Rust / Tauri build artifacts
 target/
 src-tauri/target/
+
+# Worktrees locales de Claude
+.claude/worktrees/
+.superpowers/
