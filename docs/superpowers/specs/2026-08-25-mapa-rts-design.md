@@ -75,9 +75,12 @@ Función pura `urbanizar(edificios, calles) -> dict[id, (x, y)]`. Reglas:
 
 - **Resortes**: cada calle tira de sus dos extremos. Longitud de reposo inversamente proporcional al peso — cuanto más comercian, más cerca quedan.
 - **Repulsión**: todos los pares se empujan, con fuerza inversamente proporcional al cuadrado de la distancia, para que no se encimen.
+- **Cohesión de zona**: entre dos edificios de la misma zona actúa además un resorte suave que los acerca, activo solo cuando la ciudad tiene más de una zona (`multizona = len(set(zona.values())) > 1`) — es lo que hace que la zona personal se agrupe entre sí y se distinga a simple vista; con una sola zona el resorte no entra en juego y el resto de la física queda intacto.
 - **Anclaje por antigüedad**: el edificio más viejo (el de primera aparición en el libro) queda clavado en el origen, y la inercia de cada uno crece con su antigüedad. Así la ciudad **crece hacia afuera** en vez de reacomodarse entera cuando nace un departamento nuevo.
 - **Determinismo**: posición inicial de cada edificio en un círculo, con el ángulo derivado de un hash estable de su nombre (no `hash()` de Python, que varía entre procesos: SHA-256 truncado). Número fijo de iteraciones (300) y paso fijo. Coordenadas redondeadas a enteros al final.
 - **La zona personal es un barrio aparte**: los edificios `personal:*` reciben una fuerza extra que los aleja del centroide de la fábrica, de modo que quedan agrupados y se distinguen a simple vista, unidos por cables.
+
+Constantes reales del módulo (`calipso/mapa/urbanismo.py`): `K_REPULSION=150_000.0`, `K_RESORTE=0.030`, `PASO=0.55`, `AMORTIGUACION=0.6`, `SEPARACION_ZONAS=9_000.0` (retunada desde el valor original de 900.0, para que el empuje entre zonas distintas domine con margen a la cohesión de zona nueva), `K_ZONA=0.15`, `REPOSO_ZONA=150.0`, `RADIO_INICIAL=120.0`, `REPOSO=(0.0, 260.0, 190.0, 130.0, 80.0)` indexado por ancho de calle 1-4.
 
 El cliente **anima la transición** entre dos layouts consecutivos: la ciudad se reacomoda a la vista en vez de teletransportarse.
 
