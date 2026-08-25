@@ -47,7 +47,7 @@ Una función pura `ciudad(asientos, registro, bus, cola, suscripciones, semana) 
 |---|---|
 | `id`, `nombre`, `zona` | del registro (`dep:*` / `personal:*`; la casa es `cuenta_pedro`) |
 | `tamano` (1-9) | escala logarítmica del saldo (fórmula abajo) |
-| `estado` | `activo` \| `congelado` (quiebra declarada sin rescate) \| `cerrado` (liquidado) |
+| `estado` | `activo` \| `congelado` (quiebra declarada sin rescate). No existe `cerrado`: liquidar no deja marca distinguible en el libro, asi que no es derivable |
 | `saldo_mm`, `gasto_ciclo_mm`, `ventas_ventana_mm`, `eficiencia_pormil` | de los módulos de economía que ya existen |
 | `actividad` (0-3) | señal de vida barata, derivada del libro: cuántos de los últimos 3 días tuvieron gasto de ese departamento |
 | `trabajos` | ids de los trabajos vivos cuyo dueño es el departamento (del bus) |
