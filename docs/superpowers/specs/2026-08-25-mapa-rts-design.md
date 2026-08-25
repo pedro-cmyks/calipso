@@ -24,7 +24,7 @@ Reglas que viven en código, no en la intención.
 
 ## 3. El modelo de ciudad
 
-Una función pura `ciudad(asientos, registro, bus, cola, suscripciones, semana) -> dict`. Estructura:
+Una función pura `ciudad(asientos, registro, bus, cola, semana, minutos_empleo=0, suscripciones=None) -> dict`. `suscripciones` es opcional porque el mapa tiene que poder derivarse sin ese estado: sin él no hay costo API equivalente y entonces `eficiencia_pormil` va en `null` — un campo nulo declarado, nunca ausente. El endpoint sí lo alcanza (`mercado_fresco().suscripciones`) y lo pasa. Estructura:
 
 ```
 {
@@ -48,7 +48,10 @@ Una función pura `ciudad(asientos, registro, bus, cola, suscripciones, semana) 
 | `id`, `nombre`, `zona` | del registro (`dep:*` / `personal:*`; la casa es `cuenta_pedro`) |
 | `tamano` (1-9) | escala logarítmica del saldo (fórmula abajo) |
 | `estado` | `activo` \| `congelado` (quiebra declarada sin rescate). No existe `cerrado`: liquidar no deja marca distinguible en el libro, asi que no es derivable |
-| `saldo_mm`, `gasto_ciclo_mm`, `ventas_ventana_mm`, `eficiencia_pormil` | de los módulos de economía que ya existen |
+| `saldo_mm` | de `balances.saldos` |
+| `gasto_ciclo_mm` | todo lo que SALIÓ de la cuenta en las semanas operativas del ciclo en curso (destrucción, transferencia y ejecución de reserva). Mismo criterio de salida que `bus.gastado`, para que dos lecturas del mismo libro no discrepen sobre qué es gasto |
+| `ventas_ventana_mm` | acuñaciones de subtipo `venta` con destino el departamento, dentro del lapso de la ventana. El capital no es venta: no lo firma el mercado |
+| `eficiencia_pormil` | `eficiencia.eficiencia_departamento` sobre las ocho semanas operativas de la ventana, o `null` si no se pasó el estado de suscripciones |
 | `actividad` (0-3) | señal de vida barata, derivada del libro: cuántos de los últimos 3 días tuvieron gasto de ese departamento |
 | `trabajos` | ids de los trabajos vivos cuyo dueño es el departamento (del bus) |
 | `compuertas` | cuántas compuertas suyas están pendientes (de la cola) |
@@ -61,26 +64,40 @@ Una función pura `ciudad(asientos, registro, bus, cola, suscripciones, semana) 
 | campo | derivación |
 |---|---|
 | `a`, `b` | los dos extremos, ordenados alfabéticamente para que el par sea estable |
-| `peso_mm` | suma de las transferencias internas directas entre ambos en la ventana: servicios vendidos y financiación de propuestas. La compra de capacidad no cuenta, porque su destino es dirección y no el otro departamento |
+| `peso_mm` | suma de las transferencias internas directas entre ambos en la ventana: servicios vendidos y financiación de propuestas. La compra de capacidad no cuenta, porque su destino es dirección y no el otro departamento. La ventana es el **lapso** entre la primera y la última de las ocho semanas operativas, no la pertenencia al conjunto de sus etiquetas: una venta no desaparece de la ventana solo porque su semana no tuvo emisión de PT, igual que en `pt.tipo_de_cambio` |
 | `ancho` (1-4) | bucket del peso: `<10k`→1, `<100k`→2, `<1M`→3, resto→4 |
 | `tipo` | `cable` si los extremos están en zonas distintas (fábrica ↔ personal), `calle` si comparten zona |
 
-**Unidad**: un trabajo vivo, con `id`, `dueno`, `gastado_mm` y `hacia` — el departamento que más cofinanció el trabajo sin ser su dueño, o `null` si no hay ninguno. La unidad camina por esa calle; sin `hacia`, orbita el edificio de su dueño.
+**Unidad**: un trabajo vivo, con `id`, `dueno`, `gastado_mm` y `hacia` — el departamento que más cofinanció el trabajo sin ser su dueño, o `null` si no hay ninguno. La unidad camina por esa calle, así que **`hacia` solo puede nombrar a un cofinanciador que tenga calle en el modelo**: los aportes se leen del libro entero pero las calles son de la ventana, y un trabajo de larga vida puede tener toda su financiación ya fuera de ventana. Sin `hacia`, la unidad orbita el edificio de su dueño.
 
 **Aviso**: una compuerta o carta pendiente, con `id`, `sobre` (el edificio), `tipo` y `monedas_en_juego_mm` para que el cliente ordene por importancia.
 
 ## 4. Urbanismo: la física de afinidad
 
-Función pura `urbanizar(edificios, calles) -> dict[id, (x, y)]`. Reglas:
+Función pura `urbanizar(edificios, calles) -> dict[id, (x, y)]`, por **colocación incremental por antigüedad**. No es una relajación global: una relajación global no tiene memoria, resuelve la ciudad entera desde cero en cada request, y cuando nace un departamento encuentra un mínimo distinto y se corren todos. El anclaje por inercia según la antigüedad era un proxy débil de "la ciudad no se reacomoda" — empuja en la dirección correcta pero no lo garantiza, y ninguna constante lo logra.
 
-- **Resortes**: cada calle tira de sus dos extremos. Longitud de reposo inversamente proporcional al peso — cuanto más comercian, más cerca quedan.
-- **Repulsión**: todos los pares se empujan, con fuerza inversamente proporcional al cuadrado de la distancia, para que no se encimen.
-- **Cohesión de zona**: entre dos edificios de la misma zona actúa además un resorte suave que los acerca, activo solo cuando la ciudad tiene más de una zona (`multizona = len(set(zona.values())) > 1`) — es lo que hace que la zona personal se agrupe entre sí y se distinga a simple vista; con una sola zona el resorte no entra en juego y el resto de la física queda intacto.
-- **Anclaje por antigüedad**: el edificio más viejo (el de primera aparición en el libro) queda clavado en el origen, y la inercia de cada uno crece con su antigüedad. Así la ciudad **crece hacia afuera** en vez de reacomodarse entera cuando nace un departamento nuevo.
-- **Determinismo**: posición inicial de cada edificio en un círculo, con el ángulo derivado de un hash estable de su nombre (no `hash()` de Python, que varía entre procesos: SHA-256 truncado). Número fijo de iteraciones (300) y paso fijo. Coordenadas redondeadas a enteros al final.
-- **La zona personal es un barrio aparte**: entre cada edificio `personal:*` y cada edificio de la fábrica actúa una repulsión extra, par a par, que se suma a la repulsión general. Junto con la cohesión de zona, eso deja el barrio personal agrupado y separado del resto, unido por cables. No hay ningún cálculo de centroide: la separación emerge de las fuerzas entre pares, como todo lo demás en esta física.
+El algoritmo:
 
-Constantes reales del módulo (`calipso/mapa/urbanismo.py`): `K_REPULSION=150_000.0`, `K_RESORTE=0.030`, `PASO=0.55`, `AMORTIGUACION=0.6`, `SEPARACION_ZONAS=9_000.0` (retunada desde el valor original de 900.0, para que el empuje entre zonas distintas domine con margen a la cohesión de zona nueva), `K_ZONA=0.15`, `REPOSO_ZONA=150.0`, `RADIO_INICIAL=120.0`, `REPOSO=(0.0, 260.0, 190.0, 130.0, 80.0)` indexado por ancho de calle 1-4.
+- Los edificios se ordenan por `orden` (primera aparición en el libro), desempatando por `id`. El primero va al origen y no se mueve nunca.
+- El edificio k se coloca relajando **solo a él** contra los k−1 anteriores, que quedan **congelados** en las posiciones ya calculadas. Cuando termina, se congela también y sigue el k+1.
+- Nace justo afuera del borde de la ciudad de ese momento (`borde + RADIO_INICIAL`), en el ángulo que le da el SHA-256 de su nombre.
+
+Sobre el que se coloca actúan tres fuerzas, todas par a par contra los ya colocados:
+
+- **Repulsión**: inversamente proporcional al cuadrado de la distancia, para que nadie se encime.
+- **Pertenencia y separación de zona**: un resorte hacia cada edificio de su misma zona, con reposo corto (`REPOSO_ZONA`), y un resorte contra cada uno de las otras zonas, con reposo largo (`SEPARACION_ZONAS`). Son las dos caras de la misma regla y no hay ningún cálculo de centroide: el barrio personal emerge de las fuerzas entre pares. Ya **no** hay compuerta `multizona`: el resorte de pertenencia actúa siempre, porque es lo único que ata a la ciudad cuando hay una sola zona.
+- **Resortes de calle**: cada calle que toca al edificio tira de él, con longitud de reposo inversamente proporcional al peso — cuanto más comercian, más cerca quedan.
+
+Todos los resortes son atractivos más allá de su reposo, así que un edificio suelto siempre tiene equilibrio y la relajación converge: no hay un mínimo global inestable del que depender.
+
+Lo que esto compra: cuando nace un departamento se agrega al final del orden y las posiciones de todos los que ya estaban salen **bit a bit idénticas**. El corrimiento es cero **por construcción**, no por tuneo, y la ciudad crece hacia afuera de verdad.
+
+Lo que esto cuesta, aceptado a propósito: **un edificio viejo ya no se acerca a un socio comercial nuevo**, porque no se mueve más. Una calle nueva entre un edificio viejo y uno nuevo tira solo del nuevo. Es exactamente lo que significa crecimiento anclado.
+
+- **Determinismo**: ángulo inicial del SHA-256 del nombre (nunca `hash()` de Python, que varía entre procesos), número fijo de iteraciones por edificio, paso fijo, todo recorrido ordenado. Coordenadas redondeadas a enteros al final.
+- **Costo**: O(N²) relajaciones con N en decenas. Medido: 8 ms con 16 edificios, 42 ms con 36, 162 ms con 71.
+
+Constantes reales del módulo (`calipso/mapa/urbanismo.py`): `K_REPULSION=150_000.0`, `K_RESORTE=0.030`, `PASO=0.55`, `AMORTIGUACION=0.6`, `SEPARACION_ZONAS=900.0` (retunada desde 9.000, que dejaba el barrio personal a nueve o diez veces el diámetro de toda la fábrica: una isla, no un barrio), `K_SEPARACION=0.15`, `K_ZONA=0.15`, `REPOSO_ZONA=150.0`, `RADIO_INICIAL=120.0` (ahora es cuánto más afuera del borde nace un edificio, no un radio absoluto que crecía con el índice), `ITERACIONES=300` **por edificio**, `REPOSO=(0.0, 260.0, 190.0, 130.0, 80.0)` indexado por ancho de calle 1-4. La masa es `1 + tamano`: el bono de inercia por antigüedad desapareció porque el anclaje ya no depende de él.
 
 El cliente **anima la transición** entre dos layouts consecutivos: la ciudad se reacomoda a la vista en vez de teletransportarse.
 
@@ -153,7 +170,8 @@ Sonido; edición manual del mapa (mover edificios a mano contradice la invariant
 ## 12. Verificación
 
 - **Determinismo**, la propiedad central: el mismo libro produce el mismo modelo y las mismas coordenadas, en el mismo proceso y en procesos distintos. Test con dos derivaciones independientes y comparación exacta.
-- **Estabilidad del urbanismo**: agregar un departamento nuevo mueve a los existentes menos de un umbral declarado; el más viejo no se mueve nunca.
+- **Estabilidad del urbanismo**: agregar un departamento nuevo deja a todos los existentes en **exactamente** las mismas coordenadas; el más viejo no se mueve nunca. Se verifica sobre modelos que `ciudad()` emite de verdad, no sobre diccionarios escritos a mano.
+- **Barrio legible**: la separación mínima entre zonas supera la distancia media entre edificios de la misma zona, los personales están más cerca entre sí que de la fábrica, y ningún par de edificios queda a menos de 20.
 - **Derivación**: cada campo del modelo se testea contra un libro sintético (tamaño por saldo, estado congelado, calles por comercio real, avisos por compuertas pendientes, actividad por gasto reciente).
 - **Pulso**: los anillos no crecen sin límite; un agente inactivo se marca; los eventos salen en orden; el bus no persiste nada.
 - **Frontera**: los endpoints responden `{"activa": false}` sin economía; el WS reconecta; el mapa sobrevive a que el pulso se caiga.
