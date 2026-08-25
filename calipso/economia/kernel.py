@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from . import balances as bal
 from .libro import Libro
-from .tipos import AsientoInvalido, Asiento, Divisa, SubtipoAcunacion, TipoAsiento
+from .tipos import (AsientoInvalido, Asiento, Divisa, SubtipoAcunacion,
+                    TipoAsiento, TESORO)
 
 
 class OperacionInvalida(Exception):
@@ -102,3 +103,41 @@ class Kernel:
             ts=ts, semana=semana, tipo=TipoAsiento.EJECUCION_RESERVA,
             divisa=Divisa.MONEDA, monto=monto, origen=cuenta,
             destino=destino, ref=ref, detalle=(detalle_extra or {}))
+
+    # -- acreencias ----------------------------------------------------------
+    def registrar_acreencia(self, ts: str, semana: str, acreedor: str,
+                            deudor: str, monto: int, ref: str) -> Asiento:
+        return self._append(
+            ts=ts, semana=semana, tipo=TipoAsiento.ACREENCIA,
+            divisa=Divisa.MONEDA, monto=monto, ref=ref,
+            detalle={"acreedor": acreedor, "deudor": deudor})
+
+    def acreencias_pendientes(self, deudor: str) -> list[tuple[str, str, int]]:
+        pagos: dict[str, int] = {}
+        acre: list[tuple[str, str, int]] = []
+        for a in self.libro.asientos():
+            if (a.tipo is TipoAsiento.ACREENCIA
+                    and a.detalle.get("deudor") == deudor):
+                acre.append((a.ref, a.detalle["acreedor"], a.monto))
+            elif a.tipo is TipoAsiento.TRANSFERENCIA and a.ref:
+                pagos[a.ref] = pagos.get(a.ref, 0) + a.monto
+        out = []
+        for ref, acreedor, monto in acre:
+            pend = monto - pagos.get(ref, 0)
+            if pend > 0:
+                out.append((ref, acreedor, pend))
+        return out
+
+    def liquidar(self, ts: str, semana: str, cuenta: str) -> list[Asiento]:
+        out: list[Asiento] = []
+        for ref, acreedor, pend in self.acreencias_pendientes(cuenta):
+            pago = min(pend, self.disponible(cuenta))
+            if pago > 0:
+                out.append(self.transferir(ts, semana, cuenta, acreedor,
+                                           pago, motivo="liquidacion",
+                                           ref=ref))
+        resto = self.disponible(cuenta)
+        if resto > 0:
+            out.append(self.transferir(ts, semana, cuenta, TESORO, resto,
+                                       motivo="liquidacion_remanente"))
+        return out

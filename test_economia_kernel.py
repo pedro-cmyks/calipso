@@ -2,6 +2,7 @@
 import pytest
 
 from calipso.economia import tipos as t
+from calipso.economia import cuenta_pedro as cp
 from calipso.economia.libro import Libro
 from calipso.economia.kernel import Kernel, SinSaldo, OperacionInvalida
 
@@ -108,3 +109,58 @@ def test_monto_invalido_es_operacion_invalida(k):
 def test_acunar_con_subtipo_crudo_es_operacion_invalida(k):
     with pytest.raises(OperacionInvalida):
         k.acunar(TS, W, t.TESORO, 1_000, "venta", {"tipo": "firma_pedro"})
+
+
+def _sueldo(k, monto=50_000):
+    """Simula pagos por PT ya cobrados en la cuenta de Pedro."""
+    _capital(k, monto, destino=t.CUENTA_PEDRO)
+
+
+def test_cuatro_salidas_de_la_cuenta_validan_saldo(k):
+    _sueldo(k, 50_000)
+    cp.retirar(k, TS, W, 10_000)
+    cp.reinyectar(k, TS, W, 10_000)
+    cp.financiar_personal(k, TS, W, "personal:finanzas", 10_000)
+    cp.rescatar(k, TS, W, "dep:mercado", 10_000, firma={"tipo": "firma_pedro"})
+    assert k.saldo(t.CUENTA_PEDRO) == 10_000
+    with pytest.raises(SinSaldo):
+        cp.retirar(k, TS, W, 10_001)
+
+
+def test_financiar_exige_departamento_personal(k):
+    _sueldo(k)
+    with pytest.raises(OperacionInvalida):
+        cp.financiar_personal(k, TS, W, "dep:mercado", 1_000)
+
+
+def test_rescate_exige_firma(k):
+    _sueldo(k)
+    with pytest.raises(OperacionInvalida):
+        cp.rescatar(k, TS, W, "dep:mercado", 1_000, firma={})
+    a = cp.rescatar(k, TS, W, "dep:mercado", 1_000,
+                    firma={"tipo": "firma_pedro"})
+    assert a.detalle["rescate"] is True
+
+
+def test_acreencias_se_liquidan_por_prelacion(k):
+    """Spec 4.1/5: en la liquidacion cobran primero los acreedores."""
+    _capital(k, 30_000, destino="dep:quebrado")
+    k.registrar_acreencia(TS, W, acreedor=t.DIRECCION, deudor="dep:quebrado",
+                          monto=20_000, ref="acr-1")
+    k.registrar_acreencia(TS, W, acreedor=t.DIRECCION, deudor="dep:quebrado",
+                          monto=15_000, ref="acr-2")
+    asientos = k.liquidar(TS, W, "dep:quebrado")
+    assert k.saldo("dep:quebrado") == 0
+    assert k.saldo(t.DIRECCION) == 30_000  # 20k de acr-1 + 10k de acr-2
+    assert k.saldo(t.TESORO) == 0  # no sobro nada
+    assert k.acreencias_pendientes("dep:quebrado") == \
+        [("acr-2", t.DIRECCION, 5_000)]  # lo impago queda visible
+
+
+def test_liquidar_con_sobrante_devuelve_al_tesoro(k):
+    _capital(k, 30_000, destino="dep:quebrado")
+    k.registrar_acreencia(TS, W, acreedor=t.DIRECCION, deudor="dep:quebrado",
+                          monto=10_000, ref="acr-1")
+    k.liquidar(TS, W, "dep:quebrado")
+    assert k.saldo(t.DIRECCION) == 10_000
+    assert k.saldo(t.TESORO) == 20_000
