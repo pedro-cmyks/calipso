@@ -184,3 +184,51 @@ def test_vender_servicio_entre_departamentos(k, mercado, registro):
     mercado.vender_servicio(TS, "2026-W35", "dep:produccion",
                             "dep:mercadeo", 4_000)
     assert k.saldo("dep:mercadeo") == 4_000
+
+
+from calipso.economia import direccion as dir_
+
+
+def test_mandato_acumulado_por_semana(k, mercado):
+    _semana_op(k, "2026-W35")
+    _capital(k, 500_000)
+    dir_.asignar_presupuesto(mercado, TS, "2026-W35", "dep:mercadeo", 60_000)
+    with pytest.raises(dir_.ErrorDireccion):
+        dir_.asignar_presupuesto(mercado, TS, "2026-W35", "dep:mercadeo",
+                                 50_000)  # acumulado 110k > 100k sin firma
+    a = dir_.asignar_presupuesto(mercado, TS, "2026-W35", "dep:mercadeo",
+                                 50_000, firma={"tipo": "firma_pedro"})
+    assert a.monto == 50_000
+    assert k.saldo("dep:mercadeo") == 110_000
+
+
+def test_presupuesto_a_congelado_se_rechaza(k, mercado):
+    _semana_op(k, "2026-W35")
+    _capital(k, 100_000)
+    deps.declarar_quiebra(k, TS, "2026-W35", "dep:mercadeo")
+    with pytest.raises(dir_.ErrorDireccion):
+        dir_.asignar_presupuesto(mercado, TS, "2026-W35", "dep:mercadeo",
+                                 10_000)
+
+
+def test_carta_de_sistema_paga_en_pt_de_direccion(k, mercado):
+    _semana_op(k, "2026-W35")
+    _capital(k, 100_000, destino=t.DIRECCION)
+    pt.emitir_semana(k, TS, "2026-W36", 4_000, 0)
+    asientos = dir_.pagar_carta_sistema(mercado, TS, "2026-W36", 500,
+                                        ref="carta:renovacion")
+    # tipo vigente de arranque: 5000 mm/PT -> 500 mpt = 2500 mm
+    assert k.saldo(t.CUENTA_PEDRO) == 2_500
+    assert k.saldo(t.POOL_PT_FABRICA, t.Divisa.PT) == 3_500
+    assert len(asientos) == 2
+
+
+def test_adelanto_deja_acreencia_prioritaria(k, mercado):
+    _semana_op(k, "2026-W35")
+    _capital(k, 100_000, destino=t.DIRECCION)
+    pt.emitir_semana(k, TS, "2026-W36", 4_000, 0)
+    dir_.adelantar_obligatoria(mercado, TS, "2026-W36", "dep:mercadeo",
+                               1_000, ref="firma-99")
+    assert k.saldo(t.CUENTA_PEDRO) == 5_000  # 1 PT a 5000
+    assert k.acreencias_pendientes("dep:mercadeo") == \
+        [("adelanto:firma-99", t.DIRECCION, 5_000)]
