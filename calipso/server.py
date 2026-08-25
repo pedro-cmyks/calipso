@@ -3249,6 +3249,7 @@ try:
     from calipso.economia.pagador import Pagador as _EcoPagador
 except Exception:  # economia no disponible: los endpoints responden inactivo
     _EcoPagador = None
+    _eco_bus = _eco_cola = _eco_op = _eco_personal = _eco_reloj = _eco_candado = None
 
 _ECO_BASE = pathlib.Path(os.path.expanduser("~/.calipso"))
 
@@ -3309,12 +3310,14 @@ def api_eco_cola() -> dict:
 
 @app.post("/api/economia/cola/{item_id}/atender")
 def api_eco_atender(item_id: str, body: EcoAtenderBody) -> dict:
-    eco = _economia()
-    if not eco:
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
+    if not p0:
         return {"activa": False}
     ts, semana = _eco_ahora()
-    # atender solo toca cola.jsonl, pero mantiene la disciplina de candado
-    with _eco_candado(eco["pagador"].ruta_libro):
+    # fresco BAJO el candado: atender lee estado/datos de la cola, que debe
+    # ser el snapshot actual, no uno tomado antes de adquirir el candado
+    with _eco_candado(p0.ruta_libro):
+        eco = _economia()
         eco["cola"].atender_carta(ts, semana, item_id, firma=body.firma)
     return {"ok": True}
 
@@ -3334,12 +3337,14 @@ def api_eco_rechazar(item_id: str) -> dict:
 
 @app.post("/api/economia/reloj/in")
 def api_eco_reloj_in(body: EcoRelojInBody) -> dict:
-    eco = _economia()
-    if not eco:
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
+    if not p0:
         return {"activa": False}
     ts, semana = _eco_ahora()
-    eco["reloj"].clock_in(ts, semana, body.categoria, ref=body.ref,
-                          cola=eco["cola"])
+    with _eco_candado(p0.ruta_libro):
+        eco = _economia()
+        eco["reloj"].clock_in(ts, semana, body.categoria, ref=body.ref,
+                              cola=eco["cola"])
     return {"ok": True}
 
 

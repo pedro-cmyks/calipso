@@ -139,6 +139,10 @@ class Pagador:
             return None  # fuera del libro de la fabrica (costs.py lo lleva)
         pin, pout = PRECIOS_API_MM_POR_MTOK.get(modelo, PRECIO_DESCONOCIDO)
         mm = -(-(prompt_tokens * pin + completion_tokens * pout) // 1_000_000)
+        if mm <= 0:
+            # un request sin usage medible no consumió nada facturable; no
+            # se genera cargo (evitar un pendiente estructuralmente eterno)
+            return 0
         self._cobrar({"ts": ts, "semana": semana, "tipo": "api",
                       "cuenta": cuenta, "mm": mm, "modelo": modelo})
         return mm

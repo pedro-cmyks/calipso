@@ -46,6 +46,13 @@ def test_cargar_api_por_tokens(base):
     assert p.leer_kernel().saldo("dep:mercadeo") == 100_000 - 82
 
 
+def test_cero_tokens_no_genera_cargo(base):
+    p = pag.Pagador.desde_entorno(base)
+    assert p.cargar_api(TS, W, "dep:mercadeo", "deepseek-chat", 0, 0) == 0
+    assert p.pendientes() == []
+    assert p.leer_kernel().saldo("dep:mercadeo") == 100_000
+
+
 def test_cargar_api_de_trabajo_resuelve_dueno(base):
     from calipso.economia import bus as bus_mod
     b = bus_mod.Bus(base / "economia" / "bus.jsonl")
