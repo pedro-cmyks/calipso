@@ -9,6 +9,7 @@ from calipso.economia import departamentos as deps
 from calipso.economia import direccion as dir_
 from calipso.economia import mercado as mkt
 from calipso.economia import pt
+from calipso.economia import reloj as reloj_mod
 from calipso.economia import tipos as t
 from calipso.economia.libro import Libro
 from calipso.economia.kernel import Kernel
@@ -271,3 +272,71 @@ def test_servir_con_adelanto_de_direccion(entorno, cola):
     assert k.saldo(t.CUENTA_PEDRO) == 2_500
     assert k.acreencias_pendientes("dep:b") == \
         [("adelanto:c2", t.DIRECCION, 2_500)]
+
+
+@pytest.fixture
+def reloj(entorno):
+    k, m, b, tmp = entorno
+    return reloj_mod.Reloj(tmp / "reloj.jsonl")
+
+
+def test_reloj_fabrica_sirve_la_compuerta(entorno, cola, reloj):
+    k, m, b, _ = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 50_000, "dep:a")
+    cola.encolar(k, TS, "2026-W30", "c1", "dep:a", "llamar", tipo="contacto",
+                 obligatoria=True, mpt_estimado=500, monedas_en_juego=9_000)
+    with pytest.raises(reloj_mod.ErrorReloj):
+        reloj.clock_in(TS, "2026-W30", "fabrica", ref="typo", cola=cola)
+    reloj.clock_in("2026-08-25T10:00:00", "2026-W30", "fabrica", ref="c1",
+                   cola=cola)
+    with pytest.raises(reloj_mod.ErrorReloj):
+        reloj.clock_in("2026-08-25T10:05:00", "2026-W30", "tuning")  # abierto
+    res = reloj.clock_out(m, cola, "2026-08-25T10:42:00", "2026-W30")
+    assert res["minutos"] == 42 and res["mpt_real"] == 700
+    assert res["sin_cobro"] is False
+    assert cola.estado("c1") == "servida"
+    assert k.saldo(t.CUENTA_PEDRO) == 5_000  # 1000 mpt redondeados a 5000mm
+
+
+def test_cobro_fallido_no_atasca_el_reloj(entorno, cola, reloj):
+    k, m, b, _ = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 50_000, "dep:a")
+    cola.encolar(k, TS, "2026-W30", "c9", "dep:a", "se expira", tipo="contacto",
+                 obligatoria=True, mpt_estimado=500, monedas_en_juego=1_000)
+    reloj.clock_in("2026-08-25T10:00:00", "2026-W30", "fabrica", ref="c9",
+                   cola=cola)
+    cola.expirar_semana(k, TS, "2026-W30")  # el cierre corrio con el tramo abierto
+    res = reloj.clock_out(m, cola, "2026-08-25T10:30:00", "2026-W30")
+    assert res["sin_cobro"] is True
+    assert reloj.abierto() is None  # el reloj sigue operable
+    assert k.saldo(t.CUENTA_PEDRO) == 0  # y no se cobro nada
+
+
+def test_reloj_personal_consume_reserva(entorno, cola, reloj):
+    k, m, b, _ = entorno
+    _semana_op(k, "2026-W30", cuota=4_000, reserva=1_000)
+    reloj.clock_in("2026-08-25T09:00:00", "2026-W30", "personal",
+                   ref="personal:finanzas")
+    res = reloj.clock_out(m, cola, "2026-08-25T09:30:00", "2026-W30")
+    assert res["mpt_real"] == 500
+    assert k.saldo(t.POOL_PT_PERSONAL, t.Divisa.PT) == 500
+
+
+def test_reloj_empleo_solo_registra(entorno, cola, reloj):
+    k, m, b, _ = entorno
+    reloj.clock_in("2026-08-25T08:00:00", "2026-W30", "empleo")
+    reloj.clock_out(m, cola, "2026-08-25T16:00:00", "2026-W30")
+    assert reloj.minutos_por_categoria(["2026-W30"]) == {"empleo": 480}
+
+
+def test_huerfano_se_concilia_sin_inventar(entorno, cola, reloj):
+    k, m, b, _ = entorno
+    reloj.clock_in("2026-08-25T08:00:00", "2026-W30", "tuning")
+    assert reloj.abierto() is not None
+    huerfanos = reloj.huerfanos("2026-W31")
+    assert len(huerfanos) == 1
+    reloj.conciliar(TS, "2026-W31", huerfanos[0]["ts"], minutos=60)
+    assert reloj.abierto() is None
+    assert reloj.minutos_por_categoria(["2026-W30"]) == {"tuning": 60}
