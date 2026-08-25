@@ -2,6 +2,7 @@
 import pytest
 
 from calipso.economia import bus as bus_mod
+from calipso.economia import capacidad as cap
 from calipso.economia import cola as cola_mod
 from calipso.economia import departamentos as deps
 from calipso.economia import pt
@@ -12,6 +13,10 @@ from calipso.mapa import ciudad as ciu
 
 TS = "2026-08-25T10:00:00"
 W = "2026-W35"
+
+
+def _lapso(asientos):
+    return ciu.lapso_ventana(cap.semanas_operativas(asientos))
 
 
 @pytest.fixture
@@ -67,10 +72,38 @@ def test_orden_es_por_primera_aparicion_en_el_libro(mundo):
     assert edis["personal:finanzas"]["orden"] > edis["dep:mercado"]["orden"]
 
 
+def test_el_orden_cuenta_edificios_y_no_pools_ni_tesoro(mundo):
+    """M8: pt:fabrica, tesoro y direccion no son departamentos. Si se los
+    cuenta se quedan con los primeros lugares y el orden miente."""
+    k, r, b, c = mundo
+    _semana_op(k, W)                      # aparece pt:fabrica
+    _capital(k, 1_000, t.TESORO)          # aparece tesoro
+    _capital(k, 1_000, "dep:mercado")     # el PRIMER edificio del libro
+    _capital(k, 1_000, "dep:curiosos")
+    edis = {e["id"]: e for e in ciu.edificios(k.libro.asientos(), r, b, c)}
+    assert edis["dep:mercado"]["orden"] == 0
+    assert edis["dep:curiosos"]["orden"] == 1
+
+
+def test_el_que_paga_es_mas_viejo_que_el_que_cobra(mundo):
+    """M8: dentro de un mismo asiento se lee primero el origen."""
+    k, r, b, c = mundo
+    _semana_op(k, W)
+    _capital(k, 200_000, t.TESORO)
+    # primera aparicion de AMBOS en el mismo asiento: el que paga ya tenia
+    # plata, asi que es el mas viejo
+    k.transferir(TS, W, t.TESORO, "dep:mercado", 50_000, motivo="presupuesto")
+    k.transferir(TS, W, "dep:mercado", "dep:curiosos", 10_000,
+                 motivo="servicio")
+    edis = {e["id"]: e for e in ciu.edificios(k.libro.asientos(), r, b, c)}
+    assert edis["dep:mercado"]["orden"] < edis["dep:curiosos"]["orden"]
+
+
 def test_congelado_se_ve_en_el_estado(mundo):
     k, r, b, c = mundo
     _capital(k, 1_000, "dep:curiosos")
-    assert ciu.edificios(k.libro.asientos(), r, b, c)
+    antes = {e["id"]: e for e in ciu.edificios(k.libro.asientos(), r, b, c)}
+    assert antes["dep:curiosos"]["estado"] == "activo"  # antes de la quiebra
     deps.declarar_quiebra(k, TS, W, "dep:curiosos")
     edis = {e["id"]: e for e in ciu.edificios(k.libro.asientos(), r, b, c)}
     assert edis["dep:curiosos"]["estado"] == "congelado"
@@ -92,6 +125,16 @@ def test_actividad_cuenta_dias_con_gasto_contra_el_ultimo_ts(mundo):
     # y no depende del reloj: reconstruido desde disco da lo mismo
     k2 = Kernel(Libro(k.libro.ruta))
     assert ciu.actividad_de(k2.libro.asientos(), "dep:mercado") == 3
+
+
+def test_la_ejecucion_de_una_reserva_tambien_es_gasto(mundo):
+    """M6: bus.gastado ya la cuenta. Dos lecturas del mismo libro no pueden
+    discrepar sobre que es gasto."""
+    k, r, b, c = mundo
+    _capital(k, 100_000, "dep:mercado", ts="2026-08-24T09:00:00")
+    k.reservar("2026-08-25T09:00:00", W, "dep:mercado", 10_000, ref="x1")
+    k.ejecutar_reserva("2026-08-25T10:00:00", W, "x1", t.CUENTA_PEDRO)
+    assert ciu.actividad_de(k.libro.asientos(), "dep:mercado") == 1
 
 
 def test_trabajos_y_compuertas_se_cuelgan_de_su_dueno(mundo):
@@ -134,7 +177,7 @@ def test_calle_por_servicio_directo_y_cable_entre_zonas(mundo):
     asientos = k.libro.asientos()
     edis = ciu.edificios(asientos, r, b, c)
     cs = {(x["a"], x["b"]): x for x in ciu.calles(
-        asientos, edis, ciu.duenos_de(b), [W])}
+        asientos, edis, ciu.duenos_de(b), _lapso(asientos))}
     assert cs[("dep:curiosos", "dep:mercado")]["peso_mm"] == 120_000
     assert cs[("dep:curiosos", "dep:mercado")]["ancho"] == 3
     assert cs[("dep:curiosos", "dep:mercado")]["tipo"] == "calle"
@@ -154,7 +197,7 @@ def test_financiar_el_trabajo_de_otro_tambien_es_comercio(mundo):
     asientos = k.libro.asientos()
     edis = ciu.edificios(asientos, r, b, c)
     cs = {(x["a"], x["b"]): x for x in ciu.calles(
-        asientos, edis, ciu.duenos_de(b), [W])}
+        asientos, edis, ciu.duenos_de(b), _lapso(asientos))}
     assert cs[("dep:curiosos", "dep:mercado")]["peso_mm"] == 40_000
 
 
@@ -167,7 +210,7 @@ def test_la_capacidad_no_crea_calles_entre_departamentos(mundo):
                  detalle_extra={"suscripcion": "claude_max", "unidades": 10})
     asientos = k.libro.asientos()
     edis = ciu.edificios(asientos, r, b, c)
-    assert ciu.calles(asientos, edis, ciu.duenos_de(b), [W]) == []
+    assert ciu.calles(asientos, edis, ciu.duenos_de(b), _lapso(asientos)) == []
 
 
 def test_unidades_son_los_trabajos_vivos(mundo):
@@ -183,13 +226,63 @@ def test_unidades_son_los_trabajos_vivos(mundo):
     k.transferir(TS, W, "dep:curiosos", "trabajo:radar", 60_000,
                  motivo="financiacion")
     k.destruir(TS, W, "trabajo:radar", 7_000, motivo="api", ref="trabajo:radar")
-    us = ciu.unidades(k.libro.asientos(), b, ciu.duenos_de(b))
+    asientos = k.libro.asientos()
+    duenos = ciu.duenos_de(b)
+    cs = ciu.calles(asientos, ciu.edificios(asientos, r, b, c), duenos,
+                    _lapso(asientos))
+    us = ciu.unidades(asientos, b.activas(), duenos, cs)
     assert len(us) == 1
     assert us[0]["id"] == "radar"
     assert us[0]["dueno"] == "dep:mercado"
     assert us[0]["gastado_mm"] == 7_000
     # camina hacia el mayor cofinanciador que no es el dueno
     assert us[0]["hacia"] == "dep:curiosos"
+
+
+def test_una_venta_no_desaparece_de_la_ventana_sin_emision_de_pt(mundo):
+    """M7: la ventana es un LAPSO entre la primera y la ultima de las ocho
+    semanas operativas, no el conjunto de sus etiquetas. Una semana sin
+    emision de PT dentro del lapso sigue contando, igual que en pt.py."""
+    k, r, b, c = mundo
+    _semana_op(k, "2026-W30")
+    _capital(k, 400_000, "dep:mercado")
+    # W33 nunca se abrio: no hay emision de PT esa semana
+    k.transferir(TS, "2026-W33", "dep:mercado", "dep:curiosos", 250_000,
+                 motivo="servicio")
+    _semana_op(k, "2026-W35")
+    asientos = k.libro.asientos()
+    edis = ciu.edificios(asientos, r, b, c)
+    cs = ciu.calles(asientos, edis, ciu.duenos_de(b), _lapso(asientos))
+    assert [(x["a"], x["b"], x["peso_mm"]) for x in cs] == [
+        ("dep:curiosos", "dep:mercado", 250_000)]
+
+
+def test_hacia_solo_nombra_calles_que_existen(mundo):
+    """C2: la unidad camina por esa calle. Con la financiacion ya fuera de
+    la ventana no hay calle, y entonces no hay a donde caminar."""
+    k, r, b, c = mundo
+    _semana_op(k, "2026-W10")
+    _capital(k, 200_000, "dep:mercado")
+    _capital(k, 200_000, "dep:curiosos")
+    b.alta(TS, "2026-W10", "radar", "dep:mercado", "radar", 10_000, 30_000,
+           {"gasto_max_mm": 50_000})
+    b.marcar(TS, "2026-W10", "radar", "financiada")
+    k.transferir(TS, "2026-W10", "dep:curiosos", "trabajo:radar", 60_000,
+                 motivo="financiacion")
+    for s in ("2026-W20", "2026-W21", "2026-W22", "2026-W23", "2026-W24",
+              "2026-W25", "2026-W26", "2026-W27", "2026-W28"):
+        _semana_op(k, s)
+    m = ciu.ciudad(k.libro.asientos(), r, b, c, "2026-W28")
+    # el aporte sigue en el libro, pero su semana quedo fuera de la ventana
+    assert bus_mod.aportes(k.libro.asientos(), "radar") == {
+        "dep:curiosos": 60_000}
+    assert m["calles"] == []
+    assert m["unidades"][0]["hacia"] is None
+    # y la regla general: todo hacia no nulo nombra una calle del modelo
+    pares = {(x["a"], x["b"]) for x in m["calles"]}
+    for u in m["unidades"]:
+        if u["hacia"] is not None:
+            assert tuple(sorted((u["dueno"], u["hacia"]))) in pares
 
 
 def test_avisos_traen_lo_que_espera_tu_firma(mundo):
@@ -200,7 +293,7 @@ def test_avisos_traen_lo_que_espera_tu_firma(mundo):
               obligatoria=True, mpt_estimado=500, monedas_en_juego=90_000)
     c.encolar_carta(TS, W, "renovacion:claude_max:0",
                     {"tipo": "renovacion", "suscripcion": "claude_max"})
-    avs = {a["id"]: a for a in ciu.avisos(c)}
+    avs = {a["id"]: a for a in ciu.avisos(c.pendientes())}
     assert avs["c1"]["sobre"] == "dep:mercado"
     assert avs["c1"]["monedas_en_juego_mm"] == 90_000
     assert avs["c1"]["tipo"] == "contacto"
