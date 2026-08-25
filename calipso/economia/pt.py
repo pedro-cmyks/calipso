@@ -18,36 +18,45 @@ class ErrorPT(Exception):
     pass
 
 
-def _ya_emitida(k: Kernel, semana: str) -> bool:
+def _pool_emitido(k: Kernel, semana: str, pool: str) -> bool:
     return any(a.tipo is TipoAsiento.EMISION_PT and a.semana == semana
-               for a in k.libro.asientos())
+               and a.destino == pool for a in k.libro.asientos())
 
 
 def emitir_semana(k: Kernel, ts: str, semana: str, cuota_firmable_mpt: int,
                   reserva_personal_mpt: int) -> list[Asiento]:
-    if not isinstance(cuota_firmable_mpt, int) \
-            or isinstance(cuota_firmable_mpt, bool) \
+    if not isinstance(cuota_firmable_mpt, int) or isinstance(cuota_firmable_mpt, bool) \
             or cuota_firmable_mpt <= 0:
         raise ErrorPT("una semana sin horas firmables no se emite: "
                       "cuota_firmable_mpt debe ser > 0")
     if not 0 <= reserva_personal_mpt <= cuota_firmable_mpt:
         raise ErrorPT("reserva personal fuera de rango [0, cuota]")
-    if _ya_emitida(k, semana):
+    # una re-llamada de recuperacion debe usar el MISMO split: si algun pool
+    # ya emitido de esta semana declara otra cuota/reserva, es un error del
+    # llamador, no una recuperacion
+    for a in k.libro.asientos():
+        if (a.tipo is TipoAsiento.EMISION_PT and a.semana == semana
+                and a.detalle.get("cuota") is not None
+                and (a.detalle["cuota"] != cuota_firmable_mpt
+                     or a.detalle["reserva"] != reserva_personal_mpt)):
+            raise ErrorPT(
+                f"emision de {semana} ya iniciada con otro split: "
+                f"({a.detalle['cuota']}, {a.detalle['reserva']})")
+    objetivos = [(POOL_PT_FABRICA, cuota_firmable_mpt - reserva_personal_mpt),
+                 (POOL_PT_PERSONAL, reserva_personal_mpt)]
+    pendientes = [(pool, monto) for pool, monto in objetivos
+                  if monto > 0 and not _pool_emitido(k, semana, pool)]
+    if not pendientes:
         raise ErrorPT(f"semana ya emitida: {semana}")
-    for pool in (POOL_PT_FABRICA, POOL_PT_PERSONAL):
+    out = []
+    for pool, monto in pendientes:
         if k.saldo(pool, Divisa.PT) != 0:
             raise ErrorPT(f"pool {pool} sin cerrar: expirar antes de emitir")
-    out = []
-    fabrica = cuota_firmable_mpt - reserva_personal_mpt
-    if fabrica:
         out.append(k.libro.append(
             ts=ts, semana=semana, tipo=TipoAsiento.EMISION_PT,
-            divisa=Divisa.PT, monto=fabrica, destino=POOL_PT_FABRICA))
-    if reserva_personal_mpt:
-        out.append(k.libro.append(
-            ts=ts, semana=semana, tipo=TipoAsiento.EMISION_PT,
-            divisa=Divisa.PT, monto=reserva_personal_mpt,
-            destino=POOL_PT_PERSONAL))
+            divisa=Divisa.PT, monto=monto, destino=pool,
+            detalle={"cuota": cuota_firmable_mpt,
+                     "reserva": reserva_personal_mpt}))
     return out
 
 

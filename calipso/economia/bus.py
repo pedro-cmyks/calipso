@@ -186,20 +186,32 @@ def evaluar_y_liquidar_muertos(mercado: Mercado, bus: Bus, ts: str,
         # devuelto), y solo entonces las marcas aterrizan. Idempotente por
         # construccion.
         cuenta = cuenta_trabajo(id)
-        saldo = mercado.k.saldo(cuenta)
+        asientos = mercado.k.libro.asientos()  # frescos: incluyen el gasto del loop
         aportado = aportes(asientos, id)
+        saldo = mercado.k.saldo(cuenta)
+        ya_devuelto = {
+            fin: sum(a.monto for a in asientos
+                     if a.tipo is TipoAsiento.TRANSFERENCIA
+                     and a.origen == cuenta and a.destino == fin
+                     and a.detalle.get("motivo") == "liquidacion_trabajo")
+            for fin in aportado}
+        saldo_original = saldo + sum(ya_devuelto.values())
         total = sum(aportado.values())
         financiadores = sorted(aportado)
-        devuelto = 0
+        # partes teoricas sobre el saldo ORIGINAL (suma exacta: el ultimo cierra)
+        partes = {}
+        repartido = 0
         for i, fin in enumerate(financiadores):
             if i < len(financiadores) - 1:
-                parte = saldo * aportado[fin] // total
+                partes[fin] = saldo_original * aportado[fin] // total
             else:
-                parte = saldo - devuelto  # el ultimo cierra la cuenta exacta
-            if parte > 0:
-                mercado.k.transferir(ts, semana, cuenta, fin, parte,
+                partes[fin] = saldo_original - repartido
+            repartido += partes[fin]
+        for fin in financiadores:
+            pendiente = partes[fin] - ya_devuelto.get(fin, 0)
+            if pendiente > 0:
+                mercado.k.transferir(ts, semana, cuenta, fin, pendiente,
                                      motivo="liquidacion_trabajo")
-                devuelto += parte
         bus.marcar(ts, semana, id, "muerta")
         bus.marcar(ts, semana, id, "liquidada")
         muertos.append(id)
