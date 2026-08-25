@@ -3456,7 +3456,8 @@ def api_mapa_ciudad() -> dict:
         minutos = eco["reloj"].minutos_por_categoria(ops[-4:]) if ops else {}
         modelo = _mapa_ciudad.ciudad(
             asientos, m.registro, eco["bus"], eco["cola"], semana,
-            minutos_empleo=minutos.get("empleo", 0))
+            minutos_empleo=minutos.get("empleo", 0),
+            suscripciones=m.suscripciones)
     posiciones = _mapa_urbanismo.urbanizar(modelo["edificios"],
                                            modelo["calles"])
     for e in modelo["edificios"]:

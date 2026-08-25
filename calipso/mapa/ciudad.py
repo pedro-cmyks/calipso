@@ -14,10 +14,11 @@ from calipso.economia import balances as bal
 from calipso.economia import bus as bus_mod
 from calipso.economia import capacidad as cap
 from calipso.economia import departamentos as deps
+from calipso.economia import eficiencia as efi
 from calipso.economia import personal as per_mod
 from calipso.economia import pt
 from calipso.economia.tipos import (Asiento, CUENTA_PEDRO, DIRECCION, Divisa,
-                                    TESORO, TipoAsiento)
+                                    SubtipoAcunacion, TESORO, TipoAsiento)
 
 DIAS_ACTIVIDAD = 3
 ACTIVIDAD_MAX = 3
@@ -102,14 +103,51 @@ def en_ventana(semana: str, lapso: tuple[str, str]) -> bool:
     return bool(techo) and piso < semana <= techo
 
 
-def edificios(asientos: list[Asiento], registro, bus, cola) -> list[dict]:
+def semanas_del_ciclo(semana: str, ops: list[str]) -> list[str]:
+    """Las semanas operativas del ciclo al que pertenece `semana`. Si la
+    semana en curso todavia no se abrio, no es operativa: vale el ciclo de
+    la ultima que si lo es."""
+    if not ops:
+        return []
+    referencia = semana if semana in ops else ops[-1]
+    ciclo, _ = cap.posicion_ciclo(referencia, ops)
+    return cap.semanas_del_ciclo(ciclo, ops)
+
+
+def gasto_ciclo(asientos: list[Asiento], cuenta: str,
+                semanas: list[str]) -> int:
+    """Lo que SALIO de la cuenta en el ciclo. No solo API: una transferencia
+    a otro departamento tambien es gasto. Mismo criterio de salida que
+    bus.gastado, para que dos lecturas del mismo libro no discrepen."""
+    return sum(a.monto for a in asientos
+               if a.origen == cuenta and a.tipo in _SALIDAS
+               and a.semana in semanas)
+
+
+def ventas_ventana(asientos: list[Asiento], cuenta: str,
+                   lapso: tuple[str, str]) -> int:
+    """Senal exterior cobrada por el departamento dentro de la ventana. La
+    acunacion de capital no es venta: no la firma el mercado, la firma
+    Pedro."""
+    return sum(a.monto for a in asientos
+               if a.tipo is TipoAsiento.ACUNACION
+               and a.subtipo == SubtipoAcunacion.VENTA.value
+               and a.destino == cuenta and en_ventana(a.semana, lapso))
+
+
+def edificios(asientos: list[Asiento], registro, bus, cola,
+              semana: str = "", suscripciones: dict | None = None) -> list[dict]:
+    ops = cap.semanas_operativas(asientos)
     return _edificios(asientos, registro, bus.activas(), duenos_de(bus),
-                      cola.pendientes(), bal.saldos(asientos))
+                      cola.pendientes(), bal.saldos(asientos),
+                      lapso_ventana(ops), semanas_del_ciclo(semana, ops),
+                      ops[-VENTANA_SEMANAS:], suscripciones)
 
 
 def _edificios(asientos: list[Asiento], registro, activas: list[str],
-               duenos: dict[str, str], pendientes: list[dict],
-               saldos: dict) -> list[dict]:
+               duenos: dict[str, str], pendientes: list[dict], saldos: dict,
+               lapso: tuple[str, str], ciclo: list[str],
+               ventana: list[str], suscripciones: dict | None) -> list[dict]:
     filas = [(d.cuenta, d.nombre, d.zona) for d in registro.todos()]
     filas.append((CUENTA_PEDRO, "pedro", deps.ZONA_PERSONAL))
     cuentas = {c for c, _, _ in filas}
@@ -131,6 +169,15 @@ def _edificios(asientos: list[Asiento], registro, activas: list[str],
             "estado": ("congelado" if deps.es_congelado(asientos, cuenta)
                        else "activo"),
             "saldo_mm": saldo,
+            "gasto_ciclo_mm": gasto_ciclo(asientos, cuenta, ciclo),
+            "ventas_ventana_mm": ventas_ventana(asientos, cuenta, lapso),
+            # sin el estado de suscripciones no hay costo API equivalente y
+            # entonces no hay eficiencia: el campo va nulo y declarado, no
+            # ausente ni inventado.
+            "eficiencia_pormil": (
+                None if suscripciones is None
+                else efi.eficiencia_departamento(asientos, cuenta, ventana,
+                                                 suscripciones, duenos)),
             "actividad": actividad_de(asientos, cuenta, fin_ts=fin_ts),
             "trabajos": sorted(id for id in vivos
                                if duenos.get(id) == cuenta),
@@ -213,7 +260,7 @@ def avisos(pendientes: list[dict]) -> list[dict]:
 
 
 def ciudad(asientos: list[Asiento], registro, bus, cola, semana: str,
-           minutos_empleo: int = 0) -> dict:
+           minutos_empleo: int = 0, suscripciones: dict | None = None) -> dict:
     # todo lo caro se calcula UNA vez y baja por parametro: este pliegue
     # corre bajo el candado del libro en cada refresco del mapa, y
     # cola.pendientes() es cuadratico en los eventos de la cola.
@@ -223,7 +270,9 @@ def ciudad(asientos: list[Asiento], registro, bus, cola, semana: str,
     activas = bus.activas()
     ops = cap.semanas_operativas(asientos)
     lapso = lapso_ventana(ops)
-    edis = _edificios(asientos, registro, activas, duenos, pendientes, saldos)
+    edis = _edificios(asientos, registro, activas, duenos, pendientes, saldos,
+                      lapso, semanas_del_ciclo(semana, ops),
+                      ops[-VENTANA_SEMANAS:], suscripciones)
     cas = calles(asientos, edis, duenos, lapso)
     return {
         "semana": semana,

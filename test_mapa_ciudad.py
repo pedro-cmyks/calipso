@@ -13,6 +13,9 @@ from calipso.mapa import ciudad as ciu
 
 TS = "2026-08-25T10:00:00"
 W = "2026-W35"
+SUS = {"claude_max": cap.Suscripcion(
+    nombre="claude_max", costo_mensual_mm=100_000, capacidad_ciclo=1_000,
+    reserva_personal=0, costo_api_mm_por_unidad=500)}
 
 
 def _lapso(asientos):
@@ -283,6 +286,59 @@ def test_hacia_solo_nombra_calles_que_existen(mundo):
     for u in m["unidades"]:
         if u["hacia"] is not None:
             assert tuple(sorted((u["dueno"], u["hacia"]))) in pares
+
+
+def test_gasto_del_ciclo_suma_lo_que_salio_de_la_cuenta(mundo):
+    """C3: gasto del ciclo, calculable a mano: 7.000 + 3.000."""
+    k, r, b, c = mundo
+    for s in ("2026-W30", "2026-W31", "2026-W32", "2026-W33"):
+        _semana_op(k, s)        # las cuatro semanas del ciclo 0
+    _capital(k, 200_000, "dep:mercado")
+    k.destruir(TS, "2026-W30", "dep:mercado", 7_000, motivo="api")
+    k.transferir(TS, "2026-W30", "dep:mercado", "dep:curiosos", 3_000,
+                 motivo="servicio")
+    _semana_op(k, "2026-W34")   # ciclo 1: no cuenta
+    k.destruir(TS, "2026-W34", "dep:mercado", 99_000, motivo="api")
+    edis = {e["id"]: e for e in ciu.edificios(
+        k.libro.asientos(), r, b, c, "2026-W30")}
+    assert edis["dep:mercado"]["gasto_ciclo_mm"] == 10_000
+    assert edis["dep:curiosos"]["gasto_ciclo_mm"] == 0
+
+
+def test_ventas_de_la_ventana_solo_cuentan_senal_exterior(mundo):
+    """C3: la acunacion de capital no es venta."""
+    k, r, b, c = mundo
+    _semana_op(k, W)
+    _capital(k, 500_000, "dep:mercado")   # capital: no es venta
+    k.acunar(TS, W, "dep:mercado", 80_000, t.SubtipoAcunacion.VENTA,
+             {"tipo": "factura", "evidencia": "inv-1"})
+    k.acunar(TS, W, "dep:mercado", 20_000, t.SubtipoAcunacion.VENTA,
+             {"tipo": "factura", "evidencia": "inv-2"})
+    edis = {e["id"]: e for e in ciu.edificios(k.libro.asientos(), r, b, c, W)}
+    assert edis["dep:mercado"]["ventas_ventana_mm"] == 100_000
+    assert edis["dep:curiosos"]["ventas_ventana_mm"] == 0
+
+
+def test_eficiencia_es_nula_sin_suscripciones_y_sale_con_ellas(mundo):
+    """C3: 30.000 de venta atribuida sobre 5.000 de API equivalente son
+    6.000 por mil. Sin el estado de suscripciones el campo va en None."""
+    k, r, b, c = mundo
+    _semana_op(k, W)
+    _capital(k, 200_000, "dep:mercado")
+    b.alta(TS, W, "radar", "dep:mercado", "radar", 10_000, 30_000,
+           {"gasto_max_mm": 50_000})
+    b.marcar(TS, W, "radar", "financiada")
+    k.transferir(TS, W, "dep:mercado", "trabajo:radar", 50_000,
+                 motivo="financiacion")
+    k.destruir(TS, W, "trabajo:radar", 5_000, motivo="api", ref="trabajo:radar")
+    k.acunar(TS, W, "dep:mercado", 30_000, t.SubtipoAcunacion.VENTA,
+             {"tipo": "factura", "id": "inv-1"}, {"trabajo": "radar"})
+    asientos = k.libro.asientos()
+    sin = {e["id"]: e for e in ciu.edificios(asientos, r, b, c, W)}
+    assert sin["dep:mercado"]["eficiencia_pormil"] is None
+    con = {e["id"]: e for e in ciu.edificios(asientos, r, b, c, W, SUS)}
+    assert con["dep:mercado"]["eficiencia_pormil"] == 6_000
+    assert con["dep:curiosos"]["eficiencia_pormil"] == 0
 
 
 def test_avisos_traen_lo_que_espera_tu_firma(mundo):
