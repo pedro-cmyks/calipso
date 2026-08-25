@@ -125,6 +125,19 @@ def _acuna(lb, monto, destino=t.TESORO):
                      detalle={"evidencia": {"tipo": "firma_pedro"}})
 
 
+def test_reserva_en_pt_es_invalida():
+    """El escrow solo existe en monedas, nunca en PT."""
+    with pytest.raises(t.AsientoInvalido):
+        t.Asiento(seq=1, ts="2026-08-24T10:00:00", semana="2026-W35",
+                  tipo=t.TipoAsiento.RESERVA, divisa=t.Divisa.PT,
+                  monto=50_000, origen=t.POOL_PT_FABRICA, ref="res-1").validar()
+    with pytest.raises(t.AsientoInvalido):
+        t.Asiento(seq=1, ts="2026-08-24T10:00:00", semana="2026-W35",
+                  tipo=t.TipoAsiento.EJECUCION_RESERVA, divisa=t.Divisa.PT,
+                  monto=50_000, origen=t.POOL_PT_FABRICA,
+                  destino=t.CUENTA_PEDRO, ref="res-1").validar()
+
+
 def test_saldos_pliegan_acunacion_transferencia_destruccion(tmp_path):
     lb = _libro(tmp_path)
     _acuna(lb, 1_000_000)

@@ -28,6 +28,7 @@ def saldos(asientos: list[Asiento]) -> dict[tuple[str, Divisa], int]:
 
 
 def reservas_activas(asientos: list[Asiento]) -> dict[str, tuple[str, int]]:
+    """Retorna reservas activas: ref -> (cuenta, monto). Reservas son solo en MONEDA (garantizado por validar())."""
     r: dict[str, tuple[str, int]] = {}
     for a in asientos:
         if a.tipo is TipoAsiento.RESERVA:

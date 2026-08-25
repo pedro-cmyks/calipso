@@ -88,12 +88,19 @@ class Asiento:
         elif t in (TipoAsiento.TRANSFERENCIA, TipoAsiento.EJECUCION_RESERVA):
             if not self.origen or not self.destino or self.origen == self.destino:
                 raise AsientoInvalido(f"{t.value}: origen y destino distintos requeridos")
-            if t is TipoAsiento.EJECUCION_RESERVA and not self.ref:
-                raise AsientoInvalido("ejecucion_reserva exige ref de la reserva")
+            if t is TipoAsiento.EJECUCION_RESERVA:
+                if self.divisa is not Divisa.MONEDA:
+                    raise AsientoInvalido("el escrow es solo en monedas: los PT se consumen del pool, nunca se reservan")
+                if not self.ref:
+                    raise AsientoInvalido("ejecucion_reserva exige ref de la reserva")
         elif t is TipoAsiento.RESERVA:
+            if self.divisa is not Divisa.MONEDA:
+                raise AsientoInvalido("el escrow es solo en monedas: los PT se consumen del pool, nunca se reservan")
             if not self.origen or not self.ref:
                 raise AsientoInvalido("reserva exige origen y ref")
         elif t is TipoAsiento.LIBERACION:
+            if self.divisa is not Divisa.MONEDA:
+                raise AsientoInvalido("el escrow es solo en monedas: los PT se consumen del pool, nunca se reservan")
             if not self.ref:
                 raise AsientoInvalido("liberacion exige ref")
         elif t is TipoAsiento.EMISION_PT:
