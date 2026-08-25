@@ -204,6 +204,13 @@ class Cola:
                         and a.destino == CUENTA_PEDRO and a.ref == ref)
         consumo_hecho = any(a.tipo is TipoAsiento.CONSUMO_PT and a.ref == ref
                             for a in asientos)
+        adelantado_previo = sum(a.monto for a in asientos
+                                if a.tipo is TipoAsiento.TRANSFERENCIA
+                                and a.origen == DIRECCION
+                                and a.destino == CUENTA_PEDRO and a.ref == ref)
+        acreencia_previa = sum(a.monto for a in asientos
+                               if a.tipo is TipoAsiento.ACREENCIA
+                               and a.ref == f"adelanto:{id}")
         reservas = bal.reservas_activas(asientos)
         monto_reservado = reservas[ref][1] if ref in reservas else 0
         pendiente = max(0, cobro - ya_pagado)
@@ -232,8 +239,10 @@ class Cola:
         if faltante > 0:
             k.transferir(ts, semana, DIRECCION, CUENTA_PEDRO, faltante,
                          motivo="carta_sistema", ref=ref)
-            k.registrar_acreencia(ts, semana, DIRECCION, dep, faltante,
-                                  ref=f"adelanto:{id}")
+        deuda_sin_registrar = (adelantado_previo + faltante) - acreencia_previa
+        if deuda_sin_registrar > 0:
+            k.registrar_acreencia(ts, semana, DIRECCION, dep,
+                                  deuda_sin_registrar, ref=f"adelanto:{id}")
         if not consumo_hecho:
             pt.consumir_fabrica(k, ts, semana, mpt_cobrado, ref=ref,
                                 pagador=dep)

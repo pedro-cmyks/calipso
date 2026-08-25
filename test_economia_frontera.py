@@ -274,6 +274,27 @@ def test_servir_con_adelanto_de_direccion(entorno, cola):
         [("adelanto:c2", t.DIRECCION, 2_500)]
 
 
+def test_servir_reanuda_sin_perder_la_acreencia(entorno, cola):
+    """Crash entre la transferencia del adelanto y su acreencia: el reintento
+    debe recuperar la deuda desde el libro, no perderla ni duplicar el pago."""
+    k, m, b, _ = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 100_000, t.DIRECCION)
+    cola.encolar(k, TS, "2026-W30", "cX", "dep:b", "responder",
+                 tipo="contacto", obligatoria=True, mpt_estimado=500,
+                 monedas_en_juego=5_000)  # dep:b sin caja -> adelanto
+    # simula el crash: la transferencia del adelanto ya se hizo, pero la
+    # acreencia que la respalda nunca se registro
+    k.transferir(TS, "2026-W30", t.DIRECCION, t.CUENTA_PEDRO, 2_500,
+                 motivo="carta_sistema", ref="cola:cX")
+    res = cola.servir(m, TS, "2026-W30", "cX", mpt_real=500)
+    assert k.saldo(t.CUENTA_PEDRO) == 2_500  # sin doble pago
+    assert k.acreencias_pendientes("dep:b") == \
+        [("adelanto:cX", t.DIRECCION, 2_500)]  # la deuda se recupero
+    assert k.saldo(t.POOL_PT_FABRICA, t.Divisa.PT) == 3_500
+    assert cola.estado("cX") == "servida"
+
+
 @pytest.fixture
 def reloj(entorno):
     k, m, b, tmp = entorno
