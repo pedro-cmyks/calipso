@@ -3,6 +3,7 @@ import pytest
 
 from calipso.economia import tipos as t
 from calipso.economia.libro import Libro, LibroCorrupto
+from calipso.economia import balances as bal
 
 
 def test_asiento_roundtrip_json():
@@ -115,3 +116,94 @@ def test_linea_corrupta_en_el_medio_es_error(tmp_path):
     ruta.write_text('esto no es json\n{"tampoco": 1}\n', encoding="utf-8")
     with pytest.raises(LibroCorrupto):
         Libro(ruta)
+
+
+def _acuna(lb, monto, destino=t.TESORO):
+    return lb.append(ts="2026-08-24T09:00:00", semana="2026-W35",
+                     tipo=t.TipoAsiento.ACUNACION, divisa=t.Divisa.MONEDA,
+                     monto=monto, destino=destino, subtipo="capital",
+                     detalle={"evidencia": {"tipo": "firma_pedro"}})
+
+
+def test_saldos_pliegan_acunacion_transferencia_destruccion(tmp_path):
+    lb = _libro(tmp_path)
+    _acuna(lb, 1_000_000)
+    lb.append(ts="2026-08-24T09:01:00", semana="2026-W35",
+              tipo=t.TipoAsiento.TRANSFERENCIA, divisa=t.Divisa.MONEDA,
+              monto=300_000, origen=t.TESORO, destino="dep:mercado")
+    lb.append(ts="2026-08-24T09:02:00", semana="2026-W35",
+              tipo=t.TipoAsiento.DESTRUCCION, divisa=t.Divisa.MONEDA,
+              monto=50_000, origen="dep:mercado", detalle={"motivo": "api"})
+    s = bal.saldos(lb.asientos())
+    assert s[(t.TESORO, t.Divisa.MONEDA)] == 700_000
+    assert s[("dep:mercado", t.Divisa.MONEDA)] == 250_000
+
+
+def test_suma_cero_las_transferencias_no_crean_ni_destruyen(tmp_path):
+    """Propiedad del spec 4.1: lo interno mueve, nunca crea."""
+    lb = _libro(tmp_path)
+    _acuna(lb, 500_000)
+    lb.append(ts="2026-08-24T09:01:00", semana="2026-W35",
+              tipo=t.TipoAsiento.TRANSFERENCIA, divisa=t.Divisa.MONEDA,
+              monto=200_000, origen=t.TESORO, destino="dep:a")
+    lb.append(ts="2026-08-24T09:02:00", semana="2026-W35",
+              tipo=t.TipoAsiento.TRANSFERENCIA, divisa=t.Divisa.MONEDA,
+              monto=80_000, origen="dep:a", destino="dep:b")
+    s = bal.saldos(lb.asientos())
+    total = sum(v for (cta, div), v in s.items() if div is t.Divisa.MONEDA)
+    assert total == 500_000  # exactamente lo acunado
+
+
+def test_reserva_no_mueve_saldo_pero_baja_disponible(tmp_path):
+    lb = _libro(tmp_path)
+    _acuna(lb, 100_000, destino="dep:a")
+    lb.append(ts="2026-08-24T09:01:00", semana="2026-W35",
+              tipo=t.TipoAsiento.RESERVA, divisa=t.Divisa.MONEDA,
+              monto=60_000, origen="dep:a", ref="res-1")
+    s = bal.saldos(lb.asientos())
+    assert s[("dep:a", t.Divisa.MONEDA)] == 100_000
+    assert bal.disponible(lb.asientos(), "dep:a", t.Divisa.MONEDA) == 40_000
+    assert bal.reservas_activas(lb.asientos()) == {"res-1": ("dep:a", 60_000)}
+
+
+def test_liberacion_devuelve_disponible(tmp_path):
+    lb = _libro(tmp_path)
+    _acuna(lb, 100_000, destino="dep:a")
+    lb.append(ts="2026-08-24T09:01:00", semana="2026-W35",
+              tipo=t.TipoAsiento.RESERVA, divisa=t.Divisa.MONEDA,
+              monto=60_000, origen="dep:a", ref="res-1")
+    lb.append(ts="2026-08-24T09:02:00", semana="2026-W35",
+              tipo=t.TipoAsiento.LIBERACION, divisa=t.Divisa.MONEDA,
+              monto=60_000, ref="res-1")
+    assert bal.disponible(lb.asientos(), "dep:a", t.Divisa.MONEDA) == 100_000
+    assert bal.reservas_activas(lb.asientos()) == {}
+
+
+def test_ejecucion_de_reserva_transfiere_y_cancela(tmp_path):
+    lb = _libro(tmp_path)
+    _acuna(lb, 100_000, destino="dep:a")
+    lb.append(ts="2026-08-24T09:01:00", semana="2026-W35",
+              tipo=t.TipoAsiento.RESERVA, divisa=t.Divisa.MONEDA,
+              monto=60_000, origen="dep:a", ref="res-1")
+    lb.append(ts="2026-08-24T09:02:00", semana="2026-W35",
+              tipo=t.TipoAsiento.EJECUCION_RESERVA, divisa=t.Divisa.MONEDA,
+              monto=60_000, origen="dep:a", destino=t.CUENTA_PEDRO, ref="res-1")
+    s = bal.saldos(lb.asientos())
+    assert s[("dep:a", t.Divisa.MONEDA)] == 40_000
+    assert s[(t.CUENTA_PEDRO, t.Divisa.MONEDA)] == 60_000
+    assert bal.reservas_activas(lb.asientos()) == {}
+
+
+def test_apunte_y_acreencia_no_mueven_saldos(tmp_path):
+    lb = _libro(tmp_path)
+    _acuna(lb, 10_000)
+    lb.append(ts="2026-08-24T09:01:00", semana="2026-W35",
+              tipo=t.TipoAsiento.APUNTE, divisa=t.Divisa.MONEDA,
+              monto=5_000, detalle={"nota": "costo de oportunidad atlas"})
+    lb.append(ts="2026-08-24T09:02:00", semana="2026-W35",
+              tipo=t.TipoAsiento.ACREENCIA, divisa=t.Divisa.MONEDA,
+              monto=3_000, ref="acr-1",
+              detalle={"acreedor": t.DIRECCION, "deudor": "dep:a"})
+    s = bal.saldos(lb.asientos())
+    assert s[(t.TESORO, t.Divisa.MONEDA)] == 10_000
+    assert ("dep:a", t.Divisa.MONEDA) not in s
