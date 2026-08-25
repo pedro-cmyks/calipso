@@ -9,7 +9,7 @@ El tipo de cambio es un pliegue deterministico de la historia (task 8).
 from __future__ import annotations
 
 from .kernel import Kernel
-from .tipos import (Asiento, Divisa, TipoAsiento,
+from .tipos import (Asiento, Divisa, SubtipoAcunacion, TipoAsiento,
                     POOL_PT_FABRICA, POOL_PT_PERSONAL)
 
 
@@ -86,3 +86,49 @@ def expirar_pools(k: Kernel, ts: str, semana: str) -> list[Asiento]:
                 ts=ts, semana=semana, tipo=TipoAsiento.EXPIRACION_PT,
                 divisa=Divisa.PT, monto=resto, origen=pool))
     return out
+
+
+def tipo_de_cambio(asientos: list[Asiento], hasta_semana: str,
+                   ventana: int = 8, banda_pct: int = 25,
+                   arranque_mm: int = 5000, minimo_mm: int = 1000,
+                   min_semanas_consumo: int = 4) -> int:
+    """Pliegue deterministico del contrato de spec 3.2.
+
+    Cociente de totales sobre las ultimas `ventana` semanas operativas
+    (semanas con emision de PT), recalculado en orden semana a semana para
+    que la banda encadene igual siempre: misma historia, mismo numero.
+    """
+    semanas = sorted({a.semana for a in asientos
+                      if a.tipo is TipoAsiento.EMISION_PT
+                      and a.semana <= hasta_semana})
+    ventas_por_semana: dict[str, int] = {}
+    consumo_por_semana: dict[str, int] = {}
+    for a in asientos:
+        if a.semana > hasta_semana:
+            continue
+        if (a.tipo is TipoAsiento.ACUNACION
+                and a.subtipo == SubtipoAcunacion.VENTA.value):
+            ventas_por_semana[a.semana] = \
+                ventas_por_semana.get(a.semana, 0) + a.monto
+        elif (a.tipo is TipoAsiento.CONSUMO_PT
+                and a.origen == POOL_PT_FABRICA):
+            consumo_por_semana[a.semana] = \
+                consumo_por_semana.get(a.semana, 0) + a.monto
+
+    tipo = arranque_mm
+    for i, sem in enumerate(semanas):
+        vent = semanas[max(0, i + 1 - ventana):i + 1]
+        consumo = sum(consumo_por_semana.get(s, 0) for s in vent)
+        con_consumo = sum(1 for s in vent if consumo_por_semana.get(s, 0) > 0)
+        if consumo == 0:
+            pass  # regla (c): se mantiene
+        elif con_consumo < min_semanas_consumo:
+            tipo = arranque_mm  # regla (d)
+        else:
+            ventas = sum(ventas_por_semana.get(s, 0) for s in vent)
+            objetivo = ventas * 1000 // consumo
+            piso_banda = tipo * (100 - banda_pct) // 100
+            techo_banda = tipo * (100 + banda_pct) // 100
+            tipo = min(max(objetivo, piso_banda), techo_banda)  # regla (e)
+        tipo = max(tipo, minimo_mm)  # regla (f)
+    return tipo

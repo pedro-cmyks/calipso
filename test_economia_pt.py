@@ -69,3 +69,79 @@ def test_expirar_deja_pools_en_cero_y_registra(k):
     assert k.saldo(t.POOL_PT_PERSONAL, t.Divisa.PT) == 0
     montos = {a.origen: a.monto for a in expirados}
     assert montos == {t.POOL_PT_FABRICA: 2_000, t.POOL_PT_PERSONAL: 1_000}
+
+
+def _venta(k, monto_mm, semana):
+    k.acunar(TS, semana, "dep:a", monto_mm, t.SubtipoAcunacion.VENTA,
+             {"tipo": "firma_pedro"})
+
+
+def _semana_operativa(k, semana, consumo_mpt):
+    """Emision estandar de 4 PT fabrica y consumo dado, con cierre."""
+    pt.emitir_semana(k, TS, semana, cuota_firmable_mpt=4_000,
+                     reserva_personal_mpt=0)
+    if consumo_mpt:
+        pt.consumir_fabrica(k, TS, semana, consumo_mpt, ref=f"f-{semana}",
+                            pagador="dep:a")
+    pt.expirar_pools(k, TS, semana)
+
+
+def test_arranque_rige_hasta_cuatro_semanas_con_consumo(k):
+    k.acunar(TS, "2026-W30", t.TESORO, 1_200_000,
+             t.SubtipoAcunacion.CAPITAL, {"tipo": "firma_pedro"})
+    for i, sem in enumerate(["2026-W30", "2026-W31", "2026-W32"]):
+        _semana_operativa(k, sem, 2_000)
+    got = pt.tipo_de_cambio(k.libro.asientos(), "2026-W32")
+    assert got == 5_000  # solo 3 semanas con consumo: sigue el arranque
+
+
+def test_capital_no_mueve_el_tipo_de_cambio(k):
+    """Spec 3.2 regla (a): inyectar pista no sube el sueldo de Pedro."""
+    for sem in ["2026-W30", "2026-W31", "2026-W32", "2026-W33", "2026-W34"]:
+        _semana_operativa(k, sem, 2_000)
+    k.acunar(TS, "2026-W34", t.TESORO, 1_200_000,
+             t.SubtipoAcunacion.CAPITAL, {"tipo": "firma_pedro"})
+    got = pt.tipo_de_cambio(k.libro.asientos(), "2026-W34")
+    # 5 semanas con consumo y CERO ventas: cociente 0 -> banda y piso mandan
+    assert got < 5_000  # bajo desde el arranque, no subio por el capital
+    assert got >= 1_000
+
+
+def test_ventas_suben_el_tipo_dentro_de_la_banda(k):
+    for sem in ["2026-W30", "2026-W31", "2026-W32", "2026-W33"]:
+        _semana_operativa(k, sem, 2_000)
+    _venta(k, 100_000, "2026-W34")  # 100 monedas de venta real
+    _semana_operativa(k, "2026-W34", 2_000)
+    antes = pt.tipo_de_cambio(k.libro.asientos(), "2026-W33")
+    despues = pt.tipo_de_cambio(k.libro.asientos(), "2026-W34")
+    assert despues > antes
+    assert despues <= antes * 125 // 100  # banda de +25% por cierre
+
+
+def test_ventana_sin_consumo_mantiene_el_tipo(k):
+    """Spec 3.2 regla (c): con la ventana entera sin consumo, el tipo no
+    se mueve. (Mientras la ventana todavia contiene semanas con consumo y
+    cero ventas, bajar es legitimo: eso no es esta regla.)"""
+    for sem in ["2026-W30", "2026-W31", "2026-W32", "2026-W33", "2026-W34"]:
+        _semana_operativa(k, sem, 2_000)
+    for sem in ["2026-W35", "2026-W36", "2026-W37", "2026-W38", "2026-W39",
+                "2026-W40", "2026-W41", "2026-W42", "2026-W43"]:
+        _semana_operativa(k, sem, 0)  # nueve semanas sin consumo
+    # en W42 y W43 la ventana de 8 ya es toda sin consumo: se mantiene
+    a = pt.tipo_de_cambio(k.libro.asientos(), "2026-W42")
+    b = pt.tipo_de_cambio(k.libro.asientos(), "2026-W43")
+    assert a == b
+    assert a >= 1_000  # y nunca por debajo del piso
+
+
+def test_reproducible_misma_historia_mismo_numero(k):
+    for sem in ["2026-W30", "2026-W31", "2026-W32", "2026-W33", "2026-W34"]:
+        _venta(k, 20_000, sem)
+        _semana_operativa(k, sem, 2_000)
+    a = pt.tipo_de_cambio(k.libro.asientos(), "2026-W34")
+    b = pt.tipo_de_cambio(list(k.libro.asientos()), "2026-W34")
+    assert a == b
+    # y reconstruyendo el libro desde disco
+    from calipso.economia.libro import Libro
+    k2 = Kernel(Libro(k.libro.ruta))
+    assert pt.tipo_de_cambio(k2.libro.asientos(), "2026-W34") == a
