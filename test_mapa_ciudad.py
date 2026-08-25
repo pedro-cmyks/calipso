@@ -4,6 +4,7 @@ import pytest
 from calipso.economia import bus as bus_mod
 from calipso.economia import cola as cola_mod
 from calipso.economia import departamentos as deps
+from calipso.economia import pt
 from calipso.economia import tipos as t
 from calipso.economia.kernel import Kernel
 from calipso.economia.libro import Libro
@@ -106,3 +107,128 @@ def test_trabajos_y_compuertas_se_cuelgan_de_su_dueno(mundo):
     assert edis["dep:mercado"]["compuertas"] == 1
     assert edis["dep:curiosos"]["trabajos"] == []
     assert edis["dep:curiosos"]["compuertas"] == 0
+
+
+def _semana_op(k, semana):
+    pt.emitir_semana(k, TS, semana, 4_000, 0)
+    pt.expirar_pools(k, TS, semana)
+
+
+def test_ancho_por_buckets_de_comercio():
+    assert ciu.ancho_de(0) == 1
+    assert ciu.ancho_de(9_999) == 1
+    assert ciu.ancho_de(10_000) == 2
+    assert ciu.ancho_de(100_000) == 3
+    assert ciu.ancho_de(1_000_000) == 4
+
+
+def test_calle_por_servicio_directo_y_cable_entre_zonas(mundo):
+    k, r, b, c = mundo
+    _semana_op(k, W)
+    _capital(k, 200_000, "dep:mercado")
+    _capital(k, 200_000, "personal:finanzas")
+    k.transferir(TS, W, "dep:mercado", "dep:curiosos", 120_000,
+                 motivo="servicio")
+    k.transferir(TS, W, "personal:finanzas", "dep:mercado", 5_000,
+                 motivo="servicio")
+    asientos = k.libro.asientos()
+    edis = ciu.edificios(asientos, r, b, c)
+    cs = {(x["a"], x["b"]): x for x in ciu.calles(
+        asientos, edis, ciu.duenos_de(b), [W])}
+    assert cs[("dep:curiosos", "dep:mercado")]["peso_mm"] == 120_000
+    assert cs[("dep:curiosos", "dep:mercado")]["ancho"] == 3
+    assert cs[("dep:curiosos", "dep:mercado")]["tipo"] == "calle"
+    # cruza zonas: es cable
+    assert cs[("dep:mercado", "personal:finanzas")]["tipo"] == "cable"
+
+
+def test_financiar_el_trabajo_de_otro_tambien_es_comercio(mundo):
+    k, r, b, c = mundo
+    _semana_op(k, W)
+    _capital(k, 200_000, "dep:curiosos")
+    b.alta(TS, W, "radar", "dep:mercado", "radar", 10_000, 30_000,
+           {"gasto_max_mm": 5_000})
+    b.marcar(TS, W, "radar", "financiada")
+    k.transferir(TS, W, "dep:curiosos", "trabajo:radar", 40_000,
+                 motivo="financiacion")
+    asientos = k.libro.asientos()
+    edis = ciu.edificios(asientos, r, b, c)
+    cs = {(x["a"], x["b"]): x for x in ciu.calles(
+        asientos, edis, ciu.duenos_de(b), [W])}
+    assert cs[("dep:curiosos", "dep:mercado")]["peso_mm"] == 40_000
+
+
+def test_la_capacidad_no_crea_calles_entre_departamentos(mundo):
+    """Comprar capacidad va a direccion, no al otro departamento."""
+    k, r, b, c = mundo
+    _semana_op(k, W)
+    _capital(k, 200_000, "dep:mercado")
+    k.transferir(TS, W, "dep:mercado", t.DIRECCION, 30_000, motivo="capacidad",
+                 detalle_extra={"suscripcion": "claude_max", "unidades": 10})
+    asientos = k.libro.asientos()
+    edis = ciu.edificios(asientos, r, b, c)
+    assert ciu.calles(asientos, edis, ciu.duenos_de(b), [W]) == []
+
+
+def test_unidades_son_los_trabajos_vivos(mundo):
+    k, r, b, c = mundo
+    _semana_op(k, W)
+    _capital(k, 200_000, "dep:mercado")
+    _capital(k, 200_000, "dep:curiosos")
+    b.alta(TS, W, "radar", "dep:mercado", "radar", 10_000, 30_000,
+           {"gasto_max_mm": 50_000})
+    b.marcar(TS, W, "radar", "financiada")
+    k.transferir(TS, W, "dep:mercado", "trabajo:radar", 20_000,
+                 motivo="financiacion")
+    k.transferir(TS, W, "dep:curiosos", "trabajo:radar", 60_000,
+                 motivo="financiacion")
+    k.destruir(TS, W, "trabajo:radar", 7_000, motivo="api", ref="trabajo:radar")
+    us = ciu.unidades(k.libro.asientos(), b, ciu.duenos_de(b))
+    assert len(us) == 1
+    assert us[0]["id"] == "radar"
+    assert us[0]["dueno"] == "dep:mercado"
+    assert us[0]["gastado_mm"] == 7_000
+    # camina hacia el mayor cofinanciador que no es el dueno
+    assert us[0]["hacia"] == "dep:curiosos"
+
+
+def test_avisos_traen_lo_que_espera_tu_firma(mundo):
+    k, r, b, c = mundo
+    _semana_op(k, W)
+    _capital(k, 200_000, "dep:mercado")
+    c.encolar(k, TS, W, "c1", "dep:mercado", "llamar", tipo="contacto",
+              obligatoria=True, mpt_estimado=500, monedas_en_juego=90_000)
+    c.encolar_carta(TS, W, "renovacion:claude_max:0",
+                    {"tipo": "renovacion", "suscripcion": "claude_max"})
+    avs = {a["id"]: a for a in ciu.avisos(c)}
+    assert avs["c1"]["sobre"] == "dep:mercado"
+    assert avs["c1"]["monedas_en_juego_mm"] == 90_000
+    assert avs["c1"]["tipo"] == "contacto"
+    assert avs["renovacion:claude_max:0"]["sobre"] is None
+
+
+def test_ciudad_arma_la_cabecera_completa(mundo):
+    k, r, b, c = mundo
+    _semana_op(k, W)
+    _capital(k, 1_200_000, t.TESORO)
+    _capital(k, 5_000, t.CUENTA_PEDRO)
+    m = ciu.ciudad(k.libro.asientos(), r, b, c, W, minutos_empleo=9_600)
+    assert m["semana"] == W
+    assert m["tesoro_mm"] == 1_200_000
+    assert m["cuenta_pedro_mm"] == 5_000
+    assert m["direccion_mm"] == 0
+    assert m["tipo_cambio_mm"] == 5_000     # arranque, sin historia
+    assert m["linea_empleo_mm"] == 15_625   # 2.500.000 * 60 // 9600
+    assert len(m["edificios"]) == 4
+    assert m["calles"] == [] and m["unidades"] == [] and m["avisos"] == []
+
+
+def test_ciudad_es_reproducible(mundo):
+    """Invariante 2: mismo libro, mismo modelo — tambien desde disco."""
+    k, r, b, c = mundo
+    _semana_op(k, W)
+    _capital(k, 50_000, "dep:mercado")
+    a = ciu.ciudad(k.libro.asientos(), r, b, c, W)
+    k2 = Kernel(Libro(k.libro.ruta))
+    dos = ciu.ciudad(k2.libro.asientos(), r, b, c, W)
+    assert a == dos
