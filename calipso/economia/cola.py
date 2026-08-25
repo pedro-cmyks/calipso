@@ -224,12 +224,14 @@ class Cola:
             raise ErrorCola(
                 f"pool de fabrica insuficiente: pide {mpt_cobrado}, "
                 f"hay {k.saldo(POOL_PT_FABRICA, Divisa.PT)}")
-        if faltante > 0 and datos["obligatoria"]:
+        if faltante > 0:
+            # el faltante SIEMPRE lo cubre direccion con acreencia: una
+            # opcional desbordada no se perdona, se cobra completa (la
+            # diferencia obligatoria/opcional ya se resolvio en encolar,
+            # que rechaza la opcional sin caja)
             if k.disponible(DIRECCION) < faltante:
                 raise ErrorCola(
                     f"direccion sin caja para el adelanto: {faltante}")
-        elif faltante > 0:
-            faltante = 0  # la opcional cobra hasta donde alcanza
 
         # escrituras, todas tolerantes a reintento
         self._liberar_si_reservada(k, ts, semana, id)

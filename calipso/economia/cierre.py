@@ -76,8 +76,17 @@ def cerrar_semana_economia(mercado: Mercado, bus: bus_mod.Bus, ts: str,
 
     # 3) presupuesto de direccion
     if presupuesto_direccion_mm > 0:
-        k.transferir(ts, semana, TESORO, DIRECCION, presupuesto_direccion_mm,
-                     motivo="presupuesto_direccion")
+        ya_direccion = sum(a.monto for a in k.libro.asientos()
+                           if a.tipo is TipoAsiento.TRANSFERENCIA
+                           and a.origen == TESORO and a.destino == DIRECCION
+                           and a.detalle.get("motivo") == "presupuesto_direccion"
+                           and a.semana == semana)
+        if ya_direccion < presupuesto_direccion_mm:
+            # idempotencia: un reintento del cierre solo transfiere el
+            # faltante hasta completar el presupuesto pedido
+            k.transferir(ts, semana, TESORO, DIRECCION,
+                         presupuesto_direccion_mm - ya_direccion,
+                         motivo="presupuesto_direccion")
 
     # 4) presupuestos semanales de departamentos
     for dep in mercado.registro.todos():

@@ -436,3 +436,94 @@ def test_ciclo_completo_encola_carta_de_renovacion(entorno, cola):
     # W33 cierra el ciclo 0: sin recaudacion -> rojo 1, renueva automatico
     assert len(res["informes_ciclo"]) == 1
     assert res["informes_ciclo"][0]["renovada"] is True
+
+
+def test_carta_atendida_del_ciclo_previo_desarma_el_breaker(entorno, cola):
+    """FIX 1: la carta de renovacion del ciclo N-1 se crea con sufijo :N-1
+    en SU cierre, y Pedro la atiende durante el ciclo N — el cierre de N
+    debe reconocer esa atencion (no solo la del sufijo :N) para desarmar
+    el breaker."""
+    k, m, b, _ = entorno
+    _capital(k, 1_200_000, t.TESORO)
+    semanas = ["2026-W30", "2026-W31", "2026-W32", "2026-W33",
+              "2026-W34", "2026-W35", "2026-W36", "2026-W37"]
+    res = None
+    for sem in semanas:
+        op_mod.abrir_semana(k, TS, sem, 4_000, 0)
+        res = op_mod.cerrar_semana_operativa(m, b, cola, TS, sem)
+        if sem == "2026-W33":
+            assert cola.estado("renovacion:claude_max:0") == "encolada"
+            cola.atender_carta(TS, "2026-W34", "renovacion:claude_max:0",
+                               firma={"tipo": "firma_pedro"})
+    # W37 cierra el ciclo 1: dos ciclos rojos seguidos, pero la carta del
+    # ciclo previo fue atendida -> el breaker no se dispara
+    informe = res["informes_ciclo"][0]
+    assert informe["rojos_consecutivos"] == 2
+    assert informe["requiere_firma"] is False
+    assert informe["renovada"] is True
+
+
+def test_no_se_cierra_una_semana_vieja(entorno, cola):
+    """FIX 3: pt.expirar_pools no filtra por semana, asi que re-cerrar una
+    semana vieja despues de abrir la siguiente expiraria la emision fresca."""
+    k, m, b, _ = entorno
+    _capital(k, 1_200_000, t.TESORO)
+    op_mod.abrir_semana(k, TS, "2026-W30", 4_000, 0)
+    op_mod.cerrar_semana_operativa(m, b, cola, TS, "2026-W30")
+    op_mod.abrir_semana(k, TS, "2026-W31", 4_000, 0)
+    with pytest.raises(op_mod.ErrorOperacion):
+        op_mod.cerrar_semana_operativa(m, b, cola, TS, "2026-W30")
+    op_mod.cerrar_semana_operativa(m, b, cola, TS, "2026-W31")
+    assert k.saldo(t.POOL_PT_FABRICA, t.Divisa.PT) == 0  # W31 se expiro bien
+
+
+def test_desborde_de_reserva_personal_consume_lo_que_queda(entorno, cola, reloj):
+    """FIX 4: un tramo personal mas largo que la reserva consume lo que
+    queda (no todo-o-nada) y deja constancia del desborde."""
+    k, m, b, _ = entorno
+    _semana_op(k, "2026-W30", cuota=4_000, reserva=500)
+    reloj.clock_in("2026-08-25T09:00:00", "2026-W30", "personal",
+                   ref="personal:finanzas")
+    # 60 minutos -> 1000 mpt pedidos, solo 500 mpt en la reserva
+    res = reloj.clock_out(m, cola, "2026-08-25T10:00:00", "2026-W30")
+    assert k.saldo(t.POOL_PT_PERSONAL, t.Divisa.PT) == 0
+    assert res["desborde_mpt"] == 500
+    assert res["sin_cobro"] is False
+    # un segundo tramo personal en la misma semana: la reserva ya esta en 0
+    reloj.clock_in("2026-08-25T10:05:00", "2026-W30", "personal",
+                   ref="personal:finanzas")
+    res2 = reloj.clock_out(m, cola, "2026-08-25T10:20:00", "2026-W30")
+    assert res2["sin_cobro"] is True
+
+
+def test_presupuesto_de_direccion_es_idempotente(entorno, cola):
+    """FIX 5a: un reintento del cierre con el mismo presupuesto_direccion_mm
+    no duplica la transferencia tesoro->direccion."""
+    k, m, b, _ = entorno
+    _capital(k, 1_200_000, t.TESORO)
+    op_mod.abrir_semana(k, TS, "2026-W30", 4_000, 0)
+    op_mod.cerrar_semana_operativa(m, b, cola, TS, "2026-W30",
+                                   presupuesto_direccion_mm=50_000)
+    assert k.saldo(t.DIRECCION) == 50_000
+    op_mod.cerrar_semana_operativa(m, b, cola, TS, "2026-W30",
+                                   presupuesto_direccion_mm=50_000)
+    assert k.saldo(t.DIRECCION) == 50_000
+
+
+def test_opcional_desbordada_genera_deuda(entorno, cola):
+    """FIX 6: el faltante de una opcional desbordada YA NO se perdona:
+    direccion lo cubre con una acreencia, igual que una obligatoria."""
+    k, m, b, _ = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 2_500, "dep:a")  # caja justa para el estimado (500 mpt)
+    _capital(k, 100_000, t.DIRECCION)
+    cola.encolar(k, TS, "2026-W30", "op1", "dep:a", "brainstorm largo",
+                 tipo="opinion", obligatoria=False, mpt_estimado=500,
+                 monedas_en_juego=1_000)
+    assert k.disponible("dep:a") == 0  # todo el capital reservado como escrow
+    res = cola.servir(m, TS, "2026-W30", "op1", mpt_real=1_501)
+    assert res["mpt_cobrado"] == 2_000
+    assert res["cobro_mm"] == 10_000
+    assert k.saldo(t.CUENTA_PEDRO) == 10_000  # Pedro cobra el total
+    assert k.acreencias_pendientes("dep:a") == \
+        [("adelanto:op1", t.DIRECCION, 7_500)]

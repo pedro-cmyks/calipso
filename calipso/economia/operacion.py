@@ -54,6 +54,9 @@ def cerrar_semana_operativa(mercado: Mercado, bus: bus_mod.Bus,
         except ErrorCapacidad as exc:
             raise ErrorOperacion(
                 f"la semana no esta abierta (emitir primero): {exc}") from exc
+        if semana != ops[-1]:
+            raise ErrorOperacion(
+                f"solo se cierra la ultima semana abierta ({ops[-1]}), no {semana}")
         expiradas = cola.expirar_semana(k, ts, semana)
         res = cierre.cerrar_semana_economia(
             mercado, bus, ts, semana, refs_no_servidas=[],
@@ -62,15 +65,18 @@ def cerrar_semana_operativa(mercado: Mercado, bus: bus_mod.Bus,
             cola.encolar_carta(ts, semana, _id_carta(carta, semana), carta)
         informes = []
         if fraccion == 100:
-            # traduccion cola -> cierre: solo la atencion del ciclo CORRIENTE
-            # desarma el breaker, y las firmas se indexan por suscripcion
-            sufijo = f":{ciclo}"
+            # traduccion cola -> cierre: la carta de renovacion del ciclo
+            # ANTERIOR (creada en su cierre con sufijo :N-1) es la que Pedro
+            # atiende durante el ciclo corriente, asi que ambos sufijos
+            # cuentan para desarmar el breaker; las firmas se indexan por
+            # suscripcion
+            sufijos = (f":{ciclo - 1}", f":{ciclo}")
             atendidas = frozenset(
                 "renovacion:" + id.split(":")[1]
                 for id in cola.cartas_atendidas()
-                if id.startswith("renovacion:") and id.endswith(sufijo))
+                if id.startswith("renovacion:") and id.endswith(sufijos))
             firmas = {id.split(":")[1]: f for id, f in cola.firmas().items()
-                      if id.startswith("renovacion:") and id.endswith(sufijo)}
+                      if id.startswith("renovacion:") and id.endswith(sufijos)}
             informes = cierre.cerrar_ciclo(mercado, ts, semana,
                                            cartas_atendidas=atendidas,
                                            firmas=firmas)

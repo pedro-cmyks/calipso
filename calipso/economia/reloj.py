@@ -15,6 +15,7 @@ import pathlib
 
 from . import pt
 from .cola import Cola, ErrorCola
+from .tipos import Divisa, POOL_PT_PERSONAL
 
 CATEGORIAS = {"fabrica", "personal", "empleo", "tuning"}
 
@@ -84,14 +85,21 @@ class Reloj:
         mpt_real = minutos * 1000 // 60
         categoria = tramo["categoria"]
         error_cobro = None
+        desborde = 0
         try:
             if categoria == "fabrica":
                 cola.servir(mercado, ts, semana, tramo["ref"], mpt_real)
             elif categoria == "personal":
+                disponible_pt = mercado.k.saldo(POOL_PT_PERSONAL, Divisa.PT)
+                consumible = min(disponible_pt, mpt_real)
+                if consumible <= 0:
+                    raise pt.ErrorPT("reserva personal agotada")
                 tipo = pt.tipo_de_cambio(mercado.k.libro.asientos(), semana)
-                pt.consumir_personal(mercado.k, ts, semana, mpt_real,
+                pt.consumir_personal(mercado.k, ts, semana, consumible,
                                      departamento=tramo["ref"],
                                      tipo_vigente_mm=tipo)
+                if consumible < mpt_real:
+                    desborde = mpt_real - consumible
         except (ErrorCola, pt.ErrorPT) as exc:
             # el tiempo queda registrado; el cobro fallido no atasca el reloj
             error_cobro = str(exc)
@@ -101,9 +109,12 @@ class Reloj:
         if error_cobro:
             evento["sin_cobro"] = True
             evento["error"] = error_cobro
+        if desborde:
+            evento["desborde_mpt"] = desborde
         self._apilar(evento)
         return {"minutos": minutos, "mpt_real": mpt_real,
-                "categoria": categoria, "sin_cobro": bool(error_cobro)}
+                "categoria": categoria, "sin_cobro": bool(error_cobro),
+                "desborde_mpt": desborde}
 
     def huerfanos(self, semana_actual: str) -> list[dict]:
         tramo = self.abierto()
