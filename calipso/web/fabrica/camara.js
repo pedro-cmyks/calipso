@@ -8,7 +8,7 @@
  * donde dijo que iba.
  */
 
-export const ESCALA_MIN = 0.2;
+export const ESCALA_MIN = 0.25;
 export const ESCALA_MAX = 6;
 
 export function crearCamara(x = 0, y = 0, escala = 1) {

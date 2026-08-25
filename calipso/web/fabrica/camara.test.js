@@ -134,9 +134,13 @@ test("encuadrar hace entrar toda la ciudad, con margen", () => {
 });
 
 test("una ciudad ancha se encuadra por el lado que aprieta", () => {
-  // 4000 de ancho contra 800 de vista aprieta mas que 100 de alto contra 600
-  const e = encuadrar([{x: 0, y: 0}, {x: 4000, y: 100}], VISTA, 0);
-  assert.ok(e.escala <= VISTA.ancho / 4000 + 1e-9, `escala ${e.escala}`);
+  // 2000 de ancho contra 800 de vista aprieta (0,4) mas que 100 de alto
+  // contra 600 (6). El ancho se elige a proposito para que el encaje caiga
+  // por ENCIMA de ESCALA_MIN: si cayera por debajo, el recorte decidiria en
+  // lugar del eje y el test dejaria de medir lo que dice medir.
+  const e = encuadrar([{x: 0, y: 0}, {x: 2000, y: 100}], VISTA, 0);
+  assert.ok(e.escala > ESCALA_MIN, `el recorte se comio la prueba: ${e.escala}`);
+  assert.ok(e.escala <= VISTA.ancho / 2000 + 1e-9, `escala ${e.escala}`);
 });
 
 test("encuadrar respeta los topes de escala", () => {
