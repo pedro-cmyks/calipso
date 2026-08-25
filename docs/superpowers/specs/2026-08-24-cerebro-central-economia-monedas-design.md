@@ -207,6 +207,7 @@ Reglas de la zona personal:
 - **Conectores de señales externas:** ingesta automática de ventas, métricas y cobros (webhooks, conciliación). Hasta entonces, ingesta manual en sesión (sección 9).
 - **Conectores bancarios personales:** importación automática para el departamento de finanzas personales. Hasta entonces, carga manual o por extractos.
 - **Puentes:** Atlas/Observatory-Global y research-court entran como departamentos con billetera propia — Atlas en la zona personal, research-court como invitado de la fábrica — no como fundamento del sistema.
+- **Clientes multiplataforma:** acceso desde iPhone, Mac y Linux con el ROG Ally como servidor (Tailscale; hosting gratuito no aplica a un servidor con modelos locales). Base: PWA sobre la UI existente. Apps nativas solo donde aporten sensores reales de medición pasiva para el reloj y los libros personales: en Mac, lectura local de Screen Time (knowledgeC.db); en Linux, uso de apps/ventanas; en iOS, Apple no permite exportar datos de Screen Time a ninguna app (ni propia) — allí la medición es el reloj de Calipso más Atajos, y la instalación sin cuenta de developer paga implica re-firma cada 7 días (AltStore/SideStore).
 
 ## 13. Verificación
 
