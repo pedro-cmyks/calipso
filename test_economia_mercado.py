@@ -71,3 +71,116 @@ def test_capital_no_descongela(k):
     deps.declarar_quiebra(k, TS, W, "dep:a")
     _capital(k, 1_000, destino="dep:a")  # capital directo, sin marca de rescate
     assert deps.es_congelado(k.libro.asientos(), "dep:a")
+
+
+from calipso.economia import mercado as mkt
+
+SUS = cap.Suscripcion(nombre="claude_max", costo_mensual_mm=100_000,
+                      capacidad_ciclo=1_000, reserva_personal=200,
+                      costo_api_mm_por_unidad=500)
+
+
+@pytest.fixture
+def mercado(k, registro):
+    return mkt.Mercado(k, registro, {"claude_max": SUS})
+
+
+def _semana_op(k, semana):
+    pt.emitir_semana(k, TS, semana, 4_000, 0)
+    pt.expirar_pools(k, TS, semana)
+
+
+def test_comprar_capacidad_cobra_precio_por_escasez(k, mercado):
+    _semana_op(k, "2026-W35")
+    _capital(k, 100_000, destino="dep:mercadeo")
+    a = mercado.comprar_capacidad(TS, "2026-W35", "dep:mercadeo",
+                                  "claude_max", 10)
+    assert a.monto == 1_000            # 10 unidades a precio base 100
+    assert k.saldo(t.DIRECCION) == 1_000
+    # tras consumir 400 en el 25% del ciclo, el precio dobla (factor 200)
+    mercado.comprar_capacidad(TS, "2026-W35", "dep:mercadeo",
+                              "claude_max", 390)
+    b = mercado.comprar_capacidad(TS, "2026-W35", "dep:mercadeo",
+                                  "claude_max", 10)
+    assert b.monto == 2_000            # 10 unidades a 200
+
+
+def test_cuota_agotada_rechaza(k, mercado):
+    _semana_op(k, "2026-W35")
+    _capital(k, 1_000_000, destino="dep:mercadeo")
+    with pytest.raises(mkt.ErrorMercado):
+        mercado.comprar_capacidad(TS, "2026-W35", "dep:mercadeo",
+                                  "claude_max", 801)  # fabrica = 800
+
+
+def test_zona_personal_no_compra_capacidad_de_fabrica(k, mercado):
+    _semana_op(k, "2026-W35")
+    with pytest.raises(mkt.ErrorMercado):
+        mercado.comprar_capacidad(TS, "2026-W35", "personal:finanzas",
+                                  "claude_max", 1)
+
+
+def test_reserva_personal_se_consume_y_agota(k, mercado):
+    _semana_op(k, "2026-W35")
+    a = mercado.usar_reserva_personal(TS, "2026-W35", "claude_max", 150,
+                                      "personal:finanzas")
+    assert a.tipo is t.TipoAsiento.APUNTE and a.monto == 150
+    with pytest.raises(mkt.ErrorMercado):
+        mercado.usar_reserva_personal(TS, "2026-W35", "claude_max", 51,
+                                      "personal:finanzas")  # reserva 200
+
+
+def test_congelado_no_compra_ni_recibe(k, mercado):
+    _semana_op(k, "2026-W35")
+    _capital(k, 50_000, destino="dep:mercadeo")
+    _capital(k, 50_000, destino="dep:otro")
+    deps.declarar_quiebra(k, TS, "2026-W35", "dep:mercadeo")
+    with pytest.raises(mkt.ErrorMercado):
+        mercado.comprar_capacidad(TS, "2026-W35", "dep:mercadeo",
+                                  "claude_max", 1)
+    with pytest.raises(mkt.ErrorMercado):
+        mercado.gastar_api(TS, "2026-W35", "dep:mercadeo", 100)
+    with pytest.raises(mkt.ErrorMercado):
+        mercado.vender_servicio(TS, "2026-W35", "dep:otro",
+                                "dep:mercadeo", 100)
+
+
+def test_techo_api_exige_firma_para_superarse(k, mercado):
+    _semana_op(k, "2026-W35")
+    _capital(k, 100_000, destino="dep:mercadeo")
+    mercado.gastar_api(TS, "2026-W35", "dep:mercadeo", 9_000)
+    with pytest.raises(mkt.ErrorMercado):
+        mercado.gastar_api(TS, "2026-W35", "dep:mercadeo", 2_000)  # 11k > techo 10k
+    a = mercado.gastar_api(TS, "2026-W35", "dep:mercadeo", 2_000,
+                           firma={"tipo": "firma_pedro"})
+    assert a.monto == 2_000
+
+
+def test_trabajo_gasta_con_dueno_y_cuenta_contra_su_techo(k, mercado):
+    """La puerta de gasto de los trabajos: politicas y techo del dueno."""
+    _semana_op(k, "2026-W35")
+    _capital(k, 50_000, destino="trabajo:p1")
+    _capital(k, 50_000, destino="dep:mercadeo")
+    with pytest.raises(mkt.ErrorMercado):
+        mercado.gastar_api(TS, "2026-W35", "trabajo:p1", 1_000)  # sin dueno
+    mercado.gastar_api(TS, "2026-W35", "trabajo:p1", 6_000, dueno="dep:mercadeo")
+    # el gasto del trabajo cuenta contra el techo del dueno (10_000)
+    with pytest.raises(mkt.ErrorMercado):
+        mercado.gastar_api(TS, "2026-W35", "dep:mercadeo", 5_000)  # 6k+5k > 10k
+    a = mercado.gastar_api(TS, "2026-W35", "dep:mercadeo", 5_000,
+                           firma={"tipo": "firma_pedro"})
+    assert a.detalle["firma"] == {"tipo": "firma_pedro"}  # auditable
+    # dueno congelado: sus trabajos tampoco gastan
+    deps.declarar_quiebra(k, TS, "2026-W35", "dep:mercadeo")
+    with pytest.raises(mkt.ErrorMercado):
+        mercado.gastar_api(TS, "2026-W35", "trabajo:p1", 100,
+                           dueno="dep:mercadeo")
+
+
+def test_vender_servicio_entre_departamentos(k, mercado, registro):
+    registro.alta(deps.Departamento("produccion", deps.ZONA_FABRICA))
+    _semana_op(k, "2026-W35")
+    _capital(k, 10_000, destino="dep:produccion")
+    mercado.vender_servicio(TS, "2026-W35", "dep:produccion",
+                            "dep:mercadeo", 4_000)
+    assert k.saldo("dep:mercadeo") == 4_000
