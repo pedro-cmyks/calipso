@@ -91,3 +91,20 @@ def test_ejecutar_reserva_paga_a_destino(k):
     assert k.disponible("dep:a") == 40_000
     with pytest.raises(OperacionInvalida):
         k.ejecutar_reserva(TS, W, ref="firma-42", destino=t.CUENTA_PEDRO)
+
+
+def test_transferencia_a_si_mismo_es_operacion_invalida(k):
+    _capital(k, 10_000)
+    with pytest.raises(OperacionInvalida):
+        k.transferir(TS, W, t.TESORO, t.TESORO, 1_000, motivo="x")
+
+
+def test_monto_invalido_es_operacion_invalida(k):
+    _capital(k, 10_000)
+    with pytest.raises(OperacionInvalida):
+        k.transferir(TS, W, t.TESORO, "dep:a", 0, motivo="x")
+
+
+def test_acunar_con_subtipo_crudo_es_operacion_invalida(k):
+    with pytest.raises(OperacionInvalida):
+        k.acunar(TS, W, t.TESORO, 1_000, "venta", {"tipo": "firma_pedro"})

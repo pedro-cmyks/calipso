@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from . import balances as bal
 from .libro import Libro
-from .tipos import Asiento, Divisa, SubtipoAcunacion, TipoAsiento
+from .tipos import AsientoInvalido, Asiento, Divisa, SubtipoAcunacion, TipoAsiento
 
 
 class OperacionInvalida(Exception):
@@ -36,12 +36,20 @@ class Kernel:
         if monto > disp:
             raise SinSaldo(f"{cuenta}: pide {monto}, disponible {disp}")
 
+    def _append(self, **campos) -> Asiento:
+        try:
+            return self.libro.append(**campos)
+        except AsientoInvalido as exc:
+            raise OperacionInvalida(str(exc)) from exc
+
     # -- operaciones -------------------------------------------------------
     def acunar(self, ts: str, semana: str, destino: str, monto: int,
                subtipo: SubtipoAcunacion, evidencia: dict) -> Asiento:
         if not evidencia:
             raise OperacionInvalida("acunar exige evidencia (invariante 4)")
-        return self.libro.append(
+        if not isinstance(subtipo, SubtipoAcunacion):
+            raise OperacionInvalida(f"subtipo debe ser SubtipoAcunacion: {subtipo!r}")
+        return self._append(
             ts=ts, semana=semana, tipo=TipoAsiento.ACUNACION,
             divisa=Divisa.MONEDA, monto=monto, destino=destino,
             subtipo=subtipo.value, detalle={"evidencia": evidencia})
@@ -49,7 +57,7 @@ class Kernel:
     def destruir(self, ts: str, semana: str, origen: str, monto: int,
                  motivo: str, ref: str | None = None) -> Asiento:
         self._exigir(origen, monto)
-        return self.libro.append(
+        return self._append(
             ts=ts, semana=semana, tipo=TipoAsiento.DESTRUCCION,
             divisa=Divisa.MONEDA, monto=monto, origen=origen, ref=ref,
             detalle={"motivo": motivo})
@@ -59,7 +67,7 @@ class Kernel:
                    detalle_extra: dict | None = None) -> Asiento:
         self._exigir(origen, monto)
         detalle = {"motivo": motivo} | (detalle_extra or {})
-        return self.libro.append(
+        return self._append(
             ts=ts, semana=semana, tipo=TipoAsiento.TRANSFERENCIA,
             divisa=Divisa.MONEDA, monto=monto, origen=origen,
             destino=destino, ref=ref, detalle=detalle)
@@ -76,13 +84,13 @@ class Kernel:
         if ref in bal.reservas_activas(self.libro.asientos()):
             raise OperacionInvalida(f"ref de reserva repetida: {ref}")
         self._exigir(cuenta, monto)
-        return self.libro.append(
+        return self._append(
             ts=ts, semana=semana, tipo=TipoAsiento.RESERVA,
             divisa=Divisa.MONEDA, monto=monto, origen=cuenta, ref=ref)
 
     def liberar(self, ts: str, semana: str, ref: str) -> Asiento:
         cuenta, monto = self._reserva(ref)
-        return self.libro.append(
+        return self._append(
             ts=ts, semana=semana, tipo=TipoAsiento.LIBERACION,
             divisa=Divisa.MONEDA, monto=monto, ref=ref,
             detalle={"cuenta": cuenta})
@@ -90,7 +98,7 @@ class Kernel:
     def ejecutar_reserva(self, ts: str, semana: str, ref: str, destino: str,
                          detalle_extra: dict | None = None) -> Asiento:
         cuenta, monto = self._reserva(ref)
-        return self.libro.append(
+        return self._append(
             ts=ts, semana=semana, tipo=TipoAsiento.EJECUCION_RESERVA,
             divisa=Divisa.MONEDA, monto=monto, origen=cuenta,
             destino=destino, ref=ref, detalle=(detalle_extra or {}))
