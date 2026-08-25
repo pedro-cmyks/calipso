@@ -6,6 +6,7 @@ from calipso.economia import candado as cnd
 from calipso.economia import capacidad as cap
 from calipso.economia import cola as cola_mod
 from calipso.economia import departamentos as deps
+from calipso.economia import direccion as dir_
 from calipso.economia import mercado as mkt
 from calipso.economia import pt
 from calipso.economia import tipos as t
@@ -226,3 +227,47 @@ def test_expirar_semana_libera_reservas(entorno, cola):
     assert expirados == ["c1"]
     assert k.disponible("dep:a") == 50_000
     assert cola.estado("c1") == "expirada"
+
+
+def test_servir_cobra_tiempo_real_y_libera_reserva(entorno, cola):
+    k, m, b, _ = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 50_000, "dep:a")
+    cola.encolar(k, TS, "2026-W30", "c1", "dep:a", "llamar", tipo="contacto",
+                 obligatoria=True, mpt_estimado=500, monedas_en_juego=9_000)
+    # 42 minutos reales -> 700 mpt -> redondeo a 1000 mpt -> 5000 mm
+    res = cola.servir(m, TS, "2026-W30", "c1", mpt_real=700)
+    assert res["mpt_cobrado"] == 1_000 and res["cobro_mm"] == 5_000
+    assert k.saldo(t.CUENTA_PEDRO) == 5_000
+    assert k.saldo("dep:a") == 45_000
+    assert k.disponible("dep:a") == 45_000  # la reserva de 2500 se libero
+    assert k.saldo(t.POOL_PT_FABRICA, t.Divisa.PT) == 3_000
+    assert cola.estado("c1") == "servida"
+    with pytest.raises(cola_mod.ErrorCola):
+        cola.servir(m, TS, "2026-W30", "c1", mpt_real=500)  # ya servida
+
+
+def test_servir_goteo_cobra_recargo(entorno, cola):
+    k, m, b, _ = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 50_000, "dep:a")
+    cola.encolar(k, TS, "2026-W30", "g1", "dep:a", "urgente", tipo="contacto",
+                 obligatoria=True, mpt_estimado=500, monedas_en_juego=9_000,
+                 carril=cola_mod.CARRIL_GOTEO)
+    res = cola.servir(m, TS, "2026-W30", "g1", mpt_real=500)
+    assert res["cobro_mm"] == 5_000  # 500 mpt a 5000 x2 de recargo
+    assert k.saldo(t.CUENTA_PEDRO) == 5_000
+
+
+def test_servir_con_adelanto_de_direccion(entorno, cola):
+    k, m, b, _ = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 100_000, t.DIRECCION)
+    cola.encolar(k, TS, "2026-W30", "c2", "dep:b", "responder",
+                 tipo="contacto", obligatoria=True, mpt_estimado=500,
+                 monedas_en_juego=5_000)  # dep:b sin caja -> adelanto
+    res = cola.servir(m, TS, "2026-W30", "c2", mpt_real=500)
+    assert res["adelantado_mm"] == 2_500
+    assert k.saldo(t.CUENTA_PEDRO) == 2_500
+    assert k.acreencias_pendientes("dep:b") == \
+        [("adelanto:c2", t.DIRECCION, 2_500)]

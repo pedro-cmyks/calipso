@@ -13,9 +13,11 @@ from __future__ import annotations
 import json
 import pathlib
 
+from . import balances as bal
 from . import departamentos as deps
 from . import pt
 from .kernel import Kernel
+from .tipos import CUENTA_PEDRO, DIRECCION, Divisa, POOL_PT_FABRICA, TipoAsiento
 
 CARRIL_SESION = "sesion"
 CARRIL_GOTEO = "goteo"
@@ -26,6 +28,10 @@ _TIPOS = {"contacto", "publicacion", "gasto", "opinion"}
 
 class ErrorCola(Exception):
     pass
+
+
+def _redondear_mpt(mpt_real: int) -> int:
+    return max(500, ((mpt_real + 499) // 500) * 500)
 
 
 class Cola:
@@ -133,7 +139,6 @@ class Cola:
                               id: str) -> None:
         # tolerante: libera solo si la reserva existe de verdad (un crash
         # entre el evento y la reserva, o un reintento, la dejan ausente)
-        from . import balances as bal
         if f"cola:{id}" in bal.reservas_activas(k.libro.asientos()):
             k.liberar(ts, semana, ref=f"cola:{id}")
 
@@ -172,3 +177,69 @@ class Cola:
                               "evento": "expirada", "id": e["id"]})
                 out.append(e["id"])
         return out
+
+    # -- servicio ------------------------------------------------------------
+    def servir(self, mercado, ts: str, semana: str, id: str,
+               mpt_real: int) -> dict:
+        datos = self.datos(id)
+        if datos.get("es_carta"):
+            raise ErrorCola(f"las cartas se atienden, no se sirven: {id}")
+        if self.estado(id) != "encolada":
+            raise ErrorCola(f"no esta pendiente: {id}")
+        if not isinstance(mpt_real, int) or isinstance(mpt_real, bool) \
+                or mpt_real <= 0:
+            raise ErrorCola(f"mpt_real debe ser entero positivo: {mpt_real!r}")
+        k = mercado.k
+        dep = datos["departamento"]
+        ref = f"cola:{id}"
+        mpt_cobrado = _redondear_mpt(mpt_real)
+        cobro = mpt_cobrado * datos["tipo_mm"] // 1000
+        if datos["carril"] == CARRIL_GOTEO:
+            cobro = cobro * RECARGO_GOTEO_PCT // 100
+
+        # estado real previo (reanudable tras crash a mitad de un intento)
+        asientos = k.libro.asientos()
+        ya_pagado = sum(a.monto for a in asientos
+                        if a.tipo is TipoAsiento.TRANSFERENCIA
+                        and a.destino == CUENTA_PEDRO and a.ref == ref)
+        consumo_hecho = any(a.tipo is TipoAsiento.CONSUMO_PT and a.ref == ref
+                            for a in asientos)
+        reservas = bal.reservas_activas(asientos)
+        monto_reservado = reservas[ref][1] if ref in reservas else 0
+        pendiente = max(0, cobro - ya_pagado)
+        disponible_total = k.disponible(dep) + monto_reservado
+        del_dep = min(pendiente, disponible_total)
+        faltante = pendiente - del_dep
+
+        # PRE-VALIDACION antes del primer append (patron _pagar_pt):
+        if not consumo_hecho and \
+                k.saldo(POOL_PT_FABRICA, Divisa.PT) < mpt_cobrado:
+            raise ErrorCola(
+                f"pool de fabrica insuficiente: pide {mpt_cobrado}, "
+                f"hay {k.saldo(POOL_PT_FABRICA, Divisa.PT)}")
+        if faltante > 0 and datos["obligatoria"]:
+            if k.disponible(DIRECCION) < faltante:
+                raise ErrorCola(
+                    f"direccion sin caja para el adelanto: {faltante}")
+        elif faltante > 0:
+            faltante = 0  # la opcional cobra hasta donde alcanza
+
+        # escrituras, todas tolerantes a reintento
+        self._liberar_si_reservada(k, ts, semana, id)
+        if del_dep > 0:
+            k.transferir(ts, semana, dep, CUENTA_PEDRO, del_dep,
+                         motivo="firma_servida", ref=ref)
+        if faltante > 0:
+            k.transferir(ts, semana, DIRECCION, CUENTA_PEDRO, faltante,
+                         motivo="carta_sistema", ref=ref)
+            k.registrar_acreencia(ts, semana, DIRECCION, dep, faltante,
+                                  ref=f"adelanto:{id}")
+        if not consumo_hecho:
+            pt.consumir_fabrica(k, ts, semana, mpt_cobrado, ref=ref,
+                                pagador=dep)
+        cobro_efectivo = ya_pagado + del_dep + faltante
+        self._apilar({"ts": ts, "semana": semana, "evento": "servida",
+                      "id": id, "mpt_real": mpt_real,
+                      "mpt_cobrado": mpt_cobrado, "cobro_mm": cobro_efectivo})
+        return {"mpt_cobrado": mpt_cobrado, "cobro_mm": cobro_efectivo,
+                "adelantado_mm": faltante}
