@@ -39,8 +39,9 @@ Todo nuevo salvo los tres últimos.
 | `calipso/web/fabrica/paneles.js` | qué disposición corresponde a cada ancho de pantalla, y el armado de la tarjeta de hover y la barra de avisos. |
 | `calipso/web/fabrica/chat.js` | el reductor de eventos del `/ws/chat` que ya existe, más el cliente que lo alimenta. |
 | `calipso/web/fabrica/app.js` | el pegamento: engancha eventos del DOM, corre el bucle de animación, arma la app. |
-| `calipso/web/fabrica/index.html` | el esqueleto de las tres columnas. |
+| `calipso/web/fabrica/index.html` | el esqueleto de las tres columnas, y el registro del service worker. |
 | `calipso/web/fabrica/estilo.css` | la paleta de la interfaz y el layout. |
+| `calipso/web/fabrica/manifest.json` | manifest propio de la fábrica, con `start_url` en `/fabrica`. El global arranca en `/` y abriría la UI vieja. |
 | `calipso/web/fabrica/*.test.js` | uno por módulo puro. |
 | `test_fabrica_js.py` | puente: `pytest` corre `node --test`. |
 | `test_mapa_server.py` | **modificar**: se le suman los tests de la ruta `/fabrica`. |
@@ -246,7 +247,10 @@ def test_los_modulos_del_cliente_pasan_sus_tests():
     ejecutable = node()
     if ejecutable is None:
         pytest.skip("node no esta instalado: los tests del cliente NO corrieron")
-    r = subprocess.run([ejecutable, "--test", str(FABRICA)],
+    # el directorio va como cwd, NO como argumento: Node 22 trata un
+    # argumento posicional como modulo de entrada y sale con
+    # "Cannot find module <dir>" sin correr un solo test
+    r = subprocess.run([ejecutable, "--test"], cwd=str(FABRICA),
                        capture_output=True, text=True, timeout=180)
     assert r.returncode == 0, r.stdout + r.stderr
 ```
@@ -254,7 +258,9 @@ def test_los_modulos_del_cliente_pasan_sus_tests():
 - [ ] **Step 4: Correr los tests para verificar que fallan por la razón correcta**
 
 Correr: `/var/home/pedro/calipso/.venv/bin/python -m pytest test_fabrica_js.py -v`
-Esperado: FALLA con `Cannot find module` de `./paleta.js`.
+Esperado: FALLA, y **el texto del error tiene que nombrar `./paleta.js`** — no la carpeta `fabrica`.
+
+Esa distinción importa: si el error dice `Cannot find module '<ruta de la carpeta>'`, significa que Node recibió el directorio como argumento y no corrió ningún test. Si dice `Cannot find module './paleta.js'`, entonces sí descubrió `sprites.test.js`, lo ejecutó, y falló por la razón correcta. Los dos fallos se parecen y solo uno es el bueno.
 
 **Si en vez de fallar SALTA (`skipped`), pará**: significa que no encontró Node, y entonces ningún test del cliente va a correr en toda esta rama. Verificá a mano con `ls ~/.local/share/fnm/node-versions/` y arreglá `node()` antes de seguir. Un salto silencioso acá vuelve inútiles las seis tareas.
 
@@ -457,7 +463,7 @@ Paneo libre en los dos ejes, zoom que respeta el punto que estás mirando, y un 
 - Create: `calipso/web/fabrica/camara.test.js`
 
 **Interfaces:**
-- Produces: `ESCALA_MIN=0.25`, `ESCALA_MAX=6`; `crearCamara(x=0, y=0, escala=1) -> cam`; `aPantalla(cam, mundo, vista) -> {x,y}`; `aMundo(cam, pantalla, vista) -> {x,y}`; `arrastrar(cam, dx, dy) -> cam`; `acercar(cam, factor, punto, vista) -> cam`; `volarA(cam, destino, ms=600) -> cam`; `paso(cam, dt) -> boolean`; `suave(u) -> number`; `escalaEntera(cam) -> number`. `vista` es `{ancho, alto}` en píxeles de pantalla.
+- Produces: `ESCALA_MIN=0.25`, `ESCALA_MAX=6`; `crearCamara(x=0, y=0, escala=1) -> cam`; `aPantalla(cam, mundo, vista) -> {x,y}`; `aMundo(cam, pantalla, vista) -> {x,y}`; `arrastrar(cam, dx, dy) -> cam`; `acercar(cam, factor, punto, vista) -> cam`; `volarA(cam, destino, ms=600) -> cam`; `paso(cam, dt) -> boolean`; `suave(u) -> number`; `escalaEntera(cam) -> number`; `encuadrar(edificios, vista, margen=60) -> {x, y, escala}`. `vista` es `{ancho, alto}` en píxeles.
 
 - [ ] **Step 1: Escribir los tests que fallan**
 
@@ -468,7 +474,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {crearCamara, aPantalla, aMundo, arrastrar, acercar, volarA, paso,
-        escalaEntera, ESCALA_MIN, ESCALA_MAX} from "./camara.js";
+        escalaEntera, encuadrar, ESCALA_MIN, ESCALA_MAX} from "./camara.js";
 
 const VISTA = {ancho: 800, alto: 600};
 const cerca = (a, b, tol = 1e-9) =>
@@ -581,6 +587,49 @@ test("la escala de dibujo es entera y nunca baja de 1", () => {
   assert.equal(escalaEntera(crearCamara(0, 0, 2.4)), 2);
   assert.equal(escalaEntera(crearCamara(0, 0, 2.6)), 3);
 });
+
+test("encuadrar centra la ciudad en el medio de la vista", () => {
+  const e = encuadrar([{x: 0, y: 0}, {x: 200, y: 100}], VISTA);
+  assert.equal(e.x, 100);
+  assert.equal(e.y, 50);
+});
+
+test("encuadrar hace entrar toda la ciudad, con margen", () => {
+  const edificios = [{x: -500, y: -200}, {x: 500, y: 200}];
+  const e = encuadrar(edificios, VISTA, 60);
+  const cam = crearCamara(e.x, e.y, e.escala);
+  for (const b of edificios) {
+    const p = aPantalla(cam, b, VISTA);
+    assert.ok(p.x >= 0 && p.x <= VISTA.ancho, `se fue en x: ${p.x}`);
+    assert.ok(p.y >= 0 && p.y <= VISTA.alto, `se fue en y: ${p.y}`);
+  }
+});
+
+test("una ciudad ancha se encuadra por el lado que aprieta", () => {
+  // 4000 de ancho contra 800 de vista aprieta mas que 100 de alto contra 600
+  const e = encuadrar([{x: 0, y: 0}, {x: 4000, y: 100}], VISTA, 0);
+  assert.ok(e.escala <= VISTA.ancho / 4000 + 1e-9, `escala ${e.escala}`);
+});
+
+test("encuadrar respeta los topes de escala", () => {
+  const lejos = encuadrar([{x: 0, y: 0}, {x: 1e9, y: 1e9}], VISTA);
+  assert.equal(lejos.escala, ESCALA_MIN);
+  const juntos = encuadrar([{x: 0, y: 0}, {x: 1, y: 1}], VISTA);
+  assert.equal(juntos.escala, ESCALA_MAX);
+});
+
+test("encuadrar un solo edificio lo pone en el centro sin dividir por cero", () => {
+  const e = encuadrar([{x: 42, y: -7}], VISTA);
+  assert.equal(e.x, 42);
+  assert.equal(e.y, -7);
+  assert.ok(Number.isFinite(e.escala) && e.escala > 0);
+});
+
+test("encuadrar una ciudad vacia no rompe", () => {
+  const e = encuadrar([], VISTA);
+  assert.ok(Number.isFinite(e.x) && Number.isFinite(e.y));
+  assert.ok(Number.isFinite(e.escala) && e.escala > 0);
+});
 ```
 
 - [ ] **Step 2: Correr los tests para verificar que fallan**
@@ -675,6 +724,27 @@ export function paso(cam, dt) {
 /** El pixel no se deforma: los sprites se pintan a escala entera. */
 export function escalaEntera(cam) {
   return Math.max(1, Math.round(cam.escala));
+}
+
+/**
+ * Donde poner la camara para que la ciudad entera entre en la vista.
+ * Se llama cuando llega el modelo: el mundo que emite el urbanismo mide
+ * lo que mida, y hardcodear una posicion inicial deja medio mapa afuera.
+ */
+export function encuadrar(edificios, vista, margen = 60) {
+  if (!edificios.length) return {x: 0, y: 0, escala: 1};
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const e of edificios) {
+    x0 = Math.min(x0, e.x); x1 = Math.max(x1, e.x);
+    y0 = Math.min(y0, e.y); y1 = Math.max(y1, e.y);
+  }
+  const util = {ancho: Math.max(1, vista.ancho - margen * 2),
+                alto: Math.max(1, vista.alto - margen * 2)};
+  const ancho = x1 - x0, alto = y1 - y0;
+  const cabe = Math.min(ancho > 0 ? util.ancho / ancho : ESCALA_MAX,
+                        alto > 0 ? util.alto / alto : ESCALA_MAX);
+  return {x: (x0 + x1) / 2, y: (y0 + y1) / 2,
+          escala: Math.max(ESCALA_MIN, Math.min(ESCALA_MAX, cabe))};
 }
 ```
 
@@ -813,7 +883,10 @@ test("cuando dos se superponen gana el de adelante", () => {
   c.edificios = [edi("dep:atras", {x: 0, y: 0}),
                  edi("dep:adelante", {x: 0, y: 6})];
   const cam = crearCamara(0, 3, 1);
-  const id = enPunto(c, cam, VISTA, 400, 300);
+  // 290 cae DENTRO de las dos cajas; 300 cae solo en una y entonces el test
+  // pasaria igual con el bucle recorrido al reves, que es el error que este
+  // test existe para atrapar
+  const id = enPunto(c, cam, VISTA, 400, 290);
   assert.equal(id, "dep:adelante");
 });
 
@@ -863,7 +936,10 @@ Crear `calipso/web/fabrica/ciudad.js`:
 import {medidas} from "./sprites.js";
 import {aPantalla, escalaEntera} from "./camara.js";
 
-const FORMATO = new Intl.NumberFormat("es", {maximumFractionDigits: 2});
+// useGrouping "always" es obligatorio: sin el, esta locale devuelve "1148"
+// en vez de "1.148" para los numeros de cuatro digitos.
+const FORMATO = new Intl.NumberFormat("es", {maximumFractionDigits: 2,
+                                             useGrouping: "always"});
 
 export async function cargarCiudad(buscar = fetch) {
   const r = await buscar("/api/mapa/ciudad");
@@ -933,9 +1009,9 @@ export function enPunto(ciudad, cam, vista, px, py) {
 - [ ] **Step 4: Correr los tests para verificar que pasan**
 
 Correr: `/var/home/pedro/calipso/.venv/bin/python -m pytest test_fabrica_js.py -v`
-Esperado: PASA.
+Esperado: PASA. Los cuatro valores están verificados en este Node con `useGrouping: "always"`: `1.148`, `0`, `1,5` y `123,4`.
 
-Si `monedas(1_500)` no da exactamente `"1,5"`, mirá qué devuelve `Intl.NumberFormat("es")` en este Node antes de tocar nada, y ajustá **el test** al formato real de la locale española — pero solo después de confirmar a mano que el formato que sale es el que un hispanohablante espera leer.
+**Los tests de formato no se tocan.** Si alguno sale en rojo, el que está mal es el `Intl.NumberFormat` — revisá que lleve `useGrouping: "always"` antes de mirar cualquier otra cosa. La tarea 5 vuelve a afirmar estos mismos formatos desde el otro lado, así que aflojar un assert acá deja la 5 en rojo.
 
 - [ ] **Step 5: Commit**
 
@@ -955,13 +1031,14 @@ La primera vez que se ve algo. Al terminar esta tarea, `/fabrica` muestra la ciu
 - Create: `calipso/web/fabrica/mapa.test.js`
 - Create: `calipso/web/fabrica/index.html`
 - Create: `calipso/web/fabrica/estilo.css`
+- Create: `calipso/web/fabrica/manifest.json`
 - Create: `calipso/web/fabrica/app.js`
-- Modify: `calipso/server.py` (agregar la ruta `/fabrica` justo después de la de `/sw.js`, antes del comentario de estáticos de la línea 3499)
+- Modify: `calipso/server.py` (agregar las rutas `/fabrica` y `/fabrica/manifest.json` justo después de la de `/sw.js`, antes del comentario de estáticos de la línea 3499)
 - Modify: `test_mapa_server.py`
 
 **Interfaces:**
 - Consumes: todo lo anterior.
-- Produces: `mapa.js` exporta `puntosDeCalle(ciudad, cam, vista) -> array de {desde, hasta, ancho, tipo}`; `posicionDeUnidad(unidad, ciudad, cam, vista, fase) -> {x, y}|null`; `crearMapa(canvas) -> {dibujar(ciudad, cam, resaltado), vista()}`.
+- Produces: `mapa.js` exporta `puntosDeCalle(ciudad, cam, vista, idx=indice(ciudad)) -> array de {desde, hasta, ancho, tipo}`; `posicionDeUnidad(unidad, ciudad, cam, vista, fase, idx=indice(ciudad)) -> {x, y}|null`; `crearMapa(canvas) -> {dibujar(ciudad, cam, resaltado=null, fase=0), vista()}`.
 
 - [ ] **Step 1: Escribir los tests que fallan**
 
@@ -1006,14 +1083,24 @@ test("una calle con un extremo que no existe se descarta sin romper", () => {
   assert.equal(puntosDeCalle(c, crearCamara(0, 0, 1), VISTA).length, 1);
 });
 
-test("la unidad con destino camina entre los dos, sin salirse", () => {
+test("la unidad con destino camina de su casa al otro edificio", () => {
   const c = ciudadDePrueba();
   const cam = crearCamara(0, 0, 1);
-  const a = posicionDeUnidad(c.unidades[0], c, cam, VISTA, 0);
-  const medio = posicionDeUnidad(c.unidades[0], c, cam, VISTA, 0.5);
-  const b = posicionDeUnidad(c.unidades[0], c, cam, VISTA, 1);
-  assert.ok(medio.x > Math.min(a.x, b.x) && medio.x < Math.max(a.x, b.x),
+  // la ida ocupa la primera mitad de la fase: 0 es la casa, 0.5 el destino
+  const casa = posicionDeUnidad(c.unidades[0], c, cam, VISTA, 0);
+  const medio = posicionDeUnidad(c.unidades[0], c, cam, VISTA, 0.25);
+  const destino = posicionDeUnidad(c.unidades[0], c, cam, VISTA, 0.5);
+  assert.ok(destino.x > casa.x, "el destino no quedo del otro lado");
+  assert.ok(medio.x > casa.x && medio.x < destino.x,
             "la unidad se salio del tramo");
+});
+
+test("al completar la fase la unidad volvio a su casa", () => {
+  const c = ciudadDePrueba();
+  const cam = crearCamara(0, 0, 1);
+  const casa = posicionDeUnidad(c.unidades[0], c, cam, VISTA, 0);
+  const vuelta = posicionDeUnidad(c.unidades[0], c, cam, VISTA, 1);
+  assert.ok(Math.abs(casa.x - vuelta.x) < 1e-6, "la vuelta no cierra");
 });
 
 test("la unidad sin destino orbita su casa en vez de irse al origen", () => {
@@ -1062,7 +1149,7 @@ Crear `calipso/web/fabrica/mapa.js`:
 import {aPantalla, escalaEntera} from "./camara.js";
 import {centroDe, indice, ordenDePintado} from "./ciudad.js";
 import {rampaDe} from "./paleta.js";
-import {edificioSprite, medidas, pintar} from "./sprites.js";
+import {edificioSprite, pintar} from "./sprites.js";
 
 const FONDO = "#0b0f14";
 const CALLE = "#2a3038";
@@ -1072,8 +1159,10 @@ const AVISO = "#ffd75f";
 const RESALTE = "#66d9ff";
 const RADIO_ORBITA = 22;
 
-export function puntosDeCalle(ciudad, cam, vista) {
-  const {porId} = indice(ciudad);
+// `idx` entra por parametro para que el bucle de dibujo lo calcule una sola
+// vez por cuadro en vez de una vez por calle y por unidad.
+export function puntosDeCalle(ciudad, cam, vista, idx = indice(ciudad)) {
+  const {porId} = idx;
   const out = [];
   for (const c of ciudad.calles) {
     const a = porId.get(c.a), b = porId.get(c.b);
@@ -1086,8 +1175,9 @@ export function puntosDeCalle(ciudad, cam, vista) {
 }
 
 /** `fase` va de 0 a 1 y vuelve a empezar. */
-export function posicionDeUnidad(unidad, ciudad, cam, vista, fase) {
-  const {porId} = indice(ciudad);
+export function posicionDeUnidad(unidad, ciudad, cam, vista, fase,
+                                 idx = indice(ciudad)) {
+  const {porId} = idx;
   const casa = porId.get(unidad.dueno);
   if (!casa) return null;
   const p = aPantalla(cam, centroDe(casa), vista);
@@ -1107,18 +1197,53 @@ export function posicionDeUnidad(unidad, ciudad, cam, vista, fase) {
 export function crearMapa(canvas) {
   const ctx = canvas.getContext("2d");
   ctx.imageSmoothingEnabled = false;     // pixel art: nada de interpolar
+  const cache = new Map();               // sprites ya rasterizados
 
   function vista() {
     return {ancho: canvas.clientWidth, alto: canvas.clientHeight};
   }
 
+  /**
+   * DEUDA DECLARADA: el dpr se redondea a entero. Los aparatos de Pedro
+   * (el Ally, el iPhone, el Mac) tienen todos dpr entero, y redondear
+   * mantiene la escala de dibujo entera con un solo sistema de
+   * coordenadas. En una pantalla con dpr fraccionario (Windows al 150%)
+   * el navegador reescala el lienzo entero y el pixel art pierde nitidez.
+   * El arreglo completo es pintar en pixeles fisicos, y cuesta manejar
+   * dos sistemas de coordenadas a la vez.
+   */
+  function dpr() {
+    return Math.max(1, Math.min(3, Math.round(window.devicePixelRatio || 1)));
+  }
+
+  // reasigna el bitmap SOLO si cambio de tamano: asignar canvas.width lo
+  // borra entero y es caro, y aca se llama en cada cuadro
   function ajustar() {
-    const dpr = Math.min(3, Math.max(1, window.devicePixelRatio || 1));
-    const v = vista();
-    canvas.width = Math.round(v.ancho * dpr);
-    canvas.height = Math.round(v.alto * dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const d = dpr(), v = vista();
+    const ancho = Math.round(v.ancho * d), alto = Math.round(v.alto * d);
+    if (canvas.width === ancho && canvas.height === alto) return;
+    canvas.width = ancho;
+    canvas.height = alto;
+    ctx.setTransform(d, 0, 0, d, 0, 0);
     ctx.imageSmoothingEnabled = false;
+  }
+
+  /** Un edificio se dibuja una vez por combinacion y despues se copia. */
+  function rasterizar(e, esc) {
+    const clave = `${e.id}|${e.zona}|${e.estado}|${e.tamano}|${e.actividad}|${esc}`;
+    const guardado = cache.get(clave);
+    if (guardado) return guardado;
+    const sprite = edificioSprite(e);
+    const fuera = document.createElement("canvas");
+    fuera.width = sprite.ancho * esc;
+    fuera.height = sprite.alto * esc;
+    const octx = fuera.getContext("2d");
+    octx.imageSmoothingEnabled = false;
+    pintar(octx, sprite, rampaDe(e), 0, 0, esc);
+    const listo = {lienzo: fuera, ancho: fuera.width, alto: fuera.height};
+    if (cache.size > 300) cache.clear();   // techo simple; la ciudad es chica
+    cache.set(clave, listo);
+    return listo;
   }
 
   function dibujar(ciudad, cam, resaltado = null, fase = 0) {
@@ -1127,9 +1252,10 @@ export function crearMapa(canvas) {
     ctx.fillStyle = FONDO;
     ctx.fillRect(0, 0, v.ancho, v.alto);
     const esc = escalaEntera(cam);
-    const {avisosPorId} = indice(ciudad);
+    const idx = indice(ciudad);            // una vez por cuadro, no por item
+    const {avisosPorId} = idx;
 
-    for (const s of puntosDeCalle(ciudad, cam, v)) {
+    for (const s of puntosDeCalle(ciudad, cam, v, idx)) {
       ctx.strokeStyle = s.tipo === "cable" ? CABLE : CALLE;
       ctx.lineWidth = s.ancho * esc;
       ctx.setLineDash(s.tipo === "cable" ? [6 * esc, 4 * esc] : []);
@@ -1141,18 +1267,17 @@ export function crearMapa(canvas) {
     ctx.setLineDash([]);
 
     for (const e of ordenDePintado(ciudad.edificios)) {
-      const sprite = edificioSprite(e);
+      const r = rasterizar(e, esc);
       const p = aPantalla(cam, centroDe(e), v);
-      const x = Math.round(p.x - (sprite.ancho * esc) / 2);
-      const y = Math.round(p.y - sprite.alto * esc);
-      if (x + sprite.ancho * esc < 0 || x > v.ancho ||
-          y + sprite.alto * esc < 0 || y > v.alto) continue;
-      pintar(ctx, sprite, rampaDe(e), x, y, esc);
+      const x = Math.round(p.x - r.ancho / 2);
+      const y = Math.round(p.y - r.alto);
+      if (x + r.ancho < 0 || x > v.ancho ||
+          y + r.alto < 0 || y > v.alto) continue;
+      ctx.drawImage(r.lienzo, x, y);
       if (e.id === resaltado) {
         ctx.strokeStyle = RESALTE;
         ctx.lineWidth = 2;
-        ctx.strokeRect(x - 2, y - 2, sprite.ancho * esc + 4,
-                       sprite.alto * esc + 4);
+        ctx.strokeRect(x - 2, y - 2, r.ancho + 4, r.alto + 4);
       }
       const avisos = avisosPorId.get(e.id) || 0;
       for (let i = 0; i < avisos; i++) {
@@ -1162,7 +1287,7 @@ export function crearMapa(canvas) {
     }
 
     for (const u of ciudad.unidades) {
-      const p = posicionDeUnidad(u, ciudad, cam, v, fase);
+      const p = posicionDeUnidad(u, ciudad, cam, v, fase, idx);
       if (!p) continue;
       ctx.fillStyle = UNIDAD;
       ctx.fillRect(Math.round(p.x) - esc, Math.round(p.y) - esc,
@@ -1191,7 +1316,7 @@ Crear `calipso/web/fabrica/index.html`:
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0b0f14">
 <title>Calipso — la fabrica</title>
-<link rel="manifest" href="/manifest.json">
+<link rel="manifest" href="/fabrica/manifest.json">
 <link rel="stylesheet" href="/static/fabrica/estilo.css">
 </head>
 <body>
@@ -1232,8 +1357,41 @@ Crear `calipso/web/fabrica/index.html`:
   <div id="avisos" class="avisos"></div>
 </div>
 <script type="module" src="/static/fabrica/app.js"></script>
+<script>
+// misma linea que ya usa la UI vieja: sin esto el service worker nunca se
+// registra desde /fabrica y toda la parte de PWA de la tarea 5 es inerte
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load",
+    () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+}
+</script>
 </body>
 </html>
+```
+
+Crear también `calipso/web/fabrica/manifest.json`, propio de la fábrica. El manifest global tiene `start_url: "/"`, así que instalar desde `/fabrica` abriría la UI vieja:
+
+```json
+{
+  "name": "Calipso — la fabrica",
+  "short_name": "Fabrica",
+  "description": "La consola de la fabrica de Calipso",
+  "id": "/fabrica",
+  "start_url": "/fabrica",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b0f14",
+  "theme_color": "#0b0f14",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/static/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
 ```
 
 Crear `calipso/web/fabrica/estilo.css`:
@@ -1302,6 +1460,9 @@ html, body {
 #entrada input {
   flex: 1; min-width: 0; background: var(--fondo); color: var(--texto);
   border: 1px solid var(--linea); border-radius: 4px; padding: 7px 9px;
+  /* 16px o mas: por debajo, Safari de iPhone agranda la pagina al enfocar,
+     y con overflow:hidden no hay scroll para volver */
+  font-size: 16px;
 }
 #entrada button {
   background: var(--linea); color: var(--texto); border: 0;
@@ -1354,9 +1515,15 @@ html, body {
 @media (max-width: 820px) {
   #app {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) 42px var(--barra);
+    /* el viewport dice viewport-fit=cover, asi que hay que devolverle el
+       espacio del indicador de inicio o la barra de avisos queda debajo */
+    grid-template-rows: minmax(0, 1fr) 42px
+                        calc(var(--barra) + env(safe-area-inset-bottom));
     grid-template-areas: "centro" "pestanas" "avisos";
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
   }
+  .avisos { padding-bottom: env(safe-area-inset-bottom); }
   #panel-chats { display: none; }
   #panel-centro, #panel-mapa { grid-area: centro; border-right: 0; }
   #app[data-pestana="chat"] #panel-mapa { display: none; }
@@ -1386,73 +1553,124 @@ Crear `calipso/web/fabrica/app.js` — por ahora solo carga la ciudad, la dibuja
  * logica que se puede testear vive en los otros archivos; aca solo hay
  * cableado.
  */
-import {crearCamara, arrastrar, acercar, paso} from "./camara.js";
+import {crearCamara, arrastrar, acercar, paso, encuadrar} from "./camara.js";
 import {cargarCiudad, enPunto} from "./ciudad.js";
 import {crearMapa} from "./mapa.js";
 
 const lienzo = document.getElementById("mapa");
 const sinFabrica = document.getElementById("sin-fabrica");
 const mapa = crearMapa(lienzo);
-const cam = crearCamara(0, 0, 2);
+const cam = crearCamara(0, 0, 1);
 
 let ciudad = null;
+let estadoRed = "cargando";   // cargando | activa | inactiva | sin-conexion
 let resaltado = null;
 let ultimo = 0;
+let encuadrado = false;       // el bucle encuadra cuando el lienzo ya mide
 
 async function traer() {
   try {
     const r = await cargarCiudad();
-    ciudad = r.activa ? r.ciudad : null;
+    if (r.activa) { ciudad = r.ciudad; estadoRed = "activa"; }
+    else { ciudad = null; estadoRed = "inactiva"; }
   } catch (e) {
-    ciudad = null;
+    // "no hay fabrica" y "no llego la respuesta" son cosas distintas y el
+    // cartel no puede mentir sobre cual de las dos es
+    estadoRed = "sin-conexion";
   }
+  sinFabrica.textContent = estadoRed === "inactiva"
+    ? "Todavia no hay fabrica: la economia no esta activa."
+    : "Sin conexion con el servidor.";
   sinFabrica.classList.toggle("oculto", ciudad !== null);
 }
+
+window.addEventListener("online", () => { traer(); });
 
 function bucle(ahora) {
   const dt = ultimo ? ahora - ultimo : 16;
   ultimo = ahora;
   paso(cam, dt);
+  const v = mapa.vista();
+  // el encuadre espera a que el lienzo tenga tamano: en el telefono nace
+  // adentro de un panel oculto y mide cero
+  if (ciudad && !encuadrado && v.ancho > 0 && v.alto > 0) {
+    Object.assign(cam, encuadrar(ciudad.edificios, v));
+    encuadrado = true;
+  }
   if (ciudad) mapa.dibujar(ciudad, cam, resaltado, (ahora / 4000) % 1);
   requestAnimationFrame(bucle);
 }
 
-let arrastre = null;
+// un Map de punteros vivos, no una variable: con dos dedos hay que hacer
+// pinza, y con una sola variable el segundo dedo le pasa a arrastrar() la
+// separacion entre los dos y el mapa salta
+const punteros = new Map();
+let pinza = null;
+
+const separacion = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const puntoMedio = (a, b) => ({x: (a.x + b.x) / 2, y: (a.y + b.y) / 2});
+
+function local(ev) {
+  const caja = lienzo.getBoundingClientRect();
+  return {x: ev.clientX - caja.left, y: ev.clientY - caja.top};
+}
+
 lienzo.addEventListener("pointerdown", ev => {
-  arrastre = {x: ev.clientX, y: ev.clientY, movio: false};
   lienzo.setPointerCapture(ev.pointerId);
+  const p = local(ev);
+  punteros.set(ev.pointerId, {x: p.x, y: p.y, movio: false});
+  if (punteros.size === 2) {
+    const [a, b] = [...punteros.values()];
+    pinza = separacion(a, b);
+  }
   lienzo.classList.add("arrastrando");
 });
+
 lienzo.addEventListener("pointermove", ev => {
-  const caja = lienzo.getBoundingClientRect();
-  if (arrastre) {
-    const dx = ev.clientX - arrastre.x, dy = ev.clientY - arrastre.y;
-    if (Math.abs(dx) + Math.abs(dy) > 2) arrastre.movio = true;
+  const p = local(ev);
+  const previo = punteros.get(ev.pointerId);
+  if (previo) {
+    const dx = p.x - previo.x, dy = p.y - previo.y;
+    if (Math.abs(dx) + Math.abs(dy) > 2) previo.movio = true;
+    previo.x = p.x;
+    previo.y = p.y;
+    if (punteros.size >= 2) {
+      const [a, b] = [...punteros.values()];
+      const ahora = separacion(a, b);
+      if (pinza > 0 && ahora > 0) {
+        acercar(cam, ahora / pinza, puntoMedio(a, b), mapa.vista());
+      }
+      pinza = ahora;
+      return;                       // con dos dedos se hace pinza, no paneo
+    }
     arrastrar(cam, dx, dy);
-    arrastre.x = ev.clientX;
-    arrastre.y = ev.clientY;
     return;
   }
   if (!ciudad) return;
-  resaltado = enPunto(ciudad, cam, mapa.vista(),
-                      ev.clientX - caja.left, ev.clientY - caja.top);
+  resaltado = enPunto(ciudad, cam, mapa.vista(), p.x, p.y);
 });
+
 function soltar(ev) {
-  arrastre = null;
-  lienzo.classList.remove("arrastrando");
-  if (ev && lienzo.hasPointerCapture(ev.pointerId)) {
+  punteros.delete(ev.pointerId);
+  if (punteros.size < 2) pinza = null;
+  if (!punteros.size) lienzo.classList.remove("arrastrando");
+  if (lienzo.hasPointerCapture(ev.pointerId)) {
     lienzo.releasePointerCapture(ev.pointerId);
   }
 }
 lienzo.addEventListener("pointerup", soltar);
 lienzo.addEventListener("pointercancel", soltar);
-lienzo.addEventListener("pointerleave", () => { resaltado = null; });
+
+// solo el mouse tiene "salir": en touch el pointerleave llega SIEMPRE
+// justo despues del pointerup, y borraria lo que el toque acaba de abrir
+lienzo.addEventListener("pointerleave", ev => {
+  if (ev.pointerType !== "mouse") return;
+  resaltado = null;
+});
 
 lienzo.addEventListener("wheel", ev => {
   ev.preventDefault();
-  const caja = lienzo.getBoundingClientRect();
-  acercar(cam, ev.deltaY < 0 ? 1.12 : 1 / 1.12,
-          {x: ev.clientX - caja.left, y: ev.clientY - caja.top}, mapa.vista());
+  acercar(cam, ev.deltaY < 0 ? 1.12 : 1 / 1.12, local(ev), mapa.vista());
 }, {passive: false});
 
 await traer();
@@ -1479,6 +1697,14 @@ def test_los_modulos_del_cliente_se_sirven(cliente):
         assert "javascript" in r.headers["content-type"], modulo
 
 
+def test_el_manifest_de_la_fabrica_arranca_en_la_fabrica(cliente):
+    r = cliente.get("/fabrica/manifest.json")
+    assert r.status_code == 200
+    m = r.json()
+    # el manifest global arranca en "/" y abriria la UI vieja
+    assert m["start_url"] == "/fabrica"
+
+
 def test_fabrica_sin_auth_manda_al_login(cliente):
     # /fabrica no es /api ni /ws: el middleware redirige en vez de dar 401
     c = TestClient(srv.app)
@@ -1503,6 +1729,13 @@ En `calipso/server.py`, justo después de la función `service_worker()` y antes
 def fabrica() -> FileResponse:
     """La consola de la fabrica. App propia: no toca la UI vieja de `/`."""
     return FileResponse(WEB / "fabrica" / "index.html")
+
+
+@app.get("/fabrica/manifest.json")
+def fabrica_manifest() -> FileResponse:
+    """Manifest propio: el global arranca en `/` y abriria la UI vieja."""
+    return FileResponse(WEB / "fabrica" / "manifest.json",
+                        media_type="application/manifest+json")
 ```
 
 - [ ] **Step 10: Correr los tests para verificar que pasan**
@@ -1515,7 +1748,8 @@ Esperado: PASA.
 ```bash
 git add calipso/web/fabrica/mapa.js calipso/web/fabrica/mapa.test.js \
         calipso/web/fabrica/index.html calipso/web/fabrica/estilo.css \
-        calipso/web/fabrica/app.js calipso/server.py test_mapa_server.py
+        calipso/web/fabrica/manifest.json calipso/web/fabrica/app.js \
+        calipso/server.py test_mapa_server.py
 git commit -m "feat(fabrica): la ruta, el esqueleto y la ciudad dibujada"
 ```
 
@@ -1528,11 +1762,11 @@ git commit -m "feat(fabrica): la ruta, el esqueleto y la ciudad dibujada"
 - Create: `calipso/web/fabrica/paneles.test.js`
 - Modify: `calipso/web/fabrica/app.js`
 - Modify: `calipso/web/sw.js`
-- Modify: `calipso/web/manifest.json`
+- Modify: `test_mapa_server.py`
 
 **Interfaces:**
 - Consumes: `fichaDe(ciudad, id)` y `monedas(mm)` de `ciudad.js`.
-- Produces: `ANCHO_TELEFONO=820`; `disposicion(ancho) -> "tres-paneles"|"dos-pestanas"`; `textoDeTarjeta(ficha) -> string` (HTML); `posicionDeTarjeta(x, y, caja, tarjeta) -> {x, y}`; `resumenDeAvisos(ciudad) -> array de {id, texto, sobre}`.
+- Produces: `ANCHO_TELEFONO=820`; `disposicion(ancho) -> "tres-paneles"|"dos-pestanas"`; `escapar(texto) -> string` (la tarea 6 se apoya en este export); `textoDeTarjeta(ficha) -> string` (HTML); `posicionDeTarjeta(x, y, caja, tarjeta) -> {x, y}`; `resumenDeAvisos(ciudad) -> array de {id, texto, sobre}`.
 
 - [ ] **Step 1: Escribir los tests que fallan**
 
@@ -1716,9 +1950,10 @@ const tarjeta = document.getElementById("tarjeta");
 const barra = document.getElementById("avisos");
 
 // El layout lo resuelve el CSS con su media query, que no depende de que
-// el JS ande. `disposicion` decide lo que el CSS no puede: en un telefono
-// no existe el hover, asi que la tarjeta se abre al tocar y no al pasar.
-function haySobrevuelo() {
+// el JS ande. `disposicion` decide lo que el CSS no puede: en el telefono
+// el dedo tapa la tarjeta si va pegada al punto, asi que ahi se ancla a
+// una esquina del lienzo en vez de seguir al puntero.
+function tarjetaSigueAlPuntero() {
   return disposicion(window.innerWidth) === "tres-paneles";
 }
 
@@ -1751,7 +1986,12 @@ function pintarTarjeta(px, py) {
   const ficha = (ciudad && resaltado) ? fichaDe(ciudad, resaltado) : null;
   if (!ficha) { tarjeta.classList.add("oculto"); return; }
   tarjeta.innerHTML = textoDeTarjeta(ficha);
-  tarjeta.classList.remove("oculto");
+  tarjeta.classList.remove("oculto");   // visible antes de medirla
+  if (!tarjetaSigueAlPuntero()) {
+    tarjeta.style.left = "10px";
+    tarjeta.style.top = "10px";
+    return;
+  }
   const caja = lienzo.getBoundingClientRect();
   const p = posicionDeTarjeta(px, py, {ancho: caja.width, alto: caja.height},
                               {ancho: tarjeta.offsetWidth,
@@ -1761,26 +2001,34 @@ function pintarTarjeta(px, py) {
 }
 ```
 
-Después, dentro del `pointermove` que ya existe, reemplazar la última línea (`resaltado = enPunto(...)`) por:
+Después hay que tocar tres lugares del `app.js` que escribió la tarea 4.
+
+**Uno.** En el `pointermove`, la última línea es `resaltado = enPunto(ciudad, cam, mapa.vista(), p.x, p.y);`. Agregarle debajo:
 
 ```js
-  if (!haySobrevuelo()) return;      // en el telefono la tarjeta va por toque
-  const lx = ev.clientX - caja.left, ly = ev.clientY - caja.top;
-  resaltado = enPunto(ciudad, cam, mapa.vista(), lx, ly);
-  pintarTarjeta(lx, ly);
+  pintarTarjeta(p.x, p.y);
 ```
 
-En el `pointerleave`, agregar `tarjeta.classList.add("oculto");`.
-
-En la función `soltar`, antes de limpiar el arrastre, abrir la tarjeta cuando fue un toque y no un arrastre — así en el teléfono también se puede consultar un edificio:
+**Dos.** En el `pointerleave`, que ya filtra por `ev.pointerType !== "mouse"`, agregar después de `resaltado = null;`:
 
 ```js
-  if (arrastre && !arrastre.movio && ciudad && ev) {
-    const caja = lienzo.getBoundingClientRect();
-    const lx = ev.clientX - caja.left, ly = ev.clientY - caja.top;
-    resaltado = enPunto(ciudad, cam, mapa.vista(), lx, ly);
-    pintarTarjeta(lx, ly);
+  tarjeta.classList.add("oculto");
+```
+
+**Tres.** En la función `soltar`, **antes** de la línea `punteros.delete(ev.pointerId);`, abrir la tarjeta cuando el gesto fue un toque y no un arrastre. Es la única forma de consultar un edificio en el teléfono, donde no hay hover:
+
+```js
+  const tocado = punteros.get(ev.pointerId);
+  if (tocado && !tocado.movio && punteros.size === 1 && ciudad) {
+    resaltado = enPunto(ciudad, cam, mapa.vista(), tocado.x, tocado.y);
+    pintarTarjeta(tocado.x, tocado.y);
   }
+```
+
+Y en el botón de expandir, además de alternar la clase, pedir un encuadre nuevo — el lienzo cambia de tamaño y la ciudad tiene que volver a entrar:
+
+```js
+  encuadrado = false;
 ```
 
 Al final de `traer()`, agregar `pintarAvisos();`.
@@ -1794,6 +2042,7 @@ const CACHE = "calipso-shell-v2";
 const SHELL = [
   "/",
   "/fabrica",
+  "/fabrica/manifest.json",
   "/manifest.json",
   "/static/icon.svg",
   "/static/fabrica/estilo.css",
@@ -1807,15 +2056,23 @@ const SHELL = [
 ];
 ```
 
-En `calipso/web/manifest.json`, agregar un atajo a la fábrica. El archivo hoy tiene `name`, `short_name`, `description`, `start_url`, `scope`, `display`, `background_color`, `theme_color`, `orientation` e `icons`: **no se toca ninguno de esos**, solo se suma `shortcuts` después de `icons`:
+`chat.js` **no** va todavía: lo crea la tarea 6, y `cache.addAll` rechaza el lote entero si una sola URL da 404. Entra en la tarea 6, junto con el archivo.
 
-```json
-  "shortcuts": [
-    {"name": "La fabrica", "short_name": "Fabrica", "url": "/fabrica"}
-  ]
+`calipso/web/manifest.json`, el global, **no se toca**: la fábrica ya tiene el suyo en `calipso/web/fabrica/manifest.json`, creado en la tarea 4, con `start_url` apuntando a `/fabrica`.
+
+Agregar también a `test_mapa_server.py` un test que convierta un fallo silencioso del caché en un rojo:
+
+```python
+def test_todo_el_shell_del_service_worker_existe(cliente):
+    """cache.addAll rechaza el lote entero si una URL da 404, y el service
+    worker se lo traga con un catch. Que falle aca en vez de en silencio."""
+    import re
+    sw = (srv.WEB / "sw.js").read_text(encoding="utf-8")
+    urls = re.findall(r'"(/[^"]*)"', sw.split("const SHELL")[1].split("];")[0])
+    assert urls, "no se pudo leer el SHELL del service worker"
+    for url in urls:
+        assert cliente.get(url).status_code == 200, url
 ```
-
-Acordate de la coma después del `]` de `icons`, y de que el JSON siga siendo válido.
 
 - [ ] **Step 7: Correr toda la suite**
 
@@ -1826,7 +2083,7 @@ Esperado: todo verde.
 
 ```bash
 git add calipso/web/fabrica/paneles.js calipso/web/fabrica/paneles.test.js \
-        calipso/web/fabrica/app.js calipso/web/sw.js calipso/web/manifest.json
+        calipso/web/fabrica/app.js calipso/web/sw.js test_mapa_server.py
 git commit -m "feat(fabrica): paneles, tarjeta de hover, barra de avisos y PWA"
 ```
 
@@ -1840,9 +2097,11 @@ El chat contra el `/ws/chat` que ya existe, sin tocar el servidor. El acoplamien
 - Create: `calipso/web/fabrica/chat.js`
 - Create: `calipso/web/fabrica/chat.test.js`
 - Modify: `calipso/web/fabrica/app.js`
+- Modify: `calipso/web/sw.js`
 
 **Interfaces:**
-- Produces: `estadoInicial() -> estado`; `aplicarEvento(estado, evento) -> estado`; `paquete(texto, chatId) -> objeto`; `crearChat(alSalir) -> {enviar(texto), estado()}`. El `estado` es `{turnos: array de {quien, texto}, pensando: boolean, chatId: string|null, ruta: string|null, modelo: string|null, costo_mm: number}`.
+- Produces: `estadoInicial() -> estado`; `aplicarEvento(estado, evento) -> estado`; `paquete(texto, chatId) -> objeto`; `crearChat(alCambiar) -> {enviar(texto), estado()}`. El `estado` es `{turnos: array de {quien, texto, abierto}, pensando: boolean, chatId: string|null, ruta: string|null, modelo: string|null, costo_usd: number, tokens: number}`.
+- **El protocolo real de `/ws/chat`**, verificado en `calipso/server.py:2423-2425`: el evento de costo es `{type: "cost", model, route, tokens, cost_usd}`. No existe ningún `costo_mm` — eso es del pulso del Plan 3.
 
 - [ ] **Step 1: Escribir los tests que fallan**
 
@@ -1895,15 +2154,21 @@ test("meta guarda por donde fue y con que modelo", () => {
   assert.equal(e.modelo, "opus");
 });
 
-test("el costo se acumula entre turnos", () => {
-  const e = aplicar([{type: "cost", costo_mm: 120},
-                     {type: "cost", costo_mm: 80}]);
-  assert.equal(e.costo_mm, 200);
+test("el costo y los tokens se acumulan entre turnos", () => {
+  // los campos son los que manda el servidor de verdad: cost_usd y tokens
+  const e = aplicar([{type: "cost", model: "opus", route: "suscripcion",
+                      tokens: 1200, cost_usd: 0.03},
+                     {type: "cost", model: "opus", route: "suscripcion",
+                      tokens: 800, cost_usd: 0.02}]);
+  assert.equal(e.tokens, 2000);
+  assert.ok(Math.abs(e.costo_usd - 0.05) < 1e-9);
 });
 
-test("un cost sin monto no ensucia el acumulado", () => {
-  const e = aplicar([{type: "cost", costo_mm: 120}, {type: "cost"}]);
-  assert.equal(e.costo_mm, 120);
+test("un cost sin montos no ensucia el acumulado", () => {
+  const e = aplicar([{type: "cost", tokens: 1200, cost_usd: 0.03},
+                     {type: "cost"}]);
+  assert.equal(e.tokens, 1200);
+  assert.ok(Math.abs(e.costo_usd - 0.03) < 1e-9);
 });
 
 test("un error se ve y corta el pensar", () => {
@@ -1952,7 +2217,7 @@ Crear `calipso/web/fabrica/chat.js`:
 
 export function estadoInicial() {
   return {turnos: [], pensando: false, chatId: null, ruta: null,
-          modelo: null, costo_mm: 0};
+          modelo: null, costo_usd: 0, tokens: 0};
 }
 
 export function paquete(texto, chatId) {
@@ -1988,7 +2253,9 @@ export function aplicarEvento(estado, ev) {
       if (ev.model) e.modelo = ev.model;
       break;
     case "cost":
-      e.costo_mm = e.costo_mm + (ev.costo_mm || 0);
+      // campos reales del /ws/chat: cost_usd y tokens (server.py:2423)
+      e.costo_usd = e.costo_usd + (ev.cost_usd || 0);
+      e.tokens = e.tokens + (ev.tokens || 0);
       break;
     case "error":
       e.pensando = false;
@@ -2091,16 +2358,26 @@ try {
 }
 ```
 
-- [ ] **Step 6: Correr toda la suite**
+- [ ] **Step 6: Sumar chat.js al shell del service worker**
+
+Ahora que el archivo existe, entra en el caché. En `calipso/web/sw.js`, agregar al final de la lista `SHELL`:
+
+```js
+  "/static/fabrica/chat.js"
+```
+
+(acordate de la coma en la línea anterior). El test `test_todo_el_shell_del_service_worker_existe` que agregó la tarea 5 va a comprobar solo que la URL responde 200.
+
+- [ ] **Step 7: Correr toda la suite**
 
 Correr: `/var/home/pedro/calipso/.venv/bin/python -m pytest -q --ignore=test_chat_live.py`
 Esperado: todo verde.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add calipso/web/fabrica/chat.js calipso/web/fabrica/chat.test.js \
-        calipso/web/fabrica/app.js
+        calipso/web/fabrica/app.js calipso/web/sw.js
 git commit -m "feat(fabrica): panel de conversacion contra el ws de chat que ya existe"
 ```
 
@@ -2111,7 +2388,9 @@ git commit -m "feat(fabrica): panel de conversacion contra el ws de chat que ya 
 Los tests cubren la lógica; el render fino se mira. Levantar el servidor y abrir `/fabrica`:
 
 1. La ciudad se ve: edificios con volumen, más altos los de más saldo, ventanas prendidas en los que gastaron hace poco.
-2. Arrastrar mueve en los dos ejes; la rueda acerca y aleja sin deformar el pixel.
+2. Al abrir, la ciudad entera entra en pantalla sin tener que buscarla.
+3. Arrastrar mueve en los dos ejes; la rueda acerca y aleja sin deformar el pixel. En el teléfono, dos dedos hacen pinza y el mapa no salta.
+4. En el teléfono, tocar un edificio abre su tarjeta y el toque siguiente la cambia.
 3. Pasar por encima de un edificio muestra la tarjeta con sus cinco números, y la tarjeta no se sale de la pantalla cerca de los bordes.
 4. La barra de avisos lista las compuertas pendientes, la de más plata primero.
 5. Achicando la ventana por debajo de 820 píxeles aparecen las dos pestañas y la barra de avisos sigue visible.
