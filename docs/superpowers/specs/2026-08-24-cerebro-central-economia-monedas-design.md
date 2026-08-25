@@ -201,7 +201,7 @@ Reglas de la zona personal:
 
 ## 12. Fuera de alcance (specs futuros)
 
-- **Mapa RTS:** la vista de tablero con las dos zonas, tesoro, tipo de cambio del PT, líneas y perillas. Es una vista del cerebro, no lógica nueva.
+- **Mapa RTS:** la vista de tablero con las dos zonas, tesoro, tipo de cambio del PT, líneas y perillas. Es una vista del cerebro, no lógica nueva. Dirección de diseño (Pedro, 2026-08-25): estética de overview en tiles/pixel art (referencias: Fallout 1, Caves of Qud, Age of Mythology) generada PROCEDURALMENTE desde el libro — cada departamento un edificio que crece con su balance, se ve congelado en quiebra, los trabajos como unidades, la cuenta de Pedro como su casa; determinístico (mismo libro, mismo mapa). La interacción principal NO es el mapa: es chat-first — elegir un departamento y hablarle, compartiendo texto, imágenes y archivos; el mapa es contexto y perillas. Base: la UI web existente más el endpoint del tablero (PWA, funciona en iPhone vía Tailscale).
 - **Mezcla multi-proveedor:** presupuesto y cuota por proveedor (Claude, Codex, otros), con la misma mecánica de capacidad y la eficiencia como criterio de comparación.
 - **Capa de estilo:** ASD-STE100 y anti-look-IA; consume las horas de tuning reservadas.
 - **Conectores de señales externas:** ingesta automática de ventas, métricas y cobros (webhooks, conciliación). Hasta entonces, ingesta manual en sesión (sección 9).
