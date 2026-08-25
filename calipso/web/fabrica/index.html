@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0f14">
+<title>Calipso — la fabrica</title>
+<link rel="manifest" href="/fabrica/manifest.json">
+<link rel="stylesheet" href="/static/fabrica/estilo.css">
+</head>
+<body>
+<div id="app">
+  <aside id="panel-chats" class="panel">
+    <div class="titulo">Chats</div>
+    <div id="lista-chats" class="lista"></div>
+  </aside>
+
+  <main id="panel-centro" class="panel">
+    <div class="titulo">Calipso</div>
+    <div id="conversacion" class="conversacion"></div>
+    <form id="entrada" autocomplete="off">
+      <input id="texto" type="text" placeholder="Escribi a Calipso">
+      <button type="submit">Enviar</button>
+    </form>
+  </main>
+
+  <section id="panel-mapa" class="panel">
+    <div class="titulo">
+      <span>La fabrica</span>
+      <button id="expandir" type="button">Sobrevolar</button>
+    </div>
+    <div class="lienzo">
+      <canvas id="mapa"></canvas>
+      <div id="tarjeta" class="tarjeta oculto"></div>
+      <div id="sin-fabrica" class="sin-fabrica oculto">
+        Todavia no hay fabrica: la economia no esta activa.
+      </div>
+    </div>
+  </section>
+
+  <nav id="pestanas">
+    <button data-pestana="chat" class="activa" type="button">Chat</button>
+    <button data-pestana="mapa" type="button">Mapa</button>
+  </nav>
+
+  <div id="avisos" class="avisos"></div>
+</div>
+<script type="module" src="/static/fabrica/app.js"></script>
+<script>
+// misma linea que ya usa la UI vieja: sin esto el service worker nunca se
+// registra desde /fabrica y toda la parte de PWA de la tarea 5 es inerte
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load",
+    () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+}
+</script>
+</body>
+</html>

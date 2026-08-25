@@ -1,0 +1,20 @@
+{
+  "name": "Calipso — la fabrica",
+  "short_name": "Fabrica",
+  "description": "La consola de la fabrica de Calipso",
+  "id": "/fabrica",
+  "start_url": "/fabrica",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b0f14",
+  "theme_color": "#0b0f14",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/static/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

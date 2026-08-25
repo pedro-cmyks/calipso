@@ -3496,6 +3496,19 @@ def service_worker() -> FileResponse:
     return FileResponse(WEB / "sw.js", media_type="application/javascript")
 
 
+@app.get("/fabrica")
+def fabrica() -> FileResponse:
+    """La consola de la fabrica. App propia: no toca la UI vieja de `/`."""
+    return FileResponse(WEB / "fabrica" / "index.html")
+
+
+@app.get("/fabrica/manifest.json")
+def fabrica_manifest() -> FileResponse:
+    """Manifest propio: el global arranca en `/` y abriria la UI vieja."""
+    return FileResponse(WEB / "fabrica" / "manifest.json",
+                        media_type="application/manifest+json")
+
+
 # EstÃƒÂ¡ticos (por si aÃƒÂ±adimos assets locales: monaco vendorizado, iconos, etc.)
 if WEB.exists():
     app.mount("/static", StaticFiles(directory=str(WEB)), name="static")

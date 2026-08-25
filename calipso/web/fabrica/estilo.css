@@ -1,0 +1,142 @@
+/* calipso/web/fabrica/estilo.css — La consola de la fabrica. */
+:root {
+  --fondo: #0b0f14;
+  --panel: #12161c;
+  --linea: #222a33;
+  --texto: #c9d1d9;
+  --tenue: #6e7681;
+  --acento: #66d9ff;
+  --aviso: #ffd75f;
+  --barra: 34px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; height: 100%; overflow: hidden;
+  background: var(--fondo); color: var(--texto);
+  font: 13px/1.5 ui-sans-serif, system-ui, sans-serif;
+}
+
+#app {
+  display: grid; height: 100%;
+  grid-template-columns: 220px minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) var(--barra);
+  grid-template-areas: "chats centro mapa" "avisos avisos avisos";
+}
+
+.panel {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  border-right: 1px solid var(--linea); background: var(--panel);
+}
+#panel-chats { grid-area: chats; }
+#panel-centro { grid-area: centro; }
+#panel-mapa { grid-area: mapa; border-right: 0; }
+
+.titulo {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--linea);
+  color: var(--tenue); font-size: 11px; letter-spacing: .6px;
+  text-transform: uppercase;
+}
+.titulo button {
+  background: transparent; border: 1px solid var(--linea); color: var(--texto);
+  border-radius: 4px; padding: 3px 8px; font-size: 11px; cursor: pointer;
+}
+
+.lista { overflow-y: auto; }
+.lista .chat {
+  padding: 7px 10px; border-bottom: 1px solid var(--linea);
+  cursor: pointer; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lista .chat.activo { color: var(--acento); }
+
+.conversacion { flex: 1; overflow-y: auto; padding: 10px; }
+.conversacion .turno { margin-bottom: 12px; white-space: pre-wrap; }
+.conversacion .turno.mio { color: var(--acento); }
+.conversacion .turno.error { color: #ff7b72; }
+
+#entrada { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--linea); }
+#entrada input {
+  flex: 1; min-width: 0; background: var(--fondo); color: var(--texto);
+  border: 1px solid var(--linea); border-radius: 4px; padding: 7px 9px;
+  /* 16px o mas: por debajo, Safari de iPhone agranda la pagina al enfocar,
+     y con overflow:hidden no hay scroll para volver */
+  font-size: 16px;
+}
+#entrada button {
+  background: var(--linea); color: var(--texto); border: 0;
+  border-radius: 4px; padding: 7px 12px; cursor: pointer;
+}
+
+.lienzo { position: relative; flex: 1; min-height: 0; }
+#mapa {
+  display: block; width: 100%; height: 100%;
+  touch-action: none;                  /* el paneo lo maneja la camara */
+  image-rendering: pixelated;
+  cursor: grab;
+}
+#mapa.arrastrando { cursor: grabbing; }
+
+.tarjeta {
+  position: absolute; pointer-events: none; max-width: 230px;
+  background: #12161cf2; border: 1px solid var(--linea); border-radius: 5px;
+  padding: 8px 10px; font-size: 12px;
+}
+.tarjeta .nombre { color: var(--acento); margin-bottom: 5px; }
+.tarjeta .fila { display: flex; justify-content: space-between; gap: 12px; }
+.tarjeta .fila span:first-child { color: var(--tenue); }
+.tarjeta .congelado { color: #ff7b72; }
+
+.sin-fabrica {
+  position: absolute; inset: 0; display: flex;
+  align-items: center; justify-content: center;
+  color: var(--tenue); text-align: center; padding: 20px;
+}
+
+.avisos {
+  grid-area: avisos; display: flex; align-items: center; gap: 10px;
+  padding: 0 10px; overflow-x: auto; white-space: nowrap;
+  border-top: 1px solid var(--linea); background: var(--panel);
+  font-size: 12px;
+}
+.avisos .nada { color: var(--tenue); }
+.avisos .aviso { color: var(--aviso); }
+
+#pestanas { display: none; }
+.oculto { display: none !important; }
+
+/* Mapa a pantalla completa, para sobrevolar. */
+#app.mapa-entero { grid-template-areas: "mapa mapa mapa" "avisos avisos avisos"; }
+#app.mapa-entero #panel-chats,
+#app.mapa-entero #panel-centro { display: none; }
+
+/* Telefono: dos pestanas, con la barra de avisos siempre a la vista. */
+@media (max-width: 820px) {
+  #app {
+    grid-template-columns: minmax(0, 1fr);
+    /* el viewport dice viewport-fit=cover, asi que hay que devolverle el
+       espacio del indicador de inicio o la barra de avisos queda debajo */
+    grid-template-rows: minmax(0, 1fr) 42px
+                        calc(var(--barra) + env(safe-area-inset-bottom));
+    grid-template-areas: "centro" "pestanas" "avisos";
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+  .avisos { padding-bottom: env(safe-area-inset-bottom); }
+  #panel-chats { display: none; }
+  #panel-centro, #panel-mapa { grid-area: centro; border-right: 0; }
+  #app[data-pestana="chat"] #panel-mapa { display: none; }
+  #app[data-pestana="mapa"] #panel-centro { display: none; }
+  #pestanas {
+    grid-area: pestanas; display: grid; grid-template-columns: 1fr 1fr;
+    border-top: 1px solid var(--linea); background: var(--panel);
+  }
+  #pestanas button {
+    background: transparent; border: 0; color: var(--tenue);
+    font-size: 13px; cursor: pointer;
+  }
+  #pestanas button.activa { color: var(--acento); }
+  .titulo #expandir { display: none; }
+}

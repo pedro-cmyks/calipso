@@ -80,3 +80,34 @@ def test_sin_auth_rechaza(cliente):
     c = TestClient(srv.app)
     assert c.get("/api/mapa/ciudad",
                  follow_redirects=False).status_code in (302, 401, 403)
+
+
+def test_fabrica_sirve_la_app(cliente):
+    r = cliente.get("/fabrica")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert "/static/fabrica/app.js" in r.text
+
+
+def test_los_modulos_del_cliente_se_sirven(cliente):
+    for modulo in ("app.js", "camara.js", "ciudad.js", "mapa.js",
+                   "sprites.js", "paleta.js"):
+        r = cliente.get(f"/static/fabrica/{modulo}")
+        assert r.status_code == 200, modulo
+        assert "javascript" in r.headers["content-type"], modulo
+
+
+def test_el_manifest_de_la_fabrica_arranca_en_la_fabrica(cliente):
+    r = cliente.get("/fabrica/manifest.json")
+    assert r.status_code == 200
+    m = r.json()
+    # el manifest global arranca en "/" y abriria la UI vieja
+    assert m["start_url"] == "/fabrica"
+
+
+def test_fabrica_sin_auth_manda_al_login(cliente):
+    # /fabrica no es /api ni /ws: el middleware redirige en vez de dar 401
+    c = TestClient(srv.app)
+    r = c.get("/fabrica", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/login"
