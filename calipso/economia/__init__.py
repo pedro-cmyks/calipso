@@ -10,6 +10,7 @@ import os
 import pathlib
 
 from . import balances, cuenta_pedro, pt, tipos          # noqa: F401
+from . import bus, capacidad, cierre, departamentos, direccion, eficiencia, mercado  # noqa: F401
 from .kernel import Kernel, OperacionInvalida, SinSaldo  # noqa: F401
 from .libro import Libro, LibroCorrupto                  # noqa: F401
 
