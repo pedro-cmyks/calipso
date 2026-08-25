@@ -42,6 +42,13 @@ try:
 except Exception:
     _rd = None  # type: ignore[assignment]
 
+try:
+    from calipso.economia.pagador import Pagador as _Pagador
+    from calipso.economia.operacion import semana_iso as _semana_iso
+except Exception:
+    _Pagador = None
+    _semana_iso = None
+
 # ----------------------------------------------------------------------------
 # CONFIGURACIÓN  (ajusta a tu entorno)
 # ----------------------------------------------------------------------------
@@ -304,7 +311,7 @@ def run_subscription(prompt: str, client: str, cwd: str | None = None) -> int:
     return subprocess.run(cmd, env=env, cwd=cwd).returncode
 
 
-def run_api(prompt: str, stream: bool = True) -> int:
+def run_api(prompt: str, stream: bool = True, usage: dict | None = None) -> int:
     """Habla con LiteLLM (formato OpenAI chat/completions)."""
     cfg = CONFIG["api"]
     headers = {"Authorization": f"Bearer {cfg['api_key']}"}
@@ -315,10 +322,13 @@ def run_api(prompt: str, stream: bool = True) -> int:
     }
     print(f"[dispatcher] -> API vía LiteLLM ({cfg['model']})\n", file=sys.stderr)
     if stream:
-        return _emit(_sse_text_chunks(cfg["base_url"], payload, headers), "API")
+        payload["stream_options"] = {"include_usage": True}
+        return _emit(_sse_text_chunks(cfg["base_url"], payload, headers, usage), "API")
     # No-stream: una sola respuesta completa (útil para pipes/captura).
     try:
         data = _http_post_json(cfg["base_url"], payload, headers)
+        if usage is not None:
+            usage.update(data.get("usage") or {})
         print(data["choices"][0]["message"]["content"])
         return 0
     except Exception as e:
@@ -505,6 +515,9 @@ def main() -> int:
                          "(respuesta completa de una vez).")
     ap.add_argument("--no-log", action="store_true",
                     help=f"No registrar la decisión en {LOG_PATH}.")
+    ap.add_argument("--cuenta", default="personal",
+                    help="cuenta pagadora de la economia (dep:<x>, "
+                         "trabajo:<id>, personal)")
     args = ap.parse_args()
     stream = not args.no_stream
 
@@ -525,14 +538,45 @@ def main() -> int:
         return 0
 
     r = verdict["route"]
+    usage: dict = {}
     if r == "subscription":
-        return run_subscription(prompt, verdict.get("client") or "claude", args.cwd)
-    if r == "api":
-        return run_api(prompt, stream)
-    if r == "local":
-        return run_local(prompt, stream)
-    print("[error] ruta desconocida", file=sys.stderr)
-    return 2
+        rc = run_subscription(prompt, verdict.get("client") or "claude", args.cwd)
+    elif r == "api":
+        rc = run_api(prompt, stream, usage=usage)
+    elif r == "local":
+        rc = run_local(prompt, stream)
+    else:
+        print("[error] ruta desconocida", file=sys.stderr)
+        return 2
+
+    # Cargo economico best-effort (nunca rompe el flujo, patron log_decision)
+    try:
+        if _Pagador and _semana_iso:
+            pagador = _Pagador.desde_entorno()
+            if pagador:
+                ahora = datetime.datetime.now()
+                ts_eco = ahora.isoformat(timespec="seconds")
+                sem = _semana_iso(ahora.date().isoformat())
+                if r == "api":
+                    pagador.cargar_api(ts_eco, sem, args.cuenta,
+                                       CONFIG["api"]["model"],
+                                       usage.get("prompt_tokens", 0),
+                                       usage.get("completion_tokens", 0))
+                else:
+                    # subscription Y local: run_local redirige a la
+                    # suscripcion, asi que tambien consume una unidad
+                    if r == "subscription":
+                        cliente = verdict.get("client") or "claude"
+                    else:  # local
+                        routing = (load_config() if load_config else {}).get(
+                            "routing", {})
+                        cliente = routing.get("subscription_client", "claude")
+                    sus = "claude_max" if cliente == "claude" else "chatgpt_plus"
+                    pagador.cargar_suscripcion(ts_eco, sem, args.cuenta, sus)
+    except Exception:
+        pass  # telemetria economica best-effort
+
+    return rc
 
 
 if __name__ == "__main__":
