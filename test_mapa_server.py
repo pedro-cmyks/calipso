@@ -111,3 +111,14 @@ def test_fabrica_sin_auth_manda_al_login(cliente):
     r = c.get("/fabrica", follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "/login"
+
+
+def test_todo_el_shell_del_service_worker_existe(cliente):
+    """cache.addAll rechaza el lote entero si una URL da 404, y el service
+    worker se lo traga con un catch. Que falle aca en vez de en silencio."""
+    import re
+    sw = (srv.WEB / "sw.js").read_text(encoding="utf-8")
+    urls = re.findall(r'"(/[^"]*)"', sw.split("const SHELL")[1].split("];")[0])
+    assert urls, "no se pudo leer el SHELL del service worker"
+    for url in urls:
+        assert cliente.get(url).status_code == 200, url

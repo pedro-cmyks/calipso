@@ -1,0 +1,77 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import {disposicion, textoDeTarjeta, posicionDeTarjeta, resumenDeAvisos,
+        ANCHO_TELEFONO} from "./paneles.js";
+import {fichaDe} from "./ciudad.js";
+
+function ciudadDePrueba() {
+  const base = {nombre: "atlas", zona: "fabrica", orden: 0, tamano: 4,
+                estado: "activo", saldo_mm: 1_148_000, gasto_ciclo_mm: 22_500,
+                ventas_ventana_mm: 900_000, eficiencia_pormil: 1234,
+                actividad: 2, trabajos: [], compuertas: 0, x: 0, y: 0};
+  return {
+    edificios: [{...base, id: "dep:atlas"},
+                {...base, id: "dep:frio", nombre: "frio", estado: "congelado"}],
+    calles: [], unidades: [],
+    avisos: [{id: "c1", tipo: "gasto", sobre: "dep:atlas",
+              monedas_en_juego_mm: 50_000},
+             {id: "c2", tipo: "renovacion", sobre: null,
+              monedas_en_juego_mm: 120_000}],
+  };
+}
+
+test("el ancho decide la disposicion", () => {
+  assert.equal(disposicion(1400), "tres-paneles");
+  assert.equal(disposicion(ANCHO_TELEFONO + 1), "tres-paneles");
+  assert.equal(disposicion(ANCHO_TELEFONO), "dos-pestanas");
+  assert.equal(disposicion(390), "dos-pestanas");
+});
+
+test("la tarjeta muestra los cinco numeros de la ficha", () => {
+  const html = textoDeTarjeta(fichaDe(ciudadDePrueba(), "dep:atlas"));
+  for (const esperado of ["atlas", "1.148", "22,5", "900", "123,4%"]) {
+    assert.ok(html.includes(esperado), `falta ${esperado} en la tarjeta`);
+  }
+});
+
+test("la tarjeta de un congelado lo dice", () => {
+  const html = textoDeTarjeta(fichaDe(ciudadDePrueba(), "dep:frio"));
+  assert.ok(/congelado/i.test(html));
+});
+
+test("la tarjeta no deja pasar html del modelo", () => {
+  const c = ciudadDePrueba();
+  c.edificios[0].nombre = "<img onerror=x>";
+  const html = textoDeTarjeta(fichaDe(c, "dep:atlas"));
+  assert.ok(!html.includes("<img"), "se colo una etiqueta del modelo");
+  assert.ok(html.includes("&lt;img"), "no se escapo el nombre");
+});
+
+test("la tarjeta no se sale por la derecha ni por abajo", () => {
+  const caja = {ancho: 400, alto: 300};
+  const tarjeta = {ancho: 230, alto: 120};
+  const p = posicionDeTarjeta(390, 290, caja, tarjeta);
+  assert.ok(p.x + tarjeta.ancho <= caja.ancho, "se fue por la derecha");
+  assert.ok(p.y + tarjeta.alto <= caja.alto, "se fue por abajo");
+  assert.ok(p.x >= 0 && p.y >= 0, "se fue por el otro lado");
+});
+
+test("con lugar de sobra la tarjeta va al lado del dedo", () => {
+  const p = posicionDeTarjeta(50, 50, {ancho: 800, alto: 600},
+                              {ancho: 230, alto: 120});
+  assert.ok(p.x > 50 && p.y >= 50);
+});
+
+test("los avisos salen ordenados por lo que hay en juego", () => {
+  const r = resumenDeAvisos(ciudadDePrueba());
+  assert.equal(r.length, 2);
+  assert.equal(r[0].id, "c2");            // 120 monedas antes que 50
+  assert.ok(r[0].texto.includes("120"));
+});
+
+test("una ciudad sin avisos devuelve una lista vacia, no null", () => {
+  const c = ciudadDePrueba();
+  c.avisos = [];
+  assert.deepEqual(resumenDeAvisos(c), []);
+});

@@ -1,8 +1,18 @@
-const CACHE = "calipso-shell-v1";
+const CACHE = "calipso-shell-v2";
 const SHELL = [
   "/",
+  "/fabrica",
+  "/fabrica/manifest.json",
   "/manifest.json",
-  "/static/icon.svg"
+  "/static/icon.svg",
+  "/static/fabrica/estilo.css",
+  "/static/fabrica/app.js",
+  "/static/fabrica/paleta.js",
+  "/static/fabrica/sprites.js",
+  "/static/fabrica/camara.js",
+  "/static/fabrica/ciudad.js",
+  "/static/fabrica/mapa.js",
+  "/static/fabrica/paneles.js"
 ];
 
 self.addEventListener("install", event => {

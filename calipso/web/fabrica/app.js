@@ -6,8 +6,10 @@
  * cableado.
  */
 import {crearCamara, arrastrar, acercar, paso, encuadrar} from "./camara.js";
-import {cargarCiudad, enPunto} from "./ciudad.js";
+import {cargarCiudad, enPunto, fichaDe} from "./ciudad.js";
 import {crearMapa} from "./mapa.js";
+import {disposicion, escapar, textoDeTarjeta, posicionDeTarjeta,
+        resumenDeAvisos} from "./paneles.js";
 
 const lienzo = document.getElementById("mapa");
 const sinFabrica = document.getElementById("sin-fabrica");
@@ -34,6 +36,7 @@ async function traer() {
     ? "Todavia no hay fabrica: la economia no esta activa."
     : "Sin conexion con el servidor.";
   sinFabrica.classList.toggle("oculto", ciudad !== null);
+  pintarAvisos();
 }
 
 window.addEventListener("online", () => { traer(); });
@@ -100,9 +103,15 @@ lienzo.addEventListener("pointermove", ev => {
   }
   if (!ciudad) return;
   resaltado = enPunto(ciudad, cam, mapa.vista(), p.x, p.y);
+  pintarTarjeta(p.x, p.y);
 });
 
 function soltar(ev) {
+  const tocado = punteros.get(ev.pointerId);
+  if (tocado && !tocado.movio && punteros.size === 1 && ciudad) {
+    resaltado = enPunto(ciudad, cam, mapa.vista(), tocado.x, tocado.y);
+    pintarTarjeta(tocado.x, tocado.y);
+  }
   punteros.delete(ev.pointerId);
   if (punteros.size < 2) pinza = null;
   if (!punteros.size) lienzo.classList.remove("arrastrando");
@@ -118,12 +127,69 @@ lienzo.addEventListener("pointercancel", soltar);
 lienzo.addEventListener("pointerleave", ev => {
   if (ev.pointerType !== "mouse") return;
   resaltado = null;
+  tarjeta.classList.add("oculto");
 });
 
 lienzo.addEventListener("wheel", ev => {
   ev.preventDefault();
   acercar(cam, ev.deltaY < 0 ? 1.12 : 1 / 1.12, local(ev), mapa.vista());
 }, {passive: false});
+
+const app = document.getElementById("app");
+const tarjeta = document.getElementById("tarjeta");
+const barra = document.getElementById("avisos");
+
+// El layout lo resuelve el CSS con su media query, que no depende de que
+// el JS ande. `disposicion` decide lo que el CSS no puede: en el telefono
+// el dedo tapa la tarjeta si va pegada al punto, asi que ahi se ancla a
+// una esquina del lienzo en vez de seguir al puntero.
+function tarjetaSigueAlPuntero() {
+  return disposicion(window.innerWidth) === "tres-paneles";
+}
+
+for (const boton of document.querySelectorAll("#pestanas button")) {
+  boton.addEventListener("click", () => {
+    app.dataset.pestana = boton.dataset.pestana;
+    for (const otro of document.querySelectorAll("#pestanas button")) {
+      otro.classList.toggle("activa", otro === boton);
+    }
+  });
+}
+app.dataset.pestana = "chat";
+
+document.getElementById("expandir").addEventListener("click", () => {
+  app.classList.toggle("mapa-entero");
+  encuadrado = false;
+});
+
+function pintarAvisos() {
+  const avisos = ciudad ? resumenDeAvisos(ciudad) : [];
+  if (!avisos.length) {
+    barra.innerHTML = '<span class="nada">Sin compuertas pendientes</span>';
+    return;
+  }
+  barra.innerHTML = avisos
+    .map(a => `<span class="aviso">${escapar(a.texto)}</span>`)
+    .join("");
+}
+
+function pintarTarjeta(px, py) {
+  const ficha = (ciudad && resaltado) ? fichaDe(ciudad, resaltado) : null;
+  if (!ficha) { tarjeta.classList.add("oculto"); return; }
+  tarjeta.innerHTML = textoDeTarjeta(ficha);
+  tarjeta.classList.remove("oculto");   // visible antes de medirla
+  if (!tarjetaSigueAlPuntero()) {
+    tarjeta.style.left = "10px";
+    tarjeta.style.top = "10px";
+    return;
+  }
+  const caja = lienzo.getBoundingClientRect();
+  const p = posicionDeTarjeta(px, py, {ancho: caja.width, alto: caja.height},
+                              {ancho: tarjeta.offsetWidth,
+                               alto: tarjeta.offsetHeight});
+  tarjeta.style.left = p.x + "px";
+  tarjeta.style.top = p.y + "px";
+}
 
 await traer();
 requestAnimationFrame(bucle);
