@@ -60,6 +60,42 @@ def test_candado_reentrante_y_exclusivo_entre_procesos(tmp_path):
     assert r.stdout.strip() == "LIBRE"  # liberado al salir del todo
 
 
+def test_contencion_no_bloqueante_no_rompe_el_candado(tmp_path):
+    import subprocess
+    import sys
+    ruta = tmp_path / "libro.jsonl"
+    lock = str(ruta) + ".lock"
+    sostener = ("import fcntl,sys\n"
+                "f=open(sys.argv[1],'a')\n"
+                "fcntl.flock(f.fileno(), fcntl.LOCK_EX)\n"
+                "print('HOLDING', flush=True)\n"
+                "sys.stdin.readline()\n")
+    proc = subprocess.Popen([sys.executable, "-c", sostener, lock],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            text=True)
+    assert proc.stdout.readline().strip() == "HOLDING"
+    try:
+        with pytest.raises(cnd.ErrorCandado):
+            with cnd.candado(ruta, no_bloquear=True):
+                pass
+    finally:
+        proc.stdin.write("\n")
+        proc.stdin.flush()
+        proc.wait(timeout=10)
+    # tras la contencion fallida, el candado DEBE seguir tomando el flock
+    sonda = ("import fcntl,sys\n"
+             "f=open(sys.argv[1],'a')\n"
+             "try:\n"
+             "    fcntl.flock(f.fileno(), fcntl.LOCK_EX|fcntl.LOCK_NB)\n"
+             "    print('LIBRE')\n"
+             "except BlockingIOError:\n"
+             "    print('TOMADO')\n")
+    with cnd.candado(ruta):
+        r = subprocess.run([sys.executable, "-c", sonda, lock],
+                           capture_output=True, text=True)
+        assert r.stdout.strip() == "TOMADO"
+
+
 def test_liquidacion_reanuda_sin_duplicar_pagos(entorno):
     """Fix parkeado del Plan 2: crash entre devoluciones no duplica pagos."""
     k, m, b, _ = entorno

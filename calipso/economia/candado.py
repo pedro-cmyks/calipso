@@ -49,7 +49,6 @@ def candado(ruta: pathlib.Path, no_bloquear: bool = False):
                 fcntl.flock(f.fileno(), flags)
             except BlockingIOError:
                 f.close()
-                ent["profundidad"] -= 1
                 raise ErrorCandado(
                     f"candado tomado por otro proceso: {lock_path}") from None
             ent["fd"] = f
