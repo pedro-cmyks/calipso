@@ -3426,6 +3426,45 @@ def api_eco_reloj_conciliar(body: EcoConciliarBody) -> dict:
     return {"ok": True}
 
 
+# --------------------------------------------------------------------------
+# MAPA (spec 2026-08-25): el modelo de ciudad
+# --------------------------------------------------------------------------
+try:
+    from calipso.economia import capacidad as _mapa_cap
+    from calipso.mapa import ciudad as _mapa_ciudad
+    from calipso.mapa import urbanismo as _mapa_urbanismo
+except Exception:  # el mapa no esta disponible: el endpoint responde inactivo
+    _mapa_ciudad = None
+    _mapa_urbanismo = None
+    _mapa_cap = None
+
+
+@app.get("/api/mapa/ciudad")
+def api_mapa_ciudad() -> dict:
+    if _mapa_ciudad is None:
+        return {"activa": False}
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
+    if not p0:
+        return {"activa": False}
+    _, semana = _eco_ahora()
+    # lector serializado: el libro se repara truncando, no se lee a medio escribir
+    with _eco_candado(p0.ruta_libro):
+        eco = _economia()
+        m = eco["pagador"].mercado_fresco()
+        asientos = m.k.libro.asientos()
+        ops = _mapa_cap.semanas_operativas(asientos)
+        minutos = eco["reloj"].minutos_por_categoria(ops[-4:]) if ops else {}
+        modelo = _mapa_ciudad.ciudad(
+            asientos, m.registro, eco["bus"], eco["cola"], semana,
+            minutos_empleo=minutos.get("empleo", 0))
+    posiciones = _mapa_urbanismo.urbanizar(modelo["edificios"],
+                                           modelo["calles"])
+    for e in modelo["edificios"]:
+        x, y = posiciones.get(e["id"], (0, 0))
+        e["x"], e["y"] = x, y
+    return {"activa": True, "ciudad": modelo}
+
+
 @app.on_event("startup")
 async def _startup_warm() -> None:
     try:
