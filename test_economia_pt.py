@@ -158,3 +158,27 @@ def test_reproducible_misma_historia_mismo_numero(k):
     from calipso.economia.libro import Libro
     k2 = Kernel(Libro(k.libro.ruta))
     assert pt.tipo_de_cambio(k2.libro.asientos(), "2026-W34") == a
+
+
+def test_cierre_semanal_libera_expira_y_recalcula(k):
+    k.acunar(TS, "2026-W35", "dep:a", 100_000,
+             t.SubtipoAcunacion.CAPITAL, {"tipo": "firma_pedro"})
+    pt.emitir_semana(k, TS, "2026-W35", 4_000, 1_000)
+    k.reservar(TS, "2026-W35", "dep:a", 10_000, ref="firma-99")  # encolada, no servida
+    pt.consumir_fabrica(k, TS, "2026-W35", 500, ref="firma-1", pagador="dep:a")
+    cierre = pt.cerrar_semana(k, TS, "2026-W35",
+                              refs_reservas_no_servidas=["firma-99"])
+    assert cierre.semana == "2026-W35"
+    assert cierre.expirado_fabrica_mpt == 2_500
+    assert cierre.expirado_personal_mpt == 1_000
+    assert cierre.reservas_liberadas == 1
+    assert cierre.tipo_mm == 5_000  # sin historia suficiente: arranque
+    assert k.disponible("dep:a") == 100_000  # la reserva no servida volvio
+    # y la semana siguiente ya puede emitir
+    pt.emitir_semana(k, TS, "2026-W36", 4_000, 0)
+
+
+def test_api_publica_del_paquete():
+    import calipso.economia as eco
+    assert eco.Kernel and eco.Libro and eco.pt and eco.cuenta_pedro
+    assert eco.RUTA_LIBRO_DEFECTO.name == "libro.jsonl"

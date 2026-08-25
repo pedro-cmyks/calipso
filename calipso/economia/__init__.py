@@ -1,1 +1,13 @@
 """calipso/economia — kernel de la economia de la fabrica (spec 2026-08-24)."""
+from __future__ import annotations
+
+import os
+import pathlib
+
+from . import balances, cuenta_pedro, pt, tipos          # noqa: F401
+from .kernel import Kernel, OperacionInvalida, SinSaldo  # noqa: F401
+from .libro import Libro, LibroCorrupto                  # noqa: F401
+
+CALIPSO_HOME = pathlib.Path(os.environ.get(
+    "CALIPSO_HOME", os.path.expanduser("~/.calipso")))
+RUTA_LIBRO_DEFECTO = CALIPSO_HOME / "economia" / "libro.jsonl"

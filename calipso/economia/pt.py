@@ -8,6 +8,8 @@ El tipo de cambio es un pliegue deterministico de la historia (task 8).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .kernel import Kernel
 from .tipos import (Asiento, Divisa, SubtipoAcunacion, TipoAsiento,
                     POOL_PT_FABRICA, POOL_PT_PERSONAL)
@@ -140,3 +142,28 @@ def tipo_de_cambio(asientos: list[Asiento], hasta_semana: str,
             tipo = min(max(objetivo, piso_banda), techo_banda)  # regla (e)
         tipo = max(tipo, minimo_mm)  # regla (f)
     return tipo
+
+
+@dataclass(frozen=True)
+class CierreSemana:
+    semana: str
+    expirado_fabrica_mpt: int
+    expirado_personal_mpt: int
+    reservas_liberadas: int
+    tipo_mm: int
+
+
+def cerrar_semana(k: Kernel, ts: str, semana: str,
+                  refs_reservas_no_servidas: list[str] = ()) -> CierreSemana:
+    liberadas = 0
+    for ref in refs_reservas_no_servidas:
+        k.liberar(ts, semana, ref)
+        liberadas += 1
+    expirados = expirar_pools(k, ts, semana)
+    por_pool = {a.origen: a.monto for a in expirados}
+    return CierreSemana(
+        semana=semana,
+        expirado_fabrica_mpt=por_pool.get(POOL_PT_FABRICA, 0),
+        expirado_personal_mpt=por_pool.get(POOL_PT_PERSONAL, 0),
+        reservas_liberadas=liberadas,
+        tipo_mm=tipo_de_cambio(k.libro.asientos(), semana))
