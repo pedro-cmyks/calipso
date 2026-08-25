@@ -10,6 +10,7 @@ import {cargarCiudad, enPunto, fichaDe} from "./ciudad.js";
 import {crearMapa} from "./mapa.js";
 import {disposicion, escapar, textoDeTarjeta, posicionDeTarjeta,
         resumenDeAvisos} from "./paneles.js";
+import {crearChat} from "./chat.js";
 
 const lienzo = document.getElementById("mapa");
 const sinFabrica = document.getElementById("sin-fabrica");
@@ -189,6 +190,40 @@ function pintarTarjeta(px, py) {
                                alto: tarjeta.offsetHeight});
   tarjeta.style.left = p.x + "px";
   tarjeta.style.top = p.y + "px";
+}
+
+const conversacion = document.getElementById("conversacion");
+const formulario = document.getElementById("entrada");
+const campo = document.getElementById("texto");
+
+const chat = crearChat(estado => {
+  conversacion.innerHTML = estado.turnos
+    .map(t => `<div class="turno ${t.quien === "pedro" ? "mio" : ""}` +
+              `${t.quien === "error" ? " error" : ""}">` +
+              `${escapar(t.texto)}</div>`)
+    .join("");
+  conversacion.scrollTop = conversacion.scrollHeight;
+});
+
+formulario.addEventListener("submit", ev => {
+  ev.preventDefault();
+  chat.enviar(campo.value);
+  campo.value = "";
+});
+
+const listaChats = document.getElementById("lista-chats");
+try {
+  const r = await fetch("/api/chats");
+  if (r.ok) {
+    const datos = await r.json();
+    listaChats.innerHTML = (datos.chats || [])
+      .map(c => `<div class="chat${c.id === datos.active ? " activo" : ""}"` +
+                ` data-id="${escapar(c.id)}">` +
+                `${escapar(c.title || "sin titulo")}</div>`)
+      .join("");
+  }
+} catch (e) {
+  listaChats.innerHTML = '<div class="chat">sin chats</div>';
 }
 
 await traer();
