@@ -45,15 +45,17 @@ class Kernel:
 
     # -- operaciones -------------------------------------------------------
     def acunar(self, ts: str, semana: str, destino: str, monto: int,
-               subtipo: SubtipoAcunacion, evidencia: dict) -> Asiento:
-        if not evidencia:
-            raise OperacionInvalida("acunar exige evidencia (invariante 4)")
+               subtipo: SubtipoAcunacion, evidencia: dict,
+               detalle_extra: dict | None = None) -> Asiento:
         if not isinstance(subtipo, SubtipoAcunacion):
             raise OperacionInvalida(f"subtipo debe ser SubtipoAcunacion: {subtipo!r}")
+        if not evidencia:
+            raise OperacionInvalida("acunar exige evidencia (invariante 4)")
         return self._append(
             ts=ts, semana=semana, tipo=TipoAsiento.ACUNACION,
             divisa=Divisa.MONEDA, monto=monto, destino=destino,
-            subtipo=subtipo.value, detalle={"evidencia": evidencia})
+            subtipo=subtipo.value,
+            detalle={"evidencia": evidencia} | (detalle_extra or {}))
 
     def destruir(self, ts: str, semana: str, origen: str, monto: int,
                  motivo: str, ref: str | None = None,
