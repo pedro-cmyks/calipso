@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import datetime
+import datetime as _dt
 import difflib
 import hashlib
 import hmac
@@ -3234,6 +3235,142 @@ async def _routines_ticker() -> None:
             break
         except Exception:
             continue
+
+
+# --------------------------------------------------------------------------
+# ECONOMIA (spec 2026-08-24): tablero, cola, reloj y cierre
+# --------------------------------------------------------------------------
+try:
+    from calipso.economia import (bus as _eco_bus, cola as _eco_cola,
+                                  operacion as _eco_op,
+                                  personal as _eco_personal,
+                                  reloj as _eco_reloj)
+    from calipso.economia.candado import candado as _eco_candado
+    from calipso.economia.pagador import Pagador as _EcoPagador
+except Exception:  # economia no disponible: los endpoints responden inactivo
+    _EcoPagador = None
+
+_ECO_BASE = pathlib.Path(os.path.expanduser("~/.calipso"))
+
+
+def _economia():
+    """Estado FRESCO por request: el estado vive en los archivos, no en el
+    proceso — asi dispatch (otro proceso) y este server no se pisan. Los
+    endpoints que ESCRIBEN envuelven esta construccion en el candado."""
+    if _EcoPagador is None:
+        return None
+    pagador = _EcoPagador.desde_entorno(_ECO_BASE)
+    if pagador is None:
+        return None
+    eco = _ECO_BASE / "economia"
+    return {
+        "pagador": pagador,
+        "cola": _eco_cola.Cola(eco / "cola.jsonl"),
+        "reloj": _eco_reloj.Reloj(eco / "reloj.jsonl"),
+        "bus": _eco_bus.Bus(eco / "bus.jsonl"),
+        "personal": _eco_personal.LibroPersonal(eco / "personal.jsonl"),
+    }
+
+
+def _eco_ahora() -> tuple[str, str]:
+    ahora = _dt.datetime.now()
+    return (ahora.isoformat(timespec="seconds"),
+            _eco_op.semana_iso(ahora.date().isoformat()))
+
+
+class EcoAtenderBody(BaseModel):
+    firma: dict | None = None
+
+
+class EcoRelojInBody(BaseModel):
+    categoria: str
+    ref: str | None = None
+
+
+@app.get("/api/economia/tablero")
+def api_eco_tablero() -> dict:
+    eco = _economia()
+    if not eco:
+        return {"activa": False}
+    m = eco["pagador"].mercado_fresco()  # lector fresco, sin candado
+    _, semana = _eco_ahora()
+    tab = _eco_personal.tablero(m.k, m.registro, m.suscripciones,
+                                eco["reloj"], eco["personal"], semana)
+    return {"activa": True, "tablero": tab}
+
+
+@app.get("/api/economia/cola")
+def api_eco_cola() -> dict:
+    eco = _economia()
+    if not eco:
+        return {"activa": False}
+    return {"activa": True, "pendientes": eco["cola"].pendientes()}
+
+
+@app.post("/api/economia/cola/{item_id}/atender")
+def api_eco_atender(item_id: str, body: EcoAtenderBody) -> dict:
+    eco = _economia()
+    if not eco:
+        return {"activa": False}
+    ts, semana = _eco_ahora()
+    # atender solo toca cola.jsonl, pero mantiene la disciplina de candado
+    with _eco_candado(eco["pagador"].ruta_libro):
+        eco["cola"].atender_carta(ts, semana, item_id, firma=body.firma)
+    return {"ok": True}
+
+
+@app.post("/api/economia/cola/{item_id}/rechazar")
+def api_eco_rechazar(item_id: str) -> dict:
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
+    if not p0:
+        return {"activa": False}
+    ts, semana = _eco_ahora()
+    with _eco_candado(p0.ruta_libro):
+        eco = _economia()  # fresco BAJO el candado: ve el libro actual
+        eco["cola"].rechazar(eco["pagador"].mercado_fresco().k, ts, semana,
+                             item_id)
+    return {"ok": True}
+
+
+@app.post("/api/economia/reloj/in")
+def api_eco_reloj_in(body: EcoRelojInBody) -> dict:
+    eco = _economia()
+    if not eco:
+        return {"activa": False}
+    ts, semana = _eco_ahora()
+    eco["reloj"].clock_in(ts, semana, body.categoria, ref=body.ref,
+                          cola=eco["cola"])
+    return {"ok": True}
+
+
+@app.post("/api/economia/reloj/out")
+def api_eco_reloj_out() -> dict:
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
+    if not p0:
+        return {"activa": False}
+    ts, semana = _eco_ahora()
+    with _eco_candado(p0.ruta_libro):
+        eco = _economia()  # fresco BAJO el candado
+        res = eco["reloj"].clock_out(eco["pagador"].mercado_fresco(),
+                                     eco["cola"], ts, semana)
+    return {"ok": True, **res}
+
+
+@app.post("/api/economia/cierre")
+def api_eco_cierre() -> dict:
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
+    if not p0:
+        return {"activa": False}
+    ts, semana = _eco_ahora()
+    with _eco_candado(p0.ruta_libro):
+        eco = _economia()  # fresco BAJO el candado (reentrante adentro)
+        res = _eco_op.cerrar_semana_operativa(
+            eco["pagador"].mercado_fresco(), eco["bus"], eco["cola"],
+            ts, semana)
+        aplicados = eco["pagador"].reintentar_pendientes()
+    return {"ok": True, "expiradas": res["expiradas"],
+            "informes_ciclo": res["informes_ciclo"],
+            "pendientes_aplicados": aplicados}
 
 
 @app.on_event("startup")
