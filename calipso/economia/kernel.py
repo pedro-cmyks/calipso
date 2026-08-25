@@ -63,3 +63,34 @@ class Kernel:
             ts=ts, semana=semana, tipo=TipoAsiento.TRANSFERENCIA,
             divisa=Divisa.MONEDA, monto=monto, origen=origen,
             destino=destino, ref=ref, detalle=detalle)
+
+    # -- escrow ------------------------------------------------------------
+    def _reserva(self, ref: str) -> tuple[str, int]:
+        r = bal.reservas_activas(self.libro.asientos())
+        if ref not in r:
+            raise OperacionInvalida(f"reserva inexistente o ya cerrada: {ref}")
+        return r[ref]
+
+    def reservar(self, ts: str, semana: str, cuenta: str, monto: int,
+                 ref: str) -> Asiento:
+        if ref in bal.reservas_activas(self.libro.asientos()):
+            raise OperacionInvalida(f"ref de reserva repetida: {ref}")
+        self._exigir(cuenta, monto)
+        return self.libro.append(
+            ts=ts, semana=semana, tipo=TipoAsiento.RESERVA,
+            divisa=Divisa.MONEDA, monto=monto, origen=cuenta, ref=ref)
+
+    def liberar(self, ts: str, semana: str, ref: str) -> Asiento:
+        cuenta, monto = self._reserva(ref)
+        return self.libro.append(
+            ts=ts, semana=semana, tipo=TipoAsiento.LIBERACION,
+            divisa=Divisa.MONEDA, monto=monto, ref=ref,
+            detalle={"cuenta": cuenta})
+
+    def ejecutar_reserva(self, ts: str, semana: str, ref: str, destino: str,
+                         detalle_extra: dict | None = None) -> Asiento:
+        cuenta, monto = self._reserva(ref)
+        return self.libro.append(
+            ts=ts, semana=semana, tipo=TipoAsiento.EJECUCION_RESERVA,
+            divisa=Divisa.MONEDA, monto=monto, origen=cuenta,
+            destino=destino, ref=ref, detalle=(detalle_extra or {}))

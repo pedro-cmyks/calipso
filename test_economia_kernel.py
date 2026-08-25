@@ -53,7 +53,6 @@ def test_transferir_mueve_y_valida_disponible(k):
         k.transferir(TS, W, t.TESORO, "dep:mercado", 60_001, motivo="presupuesto")
 
 
-@pytest.mark.skip(reason="reservar llega en task 6")
 def test_transferir_respeta_reservas(k):
     """Sin sobregiro es contra DISPONIBLE, no contra saldo (invariante 7)."""
     _capital(k, 100_000, destino="dep:a")
@@ -62,3 +61,33 @@ def test_transferir_respeta_reservas(k):
         k.transferir(TS, W, "dep:a", "dep:b", 40_000, motivo="servicio")
     k.transferir(TS, W, "dep:a", "dep:b", 30_000, motivo="servicio")
     assert k.saldo("dep:b") == 30_000
+
+
+def test_reservar_exige_disponible_y_ref_unica(k):
+    _capital(k, 50_000, destino="dep:a")
+    k.reservar(TS, W, "dep:a", 30_000, ref="res-1")
+    with pytest.raises(SinSaldo):
+        k.reservar(TS, W, "dep:a", 30_000, ref="res-2")  # solo quedan 20k
+    with pytest.raises(OperacionInvalida):
+        k.reservar(TS, W, "dep:a", 1_000, ref="res-1")  # ref repetida
+
+
+def test_liberar_devuelve_lo_reservado(k):
+    _capital(k, 50_000, destino="dep:a")
+    k.reservar(TS, W, "dep:a", 30_000, ref="res-1")
+    k.liberar(TS, W, ref="res-1")
+    assert k.disponible("dep:a") == 50_000
+    with pytest.raises(OperacionInvalida):
+        k.liberar(TS, W, ref="res-1")  # ya no existe
+
+
+def test_ejecutar_reserva_paga_a_destino(k):
+    """El cobro al servirse una firma (spec 3.2): reserva -> ejecucion."""
+    _capital(k, 50_000, destino="dep:a")
+    k.reservar(TS, W, "dep:a", 10_000, ref="firma-42")
+    k.ejecutar_reserva(TS, W, ref="firma-42", destino=t.CUENTA_PEDRO)
+    assert k.saldo(t.CUENTA_PEDRO) == 10_000
+    assert k.saldo("dep:a") == 40_000
+    assert k.disponible("dep:a") == 40_000
+    with pytest.raises(OperacionInvalida):
+        k.ejecutar_reserva(TS, W, ref="firma-42", destino=t.CUENTA_PEDRO)
