@@ -18,6 +18,11 @@ class ErrorMercado(Exception):
     pass
 
 
+def _entero_positivo(valor: int, nombre: str) -> None:
+    if not isinstance(valor, int) or isinstance(valor, bool) or valor <= 0:
+        raise ErrorMercado(f"{nombre} debe ser entero positivo: {valor!r}")
+
+
 def gasto_api_ciclo(asientos, dep_cuenta: str, semanas: list[str]) -> int:
     """Gasto de API del departamento MAS el de sus trabajos (detalle dueno)."""
     from .tipos import TipoAsiento
@@ -55,7 +60,11 @@ class Mercado:
     def _ciclo(self, semana: str) -> tuple[list[str], int]:
         asientos = self.k.libro.asientos()
         ops = cap.semanas_operativas(asientos)
-        ciclo, fraccion = cap.posicion_ciclo(semana, ops)
+        try:
+            ciclo, fraccion = cap.posicion_ciclo(semana, ops)
+        except cap.ErrorCapacidad as exc:
+            # contrato del modulo: solo ErrorMercado sale de esta puerta
+            raise ErrorMercado(str(exc)) from exc
         return cap.semanas_del_ciclo(ciclo, ops), fraccion
 
     def _politica(self, pagador: str, dueno: str | None) -> deps.Departamento:
@@ -84,6 +93,7 @@ class Mercado:
                           ref: str | None = None,
                           dueno: str | None = None) -> Asiento:
         dep = self._politica(pagador, dueno)
+        _entero_positivo(unidades, "unidades")
         sus = self._sus(sus_nombre)
         semanas, fraccion = self._ciclo(semana)
         consumido = cap.consumo_fabrica(self.k.libro.asientos(),
@@ -91,16 +101,30 @@ class Mercado:
         if consumido + unidades > sus.capacidad_fabrica:
             raise ErrorMercado(
                 f"cuota agotada: {consumido}+{unidades} > {sus.capacidad_fabrica}")
-        precio = cap.precio_unidad_mm(sus, consumido, fraccion) * unidades
+        # FIX I5: precio marginal por unidad, no precio unico al lote — cada
+        # unidad paga el factor de escasez que le toca segun el consumo
+        # acumulado justo antes de ella.
+        precio = sum(cap.precio_unidad_mm(sus, consumido + u, fraccion)
+                    for u in range(unidades))
         detalle = {"suscripcion": sus_nombre, "unidades": unidades}
         if pagador.startswith("trabajo:"):
             detalle["dueno"] = dep.cuenta
+            # FIX I4: el ref de un trabajo se fuerza siempre a su propia
+            # cuenta; la atribucion de eficiencia no se evade omitiendolo.
+            ref = pagador
         return self.k.transferir(
             ts, semana, pagador, DIRECCION, precio, motivo="capacidad",
             ref=ref, detalle_extra=detalle)
 
     def usar_reserva_personal(self, ts: str, semana: str, sus_nombre: str,
                               unidades: int, departamento_cuenta: str) -> Asiento:
+        # FIX I3 (invariante 12): la reserva personal es exclusiva de la
+        # zona personal; la fabrica no puede consumirla.
+        dep = self.dep_por_cuenta(departamento_cuenta)
+        if dep.zona != deps.ZONA_PERSONAL:
+            raise ErrorMercado(
+                "la reserva personal es de la zona personal (invariante 12)")
+        _entero_positivo(unidades, "unidades")
         sus = self._sus(sus_nombre)
         semanas, _ = self._ciclo(semana)
         usado = cap.consumo_personal(self.k.libro.asientos(),
@@ -117,6 +141,7 @@ class Mercado:
                    ref: str | None = None, firma: dict | None = None,
                    dueno: str | None = None) -> Asiento:
         dep = self._politica(pagador, dueno)
+        _entero_positivo(mm, "mm")
         semanas, _ = self._ciclo(semana)
         gastado = gasto_api_ciclo(self.k.libro.asientos(), dep.cuenta, semanas)
         if gastado + mm > dep.techo_api_ciclo_mm and not firma:
@@ -126,6 +151,9 @@ class Mercado:
         detalle = {}
         if pagador.startswith("trabajo:"):
             detalle["dueno"] = dep.cuenta
+            # FIX I4: ver comprar_capacidad — ref forzado a la cuenta del
+            # trabajo.
+            ref = pagador
         if firma:
             detalle["firma"] = firma
         return self.k.destruir(ts, semana, pagador, mm, motivo="api", ref=ref,
@@ -134,6 +162,10 @@ class Mercado:
     def vender_servicio(self, ts: str, semana: str, origen: str,
                         destino: str, mm: int,
                         ref: str | None = None) -> Asiento:
+        # FIX C1 (critico): ambos lados deben ser departamentos registrados
+        # (cualquier zona) — nada de tesoro ni cuentas fantasma.
+        self.dep_por_cuenta(origen)
+        self.dep_por_cuenta(destino)
         self._exigir_activo(origen)
         if deps.es_congelado(self.k.libro.asientos(), destino):
             raise ErrorMercado(

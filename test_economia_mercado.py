@@ -95,14 +95,17 @@ def test_comprar_capacidad_cobra_precio_por_escasez(k, mercado):
     _capital(k, 100_000, destino="dep:mercadeo")
     a = mercado.comprar_capacidad(TS, "2026-W35", "dep:mercadeo",
                                   "claude_max", 10)
-    assert a.monto == 1_000            # 10 unidades a precio base 100
+    assert a.monto == 1_000            # 10 unidades, precio marginal 100 c/u
     assert k.saldo(t.DIRECCION) == 1_000
-    # tras consumir 400 en el 25% del ciclo, el precio dobla (factor 200)
+    # precio marginal por unidad (FIX I5): tras esta compra intermedia el
+    # consumido llega a 400 (25% del ciclo)
     mercado.comprar_capacidad(TS, "2026-W35", "dep:mercadeo",
                               "claude_max", 390)
     b = mercado.comprar_capacidad(TS, "2026-W35", "dep:mercadeo",
                                   "claude_max", 10)
-    assert b.monto == 2_000            # 10 unidades a 200
+    # las siguientes 10 unidades cubren consumido 400..409: factor
+    # consumido//2 = 200,200,201,201,202,202,203,203,204,204 -> suma 2_020
+    assert b.monto == 2_020
 
 
 def test_cuota_agotada_rechaza(k, mercado):
@@ -128,6 +131,22 @@ def test_reserva_personal_se_consume_y_agota(k, mercado):
     with pytest.raises(mkt.ErrorMercado):
         mercado.usar_reserva_personal(TS, "2026-W35", "claude_max", 51,
                                       "personal:finanzas")  # reserva 200
+
+
+def test_fabrica_no_consume_reserva_personal(k, mercado):
+    """Invariante 12: la reserva personal es solo de la zona personal."""
+    _semana_op(k, "2026-W35")
+    with pytest.raises(mkt.ErrorMercado):
+        mercado.usar_reserva_personal(TS, "2026-W35", "claude_max", 10,
+                                      "dep:mercadeo")
+
+
+def test_ref_de_trabajo_es_forzado(k, mercado):
+    _semana_op(k, "2026-W35")
+    _capital(k, 50_000, destino="trabajo:p1")
+    a = mercado.gastar_api(TS, "2026-W35", "trabajo:p1", 1_000,
+                           dueno="dep:mercadeo")  # sin pasar ref
+    assert a.ref == "trabajo:p1"
 
 
 def test_congelado_no_compra_ni_recibe(k, mercado):
@@ -184,6 +203,15 @@ def test_vender_servicio_entre_departamentos(k, mercado, registro):
     mercado.vender_servicio(TS, "2026-W35", "dep:produccion",
                             "dep:mercadeo", 4_000)
     assert k.saldo("dep:mercadeo") == 4_000
+
+
+def test_vender_servicio_exige_departamentos_registrados(k, mercado):
+    _capital(k, 10_000, destino="dep:mercadeo")
+    with pytest.raises(mkt.ErrorMercado):
+        mercado.vender_servicio(TS, "2026-W35", t.TESORO, "dep:mercadeo", 100)
+    with pytest.raises(mkt.ErrorMercado):
+        mercado.vender_servicio(TS, "2026-W35", "dep:mercadeo",
+                                "cuenta:falsa", 100)
 
 
 from calipso.economia import direccion as dir_
