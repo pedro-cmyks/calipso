@@ -3,6 +3,7 @@ import pytest
 
 from calipso.economia import tipos as t
 from calipso.economia import cuenta_pedro as cp
+from calipso.economia import balances as bal
 from calipso.economia.libro import Libro
 from calipso.economia.kernel import Kernel, SinSaldo, OperacionInvalida
 
@@ -164,3 +165,18 @@ def test_liquidar_con_sobrante_devuelve_al_tesoro(k):
     k.liquidar(TS, W, "dep:quebrado")
     assert k.saldo(t.DIRECCION) == 10_000
     assert k.saldo(t.TESORO) == 20_000
+
+
+def test_liquidar_libera_reservas_y_paga_acreencias(k):
+    """Spec 5: el saldo Y las reservas pagan acreencias por prelacion;
+    liquidar debe liberar antes de calcular disponible, o la plata
+    reservada queda inaccesible para pagar."""
+    _capital(k, 30_000, destino="dep:q")
+    k.reservar(TS, W, "dep:q", 20_000, ref="res-x")
+    k.registrar_acreencia(TS, W, acreedor=t.DIRECCION, deudor="dep:q",
+                          monto=25_000, ref="acr-1")
+    k.liquidar(TS, W, "dep:q")
+    assert k.saldo(t.DIRECCION) == 25_000
+    assert k.saldo(t.TESORO) == 5_000
+    assert k.saldo("dep:q") == 0
+    assert bal.reservas_activas(k.libro.asientos()) == {}

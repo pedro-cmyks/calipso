@@ -129,7 +129,12 @@ class Kernel:
         return out
 
     def liquidar(self, ts: str, semana: str, cuenta: str) -> list[Asiento]:
+        # spec 5: el saldo Y las reservas pagan acreencias por prelacion;
+        # liberar primero o la plata reservada queda inaccesible.
         out: list[Asiento] = []
+        for ref, (cta, _monto) in bal.reservas_activas(self.libro.asientos()).items():
+            if cta == cuenta:
+                out.append(self.liberar(ts, semana, ref))
         for ref, acreedor, pend in self.acreencias_pendientes(cuenta):
             pago = min(pend, self.disponible(cuenta))
             if pago > 0:
