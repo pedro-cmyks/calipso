@@ -1,4 +1,3 @@
-# calipso/economia/pt.py
 """
 calipso/economia/pt.py — La divisa del tiempo de Pedro.
 
@@ -102,11 +101,23 @@ def tipo_de_cambio(asientos: list[Asiento], hasta_semana: str,
                    ventana: int = 8, banda_pct: int = 25,
                    arranque_mm: int = 5000, minimo_mm: int = 1000,
                    min_semanas_consumo: int = 4) -> int:
-    """Pliegue deterministico del contrato de spec 3.2.
+    """Pliegue deterministico del contrato de spec 3.2 (enmendado).
 
     Cociente de totales sobre las ultimas `ventana` semanas operativas
     (semanas con emision de PT), recalculado en orden semana a semana para
     que la banda encadene igual siempre: misma historia, mismo numero.
+
+    El numerador (ventas) toma TODAS las semanas —operativas o no— cuyo
+    label caiga dentro del lapso de tiempo de la ventana: una venta nunca
+    desaparece del indice solo porque su semana no tuvo emision de PT. El
+    denominador (consumo) solo puede tener valor en semanas operativas, asi
+    que se sigue sumando solo sobre esas.
+
+    El arranque es solo bootstrap: rige mientras el libro nunca haya
+    alcanzado `min_semanas_consumo` semanas con consumo dentro de una
+    ventana. Una vez superado ese umbral, el cociente con banda gobierna
+    siempre — no hay salto de vuelta al arranque aunque una ventana
+    posterior vuelva a tener pocas semanas con consumo.
     """
     semanas = sorted({a.semana for a in asientos
                       if a.tipo is TipoAsiento.EMISION_PT
@@ -126,16 +137,22 @@ def tipo_de_cambio(asientos: list[Asiento], hasta_semana: str,
                 consumo_por_semana.get(a.semana, 0) + a.monto
 
     tipo = arranque_mm
+    alguna_vez_4 = False
     for i, sem in enumerate(semanas):
         vent = semanas[max(0, i + 1 - ventana):i + 1]
         consumo = sum(consumo_por_semana.get(s, 0) for s in vent)
         con_consumo = sum(1 for s in vent if consumo_por_semana.get(s, 0) > 0)
+        if con_consumo >= min_semanas_consumo:
+            alguna_vez_4 = True  # bootstrap superado: ya no hay marcha atras
         if consumo == 0:
             pass  # regla (c): se mantiene
-        elif con_consumo < min_semanas_consumo:
-            tipo = arranque_mm  # regla (d)
+        elif not alguna_vez_4:
+            tipo = arranque_mm  # regla (d): arranque, solo antes del bootstrap
         else:
-            ventas = sum(ventas_por_semana.get(s, 0) for s in vent)
+            idx0 = i - ventana
+            lower = semanas[idx0] if idx0 >= 0 else ""
+            ventas = sum(m for w, m in ventas_por_semana.items()
+                        if lower < w <= sem)
             objetivo = ventas * 1000 // consumo
             piso_banda = tipo * (100 - banda_pct) // 100
             techo_banda = tipo * (100 + banda_pct) // 100

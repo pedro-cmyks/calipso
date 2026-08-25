@@ -1,4 +1,3 @@
-# test_economia_pt.py
 """Tests de la divisa PT: emision, consumo, expiracion y tipo de cambio."""
 import pytest
 
@@ -158,6 +157,65 @@ def test_reproducible_misma_historia_mismo_numero(k):
     from calipso.economia.libro import Libro
     k2 = Kernel(Libro(k.libro.ruta))
     assert pt.tipo_de_cambio(k2.libro.asientos(), "2026-W34") == a
+
+
+def test_venta_en_semana_no_operativa_cuenta_en_el_lapso(k):
+    """Enmienda (a): una venta nunca desaparece del indice — cuenta en el
+    numerador aunque su semana no tenga emision de PT."""
+    for sem in ["2026-W30", "2026-W31", "2026-W32", "2026-W33", "2026-W34"]:
+        _semana_operativa(k, sem, 2_000)
+    got_w34 = pt.tipo_de_cambio(k.libro.asientos(), "2026-W34")
+    assert got_w34 == 2_812
+
+    # W35 NO se emite (semana no operativa), pero si se acuna una venta
+    _venta(k, 100_000, "2026-W35")
+    _semana_operativa(k, "2026-W36", 2_000)
+    got_w36 = pt.tipo_de_cambio(k.libro.asientos(), "2026-W36")
+    assert got_w36 == 3_515
+
+
+def test_arranque_es_solo_bootstrap_sin_salto(k):
+    """Enmienda (d): superado el bootstrap (4 semanas con consumo en
+    alguna ventana), el cociente con banda gobierna siempre; no hay
+    salto de vuelta al valor de arranque aunque la ventana vuelva a
+    tener pocas semanas con consumo."""
+    for sem in ["2026-W30", "2026-W31", "2026-W32", "2026-W33", "2026-W34"]:
+        _semana_operativa(k, sem, 2_000)
+    assert pt.tipo_de_cambio(k.libro.asientos(), "2026-W34") == 2_812
+
+    for sem in ["2026-W35", "2026-W36", "2026-W37", "2026-W38", "2026-W39",
+                "2026-W40", "2026-W41", "2026-W42"]:
+        _semana_operativa(k, sem, 0)  # decae, luego se mantiene en el piso
+
+    _semana_operativa(k, "2026-W43", 2_000)  # la ventana ya solo tiene 1
+    got = pt.tipo_de_cambio(k.libro.asientos(), "2026-W43")
+    assert got == 1_000  # cociente 0 clamped al piso, NO 5_000
+
+
+def test_expirados_no_cuentan_como_consumidos(k):
+    """Spec 3.2(b): los PT expirados no cuentan como consumidos — el
+    denominador solo suma CONSUMO_PT de la fabrica."""
+    for sem in ["2026-W30", "2026-W31", "2026-W32", "2026-W33"]:
+        _semana_operativa(k, sem, 2_000)  # cada semana expira 2_000 tambien
+    _venta(k, 30_000, "2026-W34")
+    _semana_operativa(k, "2026-W34", 2_000)
+    got = pt.tipo_de_cambio(k.libro.asientos(), "2026-W34")
+    assert got == 3_000  # objetivo = 30_000*1000//10_000, dentro de banda
+
+
+def test_consumo_personal_no_mueve_el_tipo(k):
+    """Spec 3.2(b): el consumo personal de PT queda fuera de numerador y
+    denominador del tipo de cambio."""
+    for sem in ["2026-W30", "2026-W31", "2026-W32", "2026-W33", "2026-W34"]:
+        pt.emitir_semana(k, TS, sem, 5_000, 1_000)
+        if sem == "2026-W34":
+            _venta(k, 30_000, sem)
+        pt.consumir_fabrica(k, TS, sem, 2_000, ref=f"f-{sem}", pagador="dep:a")
+        pt.consumir_personal(k, TS, sem, 1_000, departamento="personal:atlas",
+                             tipo_vigente_mm=5_000)
+        pt.expirar_pools(k, TS, sem)
+    got = pt.tipo_de_cambio(k.libro.asientos(), "2026-W34")
+    assert got == 3_000  # si el consumo personal contara, denominador 15_000
 
 
 def test_cierre_semanal_libera_expira_y_recalcula(k):

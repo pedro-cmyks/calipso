@@ -1,4 +1,9 @@
-"""calipso/economia — kernel de la economia de la fabrica (spec 2026-08-24)."""
+"""calipso/economia — kernel de la economia de la fabrica (spec 2026-08-24).
+
+Contrato de escritor unico: exactamente una instancia de Kernel/Libro por
+archivo y por proceso; escritores concurrentes corrompen la cadena de seq.
+El locking llega con la integracion del servidor (Plan 3).
+"""
 from __future__ import annotations
 
 import os
