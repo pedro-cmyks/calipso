@@ -2,6 +2,7 @@
 import pytest
 
 from calipso.economia import tipos as t
+from calipso.economia.libro import Libro, LibroCorrupto
 
 
 def test_asiento_roundtrip_json():
@@ -58,3 +59,59 @@ def test_semana_exige_formato_iso_con_cero():
         t.Asiento(seq=1, ts="2026-08-24T10:00:00", semana="2026-W5",
                   tipo=t.TipoAsiento.APUNTE, divisa=t.Divisa.MONEDA,
                   monto=1, detalle={"nota": "x"}).validar()
+
+
+def _libro(tmp_path):
+    return Libro(tmp_path / "libro.jsonl")
+
+
+def test_append_asigna_seq_correlativo_y_persiste(tmp_path):
+    lb = _libro(tmp_path)
+    a1 = lb.append(ts="2026-08-24T10:00:00", semana="2026-W35",
+                   tipo=t.TipoAsiento.ACUNACION, divisa=t.Divisa.MONEDA,
+                   monto=1_200_000, destino=t.TESORO, subtipo="capital",
+                   detalle={"evidencia": {"tipo": "firma_pedro"}})
+    a2 = lb.append(ts="2026-08-24T10:01:00", semana="2026-W35",
+                   tipo=t.TipoAsiento.TRANSFERENCIA, divisa=t.Divisa.MONEDA,
+                   monto=100_000, origen=t.TESORO, destino="dep:mercado")
+    assert (a1.seq, a2.seq) == (1, 2)
+    # reabrir desde disco reproduce exactamente lo mismo
+    lb2 = _libro(tmp_path)
+    assert lb2.asientos() == [a1, a2]
+
+
+def test_append_invalido_no_persiste(tmp_path):
+    lb = _libro(tmp_path)
+    with pytest.raises(t.AsientoInvalido):
+        lb.append(ts="2026-08-24T10:00:00", semana="2026-W35",
+                  tipo=t.TipoAsiento.ACUNACION, divisa=t.Divisa.MONEDA,
+                  monto=5, destino=t.TESORO)  # sin subtipo ni evidencia
+    assert lb.asientos() == []
+    assert _libro(tmp_path).asientos() == []
+
+
+def test_ultima_linea_truncada_se_ignora_con_aviso(tmp_path):
+    """Un corte de luz a mitad de un append no puede tumbar el libro entero."""
+    lb = _libro(tmp_path)
+    a1 = lb.append(ts="2026-08-24T10:00:00", semana="2026-W35",
+                   tipo=t.TipoAsiento.ACUNACION, divisa=t.Divisa.MONEDA,
+                   monto=1_000, destino=t.TESORO, subtipo="capital",
+                   detalle={"evidencia": {"tipo": "firma_pedro"}})
+    ruta = tmp_path / "libro.jsonl"
+    with ruta.open("a", encoding="utf-8") as f:
+        f.write('{"seq": 2, "ts": "2026-08-2')  # linea cortada
+    lb2 = _libro(tmp_path)
+    assert lb2.asientos() == [a1]
+    # y el proximo append sigue la numeracion sana
+    a2 = lb2.append(ts="2026-08-24T11:00:00", semana="2026-W35",
+                    tipo=t.TipoAsiento.DESTRUCCION, divisa=t.Divisa.MONEDA,
+                    monto=100, origen=t.TESORO)
+    assert a2.seq == 2
+
+
+def test_linea_corrupta_en_el_medio_es_error(tmp_path):
+    """Corrupcion que NO es la ultima linea no se tolera: hay que mirar."""
+    ruta = tmp_path / "libro.jsonl"
+    ruta.write_text('esto no es json\n{"tampoco": 1}\n', encoding="utf-8")
+    with pytest.raises(LibroCorrupto):
+        Libro(ruta)
