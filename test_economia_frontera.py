@@ -361,3 +361,40 @@ def test_huerfano_se_concilia_sin_inventar(entorno, cola, reloj):
     reloj.conciliar(TS, "2026-W31", huerfanos[0]["ts"], minutos=60)
     assert reloj.abierto() is None
     assert reloj.minutos_por_categoria(["2026-W30"]) == {"tuning": 60}
+
+
+from calipso.economia import personal as per_mod
+
+
+def test_libro_personal_registra_y_resume(entorno):
+    k, m, b, tmp = entorno
+    lp = per_mod.LibroPersonal(tmp / "personal.jsonl")
+    lp.registrar(TS, "2026-W30", "ingreso", 2_500_000, "sueldo")
+    lp.registrar(TS, "2026-W30", "gasto", 400_000, "suscripciones")
+    lp.registrar(TS, "2026-W31", "gasto", 100_000, "comida")
+    assert lp.resumen(["2026-W30"]) == {"ingresos_mm": 2_500_000,
+                                        "gastos_mm": 400_000,
+                                        "neto_mm": 2_100_000}
+    assert lp.resumen()["neto_mm"] == 2_000_000
+    with pytest.raises(per_mod.ErrorPersonal):
+        lp.registrar(TS, "2026-W30", "prestamo", 1, "x")
+
+
+def test_linea_empleo_medida_y_teorica():
+    # 160 horas reales en el mes: 2.5M/160h = 15_625 mm/h
+    assert per_mod.linea_empleo_mm_por_hora(2_500_000, 160 * 60) == 15_625
+    assert per_mod.linea_empleo_mm_por_hora(2_500_000, 0) == 14_450  # /173
+
+
+def test_tablero_consolida(entorno, reloj):
+    k, m, b, tmp = entorno
+    lp = per_mod.LibroPersonal(tmp / "personal.jsonl")
+    _semana_op(k, "2026-W30", cuota=4_000, reserva=1_000)
+    _capital(k, 1_200_000, t.TESORO)
+    _capital(k, 5_000, t.CUENTA_PEDRO)
+    tab = per_mod.tablero(k, m.registro, SUS, reloj, lp, "2026-W30")
+    assert tab["tesoro_mm"] == 1_200_000
+    assert tab["cuenta_pedro_mm"] == 5_000
+    assert tab["tipo_cambio_mm"] == 5_000
+    assert tab["departamentos"]["dep:a"] == {"saldo_mm": 0,
+                                             "congelado": False}
