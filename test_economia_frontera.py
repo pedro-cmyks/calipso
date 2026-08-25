@@ -4,6 +4,7 @@ import pytest
 from calipso.economia import bus as bus_mod
 from calipso.economia import candado as cnd
 from calipso.economia import capacidad as cap
+from calipso.economia import cola as cola_mod
 from calipso.economia import departamentos as deps
 from calipso.economia import mercado as mkt
 from calipso.economia import pt
@@ -99,3 +100,93 @@ def test_recuperacion_exige_mismo_split(entorno):
     pt.emitir_semana(k, TS, "2026-W30", 4_000, 0)
     with pytest.raises(pt.ErrorPT):
         pt.emitir_semana(k, TS, "2026-W30", 5_000, 1_000)  # otro split
+
+
+@pytest.fixture
+def cola(entorno):
+    k, m, b, tmp = entorno
+    return cola_mod.Cola(tmp / "cola.jsonl")
+
+
+def test_encolar_reserva_al_tipo_vigente(entorno, cola):
+    k, m, b, _ = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 50_000, "dep:a")
+    cola.encolar(k, TS, "2026-W30", "c1", "dep:a", "llamar cliente",
+                 tipo="contacto", obligatoria=True, mpt_estimado=500,
+                 monedas_en_juego=90_000)
+    # 500 mpt a tipo 5000 = 2500 mm reservados
+    assert k.disponible("dep:a") == 47_500
+    assert cola.estado("c1") == "encolada"
+    with pytest.raises(cola_mod.ErrorCola):
+        cola.encolar(k, TS, "2026-W30", "c1", "dep:a", "repetida",
+                     tipo="contacto", obligatoria=True, mpt_estimado=500,
+                     monedas_en_juego=1)
+
+
+def test_goteo_recarga_y_tiene_tope(entorno, cola):
+    k, m, b, _ = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 50_000, "dep:a")
+    cola.encolar(k, TS, "2026-W30", "g1", "dep:a", "urgente 1",
+                 tipo="contacto", obligatoria=True, mpt_estimado=500,
+                 monedas_en_juego=10_000, carril=cola_mod.CARRIL_GOTEO)
+    assert k.disponible("dep:a") == 45_000  # 2500 * 2 de recargo
+    cola.encolar(k, TS, "2026-W30", "g2", "dep:a", "urgente 2",
+                 tipo="contacto", obligatoria=True, mpt_estimado=500,
+                 monedas_en_juego=9_000, carril=cola_mod.CARRIL_GOTEO)
+    with pytest.raises(cola_mod.ErrorCola):
+        cola.encolar(k, TS, "2026-W30", "g3", "dep:a", "urgente 3",
+                     tipo="contacto", obligatoria=True, mpt_estimado=500,
+                     monedas_en_juego=8_000, carril=cola_mod.CARRIL_GOTEO)
+
+
+def test_obligatoria_sin_caja_encola_con_adelanto(entorno, cola):
+    k, m, b, _ = entorno
+    _semana_op(k, "2026-W30")
+    cola.encolar(k, TS, "2026-W30", "c2", "dep:b", "responder cliente",
+                 tipo="contacto", obligatoria=True, mpt_estimado=500,
+                 monedas_en_juego=5_000)  # dep:b sin un peso
+    p = [x for x in cola.pendientes() if x["id"] == "c2"][0]
+    assert p["adelanto"] is True
+    with pytest.raises(cola_mod.ErrorCola):
+        cola.encolar(k, TS, "2026-W30", "c3", "dep:b", "opinion cara",
+                     tipo="opinion", obligatoria=False, mpt_estimado=500,
+                     monedas_en_juego=1_000)  # lo opcional si se rechaza
+
+
+def test_orden_cartas_primero_y_monedas_en_juego(entorno, cola):
+    k, m, b, _ = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 50_000, "dep:a")
+    cola.encolar(k, TS, "2026-W30", "c1", "dep:a", "chica", tipo="contacto",
+                 obligatoria=True, mpt_estimado=500, monedas_en_juego=1_000)
+    cola.encolar(k, TS, "2026-W30", "c2", "dep:a", "grande", tipo="contacto",
+                 obligatoria=True, mpt_estimado=500, monedas_en_juego=50_000)
+    cola.encolar_carta(TS, "2026-W30", "k1", {"tipo": "mandato",
+                                              "departamento": "dep:a"})
+    orden = [x["id"] for x in cola.pendientes()]
+    assert orden == ["k1", "c2", "c1"]
+
+
+def test_atender_carta_y_registro_para_el_cierre(entorno, cola):
+    k, m, b, _ = entorno
+    cola.encolar_carta(TS, "2026-W30", "renovacion:claude_max",
+                       {"tipo": "renovacion", "suscripcion": "claude_max"})
+    cola.atender_carta(TS, "2026-W30", "renovacion:claude_max",
+                       firma={"tipo": "firma_pedro"})
+    assert "renovacion:claude_max" in cola.cartas_atendidas()
+    assert cola.firmas()["renovacion:claude_max"] == {"tipo": "firma_pedro"}
+
+
+def test_expirar_semana_libera_reservas(entorno, cola):
+    k, m, b, _ = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 50_000, "dep:a")
+    cola.encolar(k, TS, "2026-W30", "c1", "dep:a", "no atendida",
+                 tipo="contacto", obligatoria=True, mpt_estimado=500,
+                 monedas_en_juego=1_000)
+    expirados = cola.expirar_semana(k, TS, "2026-W30")
+    assert expirados == ["c1"]
+    assert k.disponible("dep:a") == 50_000
+    assert cola.estado("c1") == "expirada"
