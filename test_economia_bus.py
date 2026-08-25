@@ -93,3 +93,49 @@ def test_gastado_pliega_todas_las_salidas(entorno):
     m.comprar_capacidad(TS, "2026-W30", "trabajo:p1", "claude_max", 50,
                         ref="trabajo:p1", dueno="dep:a")  # 50 u a 100 = 5_000
     assert bus_mod.gastado(k.libro.asientos(), "p1") == 25_000
+
+
+def test_muere_por_gasto_y_liquida_proporcional(entorno):
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 100_000, "dep:a")
+    _capital(k, 100_000, "dep:b")
+    b.alta(TS, "2026-W30", "p1", "dep:a", "radar", 100_000, 300_000,
+           {"gasto_max_mm": 25_000})
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", "dep:a", 60_000)
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", "dep:b", 40_000)
+    k.destruir(TS, "2026-W30", "trabajo:p1", 30_000, motivo="api",
+               ref="trabajo:p1")  # 30k > 25k: muerto
+    muertos = bus_mod.evaluar_y_liquidar_muertos(m, b, TS, "2026-W30")
+    assert muertos == ["p1"]
+    assert b.estado("p1") == "liquidada"
+    assert k.saldo("trabajo:p1") == 0
+    # saldo 70k proporcional a aportes 60/40: a 42k, b 28k
+    assert k.saldo("dep:a") == 100_000 - 60_000 + 42_000
+    assert k.saldo("dep:b") == 100_000 - 40_000 + 28_000
+
+
+def test_muere_por_semanas(entorno):
+    k, m, b = entorno
+    for sem in ["2026-W30", "2026-W31", "2026-W32", "2026-W33"]:
+        _semana_op(k, sem)
+    _capital(k, 50_000, "dep:a")
+    b.alta(TS, "2026-W30", "p1", "dep:a", "radar", 50_000, 100_000,
+           {"semanas_max": 2})
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", "dep:a", 30_000)
+    assert bus_mod.evaluar_y_liquidar_muertos(m, b, TS, "2026-W32") == []
+    assert bus_mod.evaluar_y_liquidar_muertos(m, b, TS, "2026-W33") == ["p1"]
+    assert k.saldo("dep:a") == 50_000  # todo devuelto: no gasto nada
+
+
+def test_vivo_no_se_liquida(entorno):
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 50_000, "dep:a")
+    b.alta(TS, "2026-W30", "p1", "dep:a", "radar", 50_000, 100_000,
+           {"gasto_max_mm": 25_000})
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", "dep:a", 30_000)
+    k.destruir(TS, "2026-W30", "trabajo:p1", 10_000, motivo="api",
+               ref="trabajo:p1")
+    assert bus_mod.evaluar_y_liquidar_muertos(m, b, TS, "2026-W30") == []
+    assert b.estado("p1") == "financiada"

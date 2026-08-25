@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import pathlib
 
+from . import capacidad as cap
 from . import departamentos as deps
 from .mercado import Mercado
 from .tipos import Asiento, TipoAsiento
@@ -119,3 +120,48 @@ def gastado(asientos: list[Asiento], id: str) -> int:
                TipoAsiento.EJECUCION_RESERVA)
     return sum(a.monto for a in asientos
                if a.tipo in salidas and a.origen == cuenta)
+
+
+def semanas_transcurridas(semanas_ops: list[str], desde: str,
+                          hasta: str) -> int:
+    try:
+        return semanas_ops.index(hasta) - semanas_ops.index(desde)
+    except ValueError:
+        raise ErrorBus(f"semana no operativa: {desde!r} o {hasta!r}") from None
+
+
+def evaluar_y_liquidar_muertos(mercado: Mercado, bus: Bus, ts: str,
+                               semana: str) -> list[str]:
+    asientos = mercado.k.libro.asientos()
+    ops = cap.semanas_operativas(asientos)
+    muertos: list[str] = []
+    for id in bus.activas():
+        datos = bus.datos(id)
+        criterio = datos["criterio"]
+        gasto = gastado(asientos, id)
+        muere = ("gasto_max_mm" in criterio
+                 and gasto > criterio["gasto_max_mm"])
+        if not muere and "semanas_max" in criterio:
+            muere = semanas_transcurridas(
+                ops, datos["semana_financiada"], semana) > criterio["semanas_max"]
+        if not muere:
+            continue
+        bus.marcar(ts, semana, id, "muerta")
+        cuenta = cuenta_trabajo(id)
+        saldo = mercado.k.saldo(cuenta)
+        aportado = aportes(asientos, id)
+        total = sum(aportado.values())
+        financiadores = sorted(aportado)
+        devuelto = 0
+        for i, fin in enumerate(financiadores):
+            if i < len(financiadores) - 1:
+                parte = saldo * aportado[fin] // total
+            else:
+                parte = saldo - devuelto  # el ultimo cierra la cuenta exacta
+            if parte > 0:
+                mercado.k.transferir(ts, semana, cuenta, fin, parte,
+                                     motivo="liquidacion_trabajo")
+                devuelto += parte
+        bus.marcar(ts, semana, id, "liquidada")
+        muertos.append(id)
+    return muertos
