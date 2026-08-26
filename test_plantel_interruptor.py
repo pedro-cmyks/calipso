@@ -1,5 +1,6 @@
 """Tests del interruptor del plantel (spec seccion 7)."""
 import json
+import threading
 
 from calipso.plantel import interruptor as it
 
@@ -89,3 +90,40 @@ def test_techo_tics_cero_persiste_en_roundtrip(tmp_path):
     assert e_releido.techo_tics == 0
     # y hay_cuerda debe falso desde el primer tic: la cuerda se acaba
     assert it.hay_cuerda(tmp_path, e_releido, "dep:atlas", "2026-W35") is False
+
+
+def test_tomar_tic_respeta_el_techo(tmp_path):
+    """Chequear y anotar en una sola operacion: por debajo del techo pasa,
+    en el techo se vuelve sin cuerda."""
+    e = it.Estado(techo_tics=2)
+    assert it.tomar_tic(tmp_path, e, "dep:atlas", "2026-W35") is True
+    assert it.tomar_tic(tmp_path, e, "dep:atlas", "2026-W35") is True
+    assert it.tomar_tic(tmp_path, e, "dep:atlas", "2026-W35") is False
+    assert it.tics(tmp_path, "dep:atlas", "2026-W35") == 2
+
+
+def test_tomar_tic_es_atomico_bajo_concurrencia(tmp_path):
+    """El ticker de rutinas y el boton de correr a mano pueden solaparse de
+    verdad: separado en dos pasos, dos hilos leen el mismo contador y pasan
+    los dos. Bajo candado, de N hilos contra un techo de 5 tienen que ganar
+    exactamente 5."""
+    e = it.Estado(techo_tics=5)
+    n = 20
+    barrera = threading.Barrier(n)
+    resultados = []
+    candado_resultados = threading.Lock()
+
+    def trabajador():
+        barrera.wait()
+        gano = it.tomar_tic(tmp_path, e, "dep:atlas", "2026-W35")
+        with candado_resultados:
+            resultados.append(gano)
+
+    hilos = [threading.Thread(target=trabajador) for _ in range(n)]
+    for h in hilos:
+        h.start()
+    for h in hilos:
+        h.join()
+
+    assert resultados.count(True) == 5
+    assert it.tics(tmp_path, "dep:atlas", "2026-W35") == 5

@@ -203,8 +203,31 @@ def test_comentar_en_ensayo_llega_a_la_memoria(tmp_path):
 
 
 def test_comentar_no_le_toca_un_pelo_al_bus(tmp_path):
-    """`comentar` no tiene superficie de bus (docstring del modulo): opinar
-    no puede dejar una alta nueva."""
+    """Guardia de regresion, no cobertura del diseno de `comentar` (eso lo
+    cubre test_comentar_en_ensayo_llega_a_la_memoria): el `contratar`
+    inyectado en este arnes no toca el bus para ninguna accion, asi que este
+    test pasaria igual con `_puede("comentar")` roto. Lo que vigila es que
+    nadie agregue mas adelante una llamada directa al bus dentro de
+    `jefe.py` — la superficie de comentarios que el docstring del modulo
+    dice que no existe."""
     ctx, _, _ = armar(tmp_path, "comentar p2\nno me cierra el precio")
     j.tic(ctx, "dep:atlas", W)
     assert ctx.bus.ids() == []
+
+
+def test_memoria_que_revienta_no_borra_la_contratacion(tmp_path):
+    """Si `remember` revienta DESPUES de que `contratar` ya salio bien y ya
+    se cobro, decir `actuo: False` seria mentir sobre plata que salio:
+    perder la nota es feo, mentir sobre la plata es peor."""
+    class MemoriaQueRevienta(MemoriaFalsa):
+        def remember(self, texto, **meta):
+            raise RuntimeError("disco lleno")
+
+    ctx, contratos, eventos = armar(tmp_path, "proponer\nhay hueco")
+    ctx.memoria = MemoriaQueRevienta()
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["actuo"] is True
+    assert out["resultado"] == {"ok": True}
+    assert contratos == [("proponer", None)]
+    assert ("fin", {"resultado": "error"}) in eventos

@@ -11,6 +11,8 @@ import json
 import pathlib
 from dataclasses import dataclass, replace
 
+from calipso.economia.candado import candado
+
 ARCHIVO = "plantel.json"
 MODOS = ("ensayo", "vivo")
 
@@ -106,3 +108,22 @@ def hay_cuerda(base, estado: Estado, cuenta: str, semana: str) -> bool:
     """Falso cuando el departamento ya gasto su techo de tics de la semana:
     un bug que gire no puede vaciar la billetera."""
     return tics(base, cuenta, semana) < estado.techo_tics
+
+
+def tomar_tic(base, estado: Estado, cuenta: str, semana: str) -> bool:
+    """Chequear el techo y anotar el tic, en una sola operacion atomica.
+
+    Separadas dejaban una carrera: dos tics concurrentes del mismo
+    departamento —el ticker de rutinas y el boton de correr a mano— leian el
+    mismo contador y pasaban los dos, asi que el techo se aflojaba. Bajo
+    candado, el que pierde ve el contador ya incrementado y se vuelve sin
+    cuerda."""
+    with candado(ruta(base)):
+        d = _crudo(base)
+        contadores = d.setdefault("tics", {})
+        clave = _clave(cuenta, semana)
+        if int(contadores.get(clave, 0)) >= estado.techo_tics:
+            return False
+        contadores[clave] = int(contadores.get(clave, 0)) + 1
+        _guardar(base, d)
+        return True

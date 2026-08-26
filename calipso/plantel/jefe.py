@@ -56,26 +56,33 @@ def _puede(estado, s: dict, accion: str) -> tuple[bool, str]:
 
 def tic(ctx: Contexto, cuenta: str, semana: str) -> dict:
     """Un despertar. Devuelve que decidio y por que, siempre."""
-    estado = it.leer(ctx.base)
-    if not estado.encendido:
-        # cortar ANTES del modelo: apagar la fabrica no puede seguir
-        # costando un tic por departamento
-        return {"cuenta": cuenta, "accion": "apagado", "ref": None,
-                "motivo": "el interruptor esta en parar", "sesgo_pct": 0,
-                "actuo": False, "freno": "apagado", "resultado": None}
-    if not it.hay_cuerda(ctx.base, estado, cuenta, semana):
-        return {"cuenta": cuenta, "accion": "sin_cuerda", "ref": None,
-                "motivo": f"ya uso sus {estado.techo_tics} tics de la semana",
-                "sesgo_pct": 0, "actuo": False, "freno": "techo de tics",
-                "resultado": None}
-    it.anotar_tic(ctx.base, cuenta, semana)
+    def corto(accion: str, motivo: str, freno: str) -> dict:
+        """Los caminos que salen antes de saber el sesgo."""
+        return {"cuenta": cuenta, "accion": accion, "ref": None,
+                "motivo": motivo, "sesgo_pct": 0, "actuo": False,
+                "freno": freno, "resultado": None}
 
-    s = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
-                      ctx.suscripciones, semana, cuenta)
-    cap = s["capacidad"] or {}
-    sesgo = dec.sesgo_efectivo(s["explorar_explotar_pct"],
-                               cap.get("precio_mm", 0),
-                               cap.get("precio_base_mm", 0))
+    try:
+        estado = it.leer(ctx.base)
+        if not estado.encendido:
+            # cortar ANTES del modelo: apagar la fabrica no puede seguir
+            # costando un tic por departamento
+            return corto("apagado", "el interruptor esta en parar", "apagado")
+        if not it.tomar_tic(ctx.base, estado, cuenta, semana):
+            return corto("sin_cuerda",
+                         f"ya uso sus {estado.techo_tics} tics de la semana",
+                         "techo de tics")
+        s = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
+                          ctx.suscripciones, semana, cuenta)
+        cap = s["capacidad"] or {}
+        sesgo = dec.sesgo_efectivo(s["explorar_explotar_pct"],
+                                   cap.get("precio_mm", 0),
+                                   cap.get("precio_base_mm", 0))
+    except Exception as exc:
+        # todavia no se publico `inicio`, asi que no hay agente que cerrar:
+        # lo unico que falta garantizar es que el llamador reciba su dict
+        return corto("nada", f"no llego a decidir: {exc}",
+                     "fallo antes de decidir")
 
     def salida(accion="nada", ref=None, motivo="", actuo=False, freno="",
                resultado=None) -> dict:
@@ -110,8 +117,14 @@ def tic(ctx: Contexto, cuenta: str, semana: str) -> dict:
         resultado = None
         if permiso:
             resultado = ctx.contratar(s, accion, ref)
-            ctx.memoria.remember(f"{accion} {ref or ''}: {motivo}".strip(),
-                                 kind="jefe", departamento=cuenta)
+            try:
+                ctx.memoria.remember(f"{accion} {ref or ''}: {motivo}".strip(),
+                                     kind="jefe", departamento=cuenta)
+            except Exception as exc:
+                # contratar ya ocurrio y ya se cobro: decir que no actuo
+                # seria mentir sobre plata que salio
+                fin = "error"
+                motivo = f"{motivo} (no pudo anotar en su memoria: {exc})"
         return salida(accion, ref, motivo, permiso, freno, resultado)
     except Exception as exc:
         fin = "error"
