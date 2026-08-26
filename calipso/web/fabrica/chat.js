@@ -9,11 +9,22 @@ import {crearSocketQueReconecta} from "./socket.js";
 
 export function estadoInicial() {
   return {turnos: [], pensando: false, chatId: null, ruta: null,
-          modelo: null, costo_usd: 0, tokens: 0, conectado: false};
+          modelo: null, costo_usd: 0, tokens: 0, costo_mm: 0, cuenta: null,
+          conectado: false, epoca: 0};
 }
 
-export function paquete(texto, chatId) {
-  return {text: texto, chat_id: chatId};
+export function paquete(texto, chatId, departamento = null) {
+  const p = {text: texto, chat_id: chatId};
+  // el departamento va SOLO si hay uno: mandar null en cada turno haria que
+  // el server tenga que distinguir "sin foco" de "foco borrado"
+  if (departamento) p.departamento = departamento;
+  return p;
+}
+
+export function turnosDeHistorial(mensajes) {
+  return (mensajes || []).map(m => ({
+    quien: m.role === "user" ? "pedro" : "calipso",
+    texto: m.text || "", abierto: false}));
 }
 
 export function aplicarEvento(estado, ev) {
@@ -45,9 +56,12 @@ export function aplicarEvento(estado, ev) {
       if (ev.model) e.modelo = ev.model;
       break;
     case "cost":
-      // campos reales del /ws/chat: cost_usd y tokens (server.py:2423)
+      // campos reales del /ws/chat: cost_usd y tokens (server.py), mas la
+      // cuenta que pago y las milimonedas que se le cobraron
       e.costo_usd = e.costo_usd + (ev.cost_usd || 0);
       e.tokens = e.tokens + (ev.tokens || 0);
+      e.costo_mm = e.costo_mm + (ev.mm || 0);
+      if (ev.cuenta && ev.cuenta !== "personal") e.cuenta = ev.cuenta;
       break;
     case "error":
       e.pensando = false;
@@ -96,7 +110,7 @@ export function crearChat(alCambiar, ConstructorWS = WebSocket) {
     // Devuelve si el mensaje salio de verdad. Mientras el socket conecta
     // o reconecta no hay adonde mandarlo, y quien llama tiene que
     // enterarse en vez de que el texto desaparezca en silencio.
-    enviar(texto) {
+    enviar(texto, departamento = null) {
       const ws = conexion.socket();
       if (!texto.trim() || !ws || ws.readyState !== ConstructorWS.OPEN) {
         return false;
@@ -105,8 +119,16 @@ export function crearChat(alCambiar, ConstructorWS = WebSocket) {
                 turnos: [...estado.turnos,
                          {quien: "pedro", texto, abierto: false}]};
       alCambiar(estado);
-      ws.send(JSON.stringify(paquete(texto, estado.chatId)));
+      ws.send(JSON.stringify(paquete(texto, estado.chatId, departamento)));
       return true;
+    },
+    /** Otro chat: los turnos se reemplazan enteros y la epoca sube para que
+     *  quien pinta sepa que tiene que rehacer los nodos, no agregarles. */
+    cargar(chat) {
+      estado = {...estado, chatId: chat.id,
+                turnos: turnosDeHistorial(chat.messages),
+                epoca: estado.epoca + 1};
+      alCambiar(estado);
     },
   };
 }

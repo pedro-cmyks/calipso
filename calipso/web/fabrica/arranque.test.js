@@ -115,7 +115,7 @@ function montarNavegador() {
   for (const id of ["app", "panel-chats", "lista-chats", "panel-centro",
                     "conversacion", "entrada", "texto", "panel-mapa",
                     "expandir", "tarjeta", "sin-fabrica", "pestanas",
-                    "avisos"]) {
+                    "avisos", "costo", "foco", "razonamiento", "empleado"]) {
     nodos.set(id, nodo(id));
   }
   const pestanas = [nodo("", "button"), nodo("", "button")];
@@ -160,9 +160,15 @@ function montarNavegador() {
   };
 
   const pedidos = [];
-  globalThis.fetch = url => {
+  globalThis.fetch = (url, opciones) => {
     pedidos.push(String(url));
-    if (String(url).includes("/api/chats")) return new Promise(() => {});
+    // solo la lista cuelga: es el caso que este archivo fija (el mapa
+    // arranca sin esperarla). El activate tiene que poder resolver
+    if (String(url).endsWith("/api/chats")) return new Promise(() => {});
+    if (String(url).includes("/activate")) {
+      return Promise.resolve({ok: true, json: async () => (
+        {id: "c9", title: "otro", messages: [{role: "user", text: "viejo"}]})});
+    }
     return Promise.resolve({ok: true,
                             json: async () => ({activa: true,
                                                 ciudad: ciudadDePrueba()})});

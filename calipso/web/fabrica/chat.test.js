@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {estadoInicial, aplicarEvento, paquete, crearChat} from "./chat.js";
+import {estadoInicial, aplicarEvento, paquete, crearChat,
+        turnosDeHistorial} from "./chat.js";
 
 const aplicar = (eventos, e0 = estadoInicial()) =>
   eventos.reduce((e, ev) => aplicarEvento(e, ev), e0);
@@ -44,6 +45,13 @@ test("el paquete lleva el texto y el chat", () => {
 
 test("un paquete sin chat todavia no inventa uno", () => {
   assert.equal(paquete("hola", null).chat_id, null);
+});
+
+test("el paquete lleva el departamento tocado, y solo si hay uno", () => {
+  assert.deepEqual(paquete("hola", "c1", "dep:atlas"),
+                   {text: "hola", chat_id: "c1", departamento: "dep:atlas"});
+  assert.deepEqual(paquete("hola", "c1", null),
+                   {text: "hola", chat_id: "c1"});
 });
 
 test("pensando prende la señal y los chunks arman el turno", () => {
@@ -93,6 +101,19 @@ test("un cost sin montos no ensucia el acumulado", () => {
   assert.ok(Math.abs(e.costo_usd - 0.03) < 1e-9);
 });
 
+test("el evento cost dice quien pago", () => {
+  let e = estadoInicial();
+  e = aplicarEvento(e, {type: "cost", cost_usd: 0.004, tokens: 1200,
+                        cuenta: "dep:atlas", mm: 270});
+  assert.equal(e.cuenta, "dep:atlas");
+  assert.equal(e.costo_mm, 270);
+  assert.equal(e.tokens, 1200);
+  // dos turnos seguidos acumulan las milimonedas, igual que los tokens
+  e = aplicarEvento(e, {type: "cost", cost_usd: 0.001, tokens: 300,
+                        cuenta: "dep:atlas", mm: 30});
+  assert.equal(e.costo_mm, 300);
+});
+
 test("un error se ve y corta el pensar", () => {
   const e = aplicar([{type: "thinking"}, {type: "error", text: "se cayo"}]);
   assert.equal(e.pensando, false);
@@ -103,6 +124,17 @@ test("un error se ve y corta el pensar", () => {
 test("el chat activo que manda el servidor se guarda", () => {
   const e = aplicar([{type: "chat", action: "active", chat: {id: "c9"}}]);
   assert.equal(e.chatId, "c9");
+});
+
+test("el historial de otro chat se convierte en turnos", () => {
+  const turnos = turnosDeHistorial([
+    {role: "user", text: "hola", ts: "x"},
+    {role: "assistant", text: "que tal", meta: {route: "api"}},
+  ]);
+  assert.deepEqual(turnos, [{quien: "pedro", texto: "hola", abierto: false},
+                            {quien: "calipso", texto: "que tal",
+                             abierto: false}]);
+  assert.deepEqual(turnosDeHistorial(null), []);
 });
 
 test("un evento desconocido no rompe ni cambia nada", () => {
@@ -229,4 +261,16 @@ test("el cierre del socket apaga la bandera de conectado, sin tocar los turnos",
   } finally {
     globalThis.setTimeout = propioSetTimeout;
   }
+});
+
+test("cargar otro chat reemplaza los turnos y sube la epoca", () => {
+  // la epoca es lo que le dice a app.js que tiene que rehacer los nodos:
+  // sin eso, los turnos del chat viejo quedan arriba de los del nuevo
+  const vistos = [];
+  const chat = crearChat(e => vistos.push(e), WSFalso);
+  chat.cargar({id: "c9", messages: [{role: "user", text: "viejo"}]});
+  const estado = vistos.at(-1);
+  assert.equal(estado.chatId, "c9");
+  assert.equal(estado.turnos.length, 1);
+  assert.ok(estado.epoca > estadoInicial().epoca);
 });

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {disposicion, textoDeTarjeta, posicionDeTarjeta, resumenDeAvisos,
-        ANCHO_TELEFONO} from "./paneles.js";
+        ANCHO_TELEFONO, textoDeCosto, textoDeFoco} from "./paneles.js";
 import {fichaDe} from "./ciudad.js";
 
 function ciudadDePrueba() {
@@ -95,4 +95,36 @@ test("una ciudad sin avisos devuelve una lista vacia, no null", () => {
   const c = ciudadDePrueba();
   c.avisos = [];
   assert.deepEqual(resumenDeAvisos(c), []);
+});
+
+test("el costo corriendo dice ruta, modelo, tokens y quien paga", () => {
+  const texto = textoDeCosto({ruta: "api", modelo: "sonnet", tokens: 1234,
+                              costo_usd: 0.0042, cuenta: "dep:atlas",
+                              costo_mm: 270});
+  assert.match(texto, /api/);
+  assert.match(texto, /sonnet/);
+  assert.match(texto, /1\.234/);        // separador de miles en es
+  assert.match(texto, /atlas/);
+  assert.match(texto, /0,27/);          // 270 milimonedas son 0,27 monedas
+});
+
+test("sin turno todavia, la barra de costo esta vacia y no dice cero", () => {
+  assert.equal(textoDeCosto({ruta: null, modelo: null, tokens: 0,
+                             costo_usd: 0}), "");
+});
+
+test("el costo no inventa una cuenta cuando paga Pedro", () => {
+  const texto = textoDeCosto({ruta: "local", modelo: "qwen2.5:7b",
+                              tokens: 40, costo_usd: 0});
+  assert.ok(!texto.includes("paga"), texto);
+});
+
+test("la etiqueta de foco nombra al departamento y ofrece soltarlo", () => {
+  const texto = textoDeFoco({id: "dep:atlas", nombre: "atlas",
+                             saldo: "1.148"});
+  assert.match(texto, /atlas/);
+  assert.match(texto, /data-accion="quitar"/);
+  // el nombre lo escribe Pedro: va escapado, como en la tarjeta
+  const feo = textoDeFoco({id: "dep:x", nombre: '<img src=x>', saldo: "0"});
+  assert.ok(!feo.includes("<img"), feo);
 });

@@ -52,6 +52,23 @@ html, body {
 }
 .lista .chat.activo { color: var(--acento); }
 
+.costo {
+  color: var(--tenue); font-size: 11px; text-transform: none;
+  letter-spacing: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; max-width: 60%;
+}
+
+.foco {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--linea);
+  background: #12161c; color: var(--tenue); font-size: 12px;
+}
+.foco b { color: var(--acento); font-weight: 600; }
+.foco button {
+  background: transparent; border: 1px solid var(--linea); color: var(--tenue);
+  border-radius: 4px; padding: 2px 7px; font-size: 11px; cursor: pointer;
+}
+
 .conversacion { flex: 1; overflow-y: auto; padding: 10px; }
 .conversacion .turno { margin-bottom: 12px; white-space: pre-wrap; }
 .conversacion .turno.mio { color: var(--acento); }

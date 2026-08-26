@@ -16,8 +16,13 @@
   </aside>
 
   <main id="panel-centro" class="panel">
-    <div class="titulo">Calipso</div>
+    <div class="titulo">
+      <span>Calipso</span>
+      <span id="costo" class="costo"></span>
+    </div>
+    <div id="foco" class="foco oculto"></div>
     <div id="conversacion" class="conversacion"></div>
+    <div id="razonamiento" class="razonamiento oculto"></div>
     <form id="entrada" autocomplete="off">
       <input id="texto" type="text" placeholder="Escribi a Calipso">
       <button type="submit">Enviar</button>
@@ -32,6 +37,7 @@
     <div class="lienzo">
       <canvas id="mapa"></canvas>
       <div id="tarjeta" class="tarjeta oculto"></div>
+      <div id="empleado" class="tarjeta oculto"></div>
       <div id="sin-fabrica" class="sin-fabrica oculto">
         Todavia no hay fabrica: la economia no esta activa.
       </div>

@@ -10,7 +10,7 @@ import {crearCamara, arrastrar, acercar, paso, encuadrar,
 import {cargarCiudad, enPunto, fichaDe} from "./ciudad.js";
 import {crearMapa} from "./mapa.js";
 import {disposicion, escapar, textoDeTarjeta, posicionDeTarjeta,
-        resumenDeAvisos} from "./paneles.js";
+        resumenDeAvisos, textoDeCosto, textoDeFoco} from "./paneles.js";
 import {crearChat} from "./chat.js";
 import {crearPulso, empleadosDe, estadoVisible} from "./pulso.js";
 
@@ -114,6 +114,10 @@ function soltar(ev) {
   if (tocado && !tocado.movio && punteros.size === 1 && ciudad) {
     resaltado = enPunto(ciudad, cam, mapa.vista(), tocado.x, tocado.y);
     pintarTarjeta(tocado.x, tocado.y);
+    if (resaltado) {           // tocar un edificio lo fija como contexto
+      enFoco = resaltado;      // y su billetera pasa a pagar (spec 8)
+      pintarFoco();
+    }
   }
   punteros.delete(ev.pointerId);
   if (punteros.size < 2) pinza = null;
@@ -141,6 +145,23 @@ lienzo.addEventListener("wheel", ev => {
 const app = document.getElementById("app");
 const tarjeta = document.getElementById("tarjeta");
 const barra = document.getElementById("avisos");
+const barraCosto = document.getElementById("costo");
+const barraFoco = document.getElementById("foco");
+let enFoco = null;            // el edificio tocado: contexto y pagador
+let ultimaEpoca = 0;
+
+function pintarFoco() {
+  const ficha = (ciudad && enFoco) ? fichaDe(ciudad, enFoco) : null;
+  barraFoco.classList.toggle("oculto", !ficha);
+  barraFoco.innerHTML = ficha ? textoDeFoco(ficha) : "";
+}
+
+barraFoco.addEventListener("click", ev => {
+  if (ev.target && ev.target.dataset.accion === "quitar") {
+    enFoco = null;
+    pintarFoco();
+  }
+});
 
 // El layout lo resuelve el CSS con su media query, que no depende de que
 // el JS ande. `disposicion` decide lo que el CSS no puede: en el telefono
@@ -250,6 +271,13 @@ function pintarConversacion(turnos) {
 }
 
 const chat = crearChat(estado => {
+  if (estado.epoca !== ultimaEpoca) {
+    // se cargo otro chat: los nodos del anterior no se reciclan
+    ultimaEpoca = estado.epoca;
+    nodosDeTurno.length = 0;
+    avisoPasajero = null;
+    conversacion.innerHTML = "";
+  }
   pintarConversacion(estado.turnos);
   conversacion.scrollTop = conversacion.scrollHeight;
   // el estado de conexion se pinta DESDE el estado. El aviso que agrega el
@@ -258,11 +286,12 @@ const chat = crearChat(estado => {
   formulario.classList.toggle("sin-conexion", !estado.conectado);
   campo.placeholder = estado.conectado
     ? "Escribi a Calipso" : "Sin conexion con Calipso";
+  barraCosto.textContent = textoDeCosto(estado);
 });
 
 formulario.addEventListener("submit", ev => {
   ev.preventDefault();
-  if (chat.enviar(campo.value)) {
+  if (chat.enviar(campo.value, enFoco)) {
     campo.value = "";
     return;
   }
@@ -286,6 +315,22 @@ function pintarChats(datos) {
               `${escapar(c.title || "sin titulo")}</div>`)
     .join("");
 }
+
+listaChats.addEventListener("click", async ev => {
+  const fila = ev.target && ev.target.dataset && ev.target.dataset.id
+    ? ev.target : null;
+  if (!fila) return;
+  try {
+    const r = await fetch(`/api/chats/${encodeURIComponent(fila.dataset.id)}/activate`,
+                          {method: "POST"});
+    if (!r.ok) return;
+    chat.cargar(await r.json());
+    fetch("/api/chats").then(x => (x.ok ? x.json() : null))
+      .then(d => { if (d) pintarChats(d); });
+  } catch (e) {
+    // sin conexion no se cambia de chat; el que estaba sigue entero
+  }
+});
 
 // El mapa arranca PRIMERO y sin esperar a nadie. Este modulo no lleva un
 // solo `await` arriba de todo a proposito: un `await` en el cuerpo del

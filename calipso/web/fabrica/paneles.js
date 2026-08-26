@@ -7,6 +7,9 @@
  */
 import {monedas} from "./ciudad.js";
 
+const NUMERO = new Intl.NumberFormat("es", {maximumFractionDigits: 0,
+                                            useGrouping: "always"});
+
 export const ANCHO_TELEFONO = 820;   // el mismo corte que el media query
 
 export function disposicion(ancho) {
@@ -56,4 +59,26 @@ export function resumenDeAvisos(ciudad) {
       texto: `${a.tipo}${a.sobre ? " en " + a.sobre.split(":").pop() : ""}` +
              ` — ${monedas(a.monedas_en_juego_mm)}`,
     }));
+}
+
+/** El costo del turno, corriendo. Vacio antes del primer turno: una barra
+ *  que dice "0 tokens" ocupa lugar para no decir nada. */
+export function textoDeCosto(estado) {
+  if (!estado || (!estado.ruta && !estado.tokens)) return "";
+  const partes = [estado.ruta, estado.modelo,
+                  `${NUMERO.format(estado.tokens || 0)} tokens`];
+  if (estado.costo_usd) partes.push(`${estado.costo_usd.toFixed(4)} USD`);
+  if (estado.cuenta) {
+    partes.push(`paga ${estado.cuenta.split(":").pop()}` +
+                (estado.costo_mm ? ` ${monedas(estado.costo_mm)}` : ""));
+  }
+  return partes.filter(Boolean).join(" · ");
+}
+
+/** La etiqueta de que departamento esta fijado como contexto. */
+export function textoDeFoco(ficha) {
+  if (!ficha) return "";
+  return `<span>hablando sobre <b>${escapar(ficha.nombre)}</b>` +
+         ` — saldo ${escapar(ficha.saldo)}</span>` +
+         `<button type="button" data-accion="quitar">quitar</button>`;
 }
