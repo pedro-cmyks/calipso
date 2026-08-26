@@ -14,12 +14,39 @@ def test_sin_archivo_arranca_encendido_y_en_ensayo(tmp_path):
     assert it.puede_gastar(e) is False
 
 
-def test_un_archivo_ilegible_no_revienta(tmp_path):
-    """Se lee al principio de CADA tic: no puede ser una fuente de fallas."""
+def test_un_archivo_ilegible_no_revienta_ni_resucita_la_fabrica(tmp_path):
+    """Se lee al principio de CADA tic: no puede ser una fuente de fallas.
+    Y como el archivo EXISTE, lo ilegible puede ser un parar de Pedro que se
+    perdio -- asi que no puede volver a encender solo. Eso es distinto de un
+    archivo que nunca existio, que no sabe nada de ningun parar."""
     p = it.ruta(tmp_path)
     p.parent.mkdir(parents=True)
     p.write_text("{esto no es json", encoding="utf-8")
-    assert it.leer(tmp_path) == it.Estado()
+    e = it.leer(tmp_path)
+    assert e.modo == "ensayo" and it.puede_gastar(e) is False
+    assert e.encendido is False
+
+
+def test_un_archivo_con_una_lista_en_vez_de_dict_tampoco_resucita(tmp_path):
+    """Un JSON valido pero con la forma equivocada (una lista, no un dict)
+    es el mismo caso que el archivo ilegible: presente, pero no se entiende."""
+    p = it.ruta(tmp_path)
+    p.parent.mkdir(parents=True)
+    p.write_text(json.dumps(["esto", "es", "una", "lista"]), encoding="utf-8")
+    e = it.leer(tmp_path)
+    assert e.modo == "ensayo" and it.puede_gastar(e) is False
+    assert e.encendido is False
+
+
+def test_parar_seguido_de_corrupcion_no_resucita_la_fabrica(tmp_path):
+    """El caso concreto que motiva el punto 2: Pedro apreta parar, despues
+    el archivo se corrompe por lo que sea (disco lleno a mitad de camino,
+    una edicion a mano que rompe el JSON) -- el freno no se puede olvidar."""
+    it.parar(tmp_path)
+    assert it.leer(tmp_path).encendido is False
+    it.ruta(tmp_path).write_text("{esto rompe el json despues del parar",
+                                 encoding="utf-8")
+    assert it.leer(tmp_path).encendido is False
 
 
 def test_un_modo_inventado_cae_en_ensayo(tmp_path):

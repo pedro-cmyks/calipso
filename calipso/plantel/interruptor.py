@@ -69,10 +69,19 @@ def _techo(d: dict) -> int:
 
 
 def leer(base) -> Estado:
-    """Un archivo ausente, ilegible o con un modo inventado da el estado por
-    defecto. Corre al principio de cada tic: no puede ser una fuente de
-    fallas nueva, y un modo raro no puede volverse permiso para gastar."""
+    """Un archivo ausente da el default seguro (encendido=True, ensayo): es
+    el arranque limpio, sin nada configurado todavia. Un archivo presente
+    pero ilegible es otra cosa -puede ser un parar de Pedro que se perdio
+    a mitad de una escritura rota- asi que ahi fallamos apagado. Corre al
+    principio de cada tic: no puede ser una fuente de fallas nueva, y un
+    modo raro no puede volverse permiso para gastar."""
+    p = ruta(base)
     d = _crudo(base)
+    if not d and p.exists():
+        # el archivo esta ahi pero no se entiende. Eso NO es lo mismo que
+        # "nunca configure nada": puede ser un parar de Pedro que se perdio,
+        # asi que fallamos al lado seguro. Reanudar reescribe uno valido.
+        return Estado(encendido=False)
     modo = d.get("modo")
     return Estado(encendido=bool(d.get("encendido", True)),
                   modo=modo if modo in MODOS else "ensayo",
