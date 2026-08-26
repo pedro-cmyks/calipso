@@ -46,10 +46,10 @@
 | `calipso/web/fabrica/mapa.js` | **MODIFICAR**. El cruce de fundido entre exterior e interior. |
 | `calipso/web/fabrica/paneles.js` | **MODIFICAR**. El texto del popup del empleado, la barra de costo corriendo y la etiqueta del departamento en foco. |
 | `calipso/web/fabrica/chat.js` | **MODIFICAR**. Mandar el departamento en el paquete, cargar el historial de otro chat, exponer el costo del turno. |
-| `calipso/web/fabrica/ciudad.js` | **MODIFICAR**. Nada de lógica nueva: solo el helper que dice si un id es un departamento cobrable. |
 | `calipso/web/fabrica/app.js` | **MODIFICAR**. El cableado de todo lo anterior. |
 | `calipso/web/fabrica/index.html` | **MODIFICAR**. Los nodos nuevos: etiqueta de foco, barra de costo, panel de razonamiento, popup del empleado. |
 | `calipso/web/fabrica/estilo.css` | **MODIFICAR**. Los estilos de esos nodos. |
+| `calipso/web/sw.js` | **MODIFICAR**. Los dos módulos nuevos entran en el SHELL. `test_mapa_server.py` deriva la lista esperada de los archivos reales del directorio: un `.js` nuevo que no esté en el SHELL pone la suite en rojo. |
 | `test_mapa_pulso.py` | **NUEVO**. Tests del anillo, la vista y el envoltorio. |
 | `test_mapa_ws.py` | **NUEVO**. Tests del `WS /ws/mapa` con `TestClient`. |
 | `test_mapa_foco.py` | **NUEVO**. Tests del filtro de la marca. |
@@ -732,7 +732,7 @@ git commit -m "feat(pulso): el canal en vivo — /ws/mapa con cursor y latido"
 
 Calipso emite `⟦foco:atlas⟧` cuando la conversación pasa a tratar de un departamento. Pedro no la ve: el servidor la retira del stream y la convierte en un vuelo de cámara. El stream llega partido en trozos arbitrarios, así que la marca puede quedar cortada en cualquier lado; el filtro retiene la cola sospechosa hasta poder decidir.
 
-Todo el texto que Pedro lee pasa a salir por un solo objeto, el `Emisor`. Hoy los `{"type": "chunk"}` se mandan desde cinco lugares distintos de `ws_chat` y filtrar en cinco lugares es filtrar en cuatro.
+Todo el texto que Pedro lee pasa a salir por un solo objeto, el `Emisor`. Hoy los `{"type": "chunk"}` se mandan desde **siete** lugares de `ws_chat`, de los que cinco llevan texto de un modelo; filtrar en cinco lugares es filtrar en cuatro.
 
 **Files:**
 - Create: `calipso/mapa/foco.py`
@@ -812,6 +812,15 @@ def test_el_texto_sin_marcas_pasa_intacto_y_sin_retener_nada():
     assert f.comer("una respuesta comun y corriente") == (
         "una respuesta comun y corriente")
     assert f.cerrar() == ""
+
+
+def test_limpiar_saca_las_marcas_de_un_texto_entero():
+    """Para el acumulado de la ruta de suscripcion, que no es incremental."""
+    assert foco.limpiar("hola ⟦foco:atlas⟧ y ⟦foco:mercado⟧ chau") == (
+        "hola  y  chau")
+    # una marca a medio llegar se deja: el proximo envio trae el texto entero
+    assert foco.limpiar("cortada ⟦foco:atl") == "cortada ⟦foco:atl"
+    assert foco.limpiar("") == "" and foco.limpiar(None) == ""
 ```
 
 - [ ] **Step 2: Correr el test y ver que falla**
@@ -837,6 +846,8 @@ hasta poder decidir. `cerrar()` devuelve lo retenido: una marca que nunca
 cierra es texto, y tragarsela seria comerse el final de la respuesta.
 """
 from __future__ import annotations
+
+import re
 
 ABRE = "⟦foco:"
 CIERRA = "⟧"
@@ -894,6 +905,20 @@ class Filtro:
         """Los consume: la camara no tiene que volar dos veces por lo mismo."""
         focos, self._focos = self._focos, []
         return focos
+
+
+_MARCA = re.compile(re.escape(ABRE) + "[^" + re.escape(CIERRA) + "]*"
+                    + re.escape(CIERRA))
+
+
+def limpiar(texto: str) -> str:
+    """Saca las marcas COMPLETAS de un texto que ya llego entero.
+
+    El `Filtro` es para un stream partido en trozos; esto es para un
+    acumulado que se remanda entero cada tanto (el `partial` de la ruta de
+    suscripcion). Sin estado y sin retencion: una marca a medio llegar se
+    limpia sola en el envio siguiente."""
+    return _MARCA.sub("", texto or "")
 ```
 
 - [ ] **Step 4: Correr el test y ver que pasa**
@@ -984,6 +1009,14 @@ def test_el_contrato_interno_le_dice_al_modelo_como_emitir_la_marca():
     texto = prompt_compiler.internal_contract({})
     assert foco.ABRE in texto and foco.CIERRA in texto
     assert "no la ve" in texto or "no se muestra" in texto
+
+
+def test_el_parcial_de_la_suscripcion_tampoco_muestra_la_marca():
+    """El otro camino por el que el texto del modelo llega a Pedro: el
+    acumulado que la ruta de suscripcion remanda cada dos segundos."""
+    assert srv._limpiar_marcas("corriendo ⟦foco:atlas⟧ todavia") == (
+        "corriendo  todavia")
+    assert srv._limpiar_marcas("") == ""
 
 
 def test_los_edificios_livianos_no_tocan_el_libro(tmp_path, monkeypatch):
@@ -1178,7 +1211,7 @@ En `calipso/server.py`, adentro de `ws_chat`, **después** del `await ws.send_js
 
 Después, reemplazar los cinco envíos de chunk:
 
-1. En el bucle de la ruta normal:
+1. En el bucle de la ruta normal (`server.py:2329-2330`, a **24** espacios):
 ```python
                         full += chunk
                         await ws.send_json({"type": "chunk", "text": chunk})
@@ -1188,9 +1221,17 @@ pasa a
                         full += await emisor.chunk(chunk)
 ```
 
-2. En el bucle del fallback local (el que está adentro del `except`), **la misma sustitución**, con el mismo texto exacto.
+2. En el bucle del fallback local (`server.py:2412-2413`, adentro del `except`), la misma sustitución **pero a 28 espacios**: ese bucle está un nivel más adentro, así que el texto no es el mismo y un `old_string` copiado del item 1 no lo encuentra. La ventaja colateral es que, al diferir la indentación, cada uno es un anclaje único.
+```python
+                            full += chunk
+                            await ws.send_json({"type": "chunk", "text": chunk})
+```
+pasa a
+```python
+                            full += await emisor.chunk(chunk)
+```
 
-3. En la rama del orquestador:
+3. El par de la rama del orquestador (`server.py:2300-2301`) y el de la rama de suscripción (`server.py:2309-2310`) son **byte a byte idénticos**, los dos a 20 espacios: un reemplazo por texto falla por ambigüedad. La sustitución va a las **tres** apariciones —esas dos, más la del fallback entre suscripciones (`server.py:2363-2364`, a 32 espacios)— con `replace_all`, o desambiguando cada una con su línea anterior:
 ```python
                     usage["completion_tokens"] = len(full.split())
                     await ws.send_json({"type": "chunk", "text": full})
@@ -1200,10 +1241,32 @@ pasa a
                     usage["completion_tokens"] = len(full.split())
                     full = await emisor.chunk(full)
 ```
+En las tres, `usage["completion_tokens"]` se calcula **antes** de filtrar, que es lo correcto: los tokens los gastó el modelo escribiendo la marca.
 
-4. En la rama de suscripción, la misma sustitución (aparece dos veces más: la principal y la del fallback entre suscripciones). En las tres, `usage["completion_tokens"]` se calcula **antes** de filtrar, que es lo correcto: los tokens los gastó el modelo escribiendo la marca.
+4. Los dos envíos que **no** se tocan son los que escribe el server, no un modelo: el de `goal_objective` (`await ws.send_json({"type": "chunk", "text": reply})`) y el de `HELP_TEXT`. No llevan marcas.
 
-5. En la rama del `goal_objective` (`await ws.send_json({"type": "chunk", "text": reply})`) **no se toca**: ese texto lo escribe el server, no un modelo, y no lleva marcas.
+5. La ruta de suscripción manda el texto crudo del modelo por **otro** camino, que no es un chunk: `_run_subscription_text_live` reenvía el acumulado cada dos segundos como `{"type": "process", "action": "running", "partial": ...}` (`server.py:2019-2026`), y la UI vieja lo pinta en su panel de proceso (`calipso/web/index.html`). Ahí la marca se vería. En ese `send_json`, cambiar
+
+```python
+                    "partial": partial[-3000:] if partial else "",
+```
+
+por
+
+```python
+                    "partial": _limpiar_marcas(partial[-3000:]) if partial else "",
+```
+
+y poner el helper junto al `Emisor`:
+
+```python
+def _limpiar_marcas(texto: str) -> str:
+    """El parcial de la suscripcion se remanda ENTERO cada dos segundos, asi
+    que no necesita la maquinaria de retencion del Filtro: alcanza con sacar
+    las marcas completas. Una marca a medio llegar se limpia sola en el envio
+    siguiente, porque el texto se relee desde cero."""
+    return _mapa_foco.limpiar(texto) if _mapa_foco is not None else texto
+```
 
 Y justo antes del bloque `# 4) registrar costo/uso y avisar`:
 
@@ -1321,7 +1384,7 @@ En `ws_chat`, donde la Task 3 dejó `agente_id = "chat:" + uuid.uuid4().hex[:8]`
                                   modelo=model)
 ```
 
-`departamento` lo define la Task 5; hasta que esa tarea aterrice, poner `departamento=None` y dejar el nombre para el paso siguiente.
+**Ojo:** `departamento` lo define la Task 5. En esta tarea va literalmente `departamento=None` en el snippet de arriba; la Task 5 lo reemplaza por la variable. La misma advertencia vale para el paso 6.
 
 Y justo después del `await ws.send_json({"type": "cost", ...})`:
 
@@ -1392,13 +1455,56 @@ Adentro del `for idx, agent in enumerate(agents, start=1):`, envolver desde el `
     ws_agente_base = "equipo:" + uuid.uuid4().hex[:8]
 ```
 
-Y en la llamada desde `ws_chat`, pasarle el departamento:
+Y en la llamada desde `ws_chat`, pasarle el departamento — **con la misma salvedad del paso 5**: en esta tarea la variable `departamento` todavía no existe, así que la llamada se deja como está y el argumento lo agrega la Task 5. El parámetro nuevo tiene default `None`, así que la firma vieja sigue siendo válida:
 
 ```python
+                    # la Task 5 le agrega aca `departamento=departamento`
                     full, agent_team, queued = await _run_dynamic_team(
                         ws, inbox, chat_msg, features, system, verdict,
-                        approval_required=bool(directives.get("force_team")),
-                        departamento=departamento)
+                        approval_required=bool(directives.get("force_team")))
+```
+
+- [ ] **Step 6b: Publicar el `diff` que deja el borrador**
+
+El spec pide un evento `diff` (sección 5) y que el popup del empleado muestre "el diff de lo que tocó" (sección 9). El único punto del server que hoy produce un diff de verdad es `_run_chat_draft`, que ya lo calcula para mandarlo como `proposal`. Sin este paso, el evento `diff` queda declarado y sin productor, y el campo `toco` del popup nunca se llena.
+
+En `calipso/server.py`, la firma (`server.py:580`):
+
+```python
+async def _run_chat_draft(ws, chat_msg: str, file_path: str,
+                          agente_id: str | None = None) -> None:
+```
+
+y justo después de `diff = _proposal_diff(file_path, new_content)`:
+
+```python
+    if EL_PULSO is not None and agente_id:
+        # el rastro del agente: es lo que el popup del empleado muestra como
+        # "toco" y lo que el panel de razonamiento pinta abajo del texto
+        EL_PULSO.publicar(agente_id, "diff", ruta=file_path, diff=diff)
+```
+
+En la llamada (`server.py:2244`), pasarle el agente del turno:
+
+```python
+                asyncio.ensure_future(_run_chat_draft(ws, chat_msg, _edit_target,
+                                                      agente_id))
+```
+
+`_run_chat_draft` se define mil líneas antes que `EL_PULSO`, y eso está bien: el nombre se resuelve cuando la función corre, no cuando se define.
+
+Y el test, en `test_mapa_ws.py`:
+
+```python
+def test_el_borrador_deja_su_diff_en_el_anillo_del_agente(monkeypatch):
+    """El evento `diff` tenia consumidores (el popup, el panel) y ningun
+    productor: el unico diff real del server es el del borrador."""
+    pu = p.Pulso()
+    monkeypatch.setattr(srv, "EL_PULSO", pu)
+    pu.publicar("chat:abc", "inicio", departamento="dep:atlas", rol="calipso")
+    pu.publicar("chat:abc", "diff", ruta="a.py", diff="- viejo\n+ nuevo")
+    empleado = pu.empleados("dep:atlas")[0]
+    assert empleado["diff"] == {"ruta": "a.py", "diff": "- viejo\n+ nuevo"}
 ```
 
 - [ ] **Step 7: Correr la suite entera**
@@ -1582,6 +1688,23 @@ def test_un_cobro_que_no_entra_queda_pendiente_y_no_voltea_el_chat(tmp_path,
                       {"prompt_tokens": 1_000_000, "completion_tokens": 0})
     pendientes = pag.Pagador(eco).pendientes()
     assert len(pendientes) == 1 and pendientes[0]["cuenta"] == "dep:atlas"
+
+
+def test_el_turno_de_equipo_dinamico_tambien_le_cobra_al_departamento(economia):
+    """`used_route` vale "orchestrator" cuando corre el equipo dinamico. Si
+    eso llega crudo a `_cobrar_turno`, los agentes gastan y el departamento
+    no paga nada — que es justo lo contrario del criterio de exito del spec."""
+    antes = saldo(economia, "dep:atlas")
+    # lo que el llamador normaliza: orchestrator no es una ruta cobrable
+    ruta = "api"      # verdict["route"] del turno
+    cobrado = srv._cobrar_turno("dep:atlas", ruta, None, "deepseek-chat",
+                                {"prompt_tokens": 1_000_000,
+                                 "completion_tokens": 0})
+    assert cobrado == 270 and saldo(economia, "dep:atlas") == antes - 270
+    # y la ruta cruda no cobra nada, que es el bug que la normalizacion evita
+    assert srv._cobrar_turno("dep:atlas", "orchestrator", None,
+                             "deepseek-chat",
+                             {"prompt_tokens": 1_000_000}) == 0
 
 
 def test_el_modelo_de_ciudad_se_deriva_una_sola_vez_y_sin_coordenadas(economia):
@@ -1846,7 +1969,7 @@ con `_eco_suscripcion = None` en el `except` correspondiente.
                     system += "\n\n" + bloque_dep
 ```
 
-En la principal, el `attachment_context` se agrega sin `if` de por medio (`attachment_context = attachments.context_block(...)` y después `if attachment_context: system += ...`); el bloque del departamento va igual, justo debajo.
+La aparición principal está justo después de `attachment_context = attachments.context_block(...)` (`server.py:2275-2277`) y tiene su `if` como las otras tres; el bloque del departamento va debajo, igual que en el resto.
 
 5. Reemplazar el `agente_id`/`inicio` que dejó la Task 4 para que lleve el departamento de verdad:
 
@@ -1863,8 +1986,14 @@ En la principal, el `attachment_context` se agrega sin `if` de por medio (`attac
             entry = costs.log_usage(
                 used_route, model, usage.get("prompt_tokens", 0),
                 usage.get("completion_tokens", 0), client=verdict.get("client"))
+            # `used_route` vale "orchestrator" cuando corrio el equipo dinamico,
+            # y esa no es una ruta que se pueda cobrar: los agentes gastaron
+            # por la ruta base del verdict. Sin esta normalizacion, un turno
+            # de equipo con atlas en foco no le cobra un peso a atlas.
+            ruta_cobrable = (verdict["route"] if used_route == "orchestrator"
+                             else used_route)
             cobrado = await asyncio.to_thread(
-                _cobrar_turno, cuenta, used_route, verdict.get("client"),
+                _cobrar_turno, cuenta, ruta_cobrable, verdict.get("client"),
                 model, usage)
             await ws.send_json({"type": "cost", "model": model, "route": used_route,
                                 "tokens": entry["prompt_tokens"] + entry["completion_tokens"],
@@ -2270,33 +2399,70 @@ const socket = nav.sockets.find(s => s.url.endsWith("/ws/chat"));
 const socketMapa = nav.sockets.find(s => s.url.endsWith("/ws/mapa"));
 ```
 
-y agregar el test que fija que el segundo existe:
+Para poder afirmar que la cámara se movió hace falta poder verla. El archivo importa `app.js` descartando el módulo (`import("./app.js").then(() => "cargado")`, línea 183): cambiarlo para quedárselo, con un `let modulo = null;` arriba del `Promise.race`:
+
+```js
+let modulo = null;
+const cargado = await Promise.race([
+  import("./app.js").then(m => { modulo = m; return "cargado"; }),
+  new Promise(r => { plazo = setTimeout(() => r("colgado"), PLAZO); }),
+]);
+```
+
+y en `app.js`, junto a `volarAEdificio`, un lector de una línea:
+
+```js
+// Solo para arranque.test.js: la camara es interna y sin esto el test del
+// foco no puede afirmar nada mas que "el chat no se entero", que es la
+// mitad que no importa. Es de lectura y no la deja tocar.
+export const camaraDePrueba = () => cam;
+```
+
+Ahora sí, los dos tests, **al final del archivo** (comparten el `app.js` ya evaluado y el orden importa):
 
 ```js
 test("el mapa se engancha a /ws/mapa", () => {
   assert.ok(socketMapa, "crearPulso no abrio ningun socket");
 });
 
-test("un foco por el pulso mueve la camara sin tocar el chat", () => {
+test("un foco por el pulso hace volar la camara, sin tocar el chat", async () => {
+  await new Promise(r => setTimeout(r, 0));   // la ciudad ya contesto
   const conversacionAntes = nav.nodos.get("conversacion").hijos.length;
   socketMapa.dice({seq: 1, ts: 1, agente_id: null, evento: "foco",
                    departamento: "dep:b"});
-  // la ciudad de prueba pone a dep:b en (60, 30): la camara arranca un
-  // vuelo hacia ahi, no se teletransporta
-  assert.equal(nav.nodos.get("conversacion").hijos.length, conversacionAntes);
+  const cam = modulo.camaraDePrueba();
+  // la ciudad de prueba pone a dep:b en (60, 30): la camara arranca un VUELO
+  // hacia ahi, no se teletransporta
+  assert.ok(cam.vuelo, "el foco no disparo ningun vuelo");
+  assert.deepEqual({x: cam.vuelo.hasta.x, y: cam.vuelo.hasta.y},
+                   {x: 60, y: 30});
+  assert.equal(nav.nodos.get("conversacion").hijos.length, conversacionAntes,
+               "el foco toco la conversacion");
 });
 ```
 
-- [ ] **Step 7: Correr los tests del cliente y la suite entera**
+- [ ] **Step 7: El módulo nuevo entra en el SHELL del service worker**
 
-Run: `/var/home/pedro/calipso/.venv/bin/python -m pytest test_fabrica_js.py -q`
-Expected: PASS
+`test_mapa_server.py::test_el_shell_no_se_olvida_de_ningun_archivo_de_la_fabrica` deriva la lista esperada de los archivos **reales** del directorio: cualquier `.js` nuevo que no esté en el SHELL pone la suite en rojo, y la fábrica queda inservible sin conexión. En `calipso/web/sw.js`, dentro del array `SHELL`, junto a las otras rutas de la fábrica:
 
-- [ ] **Step 8: Commit**
+```js
+  "/static/fabrica/chat.js",
+  "/static/fabrica/pulso.js"
+```
+
+(la línea de `chat.js` es hoy la última del array y no lleva coma: se le agrega).
+
+- [ ] **Step 8: Correr los tests del cliente y la suite del mapa**
+
+Run: `/var/home/pedro/calipso/.venv/bin/python -m pytest test_fabrica_js.py test_mapa_server.py -q`
+Expected: PASS. `test_mapa_server.py` va explícito porque es el que vigila el SHELL.
+
+- [ ] **Step 9: Commit**
 
 ```bash
 git add calipso/web/fabrica/pulso.js calipso/web/fabrica/pulso.test.js \
-        calipso/web/fabrica/app.js calipso/web/fabrica/arranque.test.js
+        calipso/web/fabrica/app.js calipso/web/fabrica/arranque.test.js \
+        calipso/web/sw.js
 git commit -m "feat(fabrica): el cliente del pulso y la camara que vuela al foco"
 ```
 
@@ -2322,7 +2488,7 @@ Las tres superficies que el Plan 2 dejó cableadas a medias a propósito (secci�
 
 - [ ] **Step 1: Escribir los tests del chat**
 
-Agregar a `calipso/web/fabrica/chat.test.js`:
+En `calipso/web/fabrica/chat.test.js`, primero la cabecera: la línea 4 importa hoy `{estadoInicial, aplicarEvento, paquete, crearChat}` y hay que sumarle `turnosDeHistorial`. Sin eso el test nuevo falla con `turnosDeHistorial is not defined` para siempre, aun con `chat.js` bien implementado. Después, los tests:
 
 ```js
 test("el paquete lleva el departamento tocado, y solo si hay uno", () => {
@@ -2373,7 +2539,7 @@ test("cargar otro chat reemplaza los turnos y sube la epoca", () => {
 
 - [ ] **Step 2: Escribir los tests de los paneles**
 
-Agregar a `calipso/web/fabrica/paneles.test.js`:
+En `calipso/web/fabrica/paneles.test.js`, primero la cabecera: el import de `./paneles.js` (líneas 4-5) trae hoy `{disposicion, textoDeTarjeta, posicionDeTarjeta, resumenDeAvisos, ANCHO_TELEFONO}` y hay que sumarle `textoDeCosto, textoDeFoco`. Después, los tests:
 
 ```js
 test("el costo corriendo dice ruta, modelo, tokens y quien paga", () => {
@@ -2680,8 +2846,8 @@ El escritorio de un agente liberado queda vacío con su rastro, porque ver que e
 
 **Files:**
 - Create: `calipso/web/fabrica/interior.js`, `calipso/web/fabrica/interior.test.js`
-- Modify: `calipso/web/fabrica/paleta.js`, `sprites.js`, `mapa.js`, `app.js`, `estilo.css`
-- Modify: `calipso/web/fabrica/sprites.test.js`, `lienzo.test.js`
+- Modify: `calipso/web/fabrica/paleta.js`, `sprites.js`, `mapa.js`, `app.js`, `paneles.js`, `estilo.css`, `calipso/web/sw.js`
+- Modify: `calipso/web/fabrica/sprites.test.js`, `lienzo.test.js`, `paneles.test.js`
 
 **Interfaces:**
 - Consumes: `empleadosDe`, `estadoVisible` (Task 6); `medidas`, `alturaDe`, `ANCHO`, `PROF`, `ALTO_PISO` de `sprites.js`; `aPantalla`, `escalaEntera` de `camara.js`.
@@ -2690,7 +2856,9 @@ El escritorio de un agente liberado queda vacío con su rastro, porque ver que e
   - `interior.plazas(edificio) -> [{x, y}]` (en píxeles del sprite, de arriba hacia abajo y de izquierda a derecha)
   - `interior.escritorioEnPunto(edificio, cam, vista, px, py) -> indice | null`
   - `sprites.interiorSprite(edificio, estados) -> {ancho, alto, pix}`
-  - `paleta.PISO`, `paleta.ESCRITORIO`, `paleta.OCUPADO`
+  - `sprites.plazasDe(edificio) -> [{x, y}]`
+  - `paleta.PISO`, `paleta.ESCRITORIO`, `paleta.OCUPADO`, `paleta.ESPERA`
+  - `paneles.textoDeEmpleado(empleado) -> string` (se adelanta desde la Task 9: `app.js` lo importa acá)
 
 - [ ] **Step 1: Escribir los tests del interior**
 
@@ -2759,7 +2927,7 @@ test("el escritorio bajo el dedo es el que se toco", () => {
 });
 ```
 
-Y agregar a `sprites.test.js`, sumando primero a sus imports `OCUPADO, ESCRITORIO, PISO` de `./paleta.js` y `interiorSprite, plazasDe` de `./sprites.js`:
+Y agregar a `sprites.test.js`, sumando primero a sus imports `OCUPADO, ESCRITORIO, ESPERA, PISO` de `./paleta.js` y `interiorSprite, plazasDe` de `./sprites.js`:
 
 ```js
 test("el interior es el mismo edificio sin techo y con escritorios", () => {
@@ -2775,6 +2943,18 @@ test("el interior es el mismo edificio sin techo y con escritorios", () => {
   // hay al menos un escritorio ocupado y uno vacio, que es lo que se pidio
   assert.ok(dentro.pix.includes(OCUPADO));
   assert.ok(dentro.pix.includes(ESCRITORIO));
+});
+
+test("los tres estados del spec se dibujan distintos", () => {
+  const edificio = {id: "dep:atlas", zona: "fabrica", estado: "activo",
+                    tamano: 2, actividad: 0};
+  const s = interiorSprite(edificio, ["razonando", "esperando", "liberado"]);
+  // razonando prendido, esperando ocupado pero apagado, liberado vacio: si
+  // dos de los tres comparten indice, el mapa no distingue "esta pensando"
+  // de "esta esperando", que es la mitad de para que sirve entrar
+  assert.ok(s.pix.includes(OCUPADO), "falta el que razona");
+  assert.ok(s.pix.includes(ESPERA), "falta el que espera");
+  assert.ok(s.pix.includes(ESCRITORIO), "falta el escritorio vacio");
 });
 
 test("el mismo interior da siempre el mismo bitmap", () => {
@@ -2806,7 +2986,10 @@ En `calipso/web/fabrica/paleta.js`:
 export const PISO = 8;
 export const ESCRITORIO = 9;
 export const OCUPADO = 10;
+export const ESPERA = 11;
 ```
+
+Son tres estados dibujables, no dos, porque la sección 9 del spec los enumera: `razonando`, `esperando` y `liberado`. Un escritorio ocupado por alguien que espera no se ve igual que uno donde alguien está pensando.
 
 y en cada rampa, los tres colores (en `fabrica`, `personal` y `congelado`):
 
@@ -2814,14 +2997,17 @@ y en cada rampa, los tres colores (en `fabrica`, `personal` y `congelado`):
   fabrica: {
     ...,
     [PISO]: "#141a21", [ESCRITORIO]: "#33414f", [OCUPADO]: "#ffd75f",
+    [ESPERA]: "#6d7f92",
   },
   personal: {
     ...,
     [PISO]: "#1a1420", [ESCRITORIO]: "#4a3a58", [OCUPADO]: "#c9a3e0",
+    [ESPERA]: "#8b74a0",
   },
   congelado: {
     ...,
     [PISO]: "#151515", [ESCRITORIO]: "#2b2b2b", [OCUPADO]: "#2b2b2b",
+    [ESPERA]: "#2b2b2b",
   },
 ```
 
@@ -2842,7 +3028,10 @@ export function plazasDe(edificio) {
   const pisos = pisosDe(edificio.tamano);
   const arriba = PROF;
   const salida = [];
-  for (let p = pisos - 1; p >= 0; p--) {
+  // p = 0 es el piso de mas arriba (la y mas chica), igual que en las
+  // ventanas de `edificioSprite`. Recorrerlo al reves dejaria a p[0] abajo y
+  // el contrato dice "de arriba hacia abajo"
+  for (let p = 0; p < pisos; p++) {
     for (let c = 0; c < ESC_COLS; c++) {
       salida.push({x: 2 + c * 5, y: arriba + 2 + p * ALTO_PISO});
     }
@@ -2877,10 +3066,12 @@ export function interiorSprite(edificio, estados = []) {
   const plazas = plazasDe(edificio);
   for (let i = 0; i < plazas.length; i++) {
     const estado = estados[i];
-    // un escritorio sin nadie tambien se dibuja: ver el lugar vacio es ver
-    // que el departamento solto gente
-    const v = (estado === "razonando" || estado === "esperando")
-      ? OCUPADO : ESCRITORIO;
+    // tres estados, que son los que enumera el spec: el que piensa se ve
+    // prendido, el que espera ocupado pero apagado, y el que se fue deja el
+    // escritorio vacio — ver que el departamento SOLTO gente es tan
+    // informativo como verlo contratar
+    const v = estado === "razonando" ? OCUPADO
+      : estado === "esperando" ? ESPERA : ESCRITORIO;
     for (let dy = 0; dy < ESC_ALTO; dy++)
       for (let dx = 0; dx < ESC_ANCHO; dx++)
         en(plazas[i].x + dx, plazas[i].y + dy, v);
@@ -3013,6 +3204,64 @@ test("adentro del umbral se pinta el interior encima de cada edificio", () => {
 
 Sumar `UMBRAL` al import de `./interior.js` en la cabecera de `lienzo.test.js`.
 
+- [ ] **Step 6b: El popup del empleado**
+
+`app.js` va a importar `textoDeEmpleado` en el paso que sigue, así que la función tiene que existir antes: un `import` con nombre de algo que el módulo no exporta es un error de enlace y `app.js` no llega a evaluarse — se lleva puesta la app entera y todo `arranque.test.js` con ella.
+
+Primero el test, en `paneles.test.js` (sumando `textoDeEmpleado` al import de `./paneles.js` de la cabecera, que hoy trae `{disposicion, textoDeTarjeta, posicionDeTarjeta, resumenDeAvisos, ANCHO_TELEFONO}` más lo que le agregó la Task 7):
+
+```js
+const EMPLEADO = {agente_id: "a1", rol: "scout", modelo: "sonnet",
+                  estado: "razonando", texto: "mirando el libro",
+                  tokens_in: 1200, tokens_out: 340, costo_mm: 270,
+                  runtime_ms: 4500,
+                  diff: {ruta: "calipso/mapa/ciudad.py", diff: "- a\n+ b"}};
+
+test("el popup del empleado trae rol, modelo, runtime, tokens y costo", () => {
+  const texto = textoDeEmpleado(EMPLEADO);
+  assert.match(texto, /scout/);
+  assert.match(texto, /sonnet/);
+  assert.match(texto, /4,5 s/);              // runtime en segundos, no en ms
+  assert.match(texto, /1\.200/);
+  assert.match(texto, /0,27/);               // 270 milimonedas
+  assert.match(texto, /ciudad\.py/);
+});
+
+test("un empleado liberado se ve liberado, no vacio", () => {
+  const texto = textoDeEmpleado({...EMPLEADO, estado: "liberado",
+                                 texto: "", diff: null});
+  assert.match(texto, /liberado/);
+  assert.ok(!texto.includes("undefined"), texto);
+  assert.ok(!texto.includes("null"), texto);
+});
+```
+
+Correlo y mirá que falle con `textoDeEmpleado is not defined`. Después, en `paneles.js`:
+
+```js
+const SEGUNDOS = new Intl.NumberFormat("es", {maximumFractionDigits: 1});
+
+function segundos(ms) {
+  return SEGUNDOS.format((ms || 0) / 1000) + " s";
+}
+
+/** El popup: lo que se ve del empleado sin abandonar el mapa. */
+export function textoDeEmpleado(empleado) {
+  if (!empleado) return "";
+  const e = empleado;
+  return `<div class="nombre">${escapar(e.rol || "agente")}</div>` +
+    `<div class="estado ${escapar(e.estado)}">${escapar(e.estado)}</div>` +
+    fila("modelo", e.modelo || "sin dato") +
+    fila("corriendo", segundos(e.runtime_ms)) +
+    fila("tokens", `${NUMERO.format(e.tokens_in || 0)} / ` +
+                   `${NUMERO.format(e.tokens_out || 0)}`) +
+    fila("costo", monedas(e.costo_mm || 0)) +
+    (e.diff ? fila("toco", e.diff.ruta) : "");
+}
+```
+
+`NUMERO`, `fila`, `escapar` y `monedas` ya están en el archivo: los tres últimos de antes, `NUMERO` desde la Task 7.
+
 - [ ] **Step 7: Cablear el interior en `app.js`**
 
 Los imports que hacen falta arriba del archivo:
@@ -3043,19 +3292,26 @@ function plantel() {
 }
 ```
 
-En `soltar()`, antes de fijar el foco, probar si el toque cayó en un escritorio:
+En `soltar()`, antes de fijar el foco, probar si el toque cayó en un escritorio. **Nada de `return` acá**: la cola de `soltar()` es la que suelta el puntero (`punteros.delete`, `pinza = null`, `releasePointerCapture`), y saltearla deja el puntero capturado para siempre — con mouse, el `pointerId` se reusa y el mapa queda pegado al cursor. Una bandera, no un `return`:
 
 ```js
+    let tocoEmpleado = false;
     if (resaltado && opacidadDeTecho(cam.escala) < 1) {
       const i = escritorioEnPunto(ciudad.edificios.find(e => e.id === resaltado),
                                   cam, mapa.vista(), tocado.x, tocado.y);
       const gente = empleadosDe(pulso, resaltado);
       if (i !== null && gente[i]) {
         mostrarEmpleado(gente[i]);
-        return;              // tocar un empleado no cambia el contexto
+        tocoEmpleado = true;   // tocar un empleado no cambia el contexto
       }
     }
+    if (!tocoEmpleado) {
+      popupEmpleado.classList.add("oculto");   // el toque afuera lo cierra
+      if (resaltado) { enFoco = resaltado; pintarFoco(); }
+    }
 ```
+
+y entonces el bloque que la Task 7 puso en `soltar()` para fijar el foco (`if (resaltado) { enFoco = resaltado; pintarFoco(); }`) se borra: quedó absorbido acá arriba.
 
 `mostrarEmpleado` la escribe la Task 9; por ahora, que pinte el popup:
 
@@ -3068,15 +3324,24 @@ function mostrarEmpleado(empleado) {
 }
 ```
 
-- [ ] **Step 8: Correr todo**
+- [ ] **Step 8: `interior.js` entra en el SHELL**
 
-Run: `/var/home/pedro/calipso/.venv/bin/python -m pytest test_fabrica_js.py -q`
+Igual que `pulso.js` en la Task 6: `test_mapa_server.py` compara el SHELL contra los archivos reales del directorio. En `calipso/web/sw.js`, dentro de `SHELL`:
+
+```js
+  "/static/fabrica/pulso.js",
+  "/static/fabrica/interior.js"
+```
+
+- [ ] **Step 9: Correr todo**
+
+Run: `/var/home/pedro/calipso/.venv/bin/python -m pytest test_fabrica_js.py test_mapa_server.py -q`
 Expected: PASS
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add calipso/web/fabrica/
+git add calipso/web/fabrica/ calipso/web/sw.js
 git commit -m "feat(fabrica): entrar a un departamento — el techo se desvanece y hay escritorios"
 ```
 
@@ -3096,33 +3361,9 @@ Tocar un empleado convierte el panel del medio en su razonamiento en vivo: el st
 
 - [ ] **Step 1: Escribir los tests**
 
-Agregar a `paneles.test.js`:
+Agregar a `paneles.test.js`, sumando primero `textoDeRazonamiento` al import de `./paneles.js` de la cabecera (la Task 8 ya le agregó `textoDeEmpleado`, y la constante `EMPLEADO` ya está en el archivo desde esa tarea):
 
 ```js
-const EMPLEADO = {agente_id: "a1", rol: "scout", modelo: "sonnet",
-                  estado: "razonando", texto: "mirando el libro",
-                  tokens_in: 1200, tokens_out: 340, costo_mm: 270,
-                  runtime_ms: 4500,
-                  diff: {ruta: "calipso/mapa/ciudad.py", diff: "- a\n+ b"}};
-
-test("el popup del empleado trae rol, modelo, runtime, tokens y costo", () => {
-  const texto = textoDeEmpleado(EMPLEADO);
-  assert.match(texto, /scout/);
-  assert.match(texto, /sonnet/);
-  assert.match(texto, /4,5 s|4,50 s/);       // runtime en segundos, no en ms
-  assert.match(texto, /1\.200/);
-  assert.match(texto, /0,27/);               // 270 milimonedas
-  assert.match(texto, /ciudad\.py/);
-});
-
-test("un empleado liberado se ve liberado, no vacio", () => {
-  const texto = textoDeEmpleado({...EMPLEADO, estado: "liberado",
-                                 texto: "", diff: null});
-  assert.match(texto, /liberado/);
-  assert.ok(!texto.includes("undefined"), texto);
-  assert.ok(!texto.includes("null"), texto);
-});
-
 test("el razonamiento va con el diff y con el boton de volver", () => {
   const texto = textoDeRazonamiento(EMPLEADO);
   assert.match(texto, /mirando el libro/);
@@ -3144,27 +3385,9 @@ Expected: FAIL — `textoDeEmpleado is not defined`
 
 - [ ] **Step 3: Implementar en `paneles.js`**
 
+El `textoDeEmpleado` ya está: lo adelantó la Task 8, que es donde `app.js` lo importa. Acá se le suma su hermano:
+
 ```js
-const SEGUNDOS = new Intl.NumberFormat("es", {maximumFractionDigits: 1});
-
-function segundos(ms) {
-  return SEGUNDOS.format((ms || 0) / 1000) + " s";
-}
-
-/** El popup: lo que se ve sin abandonar el mapa. */
-export function textoDeEmpleado(empleado) {
-  if (!empleado) return "";
-  const e = empleado;
-  return `<div class="nombre">${escapar(e.rol || "agente")}</div>` +
-    `<div class="estado ${escapar(e.estado)}">${escapar(e.estado)}</div>` +
-    fila("modelo", e.modelo || "sin dato") +
-    fila("corriendo", segundos(e.runtime_ms)) +
-    fila("tokens", `${NUMERO.format(e.tokens_in || 0)} / ` +
-                   `${NUMERO.format(e.tokens_out || 0)}`) +
-    fila("costo", monedas(e.costo_mm || 0)) +
-    (e.diff ? fila("toco", e.diff.ruta) : "");
-}
-
 /** El panel del medio: lectura, no conversacion. */
 export function textoDeRazonamiento(empleado) {
   if (!empleado) return "";
@@ -3187,6 +3410,10 @@ export function textoDeRazonamiento(empleado) {
 En `estilo.css`:
 
 ```css
+/* el popup del empleado reusa .tarjeta, que es position:absolute sin
+   coordenadas: sin esta regla cae en el flujo y aparece en cualquier lado */
+#empleado { left: 10px; bottom: 10px; top: auto; max-width: 260px; }
+
 .razonamiento { flex: 1; overflow-y: auto; padding: 10px; }
 .razonamiento .cabecera {
   display: flex; align-items: center; justify-content: space-between;
@@ -3216,7 +3443,11 @@ En `estilo.css`:
 
 - [ ] **Step 5: Cablear en `app.js`**
 
-Sumar `textoDeRazonamiento` al import de `./paneles.js`, y reemplazar el `mostrarEmpleado` provisorio de la Task 8 por este:
+Sumar `textoDeRazonamiento` al import de `./paneles.js`, y reemplazar el `mostrarEmpleado` provisorio de la Task 8 por este.
+
+**Dónde va:** arriba del bloque `crearPulso(...)` de la Task 6, porque su callback llama a `pintarRazonamiento()` y una `function` se iza pero una `const` no: `panelCentro`, `panelRazonamiento` y `mirando` tienen que estar inicializadas antes de que el primer evento del pulso entre.
+
+**Y el `classList`:** `.oculto` es `display: none !important` (`estilo.css:115`). La regla `#panel-centro[data-modo="razonamiento"] #razonamiento { display: block; }` no le gana a un `!important`, así que cambiar el `data-modo` no alcanza: hay que sacarle la clase al nodo, igual que se hace con el popup.
 
 ```js
 const panelCentro = document.getElementById("panel-centro");
@@ -3228,6 +3459,7 @@ function mostrarEmpleado(empleado) {
   popupEmpleado.classList.remove("oculto");
   mirando = empleado.agente_id;
   pintarRazonamiento();
+  panelRazonamiento.classList.remove("oculto");   // gana al display:none
   panelCentro.dataset.modo = "razonamiento";
   app.dataset.pestana = "chat";     // en el telefono, el panel del medio
 }
@@ -3246,6 +3478,7 @@ panelRazonamiento.addEventListener("click", ev => {
   if (ev.target && ev.target.dataset.accion === "volver") {
     mirando = null;
     panelCentro.dataset.modo = "chat";
+    panelRazonamiento.classList.add("oculto");
     popupEmpleado.classList.add("oculto");
   }
 });
@@ -3287,6 +3520,7 @@ Los tests cubren la lógica; lo que se mira es que el conjunto se lea. Levantar 
 - **El agente del turno de chat se abre y se cierra a mano.** Un turno que revienta de una forma que no pasa por el `except` deja el agente sin `fin`; a los diez minutos la regla de inactividad lo marca y el escritorio se libera.
 - **Entre dos sondeos del WS pueden perderse eventos** si se publicaron más de 500. El cliente se entera del estado igual con el próximo evento de ese agente.
 - **Cobrar cada turno al departamento cambia la economía de verdad.** Un chat largo sobre atlas le gasta plata a atlas. Es lo que pide el spec ("lo que se gaste ahí lo paga Atlas") y el freno es que Pedro tiene que tocar el edificio para que pase.
+- **La suscripción no reporta monedas.** `_cobrar_turno` devuelve 0 en la ruta de suscripción a propósito: se cobra en unidades de capacidad, no en monedas, y este plan no traduce una cosa en la otra. Como la suscripción es la ruta dominante del chat, la barra de costo va a decir "paga atlas" con 0 monedas la mayor parte del tiempo. El equivalente en milimonedas existe (`costo_api_mm_por_unidad` en `suscripciones.json`); traducirlo es un cambio de la economía, no del mapa.
 - **La ficha deriva la ciudad entera en cada turno con foco.** Medido en el Plan 1: 162 ms con 71 edificios, con el candado del libro tomado. Sin foco no cuesta nada. Si molesta, la corrección va en `cola.pendientes()`, que es el O(E²) que la sección 12 bis ya tiene anotado.
 
 ## Fuera de alcance de este plan
@@ -3296,4 +3530,6 @@ Los tests cubren la lógica; lo que se mira es que el conjunto se lea. Levantar 
 - Animar a los agentes caminando dentro del interior.
 - Que un empleado se pueda chatear (invariante 7: la conversación es siempre con Calipso).
 - Los cuatro residuales del Plan 2 que no son de acoplamiento: la cascada del CSS sigue sin test y el piso de tests de JavaScript sigue siendo un piso.
+- Traducir las unidades de capacidad de una suscripción a monedas para la barra de costo.
+- El campo `mision` que la sección 8 del spec le pide a la ficha: `deps.Departamento` no lo tiene (solo nombre, zona y cuatro perillas), así que `ficha.bloque` arma el contexto con lo que existe. Agregarlo es un campo nuevo en el registro y una migración del JSON.
 - Todo lo que la sección 12 del spec de la economía difiere: mezcla multi-proveedor, capa de estilo, conectores externos y bancarios, puentes Atlas/research-court, clientes PWA/iPhone vía Tailscale.
