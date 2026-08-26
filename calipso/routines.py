@@ -14,10 +14,12 @@ que ejecutan cada `kind`. La logica de "due" recibe `now` para poder probarse.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime
 import json
 import os
 import pathlib
+import threading
 import uuid
 from typing import Any, Callable
 
@@ -25,6 +27,15 @@ CALIPSO_HOME = pathlib.Path(os.environ.get(
     "CALIPSO_HOME", os.path.expanduser("~/.calipso")))
 
 KINDS = ("reflect", "learn", "backup", "departamento")
+
+
+class ErrorRutinas(Exception):
+    """El archivo esta pero no se pudo leer -- no es lo mismo que "nunca
+    hubo rutinas". Los llamadores que ESCRIBEN (add/update/remove/mark_run)
+    la usan para negarse a tocar el archivo: pisarlo con el seed seria
+    persistir una lectura rota, y con eso Pedro pierde todas sus rutinas de
+    verdad, incluida la de departamento con su `cuenta`."""
+
 
 # Rutinas por defecto la primera vez (deshabilitadas: Pedro decide encenderlas).
 DEFAULTS = [
@@ -63,7 +74,13 @@ def _seed() -> list[dict[str, Any]]:
     return routines
 
 
-def load() -> list[dict[str, Any]]:
+def _cargar_estricto() -> list[dict[str, Any]]:
+    """Como `load`, pero NO se traga una corrupcion: la deja subir como
+    `ErrorRutinas`. `load` (abajo) es la version tolerante que usan los
+    lectores (el panel, el ticker) para no romper cuando el archivo esta a
+    medio escribir; esta version la usan los que ESCRIBEN
+    (add/update/remove/mark_run), que no pueden confundir "no se pudo leer"
+    con "no hay rutinas" y guardar un seed encima de un archivo real."""
     f = _file()
     if not f.exists():
         routines = _seed()
@@ -71,14 +88,43 @@ def load() -> list[dict[str, Any]]:
         return routines
     try:
         data = json.loads(f.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else _seed()
-    except Exception:
+    except (OSError, ValueError) as exc:
+        raise ErrorRutinas(f"{f} no se pudo leer: {exc}") from exc
+    if not isinstance(data, list):
+        raise ErrorRutinas(f"{f} no contiene una lista")
+    return data
+
+
+def load() -> list[dict[str, Any]]:
+    """Tolerante a proposito: la usan lectores que no pueden reventar (el
+    panel, el ticker). Un archivo ausente o ilegible da el seed SIN
+    persistirlo -- persistirlo es trabajo de `_cargar_estricto` mas
+    `add`/`update`/etc, que si pueden negarse a escribir."""
+    try:
+        return _cargar_estricto()
+    except ErrorRutinas:
         return _seed()
 
 
 def save(routines: list[dict[str, Any]]) -> None:
-    _file().write_text(json.dumps(routines, ensure_ascii=False, indent=2),
-                        encoding="utf-8")
+    """Atomico a proposito: temporal en el mismo directorio + os.replace, y
+    un finally que borra el temporal si el replace no llego a pasar. Con
+    write_text un lector concurrente (el ticker en su propio hilo, un
+    endpoint en el threadpool de FastAPI) podia ver un JSON a medias,
+    `_cargar_estricto` lo reportaba como ilegible, y ANTES de este cambio
+    ese lector caia al seed y lo guardaba encima -- Pedro perdia todas sus
+    rutinas, incluida la de departamento con su `cuenta`, por una escritura
+    que ya iba a terminar bien un instante despues. Mismo patron que
+    calipso/plantel/interruptor.py."""
+    p = _file()
+    tmp = p.with_name(f"{p.name}.tmp{os.getpid()}.{threading.get_ident()}")
+    try:
+        tmp.write_text(json.dumps(routines, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+        os.replace(tmp, p)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
 
 
 def get(routine_id: str) -> dict[str, Any] | None:
@@ -105,14 +151,22 @@ def add(kind: str, label: str, interval_minutes: int,
         # a quien despertar
         "cuenta": cuenta,
     }
-    routines = load()
+    # _cargar_estricto (no `load`): add tambien es load->modify->save, y no
+    # puede agregar la rutina nueva a un seed fantasma y guardarlo encima
+    # de un archivo real que no se pudo leer.
+    routines = _cargar_estricto()
     routines.append(routine)
     save(routines)
     return routine
 
 
 def update(routine_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
-    routines = load()
+    try:
+        routines = _cargar_estricto()
+    except ErrorRutinas:
+        # no se pudo leer de verdad: no tocar el archivo. Guardar un seed
+        # encima seria peor que no escribir nada.
+        return None
     out = None
     for r in routines:
         if r.get("id") == routine_id:
@@ -134,7 +188,10 @@ def update(routine_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def remove(routine_id: str) -> bool:
-    routines = load()
+    try:
+        routines = _cargar_estricto()
+    except ErrorRutinas:
+        return False
     kept = [r for r in routines if r.get("id") != routine_id]
     if len(kept) == len(routines):
         return False
@@ -161,7 +218,13 @@ def due(routines: list[dict[str, Any]], now: datetime.datetime) -> list[dict[str
 
 
 def mark_run(routine_id: str, now: datetime.datetime, status: str) -> None:
-    routines = load()
+    try:
+        routines = _cargar_estricto()
+    except ErrorRutinas:
+        # el ticker corre esto despues de CADA rutina vencida: si el
+        # archivo no se pudo leer ahora, la proxima vuelta (60s) lo
+        # reintenta. No tocarlo es mejor que reescribirlo con un seed.
+        return
     for r in routines:
         if r.get("id") == routine_id:
             r["last_run"] = now.isoformat(timespec="seconds")

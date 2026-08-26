@@ -7,7 +7,9 @@ Aisla CALIPSO_HOME en un dir temporal.
 from __future__ import annotations
 
 import datetime
+import json
 import os
+import pathlib
 import tempfile
 
 os.environ["CALIPSO_HOME"] = tempfile.mkdtemp(prefix="calipso_rt_")
@@ -59,6 +61,81 @@ def main() -> int:
     routines.mark_run(reflect["id"], now - datetime.timedelta(hours=5), "ok")  # forzar vencido
     ran2 = routines.run_due(now, {"reflect": _boom})
     check("error de handler se captura", ran2 and ran2[0]["status"].startswith("error"), fails)
+
+    # C2 (revision de la rama): save() no deja un temporal huerfano si
+    # os.replace falla a mitad de camino (disco lleno, permisos)
+    home = pathlib.Path(os.environ["CALIPSO_HOME"])
+    ruta_routines = home / "routines.json"
+    _replace_real = os.replace
+
+    def _replace_roto(*_a, **_k):
+        raise OSError("disco lleno (simulado)")
+
+    os.replace = _replace_roto
+    try:
+        propago = False
+        try:
+            routines.save(routines.load())
+        except OSError:
+            propago = True
+    finally:
+        os.replace = _replace_real
+    check("save con os.replace roto propaga el error (no lo esconde)", propago, fails)
+    temporales = list(home.glob(f"{ruta_routines.name}.tmp*"))
+    check("save no deja temporales si el replace falla", temporales == [], fails)
+
+    # C2: un routines.json PRESENTE pero corrupto no se pisa con el seed.
+    # Antes de esta ronda, add/update/remove/mark_run eran load->modify->save:
+    # un lector que agarraba el archivo a medio escribir (el ticker en su
+    # hilo, un endpoint en el threadpool) leia el seed y lo guardaba encima,
+    # perdiendo TODAS las rutinas de Pedro -incluida la de departamento con
+    # su `cuenta`- por una escritura que un instante despues iba a terminar
+    # bien.
+    antes_de_corromper = routines.load()
+    ruta_routines.write_text("esto no es json valido {{{", encoding="utf-8")
+    crudo_roto = ruta_routines.read_bytes()
+    check("load no revienta con el archivo corrupto",
+         isinstance(routines.load(), list), fails)
+    check("load no persiste el seed encima del archivo corrupto",
+         ruta_routines.read_bytes() == crudo_roto, fails)
+    check("update se niega a escribir sobre un archivo corrupto",
+         routines.update(reflect["id"], {"enabled": False}) is None, fails)
+    check("update no toco el archivo corrupto",
+         ruta_routines.read_bytes() == crudo_roto, fails)
+    check("remove se niega a escribir sobre un archivo corrupto",
+         routines.remove(reflect["id"]) is False, fails)
+    check("remove no toco el archivo corrupto",
+         ruta_routines.read_bytes() == crudo_roto, fails)
+    routines.mark_run(reflect["id"], now, "ok")
+    check("mark_run no toco el archivo corrupto",
+         ruta_routines.read_bytes() == crudo_roto, fails)
+    try:
+        routines.add("backup", "no deberia crearse", 60)
+        add_se_nego = False
+    except routines.ErrorRutinas:
+        add_se_nego = True
+    check("add se niega a escribir sobre un archivo corrupto", add_se_nego, fails)
+    check("add no toco el archivo corrupto",
+         ruta_routines.read_bytes() == crudo_roto, fails)
+
+    # el mismo archivo, pero JSON valido con la forma equivocada (un objeto,
+    # no una lista): tambien es "no se pudo leer", no "no hay rutinas"
+    ruta_routines.write_text(json.dumps({"no": "es una lista"}), encoding="utf-8")
+    check("update se niega con json valido pero forma invalida",
+         routines.update(reflect["id"], {"enabled": False}) is None, fails)
+
+    # reparar a mano, como haria Pedro (o el propio Pedro restaurando un
+    # backup): save() SI puede escribir encima de un archivo corrupto
+    routines.save(antes_de_corromper)
+    check("save repara el archivo corrupto a mano",
+         routines.get(reflect["id"]) is not None, fails)
+
+    # C2: un routines.json AUSENTE (no confundir con "presente pero
+    # corrupto", el caso de arriba) sigue dando el seed, como siempre
+    ruta_routines.unlink()
+    reseed = routines.load()
+    check("archivo ausente sigue dando el seed",
+         len(reseed) == 3 and all(not r["enabled"] for r in reseed), fails)
 
     # add/remove
     extra = routines.add("backup", "Backup manual", 720, enabled=True)

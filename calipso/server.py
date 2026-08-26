@@ -2614,19 +2614,27 @@ def _routine_handlers() -> dict:
         if eco is None:
             return
         _, semana = _eco_ahora()
-        m = eco["pagador"].mercado_fresco()
+        # lector serializado, igual que los otros seis call sites de
+        # economia en server.py: el libro se repara truncando una ultima
+        # linea que no parsea, asi que leerlo mientras dispatch (u otro
+        # departamento) esta a mitad de un append se puede comer un
+        # asiento recien escrito, para siempre. El candado se SUELTA antes
+        # de armar el Contexto: `tic` piensa afuera de el.
+        with _eco_candado(eco["pagador"].ruta_libro):
+            m = eco["pagador"].mercado_fresco()
         ts, _ = _eco_ahora()
         ctx = _plantel_jefe.Contexto(
             base=_ECO_BASE, kernel=m.k, registro=m.registro,
             bus=eco["bus"], cola=eco["cola"], suscripciones=m.suscripciones,
             memoria=mem.departamento(cuenta.split(":", 1)[1]),
             pensar=_pensar_local,
-            contratar=_contratar_para(cuenta, eco["bus"], ts, semana),
+            contratar=_contratar_para(cuenta, eco["pagador"], ts, semana),
             publicar=_publicar_jefe(cuenta))
-        # SIN candado envolvente: el tic incluye una llamada a un modelo, y
-        # tener el flock del libro tomado durante segundos serializa el chat
-        # y a dispatch contra el. La unica escritura al libro es la de
-        # `_cobrar_turno`, que ya toma el candado por su cuenta.
+        # SIN candado envolvente durante el tic: incluye una llamada a un
+        # modelo, y tener el flock tomado durante segundos serializa el chat
+        # y a dispatch contra el. La lectura de arriba ya paso por su
+        # candado; la escritura del bus (si el jefe propone) toma el suyo
+        # en `_contratar_para`.
         _plantel_jefe.tic(ctx, cuenta, semana)
 
     return {"reflect": _reflect, "learn": _learn, "backup": _backup,
@@ -2655,6 +2663,12 @@ async def api_routines_add(request: Request) -> dict:
             cuenta=data.get("cuenta"))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except calipso_routines.ErrorRutinas as e:
+        # routines.json esta pero no se pudo leer (una escritura concurrente
+        # a mitad de camino, corrupcion real): add() se niega a pisarlo con
+        # el seed en vez de perder las rutinas de Pedro. 503, no 500: es
+        # transitorio, reintentar en un momento debiera andar.
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 @app.put("/api/routines/{routine_id}")
@@ -3682,7 +3696,7 @@ def _publicar_jefe(cuenta: str):
     return publicar
 
 
-def _contratar_para(cuenta: str, bus, ts: str, semana: str):
+def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
     """Lo que el jefe hace cuando decidio que hay algo que hacer.
 
     `comentar` no toca el bus: el bus no tiene superficie de comentarios, asi
@@ -3697,6 +3711,10 @@ def _contratar_para(cuenta: str, bus, ts: str, semana: str):
     `sesgo_efectivo`, que alimenta la proxima decision del jefe — un libro
     con consumo inventado corrompe la señal de precio que realimenta al que
     decide. Un libro sin asiento es mejor que un libro con un asiento falso.
+
+    Recibe `pagador` (no `bus`): `bus.alta` es una ESCRITURA, y la regla del
+    modulo candado es no cachear escritores entre adquisiciones — el Bus se
+    construye DE NUEVO, adentro del candado, cada vez que se escribe.
     """
     def contratar(situacion: dict, accion: str, ref: str | None,
                   motivo: str = ""):
@@ -3731,8 +3749,13 @@ def _contratar_para(cuenta: str, bus, ts: str, semana: str):
         # sea el motivo que el jefe razono, no el relleno del planificador
         # (`synthesis` es casi siempre la misma constante de fallback).
         titulo = (motivo or f"{accion} {ref or ''}".strip())[:120]
-        bus.alta(ts, semana, propuesta, cuenta, titulo, presupuesto,
-                 presupuesto, {"gasto_max_mm": presupuesto, "semanas_max": 4})
+        # bus.alta ES una escritura: va bajo el mismo candado que las demas
+        # escrituras de economia, con un Bus fresco construido adentro.
+        with _eco_candado(pagador.ruta_libro):
+            bus_fresco = _eco_bus.Bus(pagador.ruta_bus)
+            bus_fresco.alta(ts, semana, propuesta, cuenta, titulo,
+                            presupuesto, presupuesto,
+                            {"gasto_max_mm": presupuesto, "semanas_max": 4})
         return {"accion": accion, "ref": ref, "propuesta": propuesta}
     return contratar
 
