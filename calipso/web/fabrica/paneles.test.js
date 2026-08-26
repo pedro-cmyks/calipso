@@ -42,10 +42,12 @@ test("la tarjeta de un congelado lo dice", () => {
 
 test("la tarjeta no deja pasar html del modelo", () => {
   const c = ciudadDePrueba();
-  c.edificios[0].nombre = "<img onerror=x>";
+  c.edificios[0].nombre = "<img onerror=x> o'brien";
   const html = textoDeTarjeta(fichaDe(c, "dep:atlas"));
   assert.ok(!html.includes("<img"), "se colo una etiqueta del modelo");
   assert.ok(html.includes("&lt;img"), "no se escapo el nombre");
+  assert.ok(html.includes("&#39;"), "no se escapo la comilla simple");
+  assert.ok(!html.includes("o'brien"), "se colo la comilla simple sin escapar");
 });
 
 test("la tarjeta no se sale por la derecha ni por abajo", () => {
@@ -55,6 +57,10 @@ test("la tarjeta no se sale por la derecha ni por abajo", () => {
   assert.ok(p.x + tarjeta.ancho <= caja.ancho, "se fue por la derecha");
   assert.ok(p.y + tarjeta.alto <= caja.alto, "se fue por abajo");
   assert.ok(p.x >= 0 && p.y >= 0, "se fue por el otro lado");
+  // el punto esta pegado al borde derecho: si de verdad se dio vuelta, la
+  // tarjeta queda a la izquierda del punto, no clavada en el origen
+  assert.ok(p.x > 0, "la tarjeta no se dio vuelta: quedo pegada al borde");
+  assert.ok(p.x < 390, "la tarjeta no se dio vuelta: sigue del lado derecho");
 });
 
 test("con lugar de sobra la tarjeta va al lado del dedo", () => {

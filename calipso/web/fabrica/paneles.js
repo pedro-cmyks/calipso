@@ -16,7 +16,8 @@ export function disposicion(ancho) {
 export function escapar(texto) {
   return String(texto)
     .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+    .replaceAll(">", "&gt;").replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function fila(etiqueta, valor) {
