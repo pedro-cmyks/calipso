@@ -4,8 +4,10 @@ calipso/routines.py - rutinas/timers de Calipso (SPEC 7 "Importantes", Fase 4).
 
 V0 honesta: Calipso es una app local que puede estar apagada, asi que "periodico"
 significa "se ejecuta cuando toca mientras el server este vivo". Persistimos
-`last_run` para no repetir de mas entre reinicios. No abre nada a internet ni
-escala a API: las rutinas v0 son tareas locales seguras (reflect, learn, backup).
+`last_run` para no repetir de mas entre reinicios. Las tres rutinas viejas
+(reflect, learn, backup) son tareas locales seguras que no abren red; la
+rutina "departamento" (Tarea 6 del plan de plantel) SI escala a API: despierta
+al jefe de un departamento, que decide en el escalon local y puede contratar.
 
 El modulo es puro de I/O + logica de vencimiento; el server inyecta los handlers
 que ejecutan cada `kind`. La logica de "due" recibe `now` para poder probarse.
@@ -120,6 +122,10 @@ def update(routine_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
                 r["interval_minutes"] = max(1, int(patch["interval_minutes"]))
             if "label" in patch:
                 r["label"] = str(patch["label"])
+            if "cuenta" in patch:
+                # Pedro crea la rutina por curl sin el campo y la ve verde:
+                # sin poder parchearlo tendria que borrarla y recrearla.
+                r["cuenta"] = patch["cuenta"]
             out = r
             break
     if out is not None:

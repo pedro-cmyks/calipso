@@ -1,4 +1,7 @@
 """Los endpoints del interruptor y la rutina del departamento."""
+import json
+
+import dispatch
 import pytest
 from fastapi.testclient import TestClient
 
@@ -31,14 +34,46 @@ def test_poner_el_modo_por_http(cliente, tmp_path):
 
 def test_un_modo_inventado_se_rechaza_con_400(cliente, tmp_path):
     """El endpoint es la superficie por la que se suelta a la fabrica a
-    gastar: no puede aceptar cualquier cosa."""
+    gastar: no puede aceptar cualquier cosa.
+
+    La asercion mira el archivo crudo, no `it.leer`: `leer` normaliza
+    cualquier modo desconocido a "ensayo", asi que pasaria igual aunque
+    `poner_modo` hubiera llegado a escribir "turbo" en disco."""
     assert cliente.put("/api/plantel/modo", json={"modo": "turbo"}).status_code == 400
-    assert it.leer(tmp_path).modo == "ensayo"
+    ruta = it.ruta(tmp_path)
+    crudo = json.loads(ruta.read_text(encoding="utf-8")) if ruta.exists() else {}
+    assert crudo.get("modo") != "turbo"
 
 
-def test_sin_auth_no_se_puede_parar_ni_soltar():
+def test_sin_auth_no_se_puede_parar_ni_soltar(tmp_path, monkeypatch):
+    """Si el auth_guard alguna vez se rompe, este test no puede terminar
+    escribiendo en el ~/.calipso real y parando la fabrica de Pedro."""
+    monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
     c = TestClient(srv.app)
     assert c.post("/api/plantel/parar", follow_redirects=False).status_code in (401, 403, 302)
+
+
+def test_pensar_local_no_corre_claude_por_subscripcion(monkeypatch):
+    """La trampa cara del brief: decidir por el escalon barato no puede
+    terminar ejecutando `claude -p`, que gastaria una unidad de suscripcion
+    por tic y por departamento. `_pensar_local` tiene que pegarle al
+    clasificador (Ollama) y nunca abrir un subproceso."""
+    llamadas = []
+
+    def falso_post(url, payload, headers=None):
+        llamadas.append(url)
+        return {"response": "nada -- sin plata"}
+
+    def spia_subprocess(*args, **kwargs):
+        raise AssertionError("_pensar_local no puede correr un subproceso")
+
+    monkeypatch.setattr(dispatch, "_http_post_json", falso_post)
+    monkeypatch.setattr(srv.subprocess, "run", spia_subprocess)
+
+    resultado = srv._pensar_local("hola")
+
+    assert llamadas == [dispatch.CONFIG["classifier"]["base_url"]]
+    assert resultado == "nada -- sin plata"
 
 
 def test_la_rutina_de_departamento_es_un_kind_valido():

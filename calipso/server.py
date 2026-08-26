@@ -2608,6 +2608,8 @@ def _routine_handlers() -> dict:
         cuenta = r.get("cuenta")
         if not cuenta:
             return
+        if _plantel_jefe is None:
+            return
         eco = _economia()
         if eco is None:
             return
@@ -2640,6 +2642,11 @@ def api_routines() -> dict:
 @app.post("/api/routines")
 async def api_routines_add(request: Request) -> dict:
     data = await request.json()
+    if data.get("kind") == "departamento" and not data.get("cuenta"):
+        # sin cuenta, la rutina nace y el handler se va en silencio en su
+        # primera linea: Pedro la ve verde en el panel y no pasa nada nunca
+        raise HTTPException(status_code=400,
+                            detail="una rutina de departamento necesita cuenta")
     try:
         return calipso_routines.add(
             data.get("kind", ""), data.get("label", ""),
@@ -3344,7 +3351,8 @@ async def api_transcribe(audio: UploadFile = File(...)) -> dict:
 
 
 async def _routines_ticker() -> None:
-    """Corre rutinas vencidas mientras el server este vivo. Local-only."""
+    """Corre rutinas vencidas mientras el server este vivo. Las tres viejas
+    son locales; la rutina "departamento" abre red (despierta al jefe)."""
     handlers = _routine_handlers()
     while True:
         try:
@@ -3553,6 +3561,18 @@ def api_eco_reloj_conciliar(body: EcoConciliarBody) -> dict:
     return {"ok": True}
 
 
+# El plantel tiene su PROPIO try/except, separado del bloque MAPA de abajo:
+# un fallo importando calipso.plantel no puede caer en el mismo except que
+# _mapa_ficha, porque _cobrar_turno corta en seco y cobra 0 cuando
+# _mapa_ficha is None. Antes de esto, romper el plantel dejaba el chat
+# entero cobrando en silencio a nadie.
+try:
+    from calipso.plantel import interruptor as _plantel_it
+    from calipso.plantel import jefe as _plantel_jefe
+except Exception:  # el plantel no esta disponible: el tablero responde inactivo
+    _plantel_it = _plantel_jefe = None
+
+
 class PlantelModoBody(BaseModel):
     modo: str
 
@@ -3608,15 +3628,12 @@ try:
     from calipso.mapa import ficha as _mapa_ficha
     from calipso.mapa import foco as _mapa_foco
     from calipso.mapa import urbanismo as _mapa_urbanismo
-    from calipso.plantel import interruptor as _plantel_it
-    from calipso.plantel import jefe as _plantel_jefe
 except Exception:  # el mapa no esta disponible: el endpoint responde inactivo
     _mapa_ciudad = None
     _mapa_urbanismo = None
     _mapa_cap = None
     _mapa_ficha = None
     _mapa_foco = None
-    _plantel_it = _plantel_jefe = None
 
 
 # --------------------------------------------------------------------------
@@ -3661,60 +3678,54 @@ def _contratar_para(cuenta: str, bus, ts: str, semana: str):
     `comentar` no toca el bus: el bus no tiene superficie de comentarios, asi
     que la opinion queda en la memoria del departamento (la escribe el jefe)
     y en el pulso.
+
+    NO cobra capacidad por agentes planificados. La capacidad se consume
+    cuando el trabajo CORRE, y ejecutar trabajo es la frontera de salida que
+    este plan no construye (spec, seccion 11): `trabajar` es un no-op. Cobrar
+    sobre un plan que nunca corre metia asientos falsos en el libro, y esos
+    asientos alimentan el precio de la capacidad, que alimenta
+    `sesgo_efectivo`, que alimenta la proxima decision del jefe — un libro
+    con consumo inventado corrompe la señal de precio que realimenta al que
+    decide. Un libro sin asiento es mejor que un libro con un asiento falso.
     """
-    def contratar(situacion: dict, accion: str, ref: str | None):
+    def contratar(situacion: dict, accion: str, ref: str | None,
+                  motivo: str = ""):
         if accion == "comentar":
             # opinar es barato: no contrata a nadie y no cobra
             return {"accion": "comentar", "ref": ref, "en": "memoria"}
 
-        # `_plan_dynamic_team` devuelve `orchestrator.plan`, que NO trae ruta
-        # ni modelo: eso lo agrega `build_team`. Sin este paso, cobrar seria
-        # cobrar contra un agente sin backend, y el chat ya hace lo mismo
-        # (server.py, la rama del equipo dinamico).
+        if accion == "trabajar":
+            # todavia no ejecuta: la frontera de salida no esta construida
+            # (spec, seccion 11). Se deja el gancho, no un cobro fantasma.
+            return {"accion": "trabajar", "ref": ref, "en": "nada",
+                    "motivo": "ejecutar trabajo todavia no existe"}
+
+        # accion == "proponer". `_plan_dynamic_team` nombra el trabajo (no
+        # arma equipo ni cobra: eso es ejecutar, y ejecutar no existe
+        # todavia).
         plan_obj = _plan_dynamic_team(
             f"Departamento {situacion['nombre']}: {accion} {ref or ''}".strip(),
             {"type": "analysis", "complexity": "media"})
-        equipo = orchestrator.build_team(plan_obj, _backend_availability(),
-                                         project_root=str(ROOT))
-        agentes = equipo.get("agents", [])
 
-        propuesta = None
-        if accion == "proponer":
-            # SIN ESTO el jefe "propone" y no queda rastro: el criterio de
-            # exito del spec (un departamento propone algo sin que Pedro le
-            # hable) se mide en el bus, no en el pulso.
-            #
-            # Los numeros los declara el jefe desde sus PERILLAS, no el
-            # modelo: pedirle un presupuesto a un modelo de 3b es pedirle un
-            # numero alucinado que gasta plata de verdad.
-            tope = (situacion["presupuesto_semanal_mm"]
-                    * situacion["agresividad_pct"] // 100)
-            presupuesto = max(1, tope - situacion["salidas_semana_mm"])
-            propuesta = f"{situacion['nombre']}-{uuid.uuid4().hex[:8]}"
-            titulo = (plan_obj.get("synthesis")
-                      or (agentes[0]["task"] if agentes else accion))[:120]
-            bus.alta(ts, semana, propuesta, cuenta, titulo, presupuesto,
-                     presupuesto, {"gasto_max_mm": presupuesto})
-
-        # Y ACA se cobra, que es el punto de todo esto.
-        unidades = 0
-        for a in agentes:
-            if cuenta.startswith("personal:"):
-                # La zona personal no compra capacidad de fabrica (invariante
-                # 12): su computo va contra la reserva personal, que es lo que
-                # el pagador entiende por la cuenta exacta "personal".
-                pagadora = _mapa_ficha.CUENTA_PERSONAL if _mapa_ficha else "personal"
-            else:
-                pagadora = cuenta
-            _cobrar_turno(pagadora, a.get("route") or "local",
-                          a.get("client"), a.get("model"),
-                          {"prompt_tokens": 0, "completion_tokens": 0})
-            unidades += 1
-        # No se informa en milimonedas: `_cobrar_turno` devuelve 0 para
-        # suscripcion (se cobra en unidades de capacidad) y decir "cobrado_mm"
-        # seria anunciar plata que el libro no movio.
+        # SIN ESTO el jefe "propone" y no queda rastro: el criterio de exito
+        # del spec (un departamento propone algo sin que Pedro le hable) se
+        # mide en el bus, no en el pulso.
+        #
+        # Los numeros los declara el jefe desde sus PERILLAS, no el modelo:
+        # pedirle un presupuesto a un modelo de 3b es pedirle un numero
+        # alucinado que gasta plata de verdad.
+        tope = (situacion["presupuesto_semanal_mm"]
+                * situacion["agresividad_pct"] // 100)
+        presupuesto = max(1, tope - situacion["salidas_semana_mm"])
+        propuesta = f"{situacion['nombre']}-{uuid.uuid4().hex[:8]}"
+        # El titulo del bus es lo que Pedro lee para decidir si financia: que
+        # sea el motivo que el jefe razono, no el relleno del planificador
+        # (`synthesis` es casi siempre la misma constante de fallback).
+        titulo = (motivo or f"{accion} {ref or ''}".strip())[:120]
+        bus.alta(ts, semana, propuesta, cuenta, titulo, presupuesto,
+                 presupuesto, {"gasto_max_mm": presupuesto, "semanas_max": 4})
         return {"accion": accion, "ref": ref, "propuesta": propuesta,
-                "agentes": len(agentes), "unidades_cobradas": unidades}
+                "plan": plan_obj.get("synthesis")}
     return contratar
 
 
