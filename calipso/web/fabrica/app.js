@@ -174,11 +174,24 @@ function pintarAvisos() {
     .join("");
 }
 
+let tarjetaPintada = "";                 // el html que ya esta en la tarjeta
+let medidaTarjeta = {ancho: 0, alto: 0};
+
 function pintarTarjeta(px, py) {
   const ficha = (ciudad && resaltado) ? fichaDe(ciudad, resaltado) : null;
   if (!ficha) { tarjeta.classList.add("oculto"); return; }
-  tarjeta.innerHTML = textoDeTarjeta(ficha);
+  const html = textoDeTarjeta(ficha);
   tarjeta.classList.remove("oculto");   // visible antes de medirla
+  // Escribir el innerHTML invalida el layout, y leer offsetWidth justo
+  // despues obliga al navegador a rehacerlo AHORA. Con el mouse quieto
+  // sobre un edificio eso pasaba en cada pointermove, para volver a pintar
+  // exactamente lo mismo. Comparar el html -y no solo el id- ademas deja
+  // que la tarjeta se actualice sola si el modelo cambia bajo el puntero.
+  if (html !== tarjetaPintada) {
+    tarjeta.innerHTML = html;
+    tarjetaPintada = html;
+    medidaTarjeta = {ancho: tarjeta.offsetWidth, alto: tarjeta.offsetHeight};
+  }
   if (!tarjetaSigueAlPuntero()) {
     tarjeta.style.left = "10px";
     tarjeta.style.top = "10px";
@@ -186,8 +199,7 @@ function pintarTarjeta(px, py) {
   }
   const caja = lienzo.getBoundingClientRect();
   const p = posicionDeTarjeta(px, py, {ancho: caja.width, alto: caja.height},
-                              {ancho: tarjeta.offsetWidth,
-                               alto: tarjeta.offsetHeight});
+                              medidaTarjeta);
   tarjeta.style.left = p.x + "px";
   tarjeta.style.top = p.y + "px";
 }

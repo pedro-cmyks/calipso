@@ -129,13 +129,55 @@ test("el reductor no toca la bandera de conectado", () => {
 });
 
 test("enviar no manda nada si el socket todavia no esta abierto", () => {
-  let visto = null;
-  const chat = crearChat(estado => { visto = estado; },
+  const vistos = [];
+  const chat = crearChat(estado => { vistos.push(estado); },
                          claseConEstado(WSFalso.CONNECTING));
+  const antes = vistos.length;      // el aviso del estado inicial ya paso
   const ok = chat.enviar("hola");
   assert.equal(ok, false);
   assert.equal(chat.estado().turnos.length, 0);
-  assert.equal(visto, null, "no debio avisar un cambio que no paso");
+  assert.equal(vistos.length, antes, "no debio avisar un cambio que no paso");
+});
+
+test("avisa el estado inicial al construirse, sin esperar al socket", () => {
+  // hasta el primer evento del socket nadie mas va a decir que no hay
+  // conexion: si el handshake se cuelga sin llegar a cerrarse, el formulario
+  // se ve conectado indefinidamente
+  const vistos = [];
+  crearChat(estado => { vistos.push(estado); },
+            claseConEstado(WSFalso.CONNECTING));
+  assert.equal(vistos.length, 1, "no aviso el estado inicial");
+  assert.equal(vistos[0].conectado, false);
+  assert.deepEqual(vistos[0].turnos, []);
+});
+
+test("si el constructor del socket tira, la reconexion sigue viva", t => {
+  // Adentro del setTimeout del reintento no hay nadie que agarre la
+  // excepcion: escapa del timer y la cadena de reconexion muere en silencio,
+  // para siempre. Los timers van simulados porque la cadena es infinita a
+  // proposito y si no el proceso del test no terminaria nunca.
+  t.mock.timers.enable({apis: ["setTimeout"]});
+  let intentos = 0;
+  class WSQueTira {
+    static OPEN = 1;
+    constructor() {
+      intentos++;
+      throw new Error("SecurityError: la politica del navegador lo bloqueo");
+    }
+  }
+  const vistos = [];
+  let chat;
+  assert.doesNotThrow(() => {
+    chat = crearChat(estado => { vistos.push(estado); }, WSQueTira);
+  }, "crearChat dejo escapar la excepcion del constructor");
+  assert.equal(intentos, 1);
+  t.mock.timers.tick(2000);
+  assert.equal(intentos, 2, "no reintento despues de que el constructor tirara");
+  t.mock.timers.tick(2000);
+  assert.equal(intentos, 3, "la cadena de reconexion se corto en el segundo");
+  assert.equal(chat.estado().conectado, false);
+  assert.equal(chat.enviar("hola"), false, "creyo que podia mandar sin socket");
+  assert.ok(vistos.length >= 1, "no aviso que no hay conexion");
 });
 
 test("enviar manda y devuelve true cuando el socket esta abierto", () => {

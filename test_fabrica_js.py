@@ -8,6 +8,7 @@ que `pytest` siga siendo el unico comando que hay que saber.
 from __future__ import annotations
 
 import pathlib
+import re
 import shutil
 import subprocess
 
@@ -20,15 +21,34 @@ FABRICA = pathlib.Path(__file__).parent / "calipso" / "web" / "fabrica"
 PISO_DE_TESTS = 90
 
 
+def version_de(ruta: pathlib.Path) -> tuple[int, int, int]:
+    """(22, 23, 0) para .../v22.23.0/installation/bin/node.
+
+    Ordenar las rutas como texto pone v9 DESPUES de v22, asi que con las dos
+    instaladas se elegiria la vieja.
+    """
+    m = re.search(r"/v(\d+)\.(\d+)\.(\d+)/", str(ruta))
+    return (int(m[1]), int(m[2]), int(m[3])) if m else (0, 0, 0)
+
+
 def node() -> str | None:
-    """Node del PATH, o el que fnm haya instalado. None si no hay."""
+    """Node del PATH, o el mas nuevo que fnm haya instalado. None si no hay."""
     directo = shutil.which("node")
     if directo:
         return directo
     versiones = sorted(
         (pathlib.Path.home() / ".local/share/fnm/node-versions")
-        .glob("v*/installation/bin/node"))
+        .glob("v*/installation/bin/node"), key=version_de)
     return str(versiones[-1]) if versiones else None
+
+
+def test_las_versiones_de_node_se_ordenan_por_numero():
+    rutas = [pathlib.Path("/x/node-versions/v9.11.2/installation/bin/node"),
+             pathlib.Path("/x/node-versions/v22.23.0/installation/bin/node"),
+             pathlib.Path("/x/node-versions/v20.5.1/installation/bin/node")]
+    assert sorted(rutas, key=version_de)[-1] == rutas[1]
+    # y el orden viejo, el de texto, elegia v9: por eso hay una clave
+    assert sorted(rutas)[-1] == rutas[0]
 
 
 def conteo_tap(salida: str, etiqueta: str) -> int | None:

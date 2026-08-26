@@ -34,9 +34,9 @@ function contextoFalso() {
 /** Un nodo con lo poco que `app.js` le toca de verdad. */
 function nodo(id, etiqueta = "div") {
   const clases = new Set();
-  return {
+  const n = {
     id, tagName: etiqueta, dataset: {}, style: {}, className: "",
-    textContent: "", innerHTML: "", value: "", placeholder: "",
+    textContent: "", value: "", placeholder: "",
     offsetWidth: 200, offsetHeight: 110,
     scrollTop: 0, scrollHeight: 0,
     hijos: [], oyentes: new Map(),
@@ -67,6 +67,17 @@ function nodo(id, etiqueta = "div") {
     setPointerCapture() {}, releasePointerCapture() {},
     hasPointerCapture: () => false,
   };
+  // el innerHTML se cuenta: escribirlo invalida el layout del navegador, y
+  // "cuantas veces se escribio" es lo unico que se puede medir de eso desde
+  // afuera de un navegador de verdad
+  let html = "", escrituras = 0;
+  Object.defineProperty(n, "innerHTML", {
+    get: () => html,
+    set: v => { html = v; escrituras++; },
+    enumerable: true, configurable: true,
+  });
+  n.escriturasDeHtml = () => escrituras;
+  return n;
 }
 
 function ciudadDePrueba() {
@@ -225,6 +236,35 @@ test("la lista de chats colgada queda vacia y no rompe a nadie", () => {
   // sin respuesta no hay nada que pintar, y eso esta bien: lo que no puede
   // pasar es que su ausencia se lleve puesto al resto de la pantalla
   assert.equal(nav.nodos.get("lista-chats").innerHTML, "");
+});
+
+test("el mouse quieto sobre un edificio no reescribe la tarjeta", () => {
+  const tarjeta = nav.nodos.get("tarjeta");
+  const mover = (x, y) => {
+    for (const f of nav.canvas.oyentes.get("pointermove") || []) {
+      f({pointerId: 7, pointerType: "mouse", clientX: x, clientY: y});
+    }
+  };
+  // se barre la pantalla hasta encontrar un edificio: la camara ya encuadro
+  // la ciudad en el cuadro que dibujo el test anterior, y adonde cae cada
+  // edificio depende de ese encuadre
+  let punto = null;
+  for (let y = 0; y < 600 && !punto; y += 8) {
+    for (let x = 0; x < 800 && !punto; x += 8) {
+      mover(x, y);
+      if (tarjeta.innerHTML) punto = {x, y};
+    }
+  }
+  assert.ok(punto, "no se encontro ningun edificio debajo del puntero");
+  const antes = tarjeta.escriturasDeHtml();
+  mover(punto.x, punto.y);
+  mover(punto.x, punto.y);
+  mover(punto.x, punto.y);
+  assert.equal(tarjeta.escriturasDeHtml(), antes,
+               "la tarjeta se reescribio con el mismo edificio debajo: cada " +
+               "reescritura invalida el layout, y el offsetWidth que se lee " +
+               "justo despues obliga al navegador a rehacerlo AHORA");
+  assert.ok(tarjeta.style.left, "la tarjeta no se llego a posicionar");
 });
 
 // --- El pintado de la conversacion, contra el mismo app.js ya cargado. ---

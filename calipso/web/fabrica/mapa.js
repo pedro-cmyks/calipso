@@ -11,12 +11,15 @@ import {centroDe, indice, ordenDePintado} from "./ciudad.js";
 import {rampaDe} from "./paleta.js";
 import {edificioSprite, pintar} from "./sprites.js";
 
-const FONDO = "#0b0f14";
-const CALLE = "#2a3038";
-const CABLE = "#c9a3e0";
-const UNIDAD = "#9ae6a4";
-const AVISO = "#ffd75f";
-const RESALTE = "#66d9ff";
+// Exportados para que el test pueda afirmar QUE color le toca a cada cosa
+// nombrandolo, en vez de repetir el hexadecimal o conformarse con "son
+// distintos" (invertir dos colores entre si tambien los deja distintos).
+export const FONDO = "#0b0f14";
+export const CALLE = "#2a3038";
+export const CABLE = "#c9a3e0";
+export const UNIDAD = "#9ae6a4";
+export const AVISO = "#ffd75f";
+export const RESALTE = "#66d9ff";
 const RADIO_ORBITA = 22;
 
 // `idx` entra por parametro para que el bucle de dibujo lo calcule una sola

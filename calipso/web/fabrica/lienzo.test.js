@@ -11,29 +11,68 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {crearCamara, escalaEntera} from "./camara.js";
+import {aPantalla, crearCamara, escalaEntera} from "./camara.js";
 import {centroDe, indice, ordenDePintado} from "./ciudad.js";
-import {crearMapa} from "./mapa.js";
+import {AVISO, CABLE, CALLE, crearMapa} from "./mapa.js";
 import {medidas} from "./sprites.js";
 
-/** Un contexto 2D que no dibuja nada y se acuerda de todo. */
+/**
+ * Un contexto 2D que no dibuja nada y se acuerda de todo.
+ *
+ * Cada operacion se anota junto con el ESTADO que tenia el contexto en ese
+ * momento (color, ancho de linea, punteado). Sin eso solo se puede afirmar
+ * que alguna linea salio punteada, no cual; y "alguna" la cumple igual una
+ * version que le puso el punteado a la calle y la continua al cable.
+ */
 function contextoFalso() {
   const ops = [];
-  return {
+  const ctx = {
     ops,
-    fillStyle: null, strokeStyle: null, lineWidth: 0,
+    fillStyle: null, strokeStyle: null, lineWidth: 0, guiones: [],
     imageSmoothingEnabled: true,
     setTransform: (...a) => ops.push({op: "setTransform", a}),
-    fillRect: (x, y, w, h) => ops.push({op: "fillRect", x, y, w, h}),
-    strokeRect: (x, y, w, h) => ops.push({op: "strokeRect", x, y, w, h}),
+    fillRect: (x, y, w, h) => ops.push({op: "fillRect", x, y, w, h,
+                                        fillStyle: ctx.fillStyle}),
+    strokeRect: (x, y, w, h) => ops.push({op: "strokeRect", x, y, w, h,
+                                          strokeStyle: ctx.strokeStyle,
+                                          lineWidth: ctx.lineWidth}),
     drawImage: (img, x, y) => ops.push({op: "drawImage", x, y,
                                         ancho: img.width, alto: img.height}),
-    setLineDash: (d) => ops.push({op: "setLineDash", d: [...d]}),
+    setLineDash: (d) => {
+      ctx.guiones = [...d];
+      ops.push({op: "setLineDash", d: [...d]});
+    },
     beginPath: () => ops.push({op: "beginPath"}),
     moveTo: (x, y) => ops.push({op: "moveTo", x, y}),
     lineTo: (x, y) => ops.push({op: "lineTo", x, y}),
-    stroke: () => ops.push({op: "stroke"}),
+    stroke: () => ops.push({op: "stroke", strokeStyle: ctx.strokeStyle,
+                            lineWidth: ctx.lineWidth,
+                            guiones: [...ctx.guiones]}),
   };
+  return ctx;
+}
+
+/**
+ * Junta cada `stroke` con el segmento que lo precede.
+ *
+ * Los trazos se identifican despues por sus PUNTAS, no por su color:
+ * identificarlos por el color haria que invertir los colores entre cable y
+ * calle se vuelva indetectable, porque el test iria a buscar cada uno
+ * justamente por lo que la mutacion cambio.
+ */
+function trazos(ops) {
+  const out = [];
+  let desde = null, hasta = null;
+  for (const o of ops) {
+    if (o.op === "moveTo") desde = {x: o.x, y: o.y};
+    if (o.op === "lineTo") hasta = {x: o.x, y: o.y};
+    if (o.op === "stroke") {
+      out.push({desde, hasta, strokeStyle: o.strokeStyle,
+                lineWidth: o.lineWidth, guiones: o.guiones});
+      desde = hasta = null;
+    }
+  }
+  return out;
 }
 
 /** Prepara los globales del navegador que `mapa.js` toca. */
@@ -42,7 +81,11 @@ function montar(ancho = 800, alto = 600, dpr = 1) {
   globalThis.window = {devicePixelRatio: dpr};
   globalThis.document = {
     createElement() {
-      const c = {width: 0, height: 0, getContext: () => contextoFalso()};
+      // un solo contexto por lienzo, y guardado: si getContext devolviera
+      // uno nuevo en cada llamada, lo que mapa.js le configura al de afuera
+      // de pantalla seria invisible desde el test
+      const octx = contextoFalso();
+      const c = {width: 0, height: 0, ctx: octx, getContext: () => octx};
       creados.push(c);
       return c;
     },
@@ -100,12 +143,71 @@ test("las calles se dibujan ANTES que los edificios", () => {
             "un edificio quedo tapado por una calle");
 });
 
-test("un cable va punteado y una calle no", () => {
-  const {lienzo, ctx} = montar();
-  crearMapa(lienzo).dibujar(ciudadDePrueba(), crearCamara(0, 0, 1));
-  const guiones = ctx.ops.filter(o => o.op === "setLineDash");
-  assert.ok(guiones.some(g => g.d.length > 0), "ningun cable punteado");
-  assert.ok(guiones.some(g => g.d.length === 0), "ninguna calle continua");
+/** El trazo que va de la punta `a` a la punta `b` de esta calle. */
+function trazoDe(ts, ciudad, calle, cam, vista) {
+  const porId = new Map(ciudad.edificios.map(e => [e.id, e]));
+  const a = aPantalla(cam, centroDe(porId.get(calle.a)), vista);
+  const b = aPantalla(cam, centroDe(porId.get(calle.b)), vista);
+  const igual = (p, q) => Math.abs(p.x - q.x) < 0.001 &&
+                          Math.abs(p.y - q.y) < 0.001;
+  return ts.find(t => igual(t.desde, a) && igual(t.hasta, b));
+}
+
+test("el cable es EL punteado y la calle es LA continua", () => {
+  const c = ciudadDePrueba();
+  const cam = crearCamara(0, 0, 1);
+  const vista = {ancho: 800, alto: 600};
+  const {lienzo, ctx} = montar(vista.ancho, vista.alto);
+  crearMapa(lienzo).dibujar(c, cam);
+  const ts = trazos(ctx.ops);
+  assert.equal(ts.length, c.calles.length, "falto dibujar alguna calle");
+  for (const calle of c.calles) {
+    const t = trazoDe(ts, c, calle, cam, vista);
+    assert.ok(t, `no se dibujo ${calle.a} - ${calle.b}`);
+    if (calle.tipo === "cable") {
+      assert.ok(t.guiones.length > 0, "el cable salio continuo");
+      assert.equal(t.strokeStyle, CABLE, "el cable no salio del color del cable");
+    } else {
+      assert.equal(t.guiones.length, 0, "la calle salio punteada");
+      assert.equal(t.strokeStyle, CALLE, "la calle no salio del color de la calle");
+    }
+  }
+});
+
+test("el ancho del trazo sale del ancho de la calle, a escala entera", () => {
+  const c = ciudadDePrueba();
+  const vista = {ancho: 800, alto: 600};
+  for (const escala of [1, 3]) {
+    const cam = crearCamara(0, 0, escala);
+    const {lienzo, ctx} = montar(vista.ancho, vista.alto);
+    crearMapa(lienzo).dibujar(c, cam);
+    const ts = trazos(ctx.ops);
+    const esc = escalaEntera(cam);
+    for (const calle of c.calles) {
+      const t = trazoDe(ts, c, calle, cam, vista);
+      assert.equal(t.lineWidth, calle.ancho * esc,
+                   `${calle.a}-${calle.b} a escala ${escala}: el trazo mide ` +
+                   `${t.lineWidth} y la calle pide ${calle.ancho} * ${esc}`);
+    }
+  }
+});
+
+test("el suavizado queda apagado en todos los contextos", () => {
+  // con el suavizado prendido el pixel art se ve borroso, y no hay ningun
+  // test que dibuje para darse cuenta: hay que preguntarselo al contexto
+  const {lienzo, ctx, creados} = montar();
+  const mapa = crearMapa(lienzo);
+  assert.equal(ctx.imageSmoothingEnabled, false,
+               "el contexto nace suavizando: queda a merced de que ajustar() " +
+               "lo apague, y ajustar() solo hace algo cuando cambia el tamano");
+  mapa.dibujar(ciudadDePrueba(), crearCamara(0, 0, 1));
+  assert.equal(ctx.imageSmoothingEnabled, false,
+               "el contexto principal quedo suavizando");
+  assert.ok(creados.length > 0, "no se rasterizo ningun sprite");
+  for (const c of creados) {
+    assert.equal(c.ctx.imageSmoothingEnabled, false,
+                 "un lienzo de fuera de pantalla quedo suavizando");
+  }
 });
 
 test("cada edificio se dibuja donde el hit test lo va a buscar", () => {
@@ -163,6 +265,28 @@ test("el sprite se rasteriza una sola vez y despues se copia", () => {
                `el cache no sirvio: ${creados.length} rasterizados`);
 });
 
+test("el cache de sprites tiene techo y no crece para siempre", () => {
+  const c = ciudadDePrueba();
+  const {lienzo, creados} = montar();
+  const mapa = crearMapa(lienzo);
+  const cam = crearCamara(0, 0, 1);
+  const original = c.edificios[0].tamano;
+  mapa.dibujar(c, cam);
+  // cada tamano distinto es una clave distinta del cache: pasado el techo,
+  // las viejas se tienen que soltar
+  for (let t = 1; t <= 340; t++) {
+    c.edificios[0].tamano = t;
+    mapa.dibujar(c, cam);
+  }
+  c.edificios[0].tamano = original;
+  const antes = creados.length;
+  mapa.dibujar(c, cam);
+  assert.ok(creados.length > antes,
+            "el sprite del principio seguia cacheado despues de 340 " +
+            "combinaciones: el cache no tiene techo y crece sin limite " +
+            "mientras la pagina este abierta");
+});
+
 test("cambiar el saldo de un edificio lo vuelve a rasterizar", () => {
   const c = ciudadDePrueba();
   const {lienzo, creados} = montar();
@@ -207,7 +331,7 @@ test("el edificio resaltado lleva su marco y los demas no", () => {
   assert.equal(ctx.ops.filter(o => o.op === "strokeRect").length, 1);
 });
 
-test("un edificio con compuertas pendientes lleva su marca", () => {
+test("dos avisos del mismo edificio caen en pixeles distintos", () => {
   const c = ciudadDePrueba();
   c.avisos.push({id: "c2", tipo: "gasto", sobre: "dep:b",
                  monedas_en_juego_mm: 1});
@@ -217,6 +341,15 @@ test("un edificio con compuertas pendientes lleva su marca", () => {
   assert.equal(avisosPorId.get("dep:b"), 2);
   // fondo + dos marcas de aviso + la unidad
   assert.equal(ctx.ops.filter(o => o.op === "fillRect").length, 4);
+  // y las dos marcas se ven las DOS: apiladas en el mismo pixel el edificio
+  // con dos compuertas se ve igual que el que tiene una
+  const marcas = ctx.ops.filter(o => o.op === "fillRect" &&
+                                     o.fillStyle === AVISO);
+  assert.equal(marcas.length, 2, "no se pintaron las dos marcas");
+  const lugares = new Set(marcas.map(m => `${m.x},${m.y}`));
+  assert.equal(lugares.size, 2,
+               "las dos marcas cayeron en el mismo pixel: " +
+               [...lugares].join(" "));
 });
 
 test("una ciudad vacia se dibuja sin romper nada", () => {

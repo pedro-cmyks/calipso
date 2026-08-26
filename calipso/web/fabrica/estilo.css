@@ -95,6 +95,10 @@ html, body {
 .sin-fabrica {
   position: absolute; inset: 0; display: flex;
   align-items: center; justify-content: center;
+  /* con fondo propio: cuando la ciudad pasa de presente a inactiva, el
+     cartel tapa el ultimo cuadro dibujado en vez de dejarlo asomar por
+     detras del texto que dice que no hay fabrica */
+  background: var(--fondo);
   color: var(--tenue); text-align: center; padding: 20px;
 }
 
@@ -110,10 +114,22 @@ html, body {
 #pestanas { display: none; }
 .oculto { display: none !important; }
 
-/* Mapa a pantalla completa, para sobrevolar. */
-#app.mapa-entero { grid-template-areas: "mapa mapa mapa" "avisos avisos avisos"; }
-#app.mapa-entero #panel-chats,
-#app.mapa-entero #panel-centro { display: none; }
+/* Mapa a pantalla completa, para sobrevolar.
+
+   Va encerrado en el complemento EXACTO del media query del telefono. Sin
+   eso, `#app.mapa-entero` (1,1,0) le gana al `#app` del media query (1,0,0)
+   -un media query no suma especificidad- y por debajo de 820px queda una
+   plantilla de tres columnas sobre una grilla de una sola: sin area para
+   #pestanas, y con #expandir escondido no hay forma de salir salvo
+   recargando. Se llega achicando una ventana de escritorio estando en
+   sobrevuelo. */
+@media not all and (max-width: 820px) {
+  #app.mapa-entero {
+    grid-template-areas: "mapa mapa mapa" "avisos avisos avisos";
+  }
+  #app.mapa-entero #panel-chats,
+  #app.mapa-entero #panel-centro { display: none; }
+}
 
 /* Telefono: dos pestanas, con la barra de avisos siempre a la vista. */
 @media (max-width: 820px) {

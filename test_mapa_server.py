@@ -113,12 +113,44 @@ def test_fabrica_sin_auth_manda_al_login(cliente):
     assert r.headers["location"] == "/login"
 
 
-def test_todo_el_shell_del_service_worker_existe(cliente):
-    """cache.addAll rechaza el lote entero si una URL da 404, y el service
-    worker se lo traga con un catch. Que falle aca en vez de en silencio."""
+def shell_del_service_worker() -> list[str]:
+    """Las URLs que el service worker precachea."""
     import re
     sw = (srv.WEB / "sw.js").read_text(encoding="utf-8")
     urls = re.findall(r'"(/[^"]*)"', sw.split("const SHELL")[1].split("];")[0])
     assert urls, "no se pudo leer el SHELL del service worker"
-    for url in urls:
+    return urls
+
+
+def test_todo_el_shell_del_service_worker_existe(cliente):
+    """cache.addAll rechaza el lote entero si una URL da 404, y el service
+    worker se lo traga con un catch. Que falle aca en vez de en silencio."""
+    for url in shell_del_service_worker():
         assert cliente.get(url).status_code == 200, url
+
+
+def test_el_shell_no_se_olvida_de_ningun_archivo_de_la_fabrica():
+    """Que todas las URLs del SHELL existan no dice nada de las que faltan.
+    Un modulo afuera del SHELL no rompe nada online y deja la fabrica
+    inservible sin conexion, que es justamente para lo que esta el SHELL.
+    La lista se saca de los archivos REALES del directorio."""
+    fabrica = srv.WEB / "fabrica"
+    esperados = {f"/static/fabrica/{p.name}"
+                 for p in sorted(fabrica.iterdir())
+                 if (p.suffix == ".css"
+                     or (p.suffix == ".js" and not p.name.endswith(".test.js")))}
+    assert esperados, f"no se encontro ningun modulo en {fabrica}"
+    faltan = esperados - set(shell_del_service_worker())
+    assert not faltan, (
+        "estos archivos de la fabrica no estan en el SHELL de "
+        f"calipso/web/sw.js: {sorted(faltan)}")
+
+
+def test_la_fabrica_registra_el_service_worker_y_su_manifest():
+    """Sin el registro, toda la parte de PWA de la fabrica es inerte; con el
+    manifest global, el icono de la pantalla de inicio abre la UI vieja."""
+    html = (srv.WEB / "fabrica" / "index.html").read_text(encoding="utf-8")
+    assert "serviceWorker" in html and "/sw.js" in html, (
+        "index.html de la fabrica no registra el service worker")
+    assert 'rel="manifest"' in html and "/fabrica/manifest.json" in html, (
+        "index.html de la fabrica no enlaza el manifest de la fabrica")

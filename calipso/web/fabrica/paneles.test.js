@@ -50,17 +50,32 @@ test("la tarjeta no deja pasar html del modelo", () => {
   assert.ok(!html.includes("o'brien"), "se colo la comilla simple sin escapar");
 });
 
-test("la tarjeta no se sale por la derecha ni por abajo", () => {
+test("la tarjeta se da vuelta cuando no entra a la derecha ni abajo", () => {
   const caja = {ancho: 400, alto: 300};
   const tarjeta = {ancho: 230, alto: 120};
   const p = posicionDeTarjeta(390, 290, caja, tarjeta);
+  // El valor exacto del volteo, no una desigualdad: la tarjeta se pone del
+  // OTRO lado del punto, en 390-12-230 y 290-12-120. Sin el volteo, el
+  // recorte contra el borde daria (170, 180) -tambien adentro de la caja y
+  // tambien a la izquierda del punto-, asi que cualquier afirmacion mas
+  // floja que esta la cumplen las dos versiones y el volteo se puede borrar
+  // entero sin que nada falle.
+  assert.deepEqual(p, {x: 148, y: 158});
   assert.ok(p.x + tarjeta.ancho <= caja.ancho, "se fue por la derecha");
   assert.ok(p.y + tarjeta.alto <= caja.alto, "se fue por abajo");
   assert.ok(p.x >= 0 && p.y >= 0, "se fue por el otro lado");
-  // el punto esta pegado al borde derecho: si de verdad se dio vuelta, la
-  // tarjeta queda a la izquierda del punto, no clavada en el origen
-  assert.ok(p.x > 0, "la tarjeta no se dio vuelta: quedo pegada al borde");
-  assert.ok(p.x < 390, "la tarjeta no se dio vuelta: sigue del lado derecho");
+});
+
+test("el recorte agarra lo que el volteo no alcanza a acomodar", () => {
+  // tarjeta casi tan grande como la caja: no entra ni adelante ni atras del
+  // punto, el volteo la manda a negativo y lo unico que la salva es el
+  // recorte contra el borde
+  const caja = {ancho: 200, alto: 150};
+  const tarjeta = {ancho: 190, alto: 140};
+  const p = posicionDeTarjeta(195, 145, caja, tarjeta);
+  assert.deepEqual(p, {x: 0, y: 0});
+  assert.ok(p.x + tarjeta.ancho <= caja.ancho &&
+            p.y + tarjeta.alto <= caja.alto, "quedo afuera de la caja");
 });
 
 test("con lugar de sobra la tarjeta va al lado del dedo", () => {

@@ -70,7 +70,19 @@ export function crearChat(alCambiar, ConstructorWS = WebSocket) {
   let ws = null;
 
   function conectar() {
-    ws = new ConstructorWS(`${proto}://${location.host}/ws/chat`);
+    try {
+      ws = new ConstructorWS(`${proto}://${location.host}/ws/chat`);
+    } catch (e) {
+      // el constructor puede tirar sincronicamente (URL invalida, politica
+      // de seguridad del navegador). Adentro del setTimeout del reintento no
+      // hay nadie que agarre esa excepcion: escapa del timer y la cadena de
+      // reconexion muere para siempre, en silencio.
+      ws = null;
+      estado = {...estado, conectado: false};
+      alCambiar(estado);
+      setTimeout(conectar, 2000);
+      return;
+    }
     ws.addEventListener("open", () => {
       estado = {...estado, conectado: true};
       alCambiar(estado);
@@ -90,6 +102,11 @@ export function crearChat(alCambiar, ConstructorWS = WebSocket) {
       setTimeout(conectar, 2000);
     });
   }
+  // El estado inicial dice "sin conexion" y hay que PINTARLO. Sin este
+  // aviso, hasta el primer evento del socket la interfaz se ve conectada, y
+  // si el handshake se cuelga sin llegar a cerrarse miente indefinidamente.
+  // Va antes de conectar() para que un "open" no se lo pise.
+  alCambiar(estado);
   conectar();
 
   return {
