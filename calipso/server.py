@@ -3700,13 +3700,12 @@ def _contratar_para(cuenta: str, bus, ts: str, semana: str):
             return {"accion": "trabajar", "ref": ref, "en": "nada",
                     "motivo": "ejecutar trabajo todavia no existe"}
 
-        # accion == "proponer". `_plan_dynamic_team` nombra el trabajo (no
-        # arma equipo ni cobra: eso es ejecutar, y ejecutar no existe
-        # todavia).
-        plan_obj = _plan_dynamic_team(
-            f"Departamento {situacion['nombre']}: {accion} {ref or ''}".strip(),
-            {"type": "analysis", "complexity": "media"})
-
+        # accion == "proponer". SIN planificar aca: es una llamada a un
+        # modelo cuya salida no lee nadie, en un bucle que corre desatendido
+        # mientras Pedro duerme. Cuando exista la ejecucion de trabajo (la
+        # frontera de salida que este plan no construye), planificar va a
+        # vivir ahi, con la informacion de ese momento.
+        #
         # SIN ESTO el jefe "propone" y no queda rastro: el criterio de exito
         # del spec (un departamento propone algo sin que Pedro le hable) se
         # mide en el bus, no en el pulso.
@@ -3724,8 +3723,7 @@ def _contratar_para(cuenta: str, bus, ts: str, semana: str):
         titulo = (motivo or f"{accion} {ref or ''}".strip())[:120]
         bus.alta(ts, semana, propuesta, cuenta, titulo, presupuesto,
                  presupuesto, {"gasto_max_mm": presupuesto, "semanas_max": 4})
-        return {"accion": accion, "ref": ref, "propuesta": propuesta,
-                "plan": plan_obj.get("synthesis")}
+        return {"accion": accion, "ref": ref, "propuesta": propuesta}
     return contratar
 
 
