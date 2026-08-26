@@ -89,23 +89,15 @@ def test_el_envoltorio_publica_cuando_hay_pulso(monkeypatch):
     assert pu.empleados("dep:atlas")[0]["rol"] == "scout"
 
 
-def test_el_borrador_deja_su_diff_en_el_anillo_del_agente(monkeypatch):
-    """El evento `diff` tenia consumidores (el popup, el panel) y ningun
-    productor: el unico diff real del server es el del borrador."""
+def test_el_borrador_es_su_propio_agente_y_cierra_con_su_fin(monkeypatch):
+    """El borrador se lanza con `ensure_future` y llama a otro modelo: si
+    publicara sobre el agente del turno, su `diff` caeria despues del `fin`
+    de ese turno, `estado_de` diria "esperando" en vez de "liberado" y a los
+    diez minutos el escritorio quedaria "inactivo" — el fantasma que el
+    `fin` existe para evitar. El orden de sus eventos es lo que lo prueba."""
     pu = p.Pulso()
     monkeypatch.setattr(srv, "EL_PULSO", pu)
-    pu.publicar("chat:abc", "inicio", departamento="dep:atlas", rol="calipso")
-    pu.publicar("chat:abc", "diff", ruta="a.py", diff="- viejo\n+ nuevo")
-    empleado = pu.empleados("dep:atlas")[0]
-    assert empleado["diff"] == {"ruta": "a.py", "diff": "- viejo\n+ nuevo"}
-
-
-def test_el_borrador_es_el_que_publica_el_diff(monkeypatch):
-    """El test de arriba mira la vista derivada; este mira al productor:
-    que sea `_run_chat_draft` el que deja el evento en el anillo del agente
-    del turno, y con el mismo texto que Pedro ve como propuesta."""
-    pu = p.Pulso()
-    monkeypatch.setattr(srv, "EL_PULSO", pu)
+    monkeypatch.setattr(srv, "PENDING_CHANGES", {})
     monkeypatch.setattr(srv.goals, "active", lambda raiz: None)
     monkeypatch.setattr(srv.developer, "chat_draft_brief",
                         lambda *a, **k: {"job": {"id": "j1"}, "system": "s",
@@ -124,9 +116,23 @@ def test_el_borrador_es_el_que_publica_el_diff(monkeypatch):
 
     ws = _WSFalso()
     asyncio.run(srv._run_chat_draft(ws, "cambia algo", "no-existe.py",
-                                    "chat:abc"))
+                                    "chat:abc:borrador", "dep:atlas"))
 
-    diffs = [e for e in pu.eventos("chat:abc") if e["evento"] == "diff"]
-    assert len(diffs) == 1
-    assert diffs[0]["ruta"] == "no-existe.py"
-    assert diffs[0]["diff"] == ws.enviados[-1]["proposal"]["diff"]
+    assert [e["evento"] for e in pu.eventos("chat:abc:borrador")] == [
+        "inicio", "diff", "fin"]
+    # y el agente del turno no se queda con un diff colgado despues de su fin
+    assert pu.eventos("chat:abc") == []
+    diff = pu.eventos("chat:abc:borrador")[1]
+    assert diff["ruta"] == "no-existe.py"
+    # el mismo texto que Pedro ve como propuesta
+    assert diff["diff"] == ws.enviados[-1]["proposal"]["diff"]
+
+
+def test_el_borrador_sin_agente_corre_igual(monkeypatch):
+    """`_pulso_agente` degrada tambien cuando no hay id: el borrador tiene
+    que poder correr sin que nadie le haya dado un agente."""
+    pu = p.Pulso()
+    monkeypatch.setattr(srv, "EL_PULSO", pu)
+    with srv._pulso_agente(None, departamento="dep:atlas") as mango:
+        mango.diff("a.py", "- x\n+ y")
+    assert pu.recientes() == []

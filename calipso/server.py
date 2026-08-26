@@ -579,48 +579,55 @@ def _extract_edit_target(message: str, features: dict) -> str | None:
 
 
 async def _run_chat_draft(ws, chat_msg: str, file_path: str,
-                          agente_id: str | None = None) -> None:
-    """Genera borrador desde chat y emite evento 'proposal' por WebSocket."""
-    active_goal = await asyncio.to_thread(goals.active, str(ROOT))
-    brief = developer.chat_draft_brief(str(ROOT), chat_msg, file_path, goal=active_goal)
-    job = brief["job"]
-    try:
-        raw = await asyncio.to_thread(
-            _run_subscription_text, "claude", brief["system"], brief["user_msg"], "sonnet")
-        new_content = developer._strip_fences(raw)
-    except Exception as exc:
-        jobs.update(str(ROOT), job["id"], status="failed", error=str(exc))
-        await ws.send_json({"type": "error", "text": f"borrador fallido: {exc}"})
-        return
+                          agente_id: str | None = None,
+                          departamento: str | None = None) -> None:
+    """Genera borrador desde chat y emite evento 'proposal' por WebSocket.
 
-    change_id = uuid.uuid4().hex[:12]
-    item = {
-        "id": change_id,
-        "path": file_path,
-        "source": "chat_draft",
-        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
-    }
-    PENDING_CHANGES[change_id] = {**item, "content": new_content}
-    diff = _proposal_diff(file_path, new_content)
-    if EL_PULSO is not None and agente_id:
+    Es su propio agente del pulso, no un rastro del turno que lo lanzo: se
+    corre con `ensure_future` y llama a otro modelo, asi que su `diff`
+    llegaria despues del `fin` del turno y dejaria ese escritorio ocupado
+    por un fantasma."""
+    with _pulso_agente(agente_id, departamento=departamento, rol="borrador",
+                       modelo="sonnet") as mango:
+        active_goal = await asyncio.to_thread(goals.active, str(ROOT))
+        brief = developer.chat_draft_brief(str(ROOT), chat_msg, file_path, goal=active_goal)
+        job = brief["job"]
+        try:
+            raw = await asyncio.to_thread(
+                _run_subscription_text, "claude", brief["system"], brief["user_msg"], "sonnet")
+            new_content = developer._strip_fences(raw)
+        except Exception as exc:
+            jobs.update(str(ROOT), job["id"], status="failed", error=str(exc))
+            await ws.send_json({"type": "error", "text": f"borrador fallido: {exc}"})
+            return
+
+        change_id = uuid.uuid4().hex[:12]
+        item = {
+            "id": change_id,
+            "path": file_path,
+            "source": "chat_draft",
+            "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        PENDING_CHANGES[change_id] = {**item, "content": new_content}
+        diff = _proposal_diff(file_path, new_content)
         # el rastro del agente: es lo que el popup del empleado muestra como
         # "toco" y lo que el panel de razonamiento pinta abajo del texto
-        EL_PULSO.publicar(agente_id, "diff", ruta=file_path, diff=diff)
+        mango.diff(file_path, diff)
 
-    jobs.write_artifact(str(ROOT), job["id"], "draft.diff", diff)
-    jobs.update(str(ROOT), job["id"], status="done",
-                proposal_id=change_id, artifact="draft.diff")
+        jobs.write_artifact(str(ROOT), job["id"], "draft.diff", diff)
+        jobs.update(str(ROOT), job["id"], status="done",
+                    proposal_id=change_id, artifact="draft.diff")
 
-    if active_goal:
-        goals.add_evidence(
-            str(ROOT), active_goal["id"], "proposal",
-            f"Borrador chat para {file_path} (propuesta {change_id})",
-            job_id=job["id"], artifact="draft.diff")
+        if active_goal:
+            goals.add_evidence(
+                str(ROOT), active_goal["id"], "proposal",
+                f"Borrador chat para {file_path} (propuesta {change_id})",
+                job_id=job["id"], artifact="draft.diff")
 
-    await ws.send_json({
-        "type": "proposal",
-        "proposal": {**item, "diff": diff},
-    })
+        await ws.send_json({
+            "type": "proposal",
+            "proposal": {**item, "diff": diff},
+        })
 
 
 def _proposal_diff(path: str, content: str) -> str:
@@ -2269,8 +2276,9 @@ async def ws_chat(ws: WebSocket) -> None:
             #         lanzar borrador en background y notificar como evento "proposal"
             _edit_target = _extract_edit_target(chat_msg, features)
             if _edit_target:
-                asyncio.ensure_future(_run_chat_draft(ws, chat_msg, _edit_target,
-                                                      agente_id))
+                # la Task 5 le agrega aca el `departamento` de verdad
+                asyncio.ensure_future(_run_chat_draft(
+                    ws, chat_msg, _edit_target, f"{agente_id}:borrador", None))
 
             # 1.5) navegación web si la tarea lo pide (grounding + preview)
             web_material = None
@@ -3516,8 +3524,8 @@ _MANGO_NULO = _MangoNulo()
 
 
 @contextlib.contextmanager
-def _pulso_agente(agente_id: str, **campos):
-    if EL_PULSO is None:
+def _pulso_agente(agente_id: str | None, **campos):
+    if EL_PULSO is None or not agente_id:
         yield _MANGO_NULO
         return
     with EL_PULSO.agente(agente_id, **campos) as mango:
