@@ -196,12 +196,47 @@ const conversacion = document.getElementById("conversacion");
 const formulario = document.getElementById("entrada");
 const campo = document.getElementById("texto");
 
+// Un nodo por turno, en el mismo orden que `estado.turnos`. Rearmar el
+// innerHTML entero en cada evento cuesta O(turnos) por token -o sea
+// cuadratico a lo largo de la sesion- pero lo caro no es el costo: rehacer
+// el subarbol destruye la seleccion, y entonces no se puede copiar lo que
+// Calipso esta escribiendo mientras lo escribe. La UI vieja de este mismo
+// repo ya hace append incremental (calipso/web/index.html, appendBotText).
+const nodosDeTurno = [];
+let avisoPasajero = null;
+
+function claseDeTurno(t) {
+  return "turno" + (t.quien === "pedro" ? " mio" : "") +
+         (t.quien === "error" ? " error" : "");
+}
+
+function pintarConversacion(turnos) {
+  // el aviso del submit es pasajero: se va en el proximo pintado, igual que
+  // cuando el innerHTML lo barria. Se saca ANTES de agregar turnos para que
+  // los nuevos no queden colgados atras suyo.
+  if (avisoPasajero) {
+    conversacion.removeChild(avisoPasajero);
+    avisoPasajero = null;
+  }
+  for (let i = nodosDeTurno.length; i < turnos.length; i++) {
+    const div = document.createElement("div");
+    div.className = claseDeTurno(turnos[i]);
+    div.textContent = turnos[i].texto;   // textContent no necesita escapado
+    nodosDeTurno.push(div);
+    conversacion.appendChild(div);
+  }
+  // el unico turno que cambia mientras llegan chunks es el ultimo: al resto
+  // del historial no se lo vuelve a tocar
+  const i = turnos.length - 1;
+  if (i < 0) return;
+  const div = nodosDeTurno[i];
+  if (div.textContent !== turnos[i].texto) div.textContent = turnos[i].texto;
+  const clase = claseDeTurno(turnos[i]);
+  if (div.className !== clase) div.className = clase;
+}
+
 const chat = crearChat(estado => {
-  conversacion.innerHTML = estado.turnos
-    .map(t => `<div class="turno ${t.quien === "pedro" ? "mio" : ""}` +
-              `${t.quien === "error" ? " error" : ""}">` +
-              `${escapar(t.texto)}</div>`)
-    .join("");
+  pintarConversacion(estado.turnos);
   conversacion.scrollTop = conversacion.scrollHeight;
   // el estado de conexion se pinta DESDE el estado. El aviso que agrega el
   // submit es pasajero y el proximo render lo borra; esto no, y por eso es
@@ -219,10 +254,12 @@ formulario.addEventListener("submit", ev => {
   }
   // enviar() no toca los turnos cuando no hay conexion: el aviso se pinta
   // aparte para no perder el texto que Pedro todavia no pudo mandar
+  if (avisoPasajero) conversacion.removeChild(avisoPasajero);
   const aviso = document.createElement("div");
   aviso.className = "turno error";
   aviso.textContent = "sin conexion con Calipso: el mensaje no se envio";
   conversacion.appendChild(aviso);
+  avisoPasajero = aviso;
   conversacion.scrollTop = conversacion.scrollHeight;
 });
 

@@ -35,7 +35,7 @@ function contextoFalso() {
 function nodo(id, etiqueta = "div") {
   const clases = new Set();
   return {
-    id, tagName: etiqueta, dataset: {}, style: {},
+    id, tagName: etiqueta, dataset: {}, style: {}, className: "",
     textContent: "", innerHTML: "", value: "", placeholder: "",
     offsetWidth: 200, offsetHeight: 110,
     scrollTop: 0, scrollHeight: 0,
@@ -56,6 +56,12 @@ function nodo(id, etiqueta = "div") {
       this.oyentes.get(tipo).push(f);
     },
     appendChild(n) { this.hijos.push(n); return n; },
+    removeChild(n) {
+      const i = this.hijos.indexOf(n);
+      if (i < 0) throw new Error("removeChild sobre un nodo que no es hijo");
+      this.hijos.splice(i, 1);
+      return n;
+    },
     querySelectorAll: () => [],
     getBoundingClientRect: () => ({left: 0, top: 0, width: 800, height: 600}),
     setPointerCapture() {}, releasePointerCapture() {},
@@ -120,12 +126,25 @@ function montarNavegador() {
   const cuadros = [];
   globalThis.requestAnimationFrame = f => cuadros.push(f);
 
-  // un socket que no conecta: el chat no es lo que se prueba aca
+  // un socket de mentira que se acuerda de sus oyentes, para poder empujarle
+  // eventos del /ws/chat sin abrir ninguna conexion
+  const sockets = [];
   globalThis.WebSocket = class {
     static OPEN = 1;
-    constructor() { this.readyState = 0; }
-    addEventListener() {}
-    send() {}
+    constructor(url) {
+      this.url = url;
+      this.readyState = 0;
+      this.enviados = [];
+      this.oyentes = new Map();
+      sockets.push(this);
+    }
+    addEventListener(tipo, f) {
+      if (!this.oyentes.has(tipo)) this.oyentes.set(tipo, []);
+      this.oyentes.get(tipo).push(f);
+    }
+    emitir(tipo, ev) { for (const f of this.oyentes.get(tipo) || []) f(ev); }
+    dice(evento) { this.emitir("message", {data: JSON.stringify(evento)}); }
+    send(d) { this.enviados.push(d); }
     close() {}
   };
 
@@ -138,7 +157,7 @@ function montarNavegador() {
                                                 ciudad: ciudadDePrueba()})});
   };
 
-  return {ctx, canvas, nodos, pedidos, cuadros,
+  return {ctx, canvas, nodos, pedidos, cuadros, sockets,
           medidaDelLienzo: () => ({ancho, alto})};
 }
 
@@ -206,4 +225,87 @@ test("la lista de chats colgada queda vacia y no rompe a nadie", () => {
   // sin respuesta no hay nada que pintar, y eso esta bien: lo que no puede
   // pasar es que su ausencia se lleve puesto al resto de la pantalla
   assert.equal(nav.nodos.get("lista-chats").innerHTML, "");
+});
+
+// --- El pintado de la conversacion, contra el mismo app.js ya cargado. ---
+//
+// Lo que se fija aca es que el turno abierto conserve su NODO mientras
+// llegan chunks. Si el nodo se reemplaza, la seleccion del navegador se
+// destruye en cada token y no se puede copiar lo que Calipso esta
+// escribiendo mientras lo escribe.
+
+const socket = nav.sockets[0];
+const conversacion = nav.nodos.get("conversacion");
+
+test("el chat se engancha a /ws/chat", () => {
+  assert.ok(socket, "crearChat no abrio ningun socket");
+  assert.ok(socket.url.endsWith("/ws/chat"), socket.url);
+});
+
+test("cada chunk agranda el mismo nodo en vez de rearmar la conversacion",
+     () => {
+  socket.readyState = 1;
+  socket.emitir("open", {});
+  socket.dice({type: "thinking"});
+  socket.dice({type: "chunk", text: "hola"});
+  const nodoAbierto = conversacion.hijos.at(-1);
+  const cuantos = conversacion.hijos.length;
+  socket.dice({type: "chunk", text: " mundo"});
+  socket.dice({type: "chunk", text: "!"});
+  assert.equal(conversacion.hijos.length, cuantos, "aparecio un nodo de mas");
+  assert.equal(conversacion.hijos.at(-1), nodoAbierto,
+               "el nodo del turno abierto se reemplazo: en el navegador eso " +
+               "borra la seleccion en cada token");
+  assert.equal(nodoAbierto.textContent, "hola mundo!");
+});
+
+test("el historial ya pintado no se vuelve a tocar", () => {
+  socket.dice({type: "done"});
+  const viejos = [...conversacion.hijos];
+  socket.dice({type: "thinking"});
+  socket.dice({type: "chunk", text: "otra respuesta"});
+  const ahora = conversacion.hijos;
+  assert.ok(ahora.length === viejos.length + 1, "no se agrego el turno nuevo");
+  for (let i = 0; i < viejos.length; i++) {
+    assert.equal(ahora[i], viejos[i], `se rehizo el turno ${i}`);
+  }
+});
+
+test("un turno de error lleva su clase y no se mezcla con los demas", () => {
+  socket.dice({type: "done"});
+  socket.dice({type: "error", text: "se cayo el modelo"});
+  const ultimo = conversacion.hijos.at(-1);
+  assert.ok(ultimo.className.includes("error"), ultimo.className);
+  assert.ok(ultimo.textContent.includes("se cayo el modelo"));
+});
+
+test("el texto del modelo no se interpreta como HTML", () => {
+  socket.dice({type: "thinking"});
+  socket.dice({type: "chunk", text: "<img onerror=x> o'brien"});
+  const ultimo = conversacion.hijos.at(-1);
+  // con textContent no hay nada que escapar: el texto entra literal y el
+  // innerHTML del nodo nunca se escribe
+  assert.equal(ultimo.textContent, "<img onerror=x> o'brien");
+  assert.equal(ultimo.innerHTML, "",
+               "el turno se pinto por innerHTML: volvio el rearmado");
+  socket.dice({type: "done"});
+});
+
+test("el aviso de 'no se envio' es pasajero y se va en el proximo pintado",
+     () => {
+  const formulario = nav.nodos.get("entrada");
+  const campo = nav.nodos.get("texto");
+  socket.readyState = 0;                       // socket caido
+  campo.value = "un mensaje que no va a salir";
+  for (const f of formulario.oyentes.get("submit") || []) {
+    f({preventDefault() {}});
+  }
+  const aviso = conversacion.hijos.at(-1);
+  assert.ok(aviso.textContent.includes("no se envio"), aviso.textContent);
+  assert.equal(campo.value, "un mensaje que no va a salir",
+               "se perdio el texto que no se pudo mandar");
+  socket.readyState = 1;
+  socket.emitir("open", {});                   // el proximo pintado lo barre
+  assert.ok(!conversacion.hijos.includes(aviso),
+            "el aviso pasajero quedo clavado en la conversacion");
 });
