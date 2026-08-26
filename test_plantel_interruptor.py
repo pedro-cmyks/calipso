@@ -130,6 +130,35 @@ def test_tomar_tic_es_atomico_bajo_concurrencia(tmp_path):
     assert it.tics(tmp_path, "dep:atlas", "2026-W35") == 5
 
 
+def test_parar_no_se_pierde_contra_poner_modo_concurrente(tmp_path):
+    """parar y poner_modo llamaban a escribir(base, replace(leer(base), ...))
+    cada uno por su lado: entre SU lectura y SU escritura no habia nada
+    sosteniendo nada, asi que un poner_modo concurrente se traia el
+    encendido viejo (True) y resucitaba la fabrica sin avisar. Medido sin
+    el arreglo, parar se perdia en 63 de 300 corridas (21%); que pasen las
+    50 rondas de este test con el bug puesto es practicamente imposible."""
+    for _ in range(50):
+        it.reanudar(tmp_path)  # como si Pedro la hubiera prendido
+        barrera = threading.Barrier(2)
+
+        def hilo_parar():
+            barrera.wait()
+            it.parar(tmp_path)
+
+        def hilo_modo():
+            barrera.wait()
+            it.poner_modo(tmp_path, "vivo")
+
+        h1 = threading.Thread(target=hilo_parar)
+        h2 = threading.Thread(target=hilo_modo)
+        h1.start()
+        h2.start()
+        h1.join()
+        h2.join()
+
+        assert it.leer(tmp_path).encendido is False, "parar se perdio"
+
+
 def test_boton_de_parar_bajo_escritura_concurrente(tmp_path):
     """Apretar parar mientras la fabrica escribe no puede fallar: write_text
     truncaba el archivo en el lugar, asi que un lector se podia topar con un

@@ -81,17 +81,22 @@ def escribir(base, estado: Estado) -> Estado:
 
 
 def parar(base) -> Estado:
-    return escribir(base, replace(leer(base), encendido=False))
+    # el candado envuelve la lectura Y la escritura: separadas, un
+    # poner_modo concurrente resucitaba el encendido que habia leido antes
+    with candado(ruta(base)):
+        return escribir(base, replace(leer(base), encendido=False))
 
 
 def reanudar(base) -> Estado:
-    return escribir(base, replace(leer(base), encendido=True))
+    with candado(ruta(base)):
+        return escribir(base, replace(leer(base), encendido=True))
 
 
 def poner_modo(base, modo: str) -> Estado:
     if modo not in MODOS:
         raise ValueError(f"modo invalido: {modo!r} (son {MODOS})")
-    return escribir(base, replace(leer(base), modo=modo))
+    with candado(ruta(base)):
+        return escribir(base, replace(leer(base), modo=modo))
 
 
 def puede_gastar(estado: Estado) -> bool:
