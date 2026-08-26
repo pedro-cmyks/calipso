@@ -3485,8 +3485,13 @@ async def ws_mapa(ws: WebSocket) -> None:
             await asyncio.sleep(SONDEO_S)
     except WebSocketDisconnect:
         pass
-    except Exception:
-        pass              # el cliente reconecta solo; el mapa sigue con la foto
+    except Exception as exc:
+        # el cliente reconecta solo y el mapa sigue mostrando la foto, pero
+        # que el socket se muera no puede ser invisible: sin esta linea, un
+        # evento no serializable o un bug en Pulso.desde deja al cliente
+        # reconectando para siempre y a nadie enterado
+        print(f"[calipso] el pulso corto el socket del mapa: {exc}",
+              file=sys.stderr)
 
 
 @app.get("/api/mapa/ciudad")
