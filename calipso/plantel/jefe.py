@@ -37,6 +37,11 @@ def _puede(estado, s: dict, accion: str) -> tuple[bool, str]:
     """Los frenos, del mas barato de chequear al mas caro de violar."""
     if accion == "nada":
         return False, "no hay nada que hacer"
+    if accion == "comentar":
+        # opinar no contrata a nadie ni cobra (el contratista lo devuelve como
+        # no-op), asi que no hay gasto que frenar — y en ensayo formar criterio
+        # es exactamente lo que queremos ver pasar
+        return True, ""
     if not it.puede_gastar(estado):
         return False, f"modo {estado.modo}: mira y decide, no gasta"
     if s["disponible_mm"] <= 0:
@@ -72,26 +77,47 @@ def tic(ctx: Contexto, cuenta: str, semana: str) -> dict:
                                cap.get("precio_mm", 0),
                                cap.get("precio_base_mm", 0))
 
-    ctx.publicar("inicio", departamento=cuenta, rol="jefe")
+    def salida(accion="nada", ref=None, motivo="", actuo=False, freno="",
+               resultado=None) -> dict:
+        """Las ocho claves, siempre: la rutina de la Tarea 6 las lee todas."""
+        return {"cuenta": cuenta, "accion": accion, "ref": ref,
+                "motivo": motivo, "sesgo_pct": sesgo, "actuo": actuo,
+                "freno": freno, "resultado": resultado}
+
+    # el prompt se arma ANTES del `inicio`: si la memoria o la forma de
+    # `situacion` fallan, no es culpa del modelo, y asi tampoco queda un
+    # agente abierto en el pulso sin nadie que lo cierre
     try:
-        crudo = ctx.pensar(dec.prompt(s, sesgo, ctx.memoria.load_core()))
+        p = dec.prompt(s, sesgo, ctx.memoria.load_core())
     except Exception as exc:
-        ctx.publicar("fin", resultado="error")
-        return {"cuenta": cuenta, "accion": "nada", "ref": None,
-                "motivo": f"no penso: {exc}", "sesgo_pct": sesgo,
-                "actuo": False, "freno": "el modelo fallo", "resultado": None}
+        return salida(motivo=f"no armo el prompt: {exc}",
+                      freno="fallo antes de pensar")
 
-    accion, ref, motivo = dec.parsear(crudo)
-    ctx.publicar("razonando",
-                 texto=f"{accion} {ref or ''} — {motivo}".strip())
+    ctx.publicar("inicio", departamento=cuenta, rol="jefe")
+    fin = "ok"
+    try:
+        try:
+            crudo = ctx.pensar(p)
+        except Exception as exc:
+            fin = "error"
+            return salida(motivo=f"no penso: {exc}", freno="el modelo fallo")
 
-    permiso, freno = _puede(estado, s, accion)
-    resultado = None
-    if permiso:
-        resultado = ctx.contratar(s, accion, ref)
-        ctx.memoria.remember(f"{accion} {ref or ''}: {motivo}".strip(),
-                             kind="jefe", departamento=cuenta)
-    ctx.publicar("fin", resultado="ok")
-    return {"cuenta": cuenta, "accion": accion, "ref": ref, "motivo": motivo,
-            "sesgo_pct": sesgo, "actuo": permiso, "freno": freno,
-            "resultado": resultado}
+        accion, ref, motivo = dec.parsear(crudo)
+        ctx.publicar("razonando",
+                     texto=f"{accion} {ref or ''} — {motivo}".strip())
+
+        permiso, freno = _puede(estado, s, accion)
+        resultado = None
+        if permiso:
+            resultado = ctx.contratar(s, accion, ref)
+            ctx.memoria.remember(f"{accion} {ref or ''}: {motivo}".strip(),
+                                 kind="jefe", departamento=cuenta)
+        return salida(accion, ref, motivo, permiso, freno, resultado)
+    except Exception as exc:
+        fin = "error"
+        return salida(motivo=f"reviento actuando: {exc}",
+                      freno="fallo al actuar")
+    finally:
+        # el `fin` sale SIEMPRE (misma regla que pulso.py): un agente que
+        # revienta y queda razonando deja el escritorio ocupado por un fantasma
+        ctx.publicar("fin", resultado=fin)

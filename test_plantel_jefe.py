@@ -1,6 +1,4 @@
 """El bucle del jefe, entero, sin un solo modelo (spec seccion 4)."""
-import pytest
-
 from calipso.economia import departamentos as deps
 from calipso.economia import pt
 from calipso.economia import tipos as t
@@ -9,11 +7,15 @@ from calipso.economia.capacidad import Suscripcion
 from calipso.economia.cola import Cola
 from calipso.economia.kernel import Kernel
 from calipso.economia.libro import Libro
+from calipso.plantel import decision as dec
 from calipso.plantel import interruptor as it
 from calipso.plantel import jefe as j
 
 TS = "2026-08-26T10:00:00"
 W = "2026-W35"
+
+CLAVES = {"cuenta", "accion", "ref", "motivo", "sesgo_pct", "actuo", "freno",
+          "resultado"}
 
 
 class MemoriaFalsa:
@@ -65,6 +67,7 @@ def test_en_ensayo_decide_y_publica_pero_no_contrata(tmp_path):
     assert "ensayo" in out["freno"]
     assert contratos == []
     assert [e for e, _ in eventos] == ["inicio", "razonando", "fin"]
+    assert set(out) == CLAVES
 
 
 def test_en_vivo_contrata(tmp_path):
@@ -84,14 +87,25 @@ def test_el_interruptor_apagado_no_deja_ni_pensar(tmp_path):
     it.parar(tmp_path)
     out = j.tic(ctx, "dep:atlas", W)
     assert out["accion"] == "apagado"
+    assert set(out) == CLAVES
     assert llamadas == [] and eventos == []
 
 
 def test_sin_cuerda_no_despierta(tmp_path):
-    ctx, _, _ = armar(tmp_path)
+    """El techo de tics tiene que cortar ANTES del modelo, igual que el
+    interruptor apagado: si no, un techo movido debajo de `ctx.pensar` deja
+    pasar los diez tests igual y el techo deja de ser un techo."""
+    llamadas = []
+    ctx, _, eventos = armar(tmp_path)
+    ctx.pensar = lambda p: llamadas.append(p) or "nada\nno hay nada"
     it.escribir(tmp_path, it.Estado(encendido=True, modo="vivo", techo_tics=1))
     assert j.tic(ctx, "dep:atlas", W)["accion"] != "sin_cuerda"
-    assert j.tic(ctx, "dep:atlas", W)["accion"] == "sin_cuerda"
+    llamadas.clear()
+    eventos.clear()
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["accion"] == "sin_cuerda"
+    assert set(out) == CLAVES
+    assert llamadas == [] and eventos == []
 
 
 def test_sin_saldo_no_actua(tmp_path):
@@ -148,7 +162,8 @@ def test_un_departamento_personal_corre_el_mismo_bucle(tmp_path):
     k = Kernel(Libro(eco / "libro.jsonl"))
     r = deps.Registro(eco / "departamentos.json")
     r.alta(deps.Departamento("finanzas", deps.ZONA_PERSONAL,
-                             presupuesto_semanal_mm=5_000, agresividad_pct=50))
+                             presupuesto_semanal_mm=5_000, agresividad_pct=50,
+                             explorar_explotar_pct=70))
     pt.emitir_semana(k, TS, W, 4_000, 1_000)
     k.acunar(TS, W, "personal:finanzas", 50_000, t.SubtipoAcunacion.CAPITAL,
              {"tipo": "firma_pedro"})
@@ -164,7 +179,9 @@ def test_un_departamento_personal_corre_el_mismo_bucle(tmp_path):
     assert out["accion"] == "proponer" and out["actuo"] is True
     assert contratos == [("proponer", None)]
     # sin suscripciones el sesgo es la perilla pelada, sin modular por precio
-    assert out["sesgo_pct"] == 50
+    # (70, no 50: si el modulo leyera agresividad_pct en vez de
+    # explorar_explotar_pct, este assert lo agarraria igual)
+    assert out["sesgo_pct"] == dec.sesgo_efectivo(70, 0, 0) == 70
 
 
 def test_un_modelo_que_alucina_no_gasta(tmp_path):
@@ -172,3 +189,22 @@ def test_un_modelo_que_alucina_no_gasta(tmp_path):
     it.poner_modo(tmp_path, "vivo")
     assert j.tic(ctx, "dep:atlas", W)["accion"] == "nada"
     assert contratos == []
+
+
+def test_comentar_en_ensayo_llega_a_la_memoria(tmp_path):
+    """Opinar no gasta, asi que ni siquiera el modo ensayo lo frena — y es
+    justo el modo en el que arranca la fabrica, donde ver el nucleo
+    formarse importa mas."""
+    ctx, contratos, _ = armar(tmp_path, "comentar p2\nno me cierra el precio")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["accion"] == "comentar" and out["actuo"] is True
+    assert contratos == [("comentar", "p2")]
+    assert ctx.memoria.recordado, "no dejo rastro en su memoria"
+
+
+def test_comentar_no_le_toca_un_pelo_al_bus(tmp_path):
+    """`comentar` no tiene superficie de bus (docstring del modulo): opinar
+    no puede dejar una alta nueva."""
+    ctx, _, _ = armar(tmp_path, "comentar p2\nno me cierra el precio")
+    j.tic(ctx, "dep:atlas", W)
+    assert ctx.bus.ids() == []
