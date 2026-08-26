@@ -7,6 +7,7 @@ El archivo es la verdad; el proceso lo relee en cada tic.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import pathlib
@@ -47,8 +48,16 @@ def _guardar(base, d: dict) -> None:
     p = ruta(base)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(f"{p.name}.tmp{os.getpid()}.{threading.get_ident()}")
-    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
-    os.replace(tmp, p)
+    try:
+        tmp.write_text(json.dumps(d, ensure_ascii=False, indent=1),
+                       encoding="utf-8")
+        os.replace(tmp, p)
+    finally:
+        # si el replace no llego a pasar (disco lleno, permisos), no dejamos
+        # el temporal tirado. Un kill duro del proceso todavia puede dejar
+        # uno, pero eso es una linea y no una fuga sin fondo
+        with contextlib.suppress(OSError):
+            tmp.unlink()
 
 
 def _techo(d: dict) -> int:

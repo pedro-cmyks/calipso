@@ -2,6 +2,8 @@
 import json
 import threading
 
+import pytest
+
 from calipso.plantel import interruptor as it
 
 
@@ -185,6 +187,21 @@ def test_boton_de_parar_bajo_escritura_concurrente(tmp_path):
         h.join()
 
     assert not any(vistos), "el boton de parar fallo bajo escritura concurrente"
+
+
+def test_guardar_no_deja_temporales_si_el_replace_falla(tmp_path, monkeypatch):
+    """Si el disco se llena o los permisos fallan a mitad de camino (entre
+    el write_text y el os.replace), el temporal no puede quedar tirado."""
+    def replace_que_revienta(origen, destino):
+        raise OSError("disco lleno (simulado)")
+
+    monkeypatch.setattr(it.os, "replace", replace_que_revienta)
+    with pytest.raises(OSError):
+        it._guardar(tmp_path, {"encendido": True, "modo": "ensayo",
+                               "techo_tics": 200})
+
+    temporales = list(it.ruta(tmp_path).parent.glob("*.tmp*"))
+    assert temporales == []
 
 
 def test_techo_dict_vacio_da_el_default():
