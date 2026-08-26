@@ -3653,10 +3653,20 @@ def _pensar_local(prompt: str) -> str:
     OJO: NO se usa `_chunks_for("local", ...)`. En este server la ruta
     "local" no es Ollama — `_local_via_sub` ejecuta `claude -p`, o sea que
     decidir consumiria una unidad de suscripcion por tic y por departamento,
-    y "decidir es gratis" seria falso. El camino local real es el del
-    clasificador, el mismo que usa `_plan_dynamic_team`.
+    y "decidir es gratis" seria falso.
+
+    Y ojo con la trampa gemela, al reves: la ENTRADA de config
+    `dispatch.CONFIG["local"]` si es Ollama (mismo host que el clasificador,
+    modelo `qwen2.5:7b`) — no confundirla con la ruta `"local"` de arriba,
+    que es un nombre distinto para una cosa distinta. Se usa esta entrada y
+    NO `CONFIG["classifier"]` (`qwen2.5:3b`, el que usa `_plan_dynamic_team`):
+    medido contra el modelo real, el 3b contesta "nada" y en el mismo parrafo
+    se contradice explicando que lo prioritario seria explorar, mientras que
+    el 7b sigue el formato de `decision.parsear`. Las dos entradas son
+    igual de gratis (mismo Ollama local); la diferencia es solo el tamano
+    del modelo.
     """
-    cfg = dispatch.CONFIG["classifier"]
+    cfg = dispatch.CONFIG["local"]
     data = dispatch._http_post_json(
         cfg["base_url"],
         {"model": cfg["model"], "prompt": prompt, "stream": False,

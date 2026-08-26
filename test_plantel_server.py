@@ -56,12 +56,18 @@ def test_sin_auth_no_se_puede_parar_ni_soltar(tmp_path, monkeypatch):
 def test_pensar_local_no_corre_claude_por_subscripcion(monkeypatch):
     """La trampa cara del brief: decidir por el escalon barato no puede
     terminar ejecutando `claude -p`, que gastaria una unidad de suscripcion
-    por tic y por departamento. `_pensar_local` tiene que pegarle al
-    clasificador (Ollama) y nunca abrir un subproceso."""
+    por tic y por departamento. `_pensar_local` tiene que pegarle a Ollama
+    y nunca abrir un subproceso.
+
+    Y la trampa gemela, al reves: `CONFIG["local"]` y `CONFIG["classifier"]`
+    comparten `base_url` (mismo Ollama), asi que afirmar solo la URL no
+    distinguiria una entrada de la otra -- el modelo tiene que quedar
+    afirmado tambien, o este test pasaria igual si `_pensar_local` volviera
+    a pegarle al 3b del clasificador."""
     llamadas = []
 
     def falso_post(url, payload, headers=None):
-        llamadas.append(url)
+        llamadas.append((url, payload.get("model")))
         return {"response": "nada -- sin plata"}
 
     def spia_subprocess(*args, **kwargs):
@@ -72,7 +78,9 @@ def test_pensar_local_no_corre_claude_por_subscripcion(monkeypatch):
 
     resultado = srv._pensar_local("hola")
 
-    assert llamadas == [dispatch.CONFIG["classifier"]["base_url"]]
+    cfg = dispatch.CONFIG["local"]
+    assert llamadas == [(cfg["base_url"], cfg["model"])]
+    assert cfg["model"] != dispatch.CONFIG["classifier"]["model"]
     assert resultado == "nada -- sin plata"
 
 
