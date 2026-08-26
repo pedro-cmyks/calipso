@@ -1,0 +1,133 @@
+/**
+ * calipso/web/fabrica/pulso.js — La capa viva, del lado del cliente.
+ *
+ * El servidor manda eventos sueltos por /ws/mapa y este reductor arma con
+ * ellos el plantel de cada departamento. Es puro y no muta lo que recibe:
+ * por eso se puede testear el protocolo entero sin abrir un socket.
+ *
+ * El reloj entra por parametro (`ahora`) y se guarda en cada empleado como
+ * `visto`: el `ts` del evento es del reloj DEL SERVIDOR y compararlo contra
+ * el del navegador es comparar dos relojes distintos. Para saber si alguien
+ * dejo de publicar alcanza con cuando lo vimos nosotros.
+ */
+export const INACTIVO_MS = 600_000;    // diez minutos, igual que el servidor
+
+export function estadoInicial() {
+  return {conectado: false, empleados: {}, foco: null, seq: 0};
+}
+
+function vacio(ev, ahora) {
+  return {agente_id: ev.agente_id, departamento: ev.departamento,
+          rol: ev.rol, modelo: ev.modelo, trabajo: ev.trabajo,
+          estado: "esperando", texto: "", tokens_in: 0, tokens_out: 0,
+          costo_mm: 0, runtime_ms: 0, diff: null, herramienta: null,
+          visto: ahora};
+}
+
+const CONOCIDOS = ["inicio", "razonando", "herramienta", "tokens", "diff",
+                   "fin", "foco"];
+
+export function aplicarEvento(estado, ev, ahora) {
+  if (!ev || !CONOCIDOS.includes(ev.evento)) return estado;   // latido incluido
+  if (ev.evento === "foco") {
+    if (!ev.departamento) return estado;
+    return {...estado, seq: ev.seq || estado.seq,
+            foco: {departamento: ev.departamento, seq: ev.seq}};
+  }
+  if (!ev.departamento || !ev.agente_id) return estado;
+  const dep = estado.empleados[ev.departamento] || {};
+  const previo = dep[ev.agente_id];
+  // el `inicio` de un agente que ya estaba lo reinicia: un id repetido es un
+  // trabajo nuevo, no la continuacion del anterior
+  const base = (previo && ev.evento !== "inicio") ? previo : vacio(ev, ahora);
+  const e = {...base, visto: ahora,
+             rol: ev.rol || base.rol, modelo: ev.modelo || base.modelo,
+             trabajo: ev.trabajo || base.trabajo};
+  switch (ev.evento) {
+    case "razonando":
+      e.texto = base.texto + (ev.texto || "");
+      e.estado = "razonando";
+      break;
+    case "herramienta":
+      e.herramienta = {nombre: ev.nombre, resumen: ev.resumen || ""};
+      e.estado = "razonando";
+      break;
+    case "tokens":
+      // acumulados: se reemplazan, no se suman
+      e.tokens_in = ev.tokens_in || 0;
+      e.tokens_out = ev.tokens_out || 0;
+      e.costo_mm = ev.costo_mm || 0;
+      break;
+    case "diff":
+      e.diff = {ruta: ev.ruta, diff: ev.diff};
+      break;
+    case "fin":
+      e.estado = "liberado";
+      e.runtime_ms = ev.runtime_ms || 0;
+      e.resultado = ev.resultado || "ok";
+      break;
+    default:
+      break;
+  }
+  return {...estado, seq: ev.seq || estado.seq,
+          empleados: {...estado.empleados,
+                      [ev.departamento]: {...dep, [ev.agente_id]: e}}};
+}
+
+/** El mas nuevo primero, que es como se llenan los escritorios. */
+export function empleadosDe(estado, departamento) {
+  const dep = estado.empleados[departamento];
+  if (!dep) return [];
+  return Object.values(dep).sort((a, b) => (b.visto - a.visto) ||
+                                           (a.agente_id < b.agente_id ? 1 : -1));
+}
+
+/** Un liberado se queda liberado; el que se colgo se marca inactivo. */
+export function estadoVisible(empleado, ahora, inactivoMs = INACTIVO_MS) {
+  if (!empleado) return "esperando";
+  if (empleado.estado === "liberado") return "liberado";
+  return (ahora - empleado.visto > inactivoMs) ? "inactivo" : empleado.estado;
+}
+
+export function crearPulso(alCambiar, ConstructorWS = WebSocket,
+                           ahora = () => Date.now()) {
+  let estado = estadoInicial();
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  let ws = null;
+
+  function conectar() {
+    try {
+      ws = new ConstructorWS(`${proto}://${location.host}/ws/mapa`);
+    } catch (e) {
+      // el constructor puede tirar sincronicamente, y adentro del setTimeout
+      // del reintento no hay nadie que agarre esa excepcion: la cadena de
+      // reconexion moriria en silencio (mismo motivo que en chat.js)
+      ws = null;
+      estado = {...estado, conectado: false};
+      alCambiar(estado);
+      setTimeout(conectar, 2000);
+      return;
+    }
+    ws.addEventListener("open", () => {
+      estado = {...estado, conectado: true};
+      alCambiar(estado);
+    });
+    ws.addEventListener("message", ev => {
+      let dato;
+      try { dato = JSON.parse(ev.data); } catch { return; }
+      estado = aplicarEvento(estado, dato, ahora());
+      alCambiar(estado);
+    });
+    // si se cae, el mapa sigue mostrando la foto: el pulso es una capa
+    // encima, no el mapa
+    ws.addEventListener("close", () => {
+      estado = {...estado, conectado: false};
+      alCambiar(estado);
+      setTimeout(conectar, 2000);
+    });
+  }
+  alCambiar(estado);        // el estado inicial dice "sin conexion" y se pinta
+  conectar();
+
+  return {estado: () => estado};
+}

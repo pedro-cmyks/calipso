@@ -179,8 +179,9 @@ const nav = montarNavegador();
 // en vez de decir que fue lo que paso.
 const PLAZO = 3000;
 let plazo;
+let modulo = null;
 const cargado = await Promise.race([
-  import("./app.js").then(() => "cargado"),
+  import("./app.js").then(m => { modulo = m; return "cargado"; }),
   new Promise(r => { plazo = setTimeout(() => r("colgado"), PLAZO); }),
 ]);
 // el plazo se apaga apenas gana el import: tiene que sostener el proceso
@@ -274,7 +275,10 @@ test("el mouse quieto sobre un edificio no reescribe la tarjeta", () => {
 // destruye en cada token y no se puede copiar lo que Calipso esta
 // escribiendo mientras lo escribe.
 
-const socket = nav.sockets[0];
+// dos sockets vivos: el del chat y el del pulso. Elegirlos por INDICE ata el
+// test al orden de los imports de app.js
+const socket = nav.sockets.find(s => s.url.endsWith("/ws/chat"));
+const socketMapa = nav.sockets.find(s => s.url.endsWith("/ws/mapa"));
 const conversacion = nav.nodos.get("conversacion");
 
 test("el chat se engancha a /ws/chat", () => {
@@ -348,4 +352,23 @@ test("el aviso de 'no se envio' es pasajero y se va en el proximo pintado",
   socket.emitir("open", {});                   // el proximo pintado lo barre
   assert.ok(!conversacion.hijos.includes(aviso),
             "el aviso pasajero quedo clavado en la conversacion");
+});
+
+test("el mapa se engancha a /ws/mapa", () => {
+  assert.ok(socketMapa, "crearPulso no abrio ningun socket");
+});
+
+test("un foco por el pulso hace volar la camara, sin tocar el chat", async () => {
+  await new Promise(r => setTimeout(r, 0));   // la ciudad ya contesto
+  const conversacionAntes = nav.nodos.get("conversacion").hijos.length;
+  socketMapa.dice({seq: 1, ts: 1, agente_id: null, evento: "foco",
+                   departamento: "dep:b"});
+  const cam = modulo.camaraDePrueba();
+  // la ciudad de prueba pone a dep:b en (60, 30): la camara arranca un VUELO
+  // hacia ahi, no se teletransporta
+  assert.ok(cam.vuelo, "el foco no disparo ningun vuelo");
+  assert.deepEqual({x: cam.vuelo.hasta.x, y: cam.vuelo.hasta.y},
+                   {x: 60, y: 30});
+  assert.equal(nav.nodos.get("conversacion").hijos.length, conversacionAntes,
+               "el foco toco la conversacion");
 });

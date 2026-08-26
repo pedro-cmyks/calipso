@@ -5,12 +5,14 @@
  * logica que se puede testear vive en los otros archivos; aca solo hay
  * cableado.
  */
-import {crearCamara, arrastrar, acercar, paso, encuadrar} from "./camara.js";
+import {crearCamara, arrastrar, acercar, paso, encuadrar,
+        volarA} from "./camara.js";
 import {cargarCiudad, enPunto, fichaDe} from "./ciudad.js";
 import {crearMapa} from "./mapa.js";
 import {disposicion, escapar, textoDeTarjeta, posicionDeTarjeta,
         resumenDeAvisos} from "./paneles.js";
 import {crearChat} from "./chat.js";
+import {crearPulso, empleadosDe, estadoVisible} from "./pulso.js";
 
 const lienzo = document.getElementById("mapa");
 const sinFabrica = document.getElementById("sin-fabrica");
@@ -300,3 +302,27 @@ fetch("/api/chats")
   .then(r => (r.ok ? r.json() : null))
   .then(datos => { if (datos) pintarChats(datos); })
   .catch(() => { listaChats.innerHTML = '<div class="chat">sin chats</div>'; });
+
+let pulso = {conectado: false, empleados: {}, foco: null, seq: 0};
+let ultimoFoco = 0;
+
+const conexionPulso = crearPulso(estado => {
+  pulso = estado;
+  if (pulso.foco && pulso.foco.seq !== ultimoFoco) {
+    ultimoFoco = pulso.foco.seq;
+    volarAEdificio(pulso.foco.departamento);
+  }
+});
+
+/** El foco de la conversacion mueve la camara (spec seccion 8). */
+function volarAEdificio(id) {
+  if (!ciudad) return;
+  const e = ciudad.edificios.find(x => x.id === id);
+  if (!e) return;              // la ciudad puede no tenerlo todavia
+  volarA(cam, {x: e.x, y: e.y, escala: Math.max(cam.escala, 2)});
+}
+
+// Solo para arranque.test.js: la camara es interna y sin esto el test del
+// foco no puede afirmar nada mas que "el chat no se entero", que es la
+// mitad que no importa. Es de lectura y no la deja tocar.
+export const camaraDePrueba = () => cam;
