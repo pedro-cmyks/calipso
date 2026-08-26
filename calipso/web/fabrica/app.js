@@ -227,19 +227,27 @@ formulario.addEventListener("submit", ev => {
 });
 
 const listaChats = document.getElementById("lista-chats");
-try {
-  const r = await fetch("/api/chats");
-  if (r.ok) {
-    const datos = await r.json();
-    listaChats.innerHTML = (datos.chats || [])
-      .map(c => `<div class="chat${c.id === datos.active ? " activo" : ""}"` +
-                ` data-id="${escapar(c.id)}">` +
-                `${escapar(c.title || "sin titulo")}</div>`)
-      .join("");
-  }
-} catch (e) {
-  listaChats.innerHTML = '<div class="chat">sin chats</div>';
+
+function pintarChats(datos) {
+  listaChats.innerHTML = (datos.chats || [])
+    .map(c => `<div class="chat${c.id === datos.active ? " activo" : ""}"` +
+              ` data-id="${escapar(c.id)}">` +
+              `${escapar(c.title || "sin titulo")}</div>`)
+    .join("");
 }
 
-await traer();
+// El mapa arranca PRIMERO y sin esperar a nadie. Este modulo no lleva un
+// solo `await` arriba de todo a proposito: un `await` en el cuerpo del
+// modulo no espera una respuesta, espera una promesa, y una promesa que no
+// resuelve nunca (el telefono saltando de WiFi a datos) deja el modulo sin
+// terminar de evaluar — sin bucle, sin lienzo dimensionado y sin cartel que
+// lo explique. El try/catch no cubre eso: cubre el rechazo, no la demora.
+traer();
 requestAnimationFrame(bucle);
+
+// La lista de chats es lo menos importante de la pantalla: se dispara y se
+// pinta cuando llega, y si no llega el resto no se entera.
+fetch("/api/chats")
+  .then(r => (r.ok ? r.json() : null))
+  .then(datos => { if (datos) pintarChats(datos); })
+  .catch(() => { listaChats.innerHTML = '<div class="chat">sin chats</div>'; });
