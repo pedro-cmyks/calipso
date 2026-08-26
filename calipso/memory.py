@@ -162,7 +162,7 @@ class Memory:
         clave = _slug(pathlib.Path(nombre))
         if clave not in self._deps:
             base = CALIPSO_HOME / "memoria" / "departamento" / clave
-            self._deps[clave] = Scope(f"departamento:{nombre}",
+            self._deps[clave] = Scope(f"departamento:{clave}",
                                       base / "core", base / "chroma",
                                       self._embed)
         return self._deps[clave]
