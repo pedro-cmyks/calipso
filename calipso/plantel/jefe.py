@@ -28,7 +28,7 @@ class Contexto:
     suscripciones: dict
     memoria: Any                  # el Scope del departamento
     pensar: Callable[[str], str]
-    contratar: Callable[[dict, str, "str | None"], Any]
+    contratar: Callable[[dict, str, "str | None", str], Any]
     publicar: Callable[..., None] = field(
         default=lambda evento, **campos: None)
 

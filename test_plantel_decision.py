@@ -109,6 +109,69 @@ def test_el_prompt_lleva_lo_que_el_departamento_aprendio():
     assert "Lo que aprendiste" not in dec.prompt(s, 50, nucleo="   ")
 
 
+def test_el_prompt_no_ofrece_trabajar_sin_trabajos_vivos():
+    """El modelo elige `trabajar` en buena medida porque esta en el menu:
+    ofrecerlo sin trabajos vivos invita a inventar un id -se lo vio pasar
+    con qwen2.5:3b, razonando sobre proponer y emitiendo trabajar 1 con la
+    lista vacia. `nada` y `proponer` van siempre."""
+    s = {"nombre": "atlas", "disponible_mm": 0, "saldo_mm": 0,
+         "presupuesto_semanal_mm": 0, "salidas_semana_mm": 0,
+         "compuertas_pendientes": 0, "trabajos": [], "propuestas_ajenas": [],
+         "capacidad": None}
+    p = dec.prompt(s, 50)
+    assert "trabajar" not in p
+    assert "nada" in p and "proponer" in p
+
+
+def test_el_prompt_ofrece_trabajar_con_trabajos_vivos():
+    s = {"nombre": "atlas", "disponible_mm": 0, "saldo_mm": 0,
+         "presupuesto_semanal_mm": 0, "salidas_semana_mm": 0,
+         "compuertas_pendientes": 0,
+         "trabajos": [{"id": "p1", "titulo": "radar", "gastado_mm": 0,
+                       "presupuesto_mm": 1_000}],
+         "propuestas_ajenas": [], "capacidad": None}
+    p = dec.prompt(s, 50)
+    assert "trabajar <id>" in p
+    # tener un trabajo vivo tambien da algo sobre lo que comentar
+    assert "comentar <id>" in p
+
+
+def test_el_prompt_no_ofrece_comentar_sin_nada_que_comentar():
+    s = {"nombre": "atlas", "disponible_mm": 0, "saldo_mm": 0,
+         "presupuesto_semanal_mm": 0, "salidas_semana_mm": 0,
+         "compuertas_pendientes": 0, "trabajos": [], "propuestas_ajenas": [],
+         "capacidad": None}
+    p = dec.prompt(s, 50)
+    assert "comentar" not in p
+    assert "nada" in p and "proponer" in p
+
+
+def test_el_prompt_ofrece_comentar_con_propuestas_ajenas():
+    s = {"nombre": "atlas", "disponible_mm": 0, "saldo_mm": 0,
+         "presupuesto_semanal_mm": 0, "salidas_semana_mm": 0,
+         "compuertas_pendientes": 0, "trabajos": [],
+         "propuestas_ajenas": [{"id": "p2", "titulo": "encuesta",
+                                "dueno": "dep:mercado"}],
+         "capacidad": None}
+    p = dec.prompt(s, 50)
+    assert "comentar <id>" in p
+    # sin trabajos vivos, trabajar sigue afuera
+    assert "trabajar" not in p
+
+
+def test_el_prompt_ofrece_comentar_con_propuestas_propias():
+    """`propuestas_propias` se lee con `.get` (algunas situaciones no la
+    traen); tiene que disparar el menu de `comentar` igual que las otras
+    dos fuentes."""
+    s = {"nombre": "atlas", "disponible_mm": 0, "saldo_mm": 0,
+         "presupuesto_semanal_mm": 0, "salidas_semana_mm": 0,
+         "compuertas_pendientes": 0, "trabajos": [], "propuestas_ajenas": [],
+         "propuestas_propias": [{"id": "p3", "titulo": "algo"}],
+         "capacidad": None}
+    p = dec.prompt(s, 50)
+    assert "comentar <id>" in p
+
+
 def test_el_prompt_sin_trabajos_ni_propuestas_no_miente():
     s = {"nombre": "atlas", "disponible_mm": 0, "saldo_mm": 0,
          "presupuesto_semanal_mm": 0, "salidas_semana_mm": 0,

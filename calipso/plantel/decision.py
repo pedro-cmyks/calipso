@@ -47,6 +47,21 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "") -> str:
                    else "terminar lo empezado" if sesgo_pct <= 40
                    else "mantener el equilibrio")
     aprendido = f"Lo que aprendiste antes:\n{nucleo.strip()}\n\n" if nucleo.strip() else ""
+
+    # El menu se arma segun la situacion: ofrecer "trabajar" sin trabajos
+    # vivos, o "comentar" sin nada para comentar, empuja al modelo a
+    # elegirlas igual porque estan en la lista -se lo vio contestar
+    # "trabajar 1" con la lista de trabajos vivos vacia, razonando sobre
+    # proponer. ACCIONES sigue siendo el vocabulario completo que parsear
+    # acepta: esto es solo lo que el prompt OFRECE.
+    hay_para_comentar = bool(s.get("propuestas_propias") or
+                             s["propuestas_ajenas"] or s["trabajos"])
+    menu = ["  nada", "  proponer"]
+    if s["trabajos"]:
+        menu.append("  trabajar <id>")
+    if hay_para_comentar:
+        menu.append("  comentar <id>")
+
     return (
         aprendido +
         f"Sos el jefe del departamento {s['nombre']} de una fabrica de agentes.\n"
@@ -62,7 +77,7 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "") -> str:
         f"{s['compuertas_pendientes']}.\n\n"
         f"Ahora inclinate a {inclinacion}.\n\n"
         "Elegi UNA accion. Primera linea, sin nada mas:\n"
-        "  nada\n  proponer\n  trabajar <id>\n  comentar <id>\n"
+        + "\n".join(menu) + "\n"
         "Segunda linea: un renglon con el motivo."
     )
 
