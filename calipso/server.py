@@ -605,10 +605,11 @@ async def _run_chat_draft(ws, chat_msg: str, file_path: str,
         # unidad de suscripcion y la paga el mismo departamento en foco. Va en
         # un hilo porque `_cobrar_turno` toma el candado del libro, igual que
         # el cobro del turno.
-        cuenta_borrador = (_mapa_ficha.cuenta_pagadora(departamento)
-                           if _mapa_ficha else "personal")
-        await asyncio.to_thread(_cobrar_turno, cuenta_borrador,
-                                "subscription", "claude", "sonnet", {})
+        def _cobrar_borrador() -> None:
+            _cobrar_turno(_cuenta_en_foco(departamento), "subscription",
+                          "claude", "sonnet", {})
+
+        await asyncio.to_thread(_cobrar_borrador)
 
         change_id = uuid.uuid4().hex[:12]
         item = {
@@ -2264,31 +2265,12 @@ async def ws_chat(ws: WebSocket) -> None:
                 await ws.send_json({"type": "done"})
                 continue
             chat_msg = directives["clean"]
-            cuenta = (_mapa_ficha.cuenta_pagadora(departamento)
-                      if _mapa_ficha else "personal")
-            bloque_dep = ""
-            if departamento and _mapa_ficha is not None:
-                edificio = None
-                try:
-                    # derivar la ciudad toma el candado del libro: va en un hilo
-                    modelo = await asyncio.to_thread(_ciudad_modelo)
-                    edificio = _mapa_ficha.edificio_de(modelo, departamento)
-                except Exception as exc:
-                    # invariante 5: una ficha que no se puede derivar degrada
-                    # a "sin ficha". El libro se repara truncando, asi que
-                    # leerlo puede reventar; que eso mate el WebSocket dejaria
-                    # a Pedro sin `done` y al escritorio del pulso sin `fin`.
-                    print(f"[calipso] no se pudo derivar la ficha de "
-                          f"{departamento}: {exc}", file=sys.stderr)
-                if edificio:
-                    bloque_dep = _mapa_ficha.bloque(edificio)
-                else:
-                    # el id sale del paquete del WebSocket: si no hay edificio
-                    # que lo respalde, no hay departamento que pueda pagar.
-                    # Un cargo a una cuenta sin departamento detras lo rechaza
-                    # el mercado y queda pendiente para siempre, una linea por
-                    # turno y sin techo.
-                    cuenta = _mapa_ficha.CUENTA_PERSONAL
+            # quien paga y que sabe Calipso del departamento son dos
+            # preguntas distintas con dos fuentes distintas: ver
+            # `_ficha_y_cuenta`. Va en un hilo porque derivar la ficha toma el
+            # candado del libro.
+            bloque_dep, cuenta = await asyncio.to_thread(_ficha_y_cuenta,
+                                                         departamento)
             route = verdict["route"]
             model = verdict.get("model")
             note = "; ".join(f"{r['persona']}={r['score']}" for r in ranked[:3]) or None
@@ -3753,6 +3735,63 @@ def api_mapa_ciudad() -> dict:
         x, y = posiciones.get(e["id"], (0, 0))
         e["x"], e["y"] = x, y
     return {"activa": True, "ciudad": modelo}
+
+
+def _departamento_registrado(departamento: str | None) -> bool:
+    """Si el id corresponde a un departamento del registro.
+
+    Contra el REGISTRO -un JSON de unas lineas- y no contra la ciudad derivada
+    del libro: son dos preguntas distintas y esta corre en cada turno."""
+    if not departamento:
+        return False
+    return any(e["id"] == departamento for e in _edificios_livianos())
+
+
+def _cuenta_en_foco(departamento: str | None) -> str:
+    """La cuenta que paga lo que se gaste con este departamento tocado.
+
+    El id llega del paquete del WebSocket, asi que esto es tambien la
+    validacion. Un cargo a una cuenta sin departamento detras lo rechaza el
+    mercado y queda pendiente para siempre: una linea por turno y sin techo."""
+    if _mapa_ficha is None:
+        return "personal"
+    if not _departamento_registrado(departamento):
+        return _mapa_ficha.CUENTA_PERSONAL
+    return _mapa_ficha.cuenta_pagadora(departamento)
+
+
+def _ficha_y_cuenta(departamento: str | None) -> tuple[str, str]:
+    """(bloque de contexto, cuenta que paga) del departamento en foco.
+
+    Dos preguntas distintas con dos fuentes distintas, a proposito. QUIEN PAGA
+    se valida contra el registro. QUE SABE Calipso del departamento sale de
+    `_ciudad_modelo`, que lee el libro entero bajo el candado y puede reventar
+    mientras se lo repara.
+
+    Conflacionar las dos cosas -que es lo que hacia `ws_chat`- degradaba el
+    COBRO a `personal` cuando lo unico roto era la derivacion de la ficha, o
+    sea justo cuando uno menos quiere que el gasto deje de asentarse. Un
+    departamento de zona personal, en cambio, existe y tiene ficha: su cuenta
+    colapsa a `personal` porque la zona personal no le compra nada a la
+    fabrica (invariante 12), no porque el id sea invalido.
+
+    Toma el candado del libro: se llama SIEMPRE desde un hilo."""
+    if _mapa_ficha is None or not _departamento_registrado(departamento):
+        # sin departamento que lo respalde no hay ficha que derivar tampoco:
+        # el id inventado se ahorra el costo de la ciudad entera
+        return "", _mapa_ficha.CUENTA_PERSONAL if _mapa_ficha else "personal"
+    cuenta = _mapa_ficha.cuenta_pagadora(departamento)
+    try:
+        edificio = _mapa_ficha.edificio_de(_ciudad_modelo(), departamento)
+    except Exception as exc:
+        # invariante 5: una ficha que no se puede derivar degrada a "sin
+        # ficha". El libro se repara truncando, asi que leerlo puede reventar;
+        # que eso mate el WebSocket dejaria a Pedro sin `done` y al escritorio
+        # del pulso sin `fin`.
+        print(f"[calipso] no se pudo derivar la ficha de "
+              f"{departamento}: {exc}", file=sys.stderr)
+        edificio = None
+    return (_mapa_ficha.bloque(edificio) if edificio else ""), cuenta
 
 
 def _cobrar_turno(cuenta: str, route: str, client: str | None,

@@ -41,8 +41,10 @@ def cuenta_pagadora(id_edificio: str | None) -> str:
     Un `personal:` COLAPSA a `personal` en vez de quedarse como esta: la zona
     personal no compra capacidad ni API de la fabrica (invariante 12), asi
     que un cargo a `personal:finanzas` lo rechaza el mercado y queda pendiente
-    para siempre. `personal` es ademas la cuenta que el camino de reserva
-    personal espera."""
+    para siempre. `personal` no manda el cargo a `usar_reserva_personal`:
+    `_cobrar_turno` corta antes y no llama al pagador. El efecto es el mismo
+    -el uso personal queda fuera del libro de la fabrica, que es donde lo
+    lleva calipso/costs.py- pero por otro camino."""
     if not id_edificio:
         return CUENTA_PERSONAL
     if id_edificio.startswith(PREFIJO_FABRICA):

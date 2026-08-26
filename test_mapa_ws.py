@@ -89,7 +89,8 @@ def test_el_envoltorio_publica_cuando_hay_pulso(monkeypatch):
     assert pu.empleados("dep:atlas")[0]["rol"] == "scout"
 
 
-def test_el_borrador_es_su_propio_agente_y_cierra_con_su_fin(monkeypatch):
+def test_el_borrador_es_su_propio_agente_y_cierra_con_su_fin(tmp_path,
+                                                            monkeypatch):
     """El borrador se lanza con `ensure_future` y llama a otro modelo: si
     publicara sobre el agente del turno, su `diff` caeria despues del `fin`
     de ese turno, `estado_de` diria "esperando" en vez de "liberado" y a los
@@ -97,6 +98,9 @@ def test_el_borrador_es_su_propio_agente_y_cierra_con_su_fin(monkeypatch):
     `fin` existe para evitar. El orden de sus eventos es lo que lo prueba."""
     pu = p.Pulso()
     monkeypatch.setattr(srv, "EL_PULSO", pu)
+    # el borrador cobra su unidad de suscripcion: sin esto el test le escribe
+    # al libro de VERDAD de quien lo corra
+    monkeypatch.setattr(srv, "_ECO_BASE", tmp_path / ".calipso")
     monkeypatch.setattr(srv, "PENDING_CHANGES", {})
     monkeypatch.setattr(srv.goals, "active", lambda raiz: None)
     monkeypatch.setattr(srv.developer, "chat_draft_brief",

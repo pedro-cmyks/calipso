@@ -247,6 +247,65 @@ def test_el_turno_de_equipo_dinamico_tambien_le_cobra_al_departamento(economia):
                              {"prompt_tokens": 1_000_000}) == 0
 
 
+def test_el_pagador_se_valida_contra_el_registro_y_no_contra_la_ciudad(
+        economia, monkeypatch):
+    """Son dos preguntas distintas y solo una de las dos puede degradar el cobro.
+
+    `_ciudad_modelo` lee el libro entero y el libro se repara truncando, asi
+    que leerlo puede reventar. Que eso pase tiene que degradar la FICHA a "sin
+    ficha" y nada mas: mandar el cobro a `personal` justo cuando el libro esta
+    a medio reparar es dejar de asentar el gasto cuando menos se quiere."""
+    def revienta():
+        raise RuntimeError("libro a medio reparar")
+
+    monkeypatch.setattr(srv, "_ciudad_modelo", revienta)
+    bloque, cuenta = srv._ficha_y_cuenta("dep:atlas")
+    assert cuenta == "dep:atlas"      # el departamento existe: sigue pagando
+    assert bloque == ""               # la ficha si degrada
+
+
+def test_un_departamento_inventado_degrada_a_personal_sin_derivar_la_ciudad(
+        economia, monkeypatch):
+    """El id sale del paquete del WebSocket. Validarlo contra el registro es
+    ademas gratis: un id inventado ya no paga derivar la ciudad entera bajo el
+    candado del libro."""
+    derivaciones = []
+    monkeypatch.setattr(srv, "_ciudad_modelo",
+                        lambda: derivaciones.append(1))
+    assert srv._ficha_y_cuenta("dep:inventado") == ("", ficha.CUENTA_PERSONAL)
+    assert srv._ficha_y_cuenta("tesoro") == ("", ficha.CUENTA_PERSONAL)
+    assert derivaciones == []
+
+
+def test_con_el_departamento_en_el_registro_la_ficha_sale_del_libro(economia):
+    bloque, cuenta = srv._ficha_y_cuenta("dep:atlas")
+    assert cuenta == "dep:atlas"
+    assert "Departamento en foco" in bloque and "atlas" in bloque
+
+
+def test_sin_departamento_tocado_no_hay_ficha_ni_pagador(economia):
+    assert srv._ficha_y_cuenta(None) == ("", ficha.CUENTA_PERSONAL)
+    assert srv._ficha_y_cuenta("") == ("", ficha.CUENTA_PERSONAL)
+
+
+def test_la_zona_personal_tiene_ficha_pero_paga_por_afuera(tmp_path,
+                                                           monkeypatch):
+    """Un departamento de zona personal existe en el registro -o sea que no es
+    un id inventado- pero su cuenta colapsa a `personal` (invariante 12)."""
+    eco = tmp_path / ".calipso" / "economia"
+    eco.mkdir(parents=True)
+    k = Kernel(Libro(eco / "libro.jsonl"))
+    r = deps.Registro(eco / "departamentos.json")
+    r.alta(deps.Departamento("finanzas", deps.ZONA_PERSONAL))
+    (eco / "suscripciones.json").write_text("{}", encoding="utf-8")
+    pt.emitir_semana(k, TS, W, 4_000, 0)
+    monkeypatch.setattr(srv, "_ECO_BASE", tmp_path / ".calipso")
+    monkeypatch.setattr(srv, "_eco_ahora", lambda: (TS, W))
+    bloque, cuenta = srv._ficha_y_cuenta("personal:finanzas")
+    assert cuenta == ficha.CUENTA_PERSONAL
+    assert "finanzas" in bloque
+
+
 def test_el_modelo_de_ciudad_se_deriva_una_sola_vez_y_sin_coordenadas(economia):
     """El chat necesita la ficha, no el dibujo: el urbanismo, que es la
     mitad cara, no corre cuando no hay mapa que pintar."""
