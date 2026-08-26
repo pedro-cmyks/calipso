@@ -136,6 +136,46 @@ def test_el_emisor_no_manda_chunks_vacios():
     assert textos(ws) == []
 
 
+def test_el_agente_de_equipo_no_publica_la_marca_al_pulso(monkeypatch):
+    """El otro camino por el que el texto de un modelo llega a Pedro.
+
+    `orchestrator.agent_system` hereda el `base_system`, que incluye la
+    instruccion de emitir la marca, y la salida del sub-agente no pasa por el
+    `Emisor`: publicada cruda, la marca queda visible en el panel de
+    razonamiento. La seccion 8 dice que no le llega a Pedro por NINGUN
+    camino."""
+    pu = p.Pulso()
+    monkeypatch.setattr(srv, "EL_PULSO", pu)
+    monkeypatch.setattr(srv, "_plan_dynamic_team", lambda *a, **k: {"plan": 1})
+    monkeypatch.setattr(srv, "_backend_availability", lambda *a, **k: {})
+    monkeypatch.setattr(srv.sessions, "active", lambda *a, **k: None)
+    monkeypatch.setattr(srv.orchestrator, "build_team", lambda *a, **k: {
+        "agents": [{"role": "scout", "task": "mira", "model": "sonnet",
+                    "persona": "explorador", "route": "api"}],
+        "synthesis": ""})
+    monkeypatch.setattr(srv.orchestrator, "agent_system", lambda *a, **k: "s")
+    monkeypatch.setattr(srv.orchestrator, "synthesis_prompt",
+                        lambda *a, **k: "u")
+    monkeypatch.setattr(srv.telemetry, "log_event", lambda *a, **k: None)
+    monkeypatch.setattr(srv, "_run_backend_text", lambda *a, **k: "listo")
+
+    async def _agente(ws, inbox, agent, system, task):
+        return "vamos a ⟦foco:atlas⟧ mirar", None
+
+    monkeypatch.setattr(srv, "_run_agent_text", _agente)
+
+    ws = WSFalso()
+    final, _, _ = asyncio.run(srv._run_dynamic_team(
+        ws, asyncio.Queue(), "hace algo", {}, "base",
+        {"route": "api", "client": None, "model": "m"},
+        departamento="dep:atlas"))
+    assert final == "listo"
+    razonado = "".join(e.get("texto", "") for e in pu.desde(0)[1]
+                       if e["evento"] == "razonando")
+    assert razonado == "vamos a  mirar"
+    assert foco.ABRE not in razonado
+
+
 def test_el_contrato_interno_le_dice_al_modelo_como_emitir_la_marca():
     """La instruccion vive en el compilador de prompts (spec seccion 8), no
     suelta en un f-string del server. `test_prompt_compiler.py` no lo cubre:

@@ -1617,8 +1617,13 @@ async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
             # el agente de un equipo no streamea: `_run_backend_text` devuelve
             # el texto entero. Su razonamiento se publica una vez, al final.
             # El incremental existe solo donde existe el stream, que es el
-            # turno principal del chat
-            mango.razonando(output)
+            # turno principal del chat.
+            # Y pasa por el filtro sin estado, no por el `Filtro` del stream:
+            # el texto llega entero. Sin esto la marca queda visible en el
+            # panel de razonamiento, porque `agent_system` hereda el
+            # `base_system` -instruccion de emitir la marca incluida- y esta
+            # salida no pasa por el `Emisor`.
+            mango.razonando(_limpiar_marcas(output))
             mango.tokens(len(agent_system) // 4, len(output) // 4, 0)
         result = {**agent, "output": output}
         results.append(result)
