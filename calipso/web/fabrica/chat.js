@@ -5,6 +5,7 @@
  * El reductor de eventos es puro y no muta lo que recibe: por eso se
  * puede testear el protocolo entero sin abrir un socket.
  */
+import {crearSocketQueReconecta} from "./socket.js";
 
 export function estadoInicial() {
   return {turnos: [], pensando: false, chatId: null, ruta: null,
@@ -66,48 +67,29 @@ export function aplicarEvento(estado, ev) {
 // pasar un doble en los tests sin abrir ninguna conexion de verdad.
 export function crearChat(alCambiar, ConstructorWS = WebSocket) {
   let estado = estadoInicial();
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  let ws = null;
-
-  function conectar() {
-    try {
-      ws = new ConstructorWS(`${proto}://${location.host}/ws/chat`);
-    } catch (e) {
-      // el constructor puede tirar sincronicamente (URL invalida, politica
-      // de seguridad del navegador). Adentro del setTimeout del reintento no
-      // hay nadie que agarre esa excepcion: escapa del timer y la cadena de
-      // reconexion muere para siempre, en silencio.
-      ws = null;
-      estado = {...estado, conectado: false};
-      alCambiar(estado);
-      setTimeout(conectar, 2000);
-      return;
-    }
-    ws.addEventListener("open", () => {
-      estado = {...estado, conectado: true};
-      alCambiar(estado);
-    });
-    ws.addEventListener("message", ev => {
-      let dato;
-      try { dato = JSON.parse(ev.data); } catch { return; }
-      estado = aplicarEvento(estado, dato);
-      alCambiar(estado);
-    });
-    // si se cae, se reintenta: el mapa sigue andando mientras tanto. La
-    // bandera se apaga antes de reintentar para que la interfaz sepa que
-    // se cayo, no solo cuando vuelva a levantarse.
-    ws.addEventListener("close", () => {
-      estado = {...estado, conectado: false};
-      alCambiar(estado);
-      setTimeout(conectar, 2000);
-    });
-  }
   // El estado inicial dice "sin conexion" y hay que PINTARLO. Sin este
   // aviso, hasta el primer evento del socket la interfaz se ve conectada, y
   // si el handshake se cuelga sin llegar a cerrarse miente indefinidamente.
-  // Va antes de conectar() para que un "open" no se lo pise.
+  // Va antes de abrir el socket para que un "open" no se lo pise.
   alCambiar(estado);
-  conectar();
+
+  const conexion = crearSocketQueReconecta("/ws/chat", {
+    alAbrir() {
+      estado = {...estado, conectado: true};
+      alCambiar(estado);
+    },
+    alMensaje(dato) {
+      estado = aplicarEvento(estado, dato);
+      alCambiar(estado);
+    },
+    // si se cae, se reintenta: el mapa sigue andando mientras tanto. La
+    // bandera se apaga antes de reintentar para que la interfaz sepa que
+    // se cayo, no solo cuando vuelva a levantarse.
+    alCerrar() {
+      estado = {...estado, conectado: false};
+      alCambiar(estado);
+    },
+  }, ConstructorWS);
 
   return {
     estado: () => estado,
@@ -115,6 +97,7 @@ export function crearChat(alCambiar, ConstructorWS = WebSocket) {
     // o reconecta no hay adonde mandarlo, y quien llama tiene que
     // enterarse en vez de que el texto desaparezca en silencio.
     enviar(texto) {
+      const ws = conexion.socket();
       if (!texto.trim() || !ws || ws.readyState !== ConstructorWS.OPEN) {
         return false;
       }

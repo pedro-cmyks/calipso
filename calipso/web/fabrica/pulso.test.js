@@ -125,28 +125,37 @@ test("el socket se engancha a /ws/mapa y reconecta cuando se cae", () => {
     dice(dato) { this.emitir("message", {data: JSON.stringify(dato)}); }
     close() {}
   }
+  // se guardan y se restauran: si no, este es el ultimo test del archivo y
+  // parece inofensivo, pero es una trampa para el que agregue otro debajo
+  const ubicacionOriginal = globalThis.location;
+  const setTimeoutOriginal = globalThis.setTimeout;
   globalThis.location = {protocol: "http:", host: "127.0.0.1:8137"};
   const vistos = [];
   const reintentos = [];
   globalThis.setTimeout = f => { reintentos.push(f); return 0; };
 
-  crearPulso(e => vistos.push(e), WSFalso, () => 5000);
-  assert.ok(abiertos[0].url.endsWith("/ws/mapa"), abiertos[0].url);
-  // el estado inicial se pinta ANTES de conectar: si no, la interfaz se ve
-  // conectada hasta el primer evento
-  assert.equal(vistos[0].conectado, false);
+  try {
+    crearPulso(e => vistos.push(e), WSFalso, () => 5000);
+    assert.ok(abiertos[0].url.endsWith("/ws/mapa"), abiertos[0].url);
+    // el estado inicial se pinta ANTES de conectar: si no, la interfaz se ve
+    // conectada hasta el primer evento
+    assert.equal(vistos[0].conectado, false);
 
-  abiertos[0].emitir("open", {});
-  assert.equal(vistos.at(-1).conectado, true);
-  abiertos[0].dice(ev("inicio"));
-  assert.equal(empleadosDe(vistos.at(-1), "dep:atlas").length, 1);
+    abiertos[0].emitir("open", {});
+    assert.equal(vistos.at(-1).conectado, true);
+    abiertos[0].dice(ev("inicio"));
+    assert.equal(empleadosDe(vistos.at(-1), "dep:atlas").length, 1);
 
-  abiertos[0].emitir("close", {});
-  assert.equal(vistos.at(-1).conectado, false);
-  assert.equal(reintentos.length, 1, "no se programo la reconexion");
-  reintentos[0]();
-  assert.equal(abiertos.length, 2);
-  // y lo que ya sabia no se pierde: el mapa no se vacia porque se corto el
-  // socket (el pulso es efimero, pero no amnesico)
-  assert.equal(empleadosDe(vistos.at(-1), "dep:atlas").length, 1);
+    abiertos[0].emitir("close", {});
+    assert.equal(vistos.at(-1).conectado, false);
+    assert.equal(reintentos.length, 1, "no se programo la reconexion");
+    reintentos[0]();
+    assert.equal(abiertos.length, 2);
+    // y lo que ya sabia no se pierde: el mapa no se vacia porque se corto el
+    // socket (el pulso es efimero, pero no amnesico)
+    assert.equal(empleadosDe(vistos.at(-1), "dep:atlas").length, 1);
+  } finally {
+    globalThis.location = ubicacionOriginal;
+    globalThis.setTimeout = setTimeoutOriginal;
+  }
 });

@@ -10,6 +10,8 @@
  * el del navegador es comparar dos relojes distintos. Para saber si alguien
  * dejo de publicar alcanza con cuando lo vimos nosotros.
  */
+import {crearSocketQueReconecta} from "./socket.js";
+
 export const INACTIVO_MS = 600_000;    // diez minutos, igual que el servidor
 
 export function estadoInicial() {
@@ -92,42 +94,24 @@ export function estadoVisible(empleado, ahora, inactivoMs = INACTIVO_MS) {
 export function crearPulso(alCambiar, ConstructorWS = WebSocket,
                            ahora = () => Date.now()) {
   let estado = estadoInicial();
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  let ws = null;
+  alCambiar(estado);        // el estado inicial dice "sin conexion" y se pinta
 
-  function conectar() {
-    try {
-      ws = new ConstructorWS(`${proto}://${location.host}/ws/mapa`);
-    } catch (e) {
-      // el constructor puede tirar sincronicamente, y adentro del setTimeout
-      // del reintento no hay nadie que agarre esa excepcion: la cadena de
-      // reconexion moriria en silencio (mismo motivo que en chat.js)
-      ws = null;
-      estado = {...estado, conectado: false};
-      alCambiar(estado);
-      setTimeout(conectar, 2000);
-      return;
-    }
-    ws.addEventListener("open", () => {
+  crearSocketQueReconecta("/ws/mapa", {
+    alAbrir() {
       estado = {...estado, conectado: true};
       alCambiar(estado);
-    });
-    ws.addEventListener("message", ev => {
-      let dato;
-      try { dato = JSON.parse(ev.data); } catch { return; }
+    },
+    alMensaje(dato) {
       estado = aplicarEvento(estado, dato, ahora());
       alCambiar(estado);
-    });
+    },
     // si se cae, el mapa sigue mostrando la foto: el pulso es una capa
     // encima, no el mapa
-    ws.addEventListener("close", () => {
+    alCerrar() {
       estado = {...estado, conectado: false};
       alCambiar(estado);
-      setTimeout(conectar, 2000);
-    });
-  }
-  alCambiar(estado);        // el estado inicial dice "sin conexion" y se pinta
-  conectar();
+    },
+  }, ConstructorWS);
 
   return {estado: () => estado};
 }
