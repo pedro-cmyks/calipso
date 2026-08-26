@@ -15,7 +15,7 @@ import {crearSocketQueReconecta} from "./socket.js";
 export const INACTIVO_MS = 600_000;    // diez minutos, igual que el servidor
 
 export function estadoInicial() {
-  return {conectado: false, empleados: {}, foco: null, seq: 0};
+  return {conectado: false, empleados: {}, foco: null, seq: 0, ts: 0};
 }
 
 function vacio(ev, ahora) {
@@ -31,9 +31,26 @@ const CONOCIDOS = ["inicio", "razonando", "herramienta", "tokens", "diff",
 
 export function aplicarEvento(estado, ev, ahora) {
   if (!ev || !CONOCIDOS.includes(ev.evento)) return estado;   // latido incluido
+  // El servidor arranca CADA conexion con el cursor en cero, asi que toda
+  // reconexion -el reintento de 2 s de socket.js, la pestana que el telefono
+  // suspende- reproduce el anillo entero. Sin esto, el `razonando` de un turno
+  // se acumulaba encima del que ya estaba: "hola Pedro" -> "hola Pedrohola
+  // Pedro". Reiniciar el escritorio con el `inicio` no alcanza: el `inicio` se
+  // cae del anillo dentro del mismo turno, porque se publica un evento por
+  // cada chunk del stream.
+  if (ev.seq && ev.seq <= estado.seq) {
+    // `seq` y `ts` son los dos del reloj del SERVIDOR, asi que compararlos
+    // entre si es legitimo. Un numero viejo con un ts viejo es el anillo
+    // reproducido: se descarta. Un numero viejo con un ts nuevo es un
+    // servidor que arranco de nuevo -su contador vuelve a uno, su reloj no- y
+    // ahi descartar dejaria al cliente mudo hasta que el contador nuevo pase
+    // al viejo.
+    if (!(ev.ts > estado.ts)) return estado;
+    estado = {...estadoInicial(), conectado: estado.conectado};
+  }
   if (ev.evento === "foco") {
     if (!ev.departamento) return estado;
-    return {...estado, seq: ev.seq || estado.seq,
+    return {...estado, seq: ev.seq || estado.seq, ts: ev.ts || estado.ts,
             foco: {departamento: ev.departamento, seq: ev.seq}};
   }
   if (!ev.departamento || !ev.agente_id) return estado;
@@ -71,7 +88,7 @@ export function aplicarEvento(estado, ev, ahora) {
     default:
       break;
   }
-  return {...estado, seq: ev.seq || estado.seq,
+  return {...estado, seq: ev.seq || estado.seq, ts: ev.ts || estado.ts,
           empleados: {...estado.empleados,
                       [ev.departamento]: {...dep, [ev.agente_id]: e}}};
 }

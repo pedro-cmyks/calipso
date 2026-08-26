@@ -108,6 +108,41 @@ test("un evento sin departamento no cuelga de ningun escritorio", () => {
   assert.deepEqual(Object.keys(e.empleados), []);
 });
 
+test("un evento repetido no duplica el texto", () => {
+  let e = aplicarEvento(estadoInicial(), ev("inicio", {}, 1, 1000), 5000);
+  e = aplicarEvento(e, ev("razonando", {texto: "hola Pedro"}, 2, 1001), 5001);
+  // el servidor arranca CADA conexion con el cursor en cero, asi que toda
+  // reconexion reproduce el anillo entero. Sin descartar por seq, el texto
+  // del turno se pegaba a si mismo: "hola Pedrohola Pedro"
+  e = aplicarEvento(e, ev("razonando", {texto: "hola Pedro"}, 2, 1001), 5002);
+  assert.equal(empleadosDe(e, "dep:atlas")[0].texto, "hola Pedro");
+});
+
+test("reproducir el anillo entero no cambia nada", () => {
+  const anillo = [ev("inicio", {}, 1, 1000),
+                  ev("razonando", {texto: "hola "}, 2, 1001),
+                  ev("razonando", {texto: "Pedro"}, 3, 1002),
+                  ev("tokens", {tokens_in: 9, tokens_out: 3}, 4, 1003)];
+  let e = estadoInicial();
+  for (const x of anillo) e = aplicarEvento(e, x, 5000);
+  let repetido = e;
+  for (const x of anillo) repetido = aplicarEvento(repetido, x, 6000);
+  assert.equal(repetido, e, "la reproduccion del anillo toco el estado");
+  assert.equal(empleadosDe(repetido, "dep:atlas")[0].texto, "hola Pedro");
+});
+
+test("un seq que retrocede resetea: el servidor se reinicio", () => {
+  let e = aplicarEvento(estadoInicial(), ev("inicio", {}, 40, 1000), 5000);
+  e = aplicarEvento(e, ev("razonando", {texto: "hola Pedro"}, 41, 1001), 5001);
+  // el contador del servidor vuelve a uno; el reloj no. Un numero viejo con
+  // un `ts` nuevo es lo unico que distingue el arranque de una reproduccion,
+  // y sin distinguirlo el cliente descartaria TODO lo que publique el
+  // servidor nuevo hasta que su contador pase al viejo
+  e = aplicarEvento(e, ev("inicio", {agente_id: "a9"}, 1, 2000), 6000);
+  assert.deepEqual(empleadosDe(e, "dep:atlas").map(x => x.agente_id), ["a9"]);
+  assert.equal(e.seq, 1);
+});
+
 test("el socket se engancha a /ws/mapa y reconecta cuando se cae", () => {
   const abiertos = [];
   class WSFalso {

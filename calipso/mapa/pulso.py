@@ -25,7 +25,13 @@ IDENTIDAD = ("departamento", "trabajo", "rol", "modelo")
 
 POR_AGENTE = 200      # eventos que guarda cada agente
 RECIENTES = 50        # agentes que se recuerdan
-FLUJO = 500           # eventos que alcanza a recibir un cliente que llega tarde
+# Eventos que alcanza a recibir un cliente que llega tarde. Dimensionado por
+# el turno de chat, que publica un `razonando` por CADA chunk del stream: una
+# respuesta larga son miles de eventos, y con 500 el `inicio` del agente se
+# caia del anillo antes de que el turno terminara. El costo es memoria del
+# proceso -unos pocos megabytes en el peor caso- y el pulso es efimero: nada
+# de esto se persiste.
+FLUJO = 10_000
 INACTIVO_S = 600      # diez minutos sin publicar: el escritorio queda vacio
 
 

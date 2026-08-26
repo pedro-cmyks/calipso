@@ -116,6 +116,22 @@ def test_el_cursor_entrega_lo_nuevo_en_orden():
     assert [e["texto"] for e in nuevos] == ["dos"]
 
 
+def test_el_flujo_aguanta_un_turno_entero_de_chunks():
+    """El `Emisor` publica un evento `razonando` por CADA chunk del stream, y
+    el que se reconecta reproduce el flujo desde cero. Con el flujo
+    dimensionado para 500 eventos, el `inicio` del agente se caia del anillo
+    dentro del mismo turno; a partir de ahi la reproduccion ya no reiniciaba
+    el escritorio y el cliente duplicaba el texto."""
+    pu = p.Pulso(ahora=Reloj())
+    pu.publicar("a1", "inicio", departamento="dep:atlas")
+    for _ in range(2000):
+        pu.publicar("a1", "razonando", texto="x")
+    _, nuevos = pu.desde(0)
+    assert nuevos[0]["evento"] == "inicio", (
+        "el inicio del turno ya no esta en el flujo: el que se reconecta "
+        "recibe el turno a medio empezar")
+
+
 def test_el_foco_viaja_por_el_mismo_canal_sin_agente():
     pu = p.Pulso(ahora=Reloj())
     ev = pu.enfocar("dep:atlas")
