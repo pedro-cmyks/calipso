@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import datetime
 import datetime as _dt
 import difflib
@@ -2022,7 +2023,7 @@ async def _run_subscription_text_live(
                     "label": label, "client": client, "model": model,
                     "elapsed": round(now - started),
                     "tokens": max(1, ((len(system) + len(user_msg)) + len(partial)) // 4),
-                    "partial": partial[-3000:] if partial else "",
+                    "partial": _limpiar_marcas(partial[-3000:]) if partial else "",
                     "hint": "sigue corriendo; envia /stop para cancelar o escribe y lo atiendo al terminar"})
                 jobs.event(
                     str(ROOT), job["id"], "running",
@@ -2237,6 +2238,9 @@ async def ws_chat(ws: WebSocket) -> None:
                                 "client": verdict.get("client"),
                                 "why": verdict["why"], "note": note})
 
+            agente_id = "chat:" + uuid.uuid4().hex[:8]
+            emisor = Emisor(ws, agente_id=agente_id)
+
             # 1.5b) dev loop: si el mensaje pide editar un archivo conocido,
             #         lanzar borrador en background y notificar como evento "proposal"
             _edit_target = _extract_edit_target(chat_msg, features)
@@ -2298,7 +2302,7 @@ async def ws_chat(ws: WebSocket) -> None:
                         pending = queued
                     used_route = "orchestrator"
                     usage["completion_tokens"] = len(full.split())
-                    await ws.send_json({"type": "chunk", "text": full})
+                    full = await emisor.chunk(full)
                 elif route == "subscription":
                     full, queued = await _run_subscription_text_live(
                         ws, inbox, verdict["client"], system, chat_msg, model,
@@ -2307,7 +2311,7 @@ async def ws_chat(ws: WebSocket) -> None:
                     if queued:
                         pending = queued
                     usage["completion_tokens"] = len(full.split())
-                    await ws.send_json({"type": "chunk", "text": full})
+                    full = await emisor.chunk(full)
                 else:
                     gen, model = _chunks_for(route, system, chat_msg, usage, model,
                                              verdict.get("effort"), chat_id=chat_id)
@@ -2326,8 +2330,7 @@ async def ws_chat(ws: WebSocket) -> None:
                         chunk = await asyncio.to_thread(_next_or_stop, gen, sentinel)
                         if chunk is sentinel:
                             break
-                        full += chunk
-                        await ws.send_json({"type": "chunk", "text": chunk})
+                        full += await emisor.chunk(chunk)
             except Exception as e:  # p.ej. LiteLLM apagado en ruta api
                 if route != "local":
                     if route == "subscription":
@@ -2361,7 +2364,7 @@ async def ws_chat(ws: WebSocket) -> None:
                                 if queued:
                                     pending = queued
                                 usage["completion_tokens"] = len(full.split())
-                                await ws.send_json({"type": "chunk", "text": full})
+                                full = await emisor.chunk(full)
                                 used_route = "subscription"
                                 route = "subscription"
                                 raise StopIteration
@@ -2409,12 +2412,15 @@ async def ws_chat(ws: WebSocket) -> None:
                             chunk = await asyncio.to_thread(_next_or_stop, gen, sentinel)
                             if chunk is sentinel:
                                 break
-                            full += chunk
-                            await ws.send_json({"type": "chunk", "text": chunk})
+                            full += await emisor.chunk(chunk)
                 else:
                     await ws.send_json({"type": "error", "text": str(e)})
             except StopIteration:
                 pass
+
+            # lo que el filtro venia reteniendo por si era una marca: si la
+            # respuesta termino en un corchete suelto, Pedro tiene que verlo
+            full += await emisor.cerrar()
 
             # 4) registrar costo/uso y avisar
             entry = costs.log_usage(
@@ -3242,6 +3248,7 @@ async def _routines_ticker() -> None:
 # --------------------------------------------------------------------------
 try:
     from calipso.economia import (bus as _eco_bus, cola as _eco_cola,
+                                  departamentos as _eco_deps,
                                   operacion as _eco_op,
                                   personal as _eco_personal,
                                   reloj as _eco_reloj)
@@ -3250,6 +3257,7 @@ try:
 except Exception:  # economia no disponible: los endpoints responden inactivo
     _EcoPagador = None
     _eco_bus = _eco_cola = _eco_op = _eco_personal = _eco_reloj = _eco_candado = None
+    _eco_deps = None
 
 _ECO_BASE = pathlib.Path(os.environ.get(
     "CALIPSO_HOME", os.path.expanduser("~/.calipso")))
@@ -3432,11 +3440,15 @@ def api_eco_reloj_conciliar(body: EcoConciliarBody) -> dict:
 try:
     from calipso.economia import capacidad as _mapa_cap
     from calipso.mapa import ciudad as _mapa_ciudad
+    from calipso.mapa import ficha as _mapa_ficha
+    from calipso.mapa import foco as _mapa_foco
     from calipso.mapa import urbanismo as _mapa_urbanismo
 except Exception:  # el mapa no esta disponible: el endpoint responde inactivo
     _mapa_ciudad = None
     _mapa_urbanismo = None
     _mapa_cap = None
+    _mapa_ficha = None
+    _mapa_foco = None
 
 
 # --------------------------------------------------------------------------
@@ -3492,6 +3504,89 @@ async def ws_mapa(ws: WebSocket) -> None:
         # reconectando para siempre y a nadie enterado
         print(f"[calipso] el pulso corto el socket del mapa: {exc}",
               file=sys.stderr)
+
+
+# --------------------------------------------------------------------------
+# LA MARCA DE FOCO (spec 2026-08-25 seccion 8): del chat a la camara
+# --------------------------------------------------------------------------
+def _edificios_livianos() -> list[dict]:
+    """`{id, nombre}` de cada departamento registrado, sin abrir el libro.
+
+    Resolver el nombre de un foco corre en cada turno de chat; el registro
+    es un JSON de unas lineas y el libro puede ser de megabytes."""
+    if _eco_deps is None or _EcoPagador is None:
+        return []
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE)
+    if p0 is None:
+        return []
+    try:
+        registro = _eco_deps.Registro(p0.ruta_registro)
+    except Exception:
+        return []
+    return [{"id": d.cuenta, "nombre": d.nombre} for d in registro.todos()]
+
+
+def _resolver_foco(nombre: str) -> str | None:
+    if _mapa_ficha is None:
+        return None
+    return _mapa_ficha.id_de_nombre(nombre, _edificios_livianos())
+
+
+class Emisor:
+    """Todo lo que Pedro lee sale por aca.
+
+    Tres cosas en un solo lugar: retirar la marca de foco del texto visible,
+    publicar el foco apenas aparece (la camara vuela mientras Calipso sigue
+    escribiendo) y darle al pulso lo que se va diciendo. Antes los chunks
+    salian desde cinco puntos de `ws_chat`, y filtrar en cinco lugares es
+    filtrar en cuatro."""
+
+    def __init__(self, ws, agente_id: str | None = None, resolver=None,
+                 pulso=None, filtro=None):
+        self.ws = ws
+        self.agente_id = agente_id
+        self._resolver = resolver or _resolver_foco
+        self._pulso = pulso if pulso is not None else EL_PULSO
+        self._filtro = filtro if filtro is not None else (
+            _mapa_foco.Filtro() if _mapa_foco is not None else None)
+        self.focos: list[str] = []
+
+    async def _soltar(self, visible: str) -> str:
+        if not visible:
+            return ""      # un chunk vacio la UI vieja lo pinta igual
+        await self.ws.send_json({"type": "chunk", "text": visible})
+        if self._pulso is not None and self.agente_id:
+            self._pulso.publicar(self.agente_id, "razonando", texto=visible)
+        return visible
+
+    async def chunk(self, texto: str) -> str:
+        """Manda lo visible y devuelve exactamente eso, para que el que
+        acumula la respuesta acumule lo mismo que Pedro leyo."""
+        if self._filtro is None:
+            return await self._soltar(texto)
+        visible = await self._soltar(self._filtro.comer(texto))
+        for nombre in self._filtro.tomar_focos():
+            destino = self._resolver(nombre)
+            if destino is None:
+                continue          # el modelo se invento un departamento
+            self.focos.append(destino)
+            if self._pulso is not None:
+                self._pulso.enfocar(destino)
+        return visible
+
+    async def cerrar(self) -> str:
+        """Una marca que nunca cerro es texto y Pedro tiene que verlo."""
+        if self._filtro is None:
+            return ""
+        return await self._soltar(self._filtro.cerrar())
+
+
+def _limpiar_marcas(texto: str) -> str:
+    """El parcial de la suscripcion se remanda ENTERO cada dos segundos, asi
+    que no necesita la maquinaria de retencion del Filtro: alcanza con sacar
+    las marcas completas. Una marca a medio llegar se limpia sola en el envio
+    siguiente, porque el texto se relee desde cero."""
+    return _mapa_foco.limpiar(texto) if _mapa_foco is not None else texto
 
 
 @app.get("/api/mapa/ciudad")
