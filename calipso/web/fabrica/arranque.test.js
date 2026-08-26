@@ -378,3 +378,64 @@ test("un foco por el pulso hace volar la camara, sin tocar el chat", async () =>
   assert.equal(nav.nodos.get("conversacion").hijos.length, conversacionAntes,
                "el foco toco la conversacion");
 });
+
+// --- El panel del medio: entrar en modo lectura y salir. ---
+
+/** Un toque completo: baja, no se mueve, sube. */
+function tocar(canvas, x, y, pointerId = 11) {
+  for (const f of canvas.oyentes.get("pointerdown") || []) {
+    f({pointerId, pointerType: "touch", clientX: x, clientY: y});
+  }
+  for (const f of canvas.oyentes.get("pointerup") || []) {
+    f({pointerId, pointerType: "touch", clientX: x, clientY: y});
+  }
+}
+
+test("cerrar el popup tocando el mapa devuelve el panel del medio al chat",
+     async () => {
+  const {aPantalla, escalaEntera} = await import("./camara.js");
+  const {centroDe} = await import("./ciudad.js");
+  const {medidas, plazasDe} = await import("./sprites.js");
+
+  const cam = modulo.camaraDePrueba();
+  const edificio = ciudadDePrueba().edificios[0];      // dep:a, en (-60, 0)
+  // encima del edificio y adentro: pasado el umbral se ven los escritorios
+  Object.assign(cam, {x: edificio.x, y: edificio.y, escala: 4, vuelo: null});
+  socketMapa.dice({seq: 20, ts: 20, agente_id: "a1", departamento: "dep:a",
+                   evento: "inicio", rol: "scout", modelo: "sonnet"});
+
+  const vista = {ancho: 800, alto: 600};
+  const esc = escalaEntera(cam);
+  const m = medidas(edificio);
+  const p = aPantalla(cam, centroDe(edificio), vista);
+  const plaza = plazasDe(edificio)[0];
+  const px = p.x - (m.ancho * esc) / 2 + plaza.x * esc + 1;
+  const py = p.y - m.alto * esc + plaza.y * esc + 1;
+
+  const panelCentro = nav.nodos.get("panel-centro");
+  const razonamiento = nav.nodos.get("razonamiento");
+  const empleado = nav.nodos.get("empleado");
+
+  tocar(nav.canvas, px, py);
+  assert.equal(panelCentro.dataset.modo, "razonamiento",
+               "tocar el escritorio no abrio el panel de razonamiento");
+  assert.ok(!empleado.classList.contains("oculto"), "el popup no se abrio");
+
+  // el toque afuera de un escritorio cierra el popup; el panel del medio
+  // tiene que volver con el, o Pedro fija un departamento y deja de ver la
+  // conversacion. La salida existia -el boton "volver al chat"- pero la
+  // asimetria se lee como un cuelgue.
+  const escrituras = razonamiento.escriturasDeHtml();
+  tocar(nav.canvas, 5, 5, 12);
+  assert.equal(panelCentro.dataset.modo, "chat");
+  assert.ok(razonamiento.classList.contains("oculto"));
+  assert.ok(empleado.classList.contains("oculto"));
+
+  // y se dejo de mirar a nadie: un evento nuevo del mismo agente ya no
+  // repinta el panel de razonamiento
+  socketMapa.dice({seq: 21, ts: 21, agente_id: "a1", departamento: "dep:a",
+                   evento: "razonando", texto: "sigo pensando"});
+  assert.equal(razonamiento.escriturasDeHtml(), escrituras,
+               "el panel de razonamiento se siguio pintando: quedo mirando " +
+               "a un empleado que Pedro ya cerro");
+});

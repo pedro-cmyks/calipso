@@ -139,7 +139,11 @@ function soltar(ev) {
       }
     }
     if (!tocoEmpleado) {
-      popupEmpleado.classList.add("oculto");   // el toque afuera lo cierra
+      // el toque afuera cierra el popup Y saca al panel del medio del modo
+      // lectura: cerrar uno solo deja a Pedro fijando un departamento sin
+      // ver la conversacion, y la salida que queda -el boton "volver al
+      // chat"- esta en el panel que justo dejo de mirar
+      volverAlChat();
       if (resaltado) { enFoco = resaltado; pintarFoco(); }
     }
   }
@@ -398,13 +402,16 @@ function pintarRazonamiento() {
   panelRazonamiento.scrollTop = panelRazonamiento.scrollHeight;
 }
 
+/** Salir del modo lectura. Los dos caminos que lo cierran hacen lo mismo. */
+function volverAlChat() {
+  mirando = null;
+  panelCentro.dataset.modo = "chat";
+  panelRazonamiento.classList.add("oculto");
+  popupEmpleado.classList.add("oculto");
+}
+
 panelRazonamiento.addEventListener("click", ev => {
-  if (ev.target && ev.target.dataset.accion === "volver") {
-    mirando = null;
-    panelCentro.dataset.modo = "chat";
-    panelRazonamiento.classList.add("oculto");
-    popupEmpleado.classList.add("oculto");
-  }
+  if (ev.target && ev.target.dataset.accion === "volver") volverAlChat();
 });
 
 let pulso = {conectado: false, empleados: {}, foco: null, seq: 0};
