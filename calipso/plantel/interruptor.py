@@ -46,8 +46,9 @@ def leer(base) -> Estado:
     fallas nueva, y un modo raro no puede volverse permiso para gastar."""
     d = _crudo(base)
     modo = d.get("modo")
+    crudo = d.get("techo_tics")
     try:
-        techo = int(d.get("techo_tics") or Estado.techo_tics)
+        techo = int(crudo) if crudo is not None else Estado.techo_tics
     except (TypeError, ValueError):
         techo = Estado.techo_tics
     return Estado(encendido=bool(d.get("encendido", True)),

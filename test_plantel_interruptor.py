@@ -78,3 +78,14 @@ def test_la_cuerda_se_acaba_en_el_techo(tmp_path):
     it.anotar_tic(tmp_path, "dep:atlas", "2026-W35")
     it.anotar_tic(tmp_path, "dep:atlas", "2026-W35")
     assert it.hay_cuerda(tmp_path, e, "dep:atlas", "2026-W35") is False
+
+
+def test_techo_tics_cero_persiste_en_roundtrip(tmp_path):
+    """Un techo_tics explicito en 0 (parar departamento) no se pisa con el
+    default 200. Escribir y releer debe conservar el 0."""
+    e = it.Estado(techo_tics=0)
+    it.escribir(tmp_path, e)
+    e_releido = it.leer(tmp_path)
+    assert e_releido.techo_tics == 0
+    # y hay_cuerda debe falso desde el primer tic: la cuerda se acaba
+    assert it.hay_cuerda(tmp_path, e_releido, "dep:atlas", "2026-W35") is False
