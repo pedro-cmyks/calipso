@@ -578,7 +578,8 @@ def _extract_edit_target(message: str, features: dict) -> str | None:
     return None
 
 
-async def _run_chat_draft(ws, chat_msg: str, file_path: str) -> None:
+async def _run_chat_draft(ws, chat_msg: str, file_path: str,
+                          agente_id: str | None = None) -> None:
     """Genera borrador desde chat y emite evento 'proposal' por WebSocket."""
     active_goal = await asyncio.to_thread(goals.active, str(ROOT))
     brief = developer.chat_draft_brief(str(ROOT), chat_msg, file_path, goal=active_goal)
@@ -601,6 +602,10 @@ async def _run_chat_draft(ws, chat_msg: str, file_path: str) -> None:
     }
     PENDING_CHANGES[change_id] = {**item, "content": new_content}
     diff = _proposal_diff(file_path, new_content)
+    if EL_PULSO is not None and agente_id:
+        # el rastro del agente: es lo que el popup del empleado muestra como
+        # "toco" y lo que el panel de razonamiento pinta abajo del texto
+        EL_PULSO.publicar(agente_id, "diff", ruta=file_path, diff=diff)
 
     jobs.write_artifact(str(ROOT), job["id"], "draft.diff", diff)
     jobs.update(str(ROOT), job["id"], status="done",
@@ -1512,7 +1517,8 @@ async def _run_agent_text(ws: WebSocket, inbox: asyncio.Queue, agent: dict,
 async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
                             features: dict, base_system: str,
                             verdict: dict,
-                            approval_required: bool = False) -> tuple[str, dict, str | None]:
+                            approval_required: bool = False,
+                            departamento: str | None = None) -> tuple[str, dict, str | None]:
     plan_obj = await asyncio.to_thread(_plan_dynamic_team, chat_msg, features)
     team = orchestrator.build_team(
         plan_obj, _backend_availability(), project_root=str(ROOT),
@@ -1562,6 +1568,7 @@ async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
                         "approval_required": approval_required})
     await ws.send_json({"type": "agent", "action": "team", "agents": agents})
     results: list[dict] = []
+    ws_agente_base = "equipo:" + uuid.uuid4().hex[:8]
     queued_msg: str | None = None
     for idx, agent in enumerate(agents, start=1):
         await ws.send_json({"type": "plan", "action": "todo", "id": idx,
@@ -1569,24 +1576,33 @@ async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
         await ws.send_json({"type": "agent", "action": "start", "index": idx,
                             "agent": agent})
         agent_system = orchestrator.agent_system(agent, base_system, chat_msg)
-        try:
-            output, queued = await _run_agent_text(
-                ws, inbox, agent, agent_system, agent["task"])
-            queued_msg = queued_msg or queued
-        except Exception as e:
-            agent["fallback_error"] = str(e)
+        with _pulso_agente(f"{ws_agente_base}:{idx}", departamento=departamento,
+                           rol=agent.get("role"),
+                           modelo=agent.get("model")) as mango:
             try:
-                output = await asyncio.to_thread(
-                    _run_backend_text, "local", None, _route_model_name("local"),
-                    agent_system, agent["task"], None)
-                agent["fallback_route"] = "local"
-            except Exception as e2:
-                output = (
-                    f"No pude ejecutar esta subtarea. Ruta original: "
-                    f"{agent.get('route')} {agent.get('model') or ''}. "
-                    f"Error: {e}. Fallback local: {e2}."
-                )
-                agent["fallback_route"] = "failed"
+                output, queued = await _run_agent_text(
+                    ws, inbox, agent, agent_system, agent["task"])
+                queued_msg = queued_msg or queued
+            except Exception as e:
+                agent["fallback_error"] = str(e)
+                try:
+                    output = await asyncio.to_thread(
+                        _run_backend_text, "local", None, _route_model_name("local"),
+                        agent_system, agent["task"], None)
+                    agent["fallback_route"] = "local"
+                except Exception as e2:
+                    output = (
+                        f"No pude ejecutar esta subtarea. Ruta original: "
+                        f"{agent.get('route')} {agent.get('model') or ''}. "
+                        f"Error: {e}. Fallback local: {e2}."
+                    )
+                    agent["fallback_route"] = "failed"
+            # el agente de un equipo no streamea: `_run_backend_text` devuelve
+            # el texto entero. Su razonamiento se publica una vez, al final.
+            # El incremental existe solo donde existe el stream, que es el
+            # turno principal del chat
+            mango.razonando(output)
+            mango.tokens(len(agent_system) // 4, len(output) // 4, 0)
         result = {**agent, "output": output}
         results.append(result)
         telemetry.log_event(
@@ -2240,12 +2256,21 @@ async def ws_chat(ws: WebSocket) -> None:
 
             agente_id = "chat:" + uuid.uuid4().hex[:8]
             emisor = Emisor(ws, agente_id=agente_id)
+            if EL_PULSO is not None:
+                # abierto y cerrado a mano: envolver el cuerpo del turno
+                # re-indentaria doscientas cincuenta lineas. Si el turno
+                # revienta sin cerrar, la regla de inactividad libera el
+                # escritorio a los diez minutos
+                EL_PULSO.publicar(agente_id, "inicio",
+                                  departamento=None, rol="calipso",
+                                  modelo=model)
 
             # 1.5b) dev loop: si el mensaje pide editar un archivo conocido,
             #         lanzar borrador en background y notificar como evento "proposal"
             _edit_target = _extract_edit_target(chat_msg, features)
             if _edit_target:
-                asyncio.ensure_future(_run_chat_draft(ws, chat_msg, _edit_target))
+                asyncio.ensure_future(_run_chat_draft(ws, chat_msg, _edit_target,
+                                                      agente_id))
 
             # 1.5) navegación web si la tarea lo pide (grounding + preview)
             web_material = None
@@ -2295,6 +2320,7 @@ async def ws_chat(ws: WebSocket) -> None:
                         system += "\n\n" + attachment_context
                     if web_material and (web_material["results"] or web_material["pages"]):
                         system += "\n\n" + calipso_web.context_block(web_material)
+                    # la Task 5 le agrega aca `departamento=departamento`
                     full, agent_team, queued = await _run_dynamic_team(
                         ws, inbox, chat_msg, features, system, verdict,
                         approval_required=bool(directives.get("force_team")))
@@ -2429,6 +2455,15 @@ async def ws_chat(ws: WebSocket) -> None:
             await ws.send_json({"type": "cost", "model": model, "route": used_route,
                                 "tokens": entry["prompt_tokens"] + entry["completion_tokens"],
                                 "cost_usd": entry["cost_usd"]})
+            if EL_PULSO is not None:
+                EL_PULSO.publicar(agente_id, "tokens",
+                                  tokens_in=entry["prompt_tokens"],
+                                  tokens_out=entry["completion_tokens"],
+                                  costo_mm=0)
+                EL_PULSO.publicar(
+                    agente_id, "fin",
+                    runtime_ms=round((time.perf_counter() - turn_started) * 1000),
+                    resultado="ok")
             telemetry.log_event(
                 "chat_turn",
                 project=str(ROOT),
@@ -3463,6 +3498,30 @@ except Exception:  # sin pulso el mapa sigue mostrando la foto
 
 SONDEO_S = 0.25
 LATIDO_CADA = 40          # sondeos: un latido cada diez segundos
+
+
+class _MangoNulo:
+    """Cuando el pulso no se pudo importar, el codigo instrumentado corre
+    igual y no se llena de `if EL_PULSO is not None`."""
+
+    resultado = "ok"
+
+    def razonando(self, texto): pass
+    def herramienta(self, nombre, resumen=""): pass
+    def tokens(self, tokens_in, tokens_out, costo_mm=0): pass
+    def diff(self, ruta, diff): pass
+
+
+_MANGO_NULO = _MangoNulo()
+
+
+@contextlib.contextmanager
+def _pulso_agente(agente_id: str, **campos):
+    if EL_PULSO is None:
+        yield _MANGO_NULO
+        return
+    with EL_PULSO.agente(agente_id, **campos) as mango:
+        yield mango
 
 
 @app.websocket("/ws/mapa")
