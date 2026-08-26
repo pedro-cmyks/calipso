@@ -105,3 +105,13 @@ def test_reintento_aplica_cuando_puede(base):
     assert p.reintentar_pendientes() == 1  # el mercado fresco ve el ajuste
     assert p.pendientes() == []
     assert p.leer_kernel().saldo("dep:mercadeo") == 100_000 - 82
+
+
+def test_el_cliente_se_traduce_a_la_suscripcion_que_existe():
+    """dispatch.py tenia esta traduccion copiada a mano; dos verdades para
+    un solo dato es como se desincronizan."""
+    from calipso.economia.pagador import suscripcion_de_cliente
+    assert suscripcion_de_cliente("claude") == "claude_max"
+    assert suscripcion_de_cliente("codex") == "chatgpt_plus"
+    assert suscripcion_de_cliente("CLAUDE") == "claude_max"
+    assert suscripcion_de_cliente(None) == "claude_max"

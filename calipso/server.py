@@ -2174,6 +2174,7 @@ async def ws_chat(ws: WebSocket) -> None:
         while True:
             chat_id = chats.active_id()
             attachment_ids: list[str] = []
+            departamento = None      # el edificio que Pedro tiene tocado
             if pending is not None:
                 user_msg, pending = pending, None
             else:
@@ -2185,6 +2186,7 @@ async def ws_chat(ws: WebSocket) -> None:
                     if isinstance(packet, dict):
                         user_msg = str(packet.get("text") or "")
                         chat_id = packet.get("chat_id") or chat_id
+                        departamento = packet.get("departamento") or None
                         attachment_ids = [
                             str(x) for x in (packet.get("attachment_ids") or [])
                             if isinstance(x, str)
@@ -2249,6 +2251,15 @@ async def ws_chat(ws: WebSocket) -> None:
                 await ws.send_json({"type": "done"})
                 continue
             chat_msg = directives["clean"]
+            cuenta = (_mapa_ficha.cuenta_pagadora(departamento)
+                      if _mapa_ficha else "personal")
+            bloque_dep = ""
+            if departamento and _mapa_ficha is not None:
+                # derivar la ciudad toma el candado del libro: va en un hilo
+                modelo = await asyncio.to_thread(_ciudad_modelo)
+                edificio = _mapa_ficha.edificio_de(modelo, departamento)
+                if edificio:
+                    bloque_dep = _mapa_ficha.bloque(edificio)
             route = verdict["route"]
             model = verdict.get("model")
             note = "; ".join(f"{r['persona']}={r['score']}" for r in ranked[:3]) or None
@@ -2269,16 +2280,16 @@ async def ws_chat(ws: WebSocket) -> None:
                 # revienta sin cerrar, la regla de inactividad libera el
                 # escritorio a los diez minutos
                 EL_PULSO.publicar(agente_id, "inicio",
-                                  departamento=None, rol="calipso",
+                                  departamento=departamento, rol="calipso",
                                   modelo=model)
 
             # 1.5b) dev loop: si el mensaje pide editar un archivo conocido,
             #         lanzar borrador en background y notificar como evento "proposal"
             _edit_target = _extract_edit_target(chat_msg, features)
             if _edit_target:
-                # la Task 5 le agrega aca el `departamento` de verdad
                 asyncio.ensure_future(_run_chat_draft(
-                    ws, chat_msg, _edit_target, f"{agente_id}:borrador", None))
+                    ws, chat_msg, _edit_target, f"{agente_id}:borrador",
+                    departamento))
 
             # 1.5) navegación web si la tarea lo pide (grounding + preview)
             web_material = None
@@ -2312,6 +2323,8 @@ async def ws_chat(ws: WebSocket) -> None:
             attachment_context = attachments.context_block(str(ROOT), attachment_ids)
             if attachment_context:
                 system += "\n\n" + attachment_context
+            if bloque_dep:
+                system += "\n\n" + bloque_dep
             if web_material and (web_material["results"] or web_material["pages"]):
                 system += "\n\n" + calipso_web.context_block(web_material)
             usage: dict = {}
@@ -2326,12 +2339,14 @@ async def ws_chat(ws: WebSocket) -> None:
                     system = _build_context(chat_msg, runtime, features)
                     if attachment_context:
                         system += "\n\n" + attachment_context
+                    if bloque_dep:
+                        system += "\n\n" + bloque_dep
                     if web_material and (web_material["results"] or web_material["pages"]):
                         system += "\n\n" + calipso_web.context_block(web_material)
-                    # la Task 5 le agrega aca `departamento=departamento`
                     full, agent_team, queued = await _run_dynamic_team(
                         ws, inbox, chat_msg, features, system, verdict,
-                        approval_required=bool(directives.get("force_team")))
+                        approval_required=bool(directives.get("force_team")),
+                        departamento=departamento)
                     if queued:
                         pending = queued
                     used_route = "orchestrator"
@@ -2391,6 +2406,8 @@ async def ws_chat(ws: WebSocket) -> None:
                                 system = _build_context(chat_msg, runtime, features)
                                 if attachment_context:
                                     system += "\n\n" + attachment_context
+                                if bloque_dep:
+                                    system += "\n\n" + bloque_dep
                                 full, queued = await _run_subscription_text_live(
                                     ws, inbox, alternate, system, chat_msg, None,
                                     label=f"fallback via {alternate}",
@@ -2430,6 +2447,8 @@ async def ws_chat(ws: WebSocket) -> None:
                         system = _build_context(chat_msg, runtime, features)
                         if attachment_context:
                             system += "\n\n" + attachment_context
+                        if bloque_dep:
+                            system += "\n\n" + bloque_dep
                         gen, model = _chunks_for("local", system, chat_msg, usage, chat_id=chat_id)
                         while True:
                             if not inbox.empty():  # steering en el fallback local
@@ -2456,18 +2475,28 @@ async def ws_chat(ws: WebSocket) -> None:
             # respuesta termino en un corchete suelto, Pedro tiene que verlo
             full += await emisor.cerrar()
 
-            # 4) registrar costo/uso y avisar
+            # 4) registrar costo/uso, cobrarle al departamento en foco y avisar
             entry = costs.log_usage(
                 used_route, model, usage.get("prompt_tokens", 0),
                 usage.get("completion_tokens", 0), client=verdict.get("client"))
+            # `used_route` vale "orchestrator" cuando corrio el equipo dinamico,
+            # y esa no es una ruta que se pueda cobrar: los agentes gastaron
+            # por la ruta base del verdict. Sin esta normalizacion, un turno
+            # de equipo con atlas en foco no le cobra un peso a atlas.
+            ruta_cobrable = (verdict["route"] if used_route == "orchestrator"
+                             else used_route)
+            cobrado = await asyncio.to_thread(
+                _cobrar_turno, cuenta, ruta_cobrable, verdict.get("client"),
+                model, usage)
             await ws.send_json({"type": "cost", "model": model, "route": used_route,
                                 "tokens": entry["prompt_tokens"] + entry["completion_tokens"],
-                                "cost_usd": entry["cost_usd"]})
+                                "cost_usd": entry["cost_usd"],
+                                "cuenta": cuenta, "mm": cobrado})
             if EL_PULSO is not None:
                 EL_PULSO.publicar(agente_id, "tokens",
                                   tokens_in=entry["prompt_tokens"],
                                   tokens_out=entry["completion_tokens"],
-                                  costo_mm=0)
+                                  costo_mm=cobrado)
                 EL_PULSO.publicar(
                     agente_id, "fin",
                     runtime_ms=round((time.perf_counter() - turn_started) * 1000),
@@ -3296,9 +3325,12 @@ try:
                                   personal as _eco_personal,
                                   reloj as _eco_reloj)
     from calipso.economia.candado import candado as _eco_candado
-    from calipso.economia.pagador import Pagador as _EcoPagador
+    from calipso.economia.pagador import (Pagador as _EcoPagador,
+                                          suscripcion_de_cliente as
+                                          _eco_suscripcion)
 except Exception:  # economia no disponible: los endpoints responden inactivo
     _EcoPagador = None
+    _eco_suscripcion = None
     _eco_bus = _eco_cola = _eco_op = _eco_personal = _eco_reloj = _eco_candado = None
     _eco_deps = None
 
@@ -3656,31 +3688,75 @@ def _limpiar_marcas(texto: str) -> str:
     return _mapa_foco.limpiar(texto) if _mapa_foco is not None else texto
 
 
-@app.get("/api/mapa/ciudad")
-def api_mapa_ciudad() -> dict:
-    if _mapa_ciudad is None:
-        return {"activa": False}
-    p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
+def _ciudad_modelo() -> dict | None:
+    """El modelo derivado del libro, SIN coordenadas.
+
+    El endpoint le agrega el urbanismo; el chat, que solo quiere la ficha de
+    un departamento, se ahorra esa mitad. None si la economia no esta."""
+    if _mapa_ciudad is None or _EcoPagador is None:
+        return None
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE)
     if not p0:
-        return {"activa": False}
+        return None
     _, semana = _eco_ahora()
-    # lector serializado: el libro se repara truncando, no se lee a medio escribir
+    # lector serializado: el libro se repara truncando, no se lee a medio
+    # escribir
     with _eco_candado(p0.ruta_libro):
         eco = _economia()
         m = eco["pagador"].mercado_fresco()
         asientos = m.k.libro.asientos()
         ops = _mapa_cap.semanas_operativas(asientos)
         minutos = eco["reloj"].minutos_por_categoria(ops[-4:]) if ops else {}
-        modelo = _mapa_ciudad.ciudad(
+        return _mapa_ciudad.ciudad(
             asientos, m.registro, eco["bus"], eco["cola"], semana,
             minutos_empleo=minutos.get("empleo", 0),
             suscripciones=m.suscripciones)
+
+
+@app.get("/api/mapa/ciudad")
+def api_mapa_ciudad() -> dict:
+    modelo = _ciudad_modelo()
+    if modelo is None:
+        return {"activa": False}
     posiciones = _mapa_urbanismo.urbanizar(modelo["edificios"],
                                            modelo["calles"])
     for e in modelo["edificios"]:
         x, y = posiciones.get(e["id"], (0, 0))
         e["x"], e["y"] = x, y
     return {"activa": True, "ciudad": modelo}
+
+
+def _cobrar_turno(cuenta: str, route: str, client: str | None,
+                  model: str | None, usage: dict) -> int:
+    """La billetera del departamento en foco paga el turno.
+
+    Nunca voltea el chat: lo que el mercado rechaza queda en
+    cargos_pendientes.jsonl y la operacion lo reintenta. Toma el candado del
+    libro, asi que se llama SIEMPRE desde un hilo. Devuelve las milimonedas
+    cobradas: la ruta local no cuesta plata y la suscripcion se cobra en
+    unidades de capacidad, no en monedas, asi que las dos devuelven cero."""
+    if _EcoPagador is None or _mapa_ficha is None:
+        return 0
+    if not cuenta or cuenta == _mapa_ficha.CUENTA_PERSONAL:
+        return 0
+    pagador = _EcoPagador.desde_entorno(_ECO_BASE)
+    if pagador is None:
+        return 0
+    ts, semana = _eco_ahora()
+    try:
+        if route == "api":
+            return pagador.cargar_api(ts, semana, cuenta, model or "",
+                                      usage.get("prompt_tokens", 0),
+                                      usage.get("completion_tokens", 0)) or 0
+        if route == "subscription":
+            pagador.cargar_suscripcion(ts, semana, cuenta,
+                                       _eco_suscripcion(client))
+    except Exception as exc:
+        # el cobro es contabilidad, no la conversacion: que falle no puede
+        # dejar a Pedro sin respuesta
+        print(f"[calipso] no se pudo cobrar el turno a {cuenta}: {exc}",
+              file=sys.stderr)
+    return 0
 
 
 @app.on_event("startup")

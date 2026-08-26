@@ -28,6 +28,17 @@ from .mercado import ErrorMercado, Mercado
 PRECIOS_API_MM_POR_MTOK = {"deepseek-chat": (270, 1100)}
 PRECIO_DESCONOCIDO = (3000, 15000)  # conservador
 
+SUSCRIPCION_POR_CLIENTE = {"claude": "claude_max", "codex": "chatgpt_plus"}
+
+
+def suscripcion_de_cliente(cliente: str | None) -> str:
+    """`claude` -> `claude_max`. El nombre del cliente y el de la suscripcion
+    no son el mismo dato; la traduccion estaba escrita a mano en dispatch.py
+    y ahora la usan los dos."""
+    return SUSCRIPCION_POR_CLIENTE.get((cliente or "").strip().lower(),
+                                       "claude_max")
+
+
 _ERRORES_ECONOMICOS = (ErrorMercado, ErrorCapacidad, ErrorBus,
                        OperacionInvalida)
 

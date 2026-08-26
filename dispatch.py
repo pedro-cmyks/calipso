@@ -43,10 +43,13 @@ except Exception:
     _rd = None  # type: ignore[assignment]
 
 try:
-    from calipso.economia.pagador import Pagador as _Pagador
+    from calipso.economia.pagador import (Pagador as _Pagador,
+                                          suscripcion_de_cliente as
+                                          _suscripcion_de_cliente)
     from calipso.economia.operacion import semana_iso as _semana_iso
 except Exception:
     _Pagador = None
+    _suscripcion_de_cliente = None
     _semana_iso = None
 
 # ----------------------------------------------------------------------------
@@ -571,7 +574,7 @@ def main() -> int:
                         routing = (load_config() if load_config else {}).get(
                             "routing", {})
                         cliente = routing.get("subscription_client", "claude")
-                    sus = "claude_max" if cliente == "claude" else "chatgpt_plus"
+                    sus = _suscripcion_de_cliente(cliente)
                     pagador.cargar_suscripcion(ts_eco, sem, args.cuenta, sus)
     except Exception:
         pass  # telemetria economica best-effort
