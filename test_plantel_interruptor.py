@@ -94,28 +94,29 @@ def test_techo_tics_cero_persiste_en_roundtrip(tmp_path):
 
 def test_tomar_tic_respeta_el_techo(tmp_path):
     """Chequear y anotar en una sola operacion: por debajo del techo pasa,
-    en el techo se vuelve sin cuerda."""
-    e = it.Estado(techo_tics=2)
-    assert it.tomar_tic(tmp_path, e, "dep:atlas", "2026-W35") is True
-    assert it.tomar_tic(tmp_path, e, "dep:atlas", "2026-W35") is True
-    assert it.tomar_tic(tmp_path, e, "dep:atlas", "2026-W35") is False
+    en el techo se vuelve sin cuerda. El techo lo saca del archivo, no de un
+    Estado que le pase el llamador."""
+    it.escribir(tmp_path, it.Estado(techo_tics=2))
+    assert it.tomar_tic(tmp_path, "dep:atlas", "2026-W35") is True
+    assert it.tomar_tic(tmp_path, "dep:atlas", "2026-W35") is True
+    assert it.tomar_tic(tmp_path, "dep:atlas", "2026-W35") is False
     assert it.tics(tmp_path, "dep:atlas", "2026-W35") == 2
 
 
 def test_tomar_tic_es_atomico_bajo_concurrencia(tmp_path):
     """El ticker de rutinas y el boton de correr a mano pueden solaparse de
     verdad: separado en dos pasos, dos hilos leen el mismo contador y pasan
-    los dos. Bajo candado, de N hilos contra un techo de 5 tienen que ganar
-    exactamente 5."""
-    e = it.Estado(techo_tics=5)
-    n = 20
+    los dos. Bajo candado, de N hilos con presion de verdad contra un techo
+    de 5 tienen que ganar exactamente 5 -- ni uno mas."""
+    it.escribir(tmp_path, it.Estado(techo_tics=5))
+    n = 24
     barrera = threading.Barrier(n)
     resultados = []
     candado_resultados = threading.Lock()
 
     def trabajador():
         barrera.wait()
-        gano = it.tomar_tic(tmp_path, e, "dep:atlas", "2026-W35")
+        gano = it.tomar_tic(tmp_path, "dep:atlas", "2026-W35")
         with candado_resultados:
             resultados.append(gano)
 
@@ -127,3 +128,44 @@ def test_tomar_tic_es_atomico_bajo_concurrencia(tmp_path):
 
     assert resultados.count(True) == 5
     assert it.tics(tmp_path, "dep:atlas", "2026-W35") == 5
+
+
+def test_boton_de_parar_bajo_escritura_concurrente(tmp_path):
+    """Apretar parar mientras la fabrica escribe no puede fallar: write_text
+    truncaba el archivo en el lugar, asi que un lector se podia topar con un
+    JSON a medias, _crudo devolvia {} y leer() caia al default MAS permisivo
+    (encendido=True) -el boton de parar fallaba sin avisar. Con escritura
+    atomica (os.replace) el lector ve el contenido viejo o el nuevo, nunca
+    uno a medias: de N lecturas concurrentes con un escritor martillando el
+    archivo, ninguna puede ver encendido=True."""
+    it.escribir(tmp_path, it.Estado(encendido=False, modo="vivo", techo_tics=5))
+    seguir = threading.Event()
+    seguir.set()
+
+    def escritor():
+        while seguir.is_set():
+            it.escribir(tmp_path,
+                       it.Estado(encendido=False, modo="vivo", techo_tics=5))
+
+    h = threading.Thread(target=escritor)
+    h.start()
+    try:
+        vistos = [it.leer(tmp_path).encendido for _ in range(2000)]
+    finally:
+        seguir.clear()
+        h.join()
+
+    assert not any(vistos), "el boton de parar fallo bajo escritura concurrente"
+
+
+def test_techo_dict_vacio_da_el_default():
+    assert it._techo({}) == it.Estado.techo_tics
+
+
+def test_techo_valor_raro_cae_en_el_default():
+    assert it._techo({"techo_tics": "no-es-numero"}) == it.Estado.techo_tics
+
+
+def test_techo_cero_se_respeta():
+    """El bug real que ya arreglamos: 0 es un valor valido, no "sin dato"."""
+    assert it._techo({"techo_tics": 0}) == 0

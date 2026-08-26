@@ -68,7 +68,7 @@ def tic(ctx: Contexto, cuenta: str, semana: str) -> dict:
             # cortar ANTES del modelo: apagar la fabrica no puede seguir
             # costando un tic por departamento
             return corto("apagado", "el interruptor esta en parar", "apagado")
-        if not it.tomar_tic(ctx.base, estado, cuenta, semana):
+        if not it.tomar_tic(ctx.base, cuenta, semana):
             return corto("sin_cuerda",
                          f"ya uso sus {estado.techo_tics} tics de la semana",
                          "techo de tics")
