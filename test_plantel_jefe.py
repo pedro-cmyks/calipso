@@ -19,12 +19,16 @@ CLAVES = {"cuenta", "accion", "ref", "motivo", "sesgo_pct", "actuo", "freno",
 
 
 class MemoriaFalsa:
-    def __init__(self, nucleo=""):
+    def __init__(self, nucleo="", recientes=()):
         self.recordado = []
         self._nucleo = nucleo
+        self._recientes = recientes
 
     def load_core(self):
         return self._nucleo
+
+    def recent(self, limit=20):
+        return list(self._recientes)
 
     def remember(self, texto, **meta):
         self.recordado.append(texto)
@@ -329,3 +333,31 @@ def test_el_techo_de_propuestas_no_afecta_comentar_ni_nada(tmp_path):
     out2 = j.tic(ctx, "dep:atlas", W)
     assert out2["actuo"] is True
     assert contratos == [("comentar", "p0", "opino sobre esta")]
+
+
+def test_el_jefe_le_pasa_las_recientes_al_prompt(tmp_path):
+    """Sin esto el jefe le pregunta al modelo desde cero en cada tic y
+    propone lo mismo una y otra vez -se lo vio pasar ocho de ocho veces con
+    el modelo real, porque no tiene idea de lo que decidio antes."""
+    prompts = []
+    ctx, _, _ = armar(tmp_path)
+    ctx.memoria = MemoriaFalsa(recientes=["proponer: radar de precios"])
+    ctx.pensar = lambda p: prompts.append(p) or "nada\nnada nuevo"
+    j.tic(ctx, "dep:atlas", W)
+    assert prompts and "radar de precios" in prompts[0]
+
+
+def test_una_memoria_cuyo_recent_revienta_no_propaga(tmp_path):
+    """El armado del prompt sigue blindado: una falla de Chroma al leer lo
+    episodico no puede reventar el tic."""
+    class MemoriaQueRevientaAlLeer(MemoriaFalsa):
+        def recent(self, limit=20):
+            raise RuntimeError("chroma caido")
+
+    ctx, contratos, _ = armar(tmp_path)
+    ctx.memoria = MemoriaQueRevientaAlLeer()
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["freno"] == "fallo antes de pensar"
+    assert "chroma caido" in out["motivo"]
+    assert contratos == []

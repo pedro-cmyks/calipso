@@ -180,3 +180,39 @@ def test_el_prompt_sin_trabajos_ni_propuestas_no_miente():
     p = dec.prompt(s, 50)
     assert "ninguno" in p and "ninguna" in p
     assert "sin capacidad" in p
+
+def test_el_prompt_lleva_las_decisiones_recientes():
+    """Sin esto el jefe le pregunta al modelo desde cero en cada tic, y un
+    modelo sin memoria de lo que ya decidio propone lo mismo una y otra
+    vez."""
+    s = {"nombre": "atlas", "disponible_mm": 0, "saldo_mm": 0,
+         "presupuesto_semanal_mm": 0, "salidas_semana_mm": 0,
+         "compuertas_pendientes": 0, "trabajos": [], "propuestas_ajenas": [],
+         "capacidad": None}
+    p = dec.prompt(s, 50, recientes=["proponer: radar de precios",
+                                     "nada: nada nuevo que ofrecer"])
+    assert "radar de precios" in p
+    assert "nada nuevo que ofrecer" in p
+    assert "no repitas lo mismo" in p
+
+
+def test_el_prompt_sin_recientes_no_lleva_el_bloque():
+    s = {"nombre": "atlas", "disponible_mm": 0, "saldo_mm": 0,
+         "presupuesto_semanal_mm": 0, "salidas_semana_mm": 0,
+         "compuertas_pendientes": 0, "trabajos": [], "propuestas_ajenas": [],
+         "capacidad": None}
+    p = dec.prompt(s, 50)
+    assert "ultimos tics" not in p
+
+
+def test_el_prompt_prohibe_otros_idiomas():
+    """El 7b mezcla chino en el motivo -el titulo que Pedro lee en el bus.
+    Medido: una prohibicion pegada a la instruccion de formato lo saca, una
+    cabecera al principio del prompt no."""
+    s = {"nombre": "atlas", "disponible_mm": 0, "saldo_mm": 0,
+         "presupuesto_semanal_mm": 0, "salidas_semana_mm": 0,
+         "compuertas_pendientes": 0, "trabajos": [], "propuestas_ajenas": [],
+         "capacidad": None}
+    p = dec.prompt(s, 50)
+    assert "castellano" in p
+    assert "chino" in p

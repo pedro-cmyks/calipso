@@ -118,7 +118,8 @@ def tic(ctx: Contexto, cuenta: str, semana: str) -> dict:
     # `situacion` fallan, no es culpa del modelo, y asi tampoco queda un
     # agente abierto en el pulso sin nadie que lo cierre
     try:
-        p = dec.prompt(s, sesgo, ctx.memoria.load_core())
+        p = dec.prompt(s, sesgo, ctx.memoria.load_core(),
+                       ctx.memoria.recent(limit=5))
     except Exception as exc:
         return salida(motivo=f"no armo el prompt: {exc}",
                       freno="fallo antes de pensar")

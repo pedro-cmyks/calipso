@@ -24,12 +24,17 @@ def sesgo_efectivo(explorar_pct: int, precio_mm: int,
     return max(0, min(100, explorar_pct + (100 - rel) // 2))
 
 
-def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "") -> str:
+def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
+          recientes: "list[str] | tuple" = ()) -> str:
     """Corto a proposito: corre seguido y en el escalon barato.
 
     `nucleo` es el markdown de la memoria del departamento. Sin el, el jefe
     escribiria en su memoria y no la leeria nunca — seria memoria de solo
-    escritura, y la tercera pata del departamento no serviria de nada."""
+    escritura, y la tercera pata del departamento no serviria de nada.
+
+    `recientes` son las ultimas decisiones episodicas: sin ellas el jefe le
+    pregunta al modelo desde cero en cada tic, y un modelo sin memoria de lo
+    que ya decidio propone lo mismo una y otra vez."""
     s = situacion
     trabajos = "\n".join(
         f"  - {t['id']}: {t['titulo']} (gastado {t['gastado_mm']} de "
@@ -47,6 +52,8 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "") -> str:
                    else "terminar lo empezado" if sesgo_pct <= 40
                    else "mantener el equilibrio")
     aprendido = f"Lo que aprendiste antes:\n{nucleo.strip()}\n\n" if nucleo.strip() else ""
+    ultimas = ("Lo que decidiste en los ultimos tics (no repitas lo mismo):\n"
+              + "\n".join(f"  - {r}" for r in recientes) + "\n\n") if recientes else ""
 
     # El menu se arma segun la situacion: ofrecer "trabajar" sin trabajos
     # vivos, o "comentar" sin nada para comentar, empuja al modelo a
@@ -64,6 +71,7 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "") -> str:
 
     return (
         aprendido +
+        ultimas +
         f"Sos el jefe del departamento {s['nombre']} de una fabrica de agentes.\n"
         f"Billetera: {s['disponible_mm']} milimonedas disponibles de "
         f"{s['saldo_mm']}.\n"
@@ -78,7 +86,9 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "") -> str:
         f"Ahora inclinate a {inclinacion}.\n\n"
         "Elegi UNA accion. Primera linea, sin nada mas:\n"
         + "\n".join(menu) + "\n"
-        "Segunda linea: un renglon con el motivo."
+        "Segunda linea: un renglon con el motivo.\n"
+        "IMPORTANTE: escribi TODO en castellano. Ni una sola palabra en chino,\n"
+        "ingles ni ningun otro idioma."
     )
 
 
