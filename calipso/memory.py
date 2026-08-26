@@ -140,6 +140,7 @@ class Memory:
         g = CALIPSO_HOME / "global"
         self.glob = Scope("global", g / "core", g / "chroma", self._embed)
         self.project: Scope | None = None
+        self._deps: dict[str, Scope] = {}
         if project_root:
             root = pathlib.Path(project_root).resolve()
             self.project = Scope(
@@ -149,6 +150,22 @@ class Memory:
     @property
     def _scopes(self) -> list[Scope]:
         return [s for s in (self.glob, self.project) if s]
+
+    def departamento(self, nombre: str) -> Scope:
+        """La memoria propia de un departamento (spec de la economia, 6).
+
+        Memoizada: cada Scope abre un cliente de Chroma y el jefe la pide en
+        cada tic. NO entra en `_scopes` a proposito — esa es la lectura
+        combinada del chat, y la memoria de un departamento no tiene por que
+        aparecer en las conversaciones de Pedro.
+        """
+        clave = _slug(pathlib.Path(nombre))
+        if clave not in self._deps:
+            base = CALIPSO_HOME / "memoria" / "departamento" / clave
+            self._deps[clave] = Scope(f"departamento:{nombre}",
+                                      base / "core", base / "chroma",
+                                      self._embed)
+        return self._deps[clave]
 
     # --- lectura combinada ---
     def load_core(self) -> str:
