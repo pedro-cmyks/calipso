@@ -6,9 +6,12 @@
  * por eso se puede testear el protocolo entero sin abrir un socket.
  *
  * El reloj entra por parametro (`ahora`) y se guarda en cada empleado como
- * `visto`: el `ts` del evento es del reloj DEL SERVIDOR y compararlo contra
- * el del navegador es comparar dos relojes distintos. Para saber si alguien
- * dejo de publicar alcanza con cuando lo vimos nosotros.
+ * `desde` y `visto`: el `ts` del evento es del reloj DEL SERVIDOR y
+ * compararlo contra el del navegador es comparar dos relojes distintos. Para
+ * saber si alguien dejo de publicar alcanza con cuando lo vimos nosotros.
+ *
+ * El unico lugar donde si se mira el reloj del servidor es el descarte por
+ * `seq`, y ahi se compara `ts` contra `ts`: los dos son del mismo reloj.
  */
 import {crearSocketQueReconecta} from "./socket.js";
 
@@ -19,11 +22,14 @@ export function estadoInicial() {
 }
 
 function vacio(ev, ahora) {
+  // `desde` es cuando lo vimos por primera vez y no se toca nunca mas;
+  // `visto` es cuando publico por ultima vez. Son dos preguntas distintas:
+  // una ordena los escritorios, la otra decide quien se colgo.
   return {agente_id: ev.agente_id, departamento: ev.departamento,
           rol: ev.rol, modelo: ev.modelo, trabajo: ev.trabajo,
           estado: "esperando", texto: "", tokens_in: 0, tokens_out: 0,
           costo_mm: 0, runtime_ms: 0, diff: null, herramienta: null,
-          visto: ahora};
+          desde: ahora, visto: ahora};
 }
 
 const CONOCIDOS = ["inicio", "razonando", "herramienta", "tokens", "diff",
@@ -93,12 +99,20 @@ export function aplicarEvento(estado, ev, ahora) {
                       [ev.departamento]: {...dep, [ev.agente_id]: e}}};
 }
 
-/** El mas nuevo primero, que es como se llenan los escritorios. */
+/**
+ * En el orden en que llegaron: el que llego primero se sienta arriba, que es
+ * el contrato que escribe `plazasDe` en sprites.js y la unica forma de que
+ * los escritorios se LLENEN en vez de correrse uno cada vez que entra
+ * alguien. Ordenar por `visto` -que se actualiza en cada evento- mandaba al
+ * primer escritorio al que acababa de publicar: con el turno de chat y su
+ * borrador vivos a la vez se intercambiaban de asiento, y `escritorioEnPunto`
+ * abre el que quedo arriba EN ESE INSTANTE.
+ */
 export function empleadosDe(estado, departamento) {
   const dep = estado.empleados[departamento];
   if (!dep) return [];
-  return Object.values(dep).sort((a, b) => (b.visto - a.visto) ||
-                                           (a.agente_id < b.agente_id ? 1 : -1));
+  return Object.values(dep).sort((a, b) => (a.desde - b.desde) ||
+                                           (a.agente_id < b.agente_id ? -1 : 1));
 }
 
 /** Un liberado se queda liberado; el que se colgo se marca inactivo. */

@@ -80,7 +80,36 @@ test("dos agentes del mismo departamento son dos escritorios", () => {
   e = aplicarEvento(e, ev("inicio", {agente_id: "a2", rol: "copista"}, 2),
                     5001);
   const empleados = empleadosDe(e, "dep:atlas");
-  assert.deepEqual(empleados.map(x => x.agente_id), ["a2", "a1"]);
+  // el que llego primero se sienta arriba: es el contrato que escribe
+  // `plazasDe` en sprites.js, y el unico orden en el que los escritorios se
+  // LLENAN en vez de correrse uno cada vez que entra alguien
+  assert.deepEqual(empleados.map(x => x.agente_id), ["a1", "a2"]);
+});
+
+test("el que publica ultimo no se cambia de escritorio", () => {
+  // `visto` se actualiza en CADA evento: ordenar por eso hacia que el agente
+  // que acababa de publicar saltara al primer escritorio. Con el turno de
+  // chat y su borrador vivos a la vez se intercambiaban de asiento, y
+  // `escritorioEnPunto` abre el que quedo arriba EN ESE INSTANTE: Pedro tocaba
+  // un empleado y se le abria otro.
+  let e = aplicarEvento(estadoInicial(), ev("inicio"), 5000);
+  e = aplicarEvento(e, ev("inicio", {agente_id: "a2"}, 2), 5001);
+  const asientos = () => empleadosDe(e, "dep:atlas").map(x => x.agente_id);
+  assert.deepEqual(asientos(), ["a1", "a2"]);
+  e = aplicarEvento(e, ev("razonando", {agente_id: "a2", texto: "x"}, 3), 5002);
+  assert.deepEqual(asientos(), ["a1", "a2"], "publico a2 y se movio la fila");
+  e = aplicarEvento(e, ev("razonando", {texto: "y"}, 4), 5003);
+  assert.deepEqual(asientos(), ["a1", "a2"], "publico a1 y se movio la fila");
+});
+
+test("el que se sienta cuando el inicio ya no esta tampoco desordena", () => {
+  // sin `inicio` -se cayo del anillo- el escritorio nace con el primer evento
+  // que se ve del agente, y ese momento es el que lo ordena
+  let e = aplicarEvento(estadoInicial(), ev("razonando", {texto: "a"}), 5000);
+  e = aplicarEvento(e, ev("razonando", {agente_id: "a2", texto: "b"}, 2), 5001);
+  e = aplicarEvento(e, ev("razonando", {texto: "c"}, 3), 5002);
+  assert.deepEqual(empleadosDe(e, "dep:atlas").map(x => x.agente_id),
+                   ["a1", "a2"]);
 });
 
 test("el foco se guarda con su seq para que no vuele dos veces", () => {
