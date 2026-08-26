@@ -8,7 +8,7 @@
 
 export function estadoInicial() {
   return {turnos: [], pensando: false, chatId: null, ruta: null,
-          modelo: null, costo_usd: 0, tokens: 0};
+          modelo: null, costo_usd: 0, tokens: 0, conectado: false};
 }
 
 export function paquete(texto, chatId) {
@@ -62,33 +62,51 @@ export function aplicarEvento(estado, ev) {
   return e;
 }
 
-export function crearChat(alCambiar) {
+// El `WebSocket` real solo existe en el navegador; el parametro deja
+// pasar un doble en los tests sin abrir ninguna conexion de verdad.
+export function crearChat(alCambiar, ConstructorWS = WebSocket) {
   let estado = estadoInicial();
   const proto = location.protocol === "https:" ? "wss" : "ws";
   let ws = null;
 
   function conectar() {
-    ws = new WebSocket(`${proto}://${location.host}/ws/chat`);
+    ws = new ConstructorWS(`${proto}://${location.host}/ws/chat`);
+    ws.addEventListener("open", () => {
+      estado = {...estado, conectado: true};
+      alCambiar(estado);
+    });
     ws.addEventListener("message", ev => {
       let dato;
       try { dato = JSON.parse(ev.data); } catch { return; }
       estado = aplicarEvento(estado, dato);
       alCambiar(estado);
     });
-    // si se cae, se reintenta: el mapa sigue andando mientras tanto
-    ws.addEventListener("close", () => setTimeout(conectar, 2000));
+    // si se cae, se reintenta: el mapa sigue andando mientras tanto. La
+    // bandera se apaga antes de reintentar para que la interfaz sepa que
+    // se cayo, no solo cuando vuelva a levantarse.
+    ws.addEventListener("close", () => {
+      estado = {...estado, conectado: false};
+      alCambiar(estado);
+      setTimeout(conectar, 2000);
+    });
   }
   conectar();
 
   return {
     estado: () => estado,
+    // Devuelve si el mensaje salio de verdad. Mientras el socket conecta
+    // o reconecta no hay adonde mandarlo, y quien llama tiene que
+    // enterarse en vez de que el texto desaparezca en silencio.
     enviar(texto) {
-      if (!texto.trim() || !ws || ws.readyState !== WebSocket.OPEN) return;
+      if (!texto.trim() || !ws || ws.readyState !== ConstructorWS.OPEN) {
+        return false;
+      }
       estado = {...estado,
                 turnos: [...estado.turnos,
                          {quien: "pedro", texto, abierto: false}]};
       alCambiar(estado);
       ws.send(JSON.stringify(paquete(texto, estado.chatId)));
+      return true;
     },
   };
 }

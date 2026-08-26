@@ -1,10 +1,42 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {estadoInicial, aplicarEvento, paquete} from "./chat.js";
+import {estadoInicial, aplicarEvento, paquete, crearChat} from "./chat.js";
 
 const aplicar = (eventos, e0 = estadoInicial()) =>
   eventos.reduce((e, ev) => aplicarEvento(e, ev), e0);
+
+// `crearChat` arma la URL con `location`, que solo existe en el navegador.
+globalThis.location = {protocol: "http:", host: "localhost.invalido"};
+
+// Un doble minimo del WebSocket del navegador: sin abrir ninguna conexion
+// de verdad, solo guarda lo que se le manda y deja que el test dispare
+// "open"/"message"/"close" a mano.
+class WSFalso {
+  constructor(url) {
+    this.url = url;
+    this.readyState = WSFalso.CONNECTING;
+    this.enviados = [];
+    this.escuchas = {};
+  }
+  addEventListener(tipo, fn) {
+    (this.escuchas[tipo] ||= []).push(fn);
+  }
+  send(texto) { this.enviados.push(texto); }
+  disparar(tipo, detalle) {
+    for (const fn of this.escuchas[tipo] || []) fn(detalle || {});
+  }
+}
+WSFalso.CONNECTING = 0;
+WSFalso.OPEN = 1;
+WSFalso.CLOSED = 3;
+
+/** Un WSFalso que ya nace en el estado que pida el test. */
+function claseConEstado(readyState) {
+  return class extends WSFalso {
+    constructor(url) { super(url); this.readyState = readyState; }
+  };
+}
 
 test("el paquete lleva el texto y el chat", () => {
   assert.deepEqual(paquete("hola", "c1"), {text: "hola", chat_id: "c1"});
@@ -84,4 +116,75 @@ test("aplicarEvento no muta el estado que recibe", () => {
   const antes = estadoInicial();
   aplicarEvento(antes, {type: "chunk", text: "x"});
   assert.equal(antes.turnos.length, 0);
+});
+
+test("el estado arranca desconectado", () => {
+  assert.equal(estadoInicial().conectado, false);
+});
+
+test("el reductor no toca la bandera de conectado", () => {
+  const e0 = {...estadoInicial(), conectado: true};
+  const e = aplicarEvento(e0, {type: "thinking"});
+  assert.equal(e.conectado, true);
+});
+
+test("enviar no manda nada si el socket todavia no esta abierto", () => {
+  let visto = null;
+  const chat = crearChat(estado => { visto = estado; },
+                         claseConEstado(WSFalso.CONNECTING));
+  const ok = chat.enviar("hola");
+  assert.equal(ok, false);
+  assert.equal(chat.estado().turnos.length, 0);
+  assert.equal(visto, null, "no debio avisar un cambio que no paso");
+});
+
+test("enviar manda y devuelve true cuando el socket esta abierto", () => {
+  let ultimoWs;
+  class WSAbierto extends WSFalso {
+    constructor(url) { super(url); ultimoWs = this; this.readyState = WSFalso.OPEN; }
+  }
+  const chat = crearChat(() => {}, WSAbierto);
+  const ok = chat.enviar("hola Calipso");
+  assert.equal(ok, true);
+  assert.equal(chat.estado().turnos.length, 1);
+  assert.equal(chat.estado().turnos[0].texto, "hola Calipso");
+  assert.equal(ultimoWs.enviados.length, 1);
+  assert.deepEqual(JSON.parse(ultimoWs.enviados[0]), paquete("hola Calipso", null));
+});
+
+test("un texto en blanco no manda nada aunque el socket este abierto", () => {
+  const chat = crearChat(() => {}, claseConEstado(WSFalso.OPEN));
+  const ok = chat.enviar("   ");
+  assert.equal(ok, false);
+  assert.equal(chat.estado().turnos.length, 0);
+});
+
+test("abrir el socket prende la bandera de conectado", () => {
+  let ultimoWs;
+  class WSCapturado extends WSFalso {
+    constructor(url) { super(url); ultimoWs = this; }
+  }
+  let visto = null;
+  const chat = crearChat(estado => { visto = estado; }, WSCapturado);
+  ultimoWs.disparar("open");
+  assert.equal(chat.estado().conectado, true);
+  assert.equal(visto.conectado, true);
+});
+
+test("el cierre del socket apaga la bandera de conectado, sin tocar los turnos", () => {
+  let ultimoWs;
+  class WSCapturado extends WSFalso {
+    constructor(url) { super(url); ultimoWs = this; this.readyState = WSFalso.OPEN; }
+  }
+  const propioSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = () => 0;   // no reintentar de verdad en el test
+  try {
+    const chat = crearChat(() => {}, WSCapturado);
+    chat.enviar("hola");
+    ultimoWs.disparar("close");
+    assert.equal(chat.estado().conectado, false);
+    assert.equal(chat.estado().turnos.length, 1, "el cierre no debe borrar la charla");
+  } finally {
+    globalThis.setTimeout = propioSetTimeout;
+  }
 });

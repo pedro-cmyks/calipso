@@ -207,8 +207,17 @@ const chat = crearChat(estado => {
 
 formulario.addEventListener("submit", ev => {
   ev.preventDefault();
-  chat.enviar(campo.value);
-  campo.value = "";
+  if (chat.enviar(campo.value)) {
+    campo.value = "";
+    return;
+  }
+  // enviar() no toca los turnos cuando no hay conexion: el aviso se pinta
+  // aparte para no perder el texto que Pedro todavia no pudo mandar
+  const aviso = document.createElement("div");
+  aviso.className = "turno error";
+  aviso.textContent = "sin conexion con Calipso: el mensaje no se envio";
+  conversacion.appendChild(aviso);
+  conversacion.scrollTop = conversacion.scrollHeight;
 });
 
 const listaChats = document.getElementById("lista-chats");
