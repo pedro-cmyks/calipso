@@ -1528,7 +1528,7 @@ Tocar un edificio fija el departamento como contexto de la conversación, y su b
 Dos cosas declaradas de entrada, porque salen del comportamiento que la economía ya tiene y este plan no lo cambia:
 
 - **La ruta local no cuesta plata.** Ollama corre en la máquina de Pedro; el libro no tiene dónde asentarlo. Se cobra API y suscripción.
-- **Un departamento personal no paga API pero sí consume capacidad de suscripción.** `Pagador.cargar_api` devuelve `None` para cualquier cuenta que empiece con `personal:` (el uso personal lo lleva `calipso/costs.py`), mientras que `cargar_suscripcion` sí le compra capacidad. Es asimétrico y es lo que hay hoy.
+- **La zona personal no le paga nada a la fábrica.** Esto se corrigió durante la ejecución: el plan afirmaba que un departamento personal no paga API pero sí consume capacidad de suscripción, y **eso era falso**. `Pagador.cargar_api` devuelve `None` para cuentas `personal:` (el uso personal lo lleva `calipso/costs.py`), pero `cargar_suscripcion` tampoco funciona: cae en `comprar_capacidad`, y `Mercado._politica` levanta `ErrorMercado("la zona personal no compra capacidad ni API de la fabrica (invariante 12)")`. Un cargo así no se puede aplicar nunca y ensucia `cargos_pendientes.jsonl` en cada turno. Por eso `cuenta_pagadora` colapsa cualquier prefijo `personal:` a `CUENTA_PERSONAL`, que es la cuenta que el camino de reserva personal espera.
 
 **Files:**
 - Modify: `calipso/mapa/ficha.py`
