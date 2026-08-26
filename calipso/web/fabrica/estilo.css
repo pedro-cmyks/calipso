@@ -109,6 +109,36 @@ html, body {
 .tarjeta .fila span:first-child { color: var(--tenue); }
 .tarjeta .congelado { color: #ff7b72; }
 
+/* el popup del empleado reusa .tarjeta, que es position:absolute sin
+   coordenadas: sin esta regla cae en el flujo y aparece en cualquier lado */
+#empleado { left: 10px; bottom: 10px; top: auto; max-width: 260px; }
+
+.razonamiento { flex: 1; overflow-y: auto; padding: 10px; }
+.razonamiento .cabecera {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; color: var(--tenue); margin-bottom: 10px;
+}
+.razonamiento .cabecera button {
+  background: transparent; border: 1px solid var(--linea); color: var(--texto);
+  border-radius: 4px; padding: 3px 8px; font-size: 11px; cursor: pointer;
+}
+.razonamiento .pensando { white-space: pre-wrap; margin: 0 0 12px; }
+.razonamiento .ruta { color: var(--acento); font-size: 12px; }
+.razonamiento .diff {
+  background: var(--fondo); border: 1px solid var(--linea); border-radius: 4px;
+  padding: 8px; overflow-x: auto; font-size: 12px; margin: 6px 0 0;
+}
+.tarjeta .estado { color: var(--tenue); margin-bottom: 5px; }
+.tarjeta .estado.razonando { color: var(--aviso); }
+.tarjeta .estado.liberado { color: var(--tenue); }
+.tarjeta .estado.inactivo { color: #ff7b72; }
+
+/* con el razonamiento abierto, el chat se esconde y la entrada tambien: es
+   lectura, no una conversacion con el agente */
+#panel-centro[data-modo="razonamiento"] .conversacion,
+#panel-centro[data-modo="razonamiento"] #entrada { display: none; }
+#panel-centro[data-modo="razonamiento"] #razonamiento { display: block; }
+
 .sin-fabrica {
   position: absolute; inset: 0; display: flex;
   align-items: center; justify-content: center;

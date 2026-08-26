@@ -102,3 +102,19 @@ export function textoDeEmpleado(empleado) {
     fila("costo", monedas(e.costo_mm || 0)) +
     (e.diff ? fila("toco", e.diff.ruta) : "");
 }
+
+/** El panel del medio: lectura, no conversacion. */
+export function textoDeRazonamiento(empleado) {
+  if (!empleado) return "";
+  const e = empleado;
+  const diff = e.diff
+    ? `<div class="ruta">${escapar(e.diff.ruta)}</div>` +
+      `<pre class="diff">${escapar(e.diff.diff)}</pre>`
+    : "";
+  return `<div class="cabecera">` +
+    `<span>${escapar(e.rol || "agente")} — ${escapar(e.estado)}` +
+    ` — ${escapar(e.modelo || "sin dato")}</span>` +
+    `<button type="button" data-accion="volver">volver al chat</button>` +
+    `</div>` +
+    `<pre class="pensando">${escapar(e.texto || "")}</pre>` + diff;
+}

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import {disposicion, textoDeTarjeta, posicionDeTarjeta, resumenDeAvisos,
         ANCHO_TELEFONO, textoDeCosto, textoDeFoco,
-        textoDeEmpleado} from "./paneles.js";
+        textoDeEmpleado, textoDeRazonamiento} from "./paneles.js";
 import {fichaDe} from "./ciudad.js";
 
 function ciudadDePrueba() {
@@ -152,4 +152,17 @@ test("un empleado liberado se ve liberado, no vacio", () => {
   assert.match(texto, /liberado/);
   assert.ok(!texto.includes("undefined"), texto);
   assert.ok(!texto.includes("null"), texto);
+});
+
+test("el razonamiento va con el diff y con el boton de volver", () => {
+  const texto = textoDeRazonamiento(EMPLEADO);
+  assert.match(texto, /mirando el libro/);
+  assert.match(texto, /- a/);
+  assert.match(texto, /data-accion="volver"/);
+});
+
+test("el texto del agente se escapa: lo escribe un modelo", () => {
+  const texto = textoDeRazonamiento({...EMPLEADO,
+                                     texto: '<script>alert(1)</script>'});
+  assert.ok(!texto.includes("<script>"), texto);
 });

@@ -12,7 +12,7 @@ import {escritorioEnPunto, opacidadDeTecho} from "./interior.js";
 import {crearMapa} from "./mapa.js";
 import {disposicion, escapar, textoDeTarjeta, posicionDeTarjeta,
         resumenDeAvisos, textoDeCosto, textoDeFoco,
-        textoDeEmpleado} from "./paneles.js";
+        textoDeEmpleado, textoDeRazonamiento} from "./paneles.js";
 import {crearChat} from "./chat.js";
 import {crearPulso, empleadosDe, estadoVisible} from "./pulso.js";
 
@@ -175,11 +175,6 @@ let enFoco = null;            // el edificio tocado: contexto y pagador
 let ultimaEpoca = 0;
 
 const popupEmpleado = document.getElementById("empleado");
-
-function mostrarEmpleado(empleado) {
-  popupEmpleado.innerHTML = textoDeEmpleado(empleado);
-  popupEmpleado.classList.remove("oculto");
-}
 
 function pintarFoco() {
   const ficha = (ciudad && enFoco) ? fichaDe(ciudad, enFoco) : null;
@@ -379,6 +374,39 @@ fetch("/api/chats")
   .then(datos => { if (datos) pintarChats(datos); })
   .catch(() => { listaChats.innerHTML = '<div class="chat">sin chats</div>'; });
 
+const panelCentro = document.getElementById("panel-centro");
+const panelRazonamiento = document.getElementById("razonamiento");
+let mirando = null;             // agente_id que se esta leyendo
+
+function mostrarEmpleado(empleado) {
+  popupEmpleado.innerHTML = textoDeEmpleado(empleado);
+  popupEmpleado.classList.remove("oculto");
+  mirando = empleado.agente_id;
+  pintarRazonamiento();
+  panelRazonamiento.classList.remove("oculto");   // gana al display:none
+  panelCentro.dataset.modo = "razonamiento";
+  app.dataset.pestana = "chat";     // en el telefono, el panel del medio
+}
+
+function pintarRazonamiento() {
+  if (!mirando) return;
+  const todos = Object.keys(pulso.empleados)
+    .flatMap(dep => empleadosDe(pulso, dep));
+  const empleado = todos.find(e => e.agente_id === mirando);
+  if (!empleado) return;            // el anillo lo olvido: se deja lo ultimo
+  panelRazonamiento.innerHTML = textoDeRazonamiento(empleado);
+  panelRazonamiento.scrollTop = panelRazonamiento.scrollHeight;
+}
+
+panelRazonamiento.addEventListener("click", ev => {
+  if (ev.target && ev.target.dataset.accion === "volver") {
+    mirando = null;
+    panelCentro.dataset.modo = "chat";
+    panelRazonamiento.classList.add("oculto");
+    popupEmpleado.classList.add("oculto");
+  }
+});
+
 let pulso = {conectado: false, empleados: {}, foco: null, seq: 0};
 let ultimoFoco = 0;
 
@@ -388,6 +416,7 @@ const conexionPulso = crearPulso(estado => {
     ultimoFoco = pulso.foco.seq;
     volarAEdificio(pulso.foco.departamento);
   }
+  pintarRazonamiento();
 });
 
 /** El foco de la conversacion mueve la camara (spec seccion 8). */
