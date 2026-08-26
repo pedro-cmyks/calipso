@@ -4,6 +4,7 @@ import json
 import pytest
 
 import calipso.server as srv
+from calipso.economia import capacidad as cap
 from calipso.economia import departamentos as deps
 from calipso.economia import pagador as pag
 from calipso.economia import pt
@@ -113,11 +114,98 @@ def test_sin_departamento_no_se_toca_el_libro(economia):
     assert saldo(economia, "dep:atlas") == antes
 
 
-def test_la_ruta_local_no_cuesta_plata(economia):
+def test_la_ruta_local_consume_suscripcion_igual(economia):
+    # no hay Ollama: `_chunks_for` resuelve la ruta local con `_local_via_sub`,
+    # que corre `claude -p` — una unidad de suscripcion, no un modelo gratis.
     antes = saldo(economia, "dep:atlas")
+    # devuelve cero milimonedas igual: la suscripcion se cobra en unidades de
+    # capacidad, y lo que sale del saldo lo pone el precio de esa unidad
     assert srv._cobrar_turno("dep:atlas", "local", None, "qwen2.5:7b",
                              {"prompt_tokens": 9_000_000}) == 0
+    p = pag.Pagador(economia)
+    asientos = p.leer_kernel().libro.asientos()
+    assert cap.consumo_fabrica(asientos, "claude_max", [W]) == 1
+    assert saldo(economia, "dep:atlas") < antes
+    assert p.pendientes() == []
+
+
+def test_el_fallback_local_le_cobra_al_departamento_en_foco(economia):
+    """El fallback local es el camino comun de cualquier falla de ruta, y
+    llega con el `client` de la ruta que fallo. Corre `claude` igual, asi que
+    la unidad que consume es la de `claude`, no la del cliente del verdict."""
+    srv._cobrar_turno("dep:atlas", "local", "codex", "qwen2.5:7b", {})
+    p = pag.Pagador(economia)
+    compras = [a for a in p.leer_kernel().libro.asientos()
+               if (a.detalle or {}).get("suscripcion")]
+    assert [a.detalle["suscripcion"] for a in compras] == ["claude_max"]
+
+
+def test_el_borrador_del_chat_cobra_su_unidad_de_suscripcion(economia,
+                                                            monkeypatch):
+    """`_run_chat_draft` llama a `_run_subscription_text("claude", ...)`: una
+    unidad de suscripcion de verdad, que hasta ahora no le cobraba a nadie.
+
+    El cobro va en un hilo porque toma el candado del libro, y el borrador
+    corre en el event loop con `ensure_future`."""
+    import asyncio
+
+    monkeypatch.setattr(srv, "EL_PULSO", None)
+    monkeypatch.setattr(srv, "PENDING_CHANGES", {})
+    monkeypatch.setattr(srv.goals, "active", lambda raiz: None)
+    monkeypatch.setattr(srv.developer, "chat_draft_brief",
+                        lambda *a, **k: {"job": {"id": "j1"}, "system": "s",
+                                         "user_msg": "u"})
+    monkeypatch.setattr(srv, "_run_subscription_text",
+                        lambda *a, **k: "linea nueva\n")
+    monkeypatch.setattr(srv.jobs, "write_artifact", lambda *a, **k: None)
+    monkeypatch.setattr(srv.jobs, "update", lambda *a, **k: None)
+
+    class _WSFalso:
+        def __init__(self):
+            self.enviados = []
+
+        async def send_json(self, payload):
+            self.enviados.append(payload)
+
+    ws = _WSFalso()
+    antes = saldo(economia, "dep:atlas")
+    asyncio.run(srv._run_chat_draft(ws, "cambia algo", "no-existe.py",
+                                    "chat:abc:borrador", "dep:atlas"))
+    # la propuesta sigue llegando: el cobro es contabilidad, no la respuesta
+    assert ws.enviados[-1]["type"] == "proposal"
+    p = pag.Pagador(economia)
+    asientos = p.leer_kernel().libro.asientos()
+    assert cap.consumo_fabrica(asientos, "claude_max", [W]) == 1
+    assert saldo(economia, "dep:atlas") < antes
+    assert p.pendientes() == []
+
+
+def test_el_borrador_sin_departamento_no_le_cobra_a_nadie(economia,
+                                                          monkeypatch):
+    """Sin edificio tocado el borrador es gasto personal, que queda fuera del
+    libro de la fabrica igual que el turno."""
+    import asyncio
+
+    monkeypatch.setattr(srv, "EL_PULSO", None)
+    monkeypatch.setattr(srv, "PENDING_CHANGES", {})
+    monkeypatch.setattr(srv.goals, "active", lambda raiz: None)
+    monkeypatch.setattr(srv.developer, "chat_draft_brief",
+                        lambda *a, **k: {"job": {"id": "j1"}, "system": "s",
+                                         "user_msg": "u"})
+    monkeypatch.setattr(srv, "_run_subscription_text",
+                        lambda *a, **k: "linea nueva\n")
+    monkeypatch.setattr(srv.jobs, "write_artifact", lambda *a, **k: None)
+    monkeypatch.setattr(srv.jobs, "update", lambda *a, **k: None)
+
+    class _WSFalso:
+        async def send_json(self, payload):
+            pass
+
+    antes = saldo(economia, "dep:atlas")
+    asyncio.run(srv._run_chat_draft(_WSFalso(), "cambia algo", "no-existe.py",
+                                    "chat:abc:borrador", None))
     assert saldo(economia, "dep:atlas") == antes
+    assert pag.Pagador(economia).pendientes() == []
 
 
 def test_un_cobro_que_no_entra_queda_pendiente_y_no_voltea_el_chat(tmp_path,

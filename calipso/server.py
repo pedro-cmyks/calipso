@@ -601,6 +601,15 @@ async def _run_chat_draft(ws, chat_msg: str, file_path: str,
             await ws.send_json({"type": "error", "text": f"borrador fallido: {exc}"})
             return
 
+        # el borrador corre `claude` aparte del turno: consume su propia
+        # unidad de suscripcion y la paga el mismo departamento en foco. Va en
+        # un hilo porque `_cobrar_turno` toma el candado del libro, igual que
+        # el cobro del turno.
+        cuenta_borrador = (_mapa_ficha.cuenta_pagadora(departamento)
+                           if _mapa_ficha else "personal")
+        await asyncio.to_thread(_cobrar_turno, cuenta_borrador,
+                                "subscription", "claude", "sonnet", {})
+
         change_id = uuid.uuid4().hex[:12]
         item = {
             "id": change_id,
@@ -3753,8 +3762,9 @@ def _cobrar_turno(cuenta: str, route: str, client: str | None,
     Nunca voltea el chat: lo que el mercado rechaza queda en
     cargos_pendientes.jsonl y la operacion lo reintenta. Toma el candado del
     libro, asi que se llama SIEMPRE desde un hilo. Devuelve las milimonedas
-    cobradas: la ruta local no cuesta plata y la suscripcion se cobra en
-    unidades de capacidad, no en monedas, asi que las dos devuelven cero."""
+    cobradas: la de API es la unica que se cobra en monedas; la suscripcion
+    -y la local, que es una suscripcion disfrazada- se cobran en unidades de
+    capacidad, asi que devuelven cero."""
     if _EcoPagador is None or _mapa_ficha is None:
         return 0
     if not cuenta or cuenta == _mapa_ficha.CUENTA_PERSONAL:
@@ -3768,9 +3778,15 @@ def _cobrar_turno(cuenta: str, route: str, client: str | None,
             return pagador.cargar_api(ts, semana, cuenta, model or "",
                                       usage.get("prompt_tokens", 0),
                                       usage.get("completion_tokens", 0)) or 0
-        if route == "subscription":
+        if route in ("subscription", "local"):
+            # `local` no es Ollama: `_chunks_for` la resuelve con
+            # `_local_via_sub`, que corre `claude -p`. Consume una unidad de
+            # suscripcion igual que la ruta de suscripcion, y siempre la de
+            # `claude`: el fallback local llega con el `client` de la ruta que
+            # fallo, que no es el backend que termino contestando.
+            cliente = "claude" if route == "local" else client
             pagador.cargar_suscripcion(ts, semana, cuenta,
-                                       _eco_suscripcion(client))
+                                       _eco_suscripcion(cliente))
     except Exception as exc:
         # el cobro es contabilidad, no la conversacion: que falle no puede
         # dejar a Pedro sin respuesta
