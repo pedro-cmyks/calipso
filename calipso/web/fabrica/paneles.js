@@ -82,3 +82,23 @@ export function textoDeFoco(ficha) {
          ` — saldo ${escapar(ficha.saldo)}</span>` +
          `<button type="button" data-accion="quitar">quitar</button>`;
 }
+
+const SEGUNDOS = new Intl.NumberFormat("es", {maximumFractionDigits: 1});
+
+function segundos(ms) {
+  return SEGUNDOS.format((ms || 0) / 1000) + " s";
+}
+
+/** El popup: lo que se ve del empleado sin abandonar el mapa. */
+export function textoDeEmpleado(empleado) {
+  if (!empleado) return "";
+  const e = empleado;
+  return `<div class="nombre">${escapar(e.rol || "agente")}</div>` +
+    `<div class="estado ${escapar(e.estado)}">${escapar(e.estado)}</div>` +
+    fila("modelo", e.modelo || "sin dato") +
+    fila("corriendo", segundos(e.runtime_ms)) +
+    fila("tokens", `${NUMERO.format(e.tokens_in || 0)} / ` +
+                   `${NUMERO.format(e.tokens_out || 0)}`) +
+    fila("costo", monedas(e.costo_mm || 0)) +
+    (e.diff ? fila("toco", e.diff.ruta) : "");
+}

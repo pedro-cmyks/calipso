@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 
 import {aPantalla, crearCamara, escalaEntera} from "./camara.js";
 import {centroDe, indice, ordenDePintado} from "./ciudad.js";
+import {UMBRAL} from "./interior.js";
 import {AVISO, CABLE, CALLE, crearMapa} from "./mapa.js";
 import {medidas} from "./sprites.js";
 
@@ -29,7 +30,7 @@ function contextoFalso() {
   const ctx = {
     ops,
     fillStyle: null, strokeStyle: null, lineWidth: 0, guiones: [],
-    imageSmoothingEnabled: true,
+    imageSmoothingEnabled: true, globalAlpha: 1,
     setTransform: (...a) => ops.push({op: "setTransform", a}),
     fillRect: (x, y, w, h) => ops.push({op: "fillRect", x, y, w, h,
                                         fillStyle: ctx.fillStyle}),
@@ -37,7 +38,8 @@ function contextoFalso() {
                                           strokeStyle: ctx.strokeStyle,
                                           lineWidth: ctx.lineWidth}),
     drawImage: (img, x, y) => ops.push({op: "drawImage", x, y,
-                                        ancho: img.width, alto: img.height}),
+                                        ancho: img.width, alto: img.height,
+                                        globalAlpha: ctx.globalAlpha}),
     setLineDash: (d) => {
       ctx.guiones = [...d];
       ops.push({op: "setLineDash", d: [...d]});
@@ -364,4 +366,23 @@ test("la vista informa el tamano en pixeles de CSS", () => {
   const {lienzo} = montar(1024, 768, 2);
   assert.deepEqual(crearMapa(lienzo).vista(), {ancho: 1024, alto: 768});
   assert.equal(centroDe({x: 5, y: 7}).x, 5);
+});
+
+test("adentro del umbral se pinta el interior encima de cada edificio", () => {
+  const {lienzo, ctx} = montar();
+  const mapa = crearMapa(lienzo);
+  // un solo edificio, en el origen: a escala 4 los de ciudadDePrueba se van
+  // de la vista y el dibujo los saltea, que es justo lo que se quiere contar
+  const ciudad = {edificios: [edi("dep:a")], calles: [], unidades: [],
+                  avisos: []};
+  mapa.dibujar(ciudad, crearCamara(0, 0, 1), null, 0, {});
+  const lejos = ctx.ops.filter(o => o.op === "drawImage").length;
+  assert.equal(lejos, 1, "lejos se pinta solo el exterior");
+  ctx.ops.length = 0;
+  mapa.dibujar(ciudad, crearCamara(0, 0, UMBRAL + 1), null, 0,
+               {"dep:a": ["razonando"]});
+  const cerca = ctx.ops.filter(o => o.op === "drawImage");
+  assert.equal(cerca.length, 2, "el interior no se pinto encima");
+  assert.equal(cerca[1].globalAlpha, 1,
+               "pasado el umbral el interior va opaco, no a medio fundir");
 });

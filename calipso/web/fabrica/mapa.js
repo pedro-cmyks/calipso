@@ -8,8 +8,9 @@
  */
 import {aPantalla, escalaEntera} from "./camara.js";
 import {centroDe, indice, ordenDePintado} from "./ciudad.js";
+import {opacidadDeTecho} from "./interior.js";
 import {rampaDe} from "./paleta.js";
-import {edificioSprite, pintar} from "./sprites.js";
+import {edificioSprite, interiorSprite, pintar} from "./sprites.js";
 
 // Exportados para que el test pueda afirmar QUE color le toca a cada cosa
 // nombrandolo, en vez de repetir el hexadecimal o conformarse con "son
@@ -109,7 +110,25 @@ export function crearMapa(canvas) {
     return listo;
   }
 
-  function dibujar(ciudad, cam, resaltado = null, fase = 0) {
+  function rasterizarInterior(e, esc, estados) {
+    const clave = `i|${e.id}|${e.zona}|${e.estado}|${e.tamano}|${esc}|` +
+                  estados.join(",");
+    const guardado = cache.get(clave);
+    if (guardado) return guardado;
+    const sprite = interiorSprite(e, estados);
+    const fuera = document.createElement("canvas");
+    fuera.width = sprite.ancho * esc;
+    fuera.height = sprite.alto * esc;
+    const octx = fuera.getContext("2d");
+    octx.imageSmoothingEnabled = false;
+    pintar(octx, sprite, rampaDe(e), 0, 0, esc);
+    const listo = {lienzo: fuera, ancho: fuera.width, alto: fuera.height};
+    if (cache.size > 300) cache.clear();
+    cache.set(clave, listo);
+    return listo;
+  }
+
+  function dibujar(ciudad, cam, resaltado = null, fase = 0, empleados = {}) {
     ajustar();
     const v = vista();
     ctx.fillStyle = FONDO;
@@ -137,6 +156,15 @@ export function crearMapa(canvas) {
       if (x + r.ancho < 0 || x > v.ancho ||
           y + r.alto < 0 || y > v.alto) continue;
       ctx.drawImage(r.lienzo, x, y);
+      // el interior: se pinta encima con la opacidad complementaria a la del
+      // techo, asi entrar es un acercamiento y no un salto de pantalla
+      const tapa = opacidadDeTecho(cam.escala);
+      if (tapa < 1) {
+        const dentro = rasterizarInterior(e, esc, empleados[e.id] || []);
+        ctx.globalAlpha = 1 - tapa;
+        ctx.drawImage(dentro.lienzo, x, y);
+        ctx.globalAlpha = 1;
+      }
       if (e.id === resaltado) {
         ctx.strokeStyle = RESALTE;
         ctx.lineWidth = 2;

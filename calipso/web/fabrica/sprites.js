@@ -8,7 +8,7 @@
  * mismo bitmap. Nada de Math.random ni de reloj aca adentro.
  */
 import {TRANSPARENTE, FRENTE, LATERAL, TECHO, VENTANA, PRENDIDA, BORDE,
-        GRIETA} from "./paleta.js";
+        GRIETA, PISO, ESCRITORIO, OCUPADO, ESPERA} from "./paleta.js";
 
 export const ANCHO = 16;      // ancho de la cara frontal, en pixeles
 export const PROF = 6;        // cuanto se corre la perspectiva
@@ -18,6 +18,10 @@ export const ALTO_PISO = 4;   // cada piso que suma el tamano
 const VENT_ANCHO = 3;
 const VENT_ALTO = 2;
 const VENT_COLS = 3;
+
+export const ESC_ANCHO = 3;
+export const ESC_ALTO = 2;
+export const ESC_COLS = 3;
 
 /** FNV-1a de 32 bits. Estable entre navegadores y entre corridas. */
 export function fnv1a(texto) {
@@ -99,6 +103,67 @@ export function edificioSprite(edificio) {
     }
   }
 
+  return {ancho, alto, pix};
+}
+
+/**
+ * Donde va cada escritorio, en pixeles del sprite. Misma grilla que las
+ * ventanas: una ventana prendida ES un escritorio ocupado, y que las dos
+ * cosas coincidan es lo que hace que acercarse se lea como entrar.
+ * De arriba hacia abajo, para que el que llego primero se siente arriba.
+ */
+export function plazasDe(edificio) {
+  const pisos = pisosDe(edificio.tamano);
+  const arriba = PROF;
+  const salida = [];
+  // p = 0 es el piso de mas arriba (la y mas chica), igual que en las
+  // ventanas de `edificioSprite`. Recorrerlo al reves dejaria a p[0] abajo y
+  // el contrato dice "de arriba hacia abajo"
+  for (let p = 0; p < pisos; p++) {
+    for (let c = 0; c < ESC_COLS; c++) {
+      salida.push({x: 2 + c * 5, y: arriba + 2 + p * ALTO_PISO});
+    }
+  }
+  return salida;
+}
+
+/**
+ * El mismo edificio, sin techo y con la gente adentro. `estados` es la lista
+ * de estados de los empleados, en el orden en que se sientan; los que no
+ * entran no se dibujan (el popup igual los lista).
+ */
+export function interiorSprite(edificio, estados = []) {
+  const {ancho, alto, altoFrente} = medidas(edificio);
+  const pix = new Uint8Array(ancho * alto);
+  const en = (x, y, v) => {
+    if (x >= 0 && x < ancho && y >= 0 && y < alto) pix[y * ancho + x] = v;
+  };
+  const arriba = PROF;
+  // el hueco: donde estaba la cara frontal ahora se ve el piso
+  for (let y = arriba; y < arriba + altoFrente; y++)
+    for (let x = 0; x < ANCHO; x++) en(x, y, PISO);
+  // el contorno se queda: sin el, el edificio se funde con el de al lado
+  for (let x = 0; x < ANCHO; x++) {
+    en(x, arriba, BORDE);
+    en(x, arriba + altoFrente - 1, BORDE);
+  }
+  for (let y = arriba; y < arriba + altoFrente; y++) {
+    en(0, y, BORDE);
+    en(ANCHO - 1, y, BORDE);
+  }
+  const plazas = plazasDe(edificio);
+  for (let i = 0; i < plazas.length; i++) {
+    const estado = estados[i];
+    // tres estados, que son los que enumera el spec: el que piensa se ve
+    // prendido, el que espera ocupado pero apagado, y el que se fue deja el
+    // escritorio vacio — ver que el departamento SOLTO gente es tan
+    // informativo como verlo contratar
+    const v = estado === "razonando" ? OCUPADO
+      : estado === "esperando" ? ESPERA : ESCRITORIO;
+    for (let dy = 0; dy < ESC_ALTO; dy++)
+      for (let dx = 0; dx < ESC_ANCHO; dx++)
+        en(plazas[i].x + dx, plazas[i].y + dy, v);
+  }
   return {ancho, alto, pix};
 }
 

@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {disposicion, textoDeTarjeta, posicionDeTarjeta, resumenDeAvisos,
-        ANCHO_TELEFONO, textoDeCosto, textoDeFoco} from "./paneles.js";
+        ANCHO_TELEFONO, textoDeCosto, textoDeFoco,
+        textoDeEmpleado} from "./paneles.js";
 import {fichaDe} from "./ciudad.js";
 
 function ciudadDePrueba() {
@@ -127,4 +128,28 @@ test("la etiqueta de foco nombra al departamento y ofrece soltarlo", () => {
   // el nombre lo escribe Pedro: va escapado, como en la tarjeta
   const feo = textoDeFoco({id: "dep:x", nombre: '<img src=x>', saldo: "0"});
   assert.ok(!feo.includes("<img"), feo);
+});
+
+const EMPLEADO = {agente_id: "a1", rol: "scout", modelo: "sonnet",
+                  estado: "razonando", texto: "mirando el libro",
+                  tokens_in: 1200, tokens_out: 340, costo_mm: 270,
+                  runtime_ms: 4500,
+                  diff: {ruta: "calipso/mapa/ciudad.py", diff: "- a\n+ b"}};
+
+test("el popup del empleado trae rol, modelo, runtime, tokens y costo", () => {
+  const texto = textoDeEmpleado(EMPLEADO);
+  assert.match(texto, /scout/);
+  assert.match(texto, /sonnet/);
+  assert.match(texto, /4,5 s/);              // runtime en segundos, no en ms
+  assert.match(texto, /1\.200/);
+  assert.match(texto, /0,27/);               // 270 milimonedas
+  assert.match(texto, /ciudad\.py/);
+});
+
+test("un empleado liberado se ve liberado, no vacio", () => {
+  const texto = textoDeEmpleado({...EMPLEADO, estado: "liberado",
+                                 texto: "", diff: null});
+  assert.match(texto, /liberado/);
+  assert.ok(!texto.includes("undefined"), texto);
+  assert.ok(!texto.includes("null"), texto);
 });

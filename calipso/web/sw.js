@@ -15,7 +15,8 @@ const SHELL = [
   "/static/fabrica/paneles.js",
   "/static/fabrica/socket.js",
   "/static/fabrica/chat.js",
-  "/static/fabrica/pulso.js"
+  "/static/fabrica/pulso.js",
+  "/static/fabrica/interior.js"
 ];
 
 self.addEventListener("install", event => {

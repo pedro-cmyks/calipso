@@ -2,8 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {FRENTE, LATERAL, TECHO, VENTANA, PRENDIDA, GRIETA, TRANSPARENTE,
-        rampaDe, RAMPAS} from "./paleta.js";
-import {edificioSprite, medidas, alturaDe, fnv1a, ANCHO, PROF} from "./sprites.js";
+        OCUPADO, ESCRITORIO, ESPERA, PISO, rampaDe, RAMPAS} from "./paleta.js";
+import {edificioSprite, medidas, alturaDe, fnv1a, ANCHO, PROF,
+        interiorSprite, plazasDe} from "./sprites.js";
 
 function edi(extra = {}) {
   return {id: "dep:atlas", nombre: "atlas", zona: "fabrica", tamano: 4,
@@ -144,4 +145,46 @@ test("fnv1a es estable y distingue", () => {
   assert.equal(fnv1a("atlas"), fnv1a("atlas"));
   assert.notEqual(fnv1a("atlas"), fnv1a("mercado"));
   assert.ok(Number.isInteger(fnv1a("atlas")) && fnv1a("atlas") >= 0);
+});
+
+test("el interior es el mismo edificio sin techo y con escritorios", () => {
+  const edificio = {id: "dep:atlas", zona: "fabrica", estado: "activo",
+                    tamano: 2, actividad: 3};
+  const fuera = edificioSprite(edificio);
+  const dentro = interiorSprite(edificio, ["razonando", "liberado"]);
+  assert.equal(dentro.ancho, fuera.ancho);
+  assert.equal(dentro.alto, fuera.alto);
+  // el techo se fue: la fila de arriba del sprite queda transparente
+  assert.ok(dentro.pix.slice(0, dentro.ancho).every(v => v === TRANSPARENTE));
+  assert.ok(fuera.pix.slice(0, fuera.ancho).some(v => v !== TRANSPARENTE));
+  // hay al menos un escritorio ocupado y uno vacio, que es lo que se pidio
+  assert.ok(dentro.pix.includes(OCUPADO));
+  assert.ok(dentro.pix.includes(ESCRITORIO));
+});
+
+test("los tres estados del spec se dibujan distintos", () => {
+  const edificio = {id: "dep:atlas", zona: "fabrica", estado: "activo",
+                    tamano: 2, actividad: 0};
+  const s = interiorSprite(edificio, ["razonando", "esperando", "liberado"]);
+  // razonando prendido, esperando ocupado pero apagado, liberado vacio: si
+  // dos de los tres comparten indice, el mapa no distingue "esta pensando"
+  // de "esta esperando", que es la mitad de para que sirve entrar
+  assert.ok(s.pix.includes(OCUPADO), "falta el que razona");
+  assert.ok(s.pix.includes(ESPERA), "falta el que espera");
+  assert.ok(s.pix.includes(ESCRITORIO), "falta el escritorio vacio");
+});
+
+test("el mismo interior da siempre el mismo bitmap", () => {
+  const edificio = {id: "dep:atlas", zona: "fabrica", estado: "activo",
+                    tamano: 4, actividad: 1};
+  assert.deepEqual(interiorSprite(edificio, ["razonando"]).pix,
+                   interiorSprite(edificio, ["razonando"]).pix);
+});
+
+test("mas empleados que escritorios no desborda el sprite", () => {
+  const edificio = {id: "dep:atlas", zona: "fabrica", estado: "activo",
+                    tamano: 1, actividad: 0};
+  const estados = new Array(50).fill("razonando");
+  const dentro = interiorSprite(edificio, estados);
+  assert.equal(dentro.pix.length, dentro.ancho * dentro.alto);
 });

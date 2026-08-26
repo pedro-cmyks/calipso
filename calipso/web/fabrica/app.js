@@ -8,9 +8,11 @@
 import {crearCamara, arrastrar, acercar, paso, encuadrar,
         volarA} from "./camara.js";
 import {cargarCiudad, enPunto, fichaDe} from "./ciudad.js";
+import {escritorioEnPunto, opacidadDeTecho} from "./interior.js";
 import {crearMapa} from "./mapa.js";
 import {disposicion, escapar, textoDeTarjeta, posicionDeTarjeta,
-        resumenDeAvisos, textoDeCosto, textoDeFoco} from "./paneles.js";
+        resumenDeAvisos, textoDeCosto, textoDeFoco,
+        textoDeEmpleado} from "./paneles.js";
 import {crearChat} from "./chat.js";
 import {crearPulso, empleadosDe, estadoVisible} from "./pulso.js";
 
@@ -55,8 +57,20 @@ function bucle(ahora) {
     Object.assign(cam, encuadrar(ciudad.edificios, v));
     encuadrado = true;
   }
-  if (ciudad) mapa.dibujar(ciudad, cam, resaltado, (ahora / 4000) % 1);
+  if (ciudad) {
+    mapa.dibujar(ciudad, cam, resaltado, (ahora / 4000) % 1, plantel());
+  }
   requestAnimationFrame(bucle);
+}
+
+/** Los estados de cada departamento, en el orden en que se sientan. */
+function plantel() {
+  const ahora = Date.now();
+  const salida = {};
+  for (const dep of Object.keys(pulso.empleados)) {
+    salida[dep] = empleadosDe(pulso, dep).map(e => estadoVisible(e, ahora));
+  }
+  return salida;
 }
 
 // un Map de punteros vivos, no una variable: con dos dedos hay que hacer
@@ -114,9 +128,19 @@ function soltar(ev) {
   if (tocado && !tocado.movio && punteros.size === 1 && ciudad) {
     resaltado = enPunto(ciudad, cam, mapa.vista(), tocado.x, tocado.y);
     pintarTarjeta(tocado.x, tocado.y);
-    if (resaltado) {           // tocar un edificio lo fija como contexto
-      enFoco = resaltado;      // y su billetera pasa a pagar (spec 8)
-      pintarFoco();
+    let tocoEmpleado = false;
+    if (resaltado && opacidadDeTecho(cam.escala) < 1) {
+      const i = escritorioEnPunto(ciudad.edificios.find(e => e.id === resaltado),
+                                  cam, mapa.vista(), tocado.x, tocado.y);
+      const gente = empleadosDe(pulso, resaltado);
+      if (i !== null && gente[i]) {
+        mostrarEmpleado(gente[i]);
+        tocoEmpleado = true;   // tocar un empleado no cambia el contexto
+      }
+    }
+    if (!tocoEmpleado) {
+      popupEmpleado.classList.add("oculto");   // el toque afuera lo cierra
+      if (resaltado) { enFoco = resaltado; pintarFoco(); }
     }
   }
   punteros.delete(ev.pointerId);
@@ -149,6 +173,13 @@ const barraCosto = document.getElementById("costo");
 const barraFoco = document.getElementById("foco");
 let enFoco = null;            // el edificio tocado: contexto y pagador
 let ultimaEpoca = 0;
+
+const popupEmpleado = document.getElementById("empleado");
+
+function mostrarEmpleado(empleado) {
+  popupEmpleado.innerHTML = textoDeEmpleado(empleado);
+  popupEmpleado.classList.remove("oculto");
+}
 
 function pintarFoco() {
   const ficha = (ciudad && enFoco) ? fichaDe(ciudad, enFoco) : null;
