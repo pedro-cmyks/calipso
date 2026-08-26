@@ -52,7 +52,7 @@ def armar(tmp_path, respuesta="nada\nno hay nada", saldo=400_000):
             costo_api_mm_por_unidad=500)},
         memoria=MemoriaFalsa(),
         pensar=lambda _p: respuesta,
-        contratar=lambda s, a, ref: contratos.append((a, ref)) or {"ok": True},
+        contratar=lambda s, a, ref, m="": contratos.append((a, ref, m)) or {"ok": True},
         publicar=lambda evento, **c: eventos.append((evento, c)))
     return ctx, contratos, eventos
 
@@ -74,7 +74,7 @@ def test_en_vivo_contrata(tmp_path):
     ctx, contratos, _ = armar(tmp_path, "proponer\nhay hueco")
     it.poner_modo(tmp_path, "vivo")
     out = j.tic(ctx, "dep:atlas", W)
-    assert out["actuo"] is True and contratos == [("proponer", None)]
+    assert out["actuo"] is True and contratos == [("proponer", None, "hay hueco")]
     assert ctx.memoria.recordado, "no dejo rastro en su memoria"
 
 
@@ -172,12 +172,12 @@ def test_un_departamento_personal_corre_el_mismo_bucle(tmp_path):
                      bus=Bus(eco / "bus.jsonl"), cola=Cola(eco / "cola.jsonl"),
                      suscripciones={}, memoria=MemoriaFalsa(),
                      pensar=lambda _p: "proponer\nordenar los gastos del mes",
-                     contratar=lambda s, a, ref: contratos.append((a, ref)),
+                     contratar=lambda s, a, ref, m="": contratos.append((a, ref, m)),
                      publicar=lambda e, **c: None)
     it.poner_modo(tmp_path, "vivo")
     out = j.tic(ctx, "personal:finanzas", W)
     assert out["accion"] == "proponer" and out["actuo"] is True
-    assert contratos == [("proponer", None)]
+    assert contratos == [("proponer", None, "ordenar los gastos del mes")]
     # sin suscripciones el sesgo es la perilla pelada, sin modular por precio
     # (70, no 50: si el modulo leyera agresividad_pct en vez de
     # explorar_explotar_pct, este assert lo agarraria igual)
@@ -198,7 +198,7 @@ def test_comentar_en_ensayo_llega_a_la_memoria(tmp_path):
     ctx, contratos, _ = armar(tmp_path, "comentar p2\nno me cierra el precio")
     out = j.tic(ctx, "dep:atlas", W)
     assert out["accion"] == "comentar" and out["actuo"] is True
-    assert contratos == [("comentar", "p2")]
+    assert contratos == [("comentar", "p2", "no me cierra el precio")]
     assert ctx.memoria.recordado, "no dejo rastro en su memoria"
 
 
@@ -229,5 +229,15 @@ def test_memoria_que_revienta_no_borra_la_contratacion(tmp_path):
     out = j.tic(ctx, "dep:atlas", W)
     assert out["actuo"] is True
     assert out["resultado"] == {"ok": True}
-    assert contratos == [("proponer", None)]
+    assert contratos == [("proponer", None, "hay hueco")]
     assert ("fin", {"resultado": "error"}) in eventos
+
+
+def test_el_motivo_del_parser_llega_al_contratista(tmp_path):
+    """El titulo con el que la propuesta aterriza en el bus es el motivo
+    que el jefe razono, no relleno del planificador: es literalmente lo
+    que Pedro lee para decidir si financia."""
+    ctx, contratos, _ = armar(tmp_path, "proponer\nhay hueco en precios de GPU")
+    it.poner_modo(tmp_path, "vivo")
+    j.tic(ctx, "dep:atlas", W)
+    assert contratos == [("proponer", None, "hay hueco en precios de GPU")]

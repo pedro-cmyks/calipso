@@ -116,7 +116,7 @@ def tic(ctx: Contexto, cuenta: str, semana: str) -> dict:
         permiso, freno = _puede(estado, s, accion)
         resultado = None
         if permiso:
-            resultado = ctx.contratar(s, accion, ref)
+            resultado = ctx.contratar(s, accion, ref, motivo)
             try:
                 ctx.memoria.remember(f"{accion} {ref or ''}: {motivo}".strip(),
                                      kind="jefe", departamento=cuenta)
