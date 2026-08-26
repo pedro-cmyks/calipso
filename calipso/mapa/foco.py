@@ -56,6 +56,12 @@ class Filtro:
                     continue
                 self._resto = buf[i:]
                 break
+            if j - (i + len(ABRE)) > MAX_NOMBRE:
+                # cerro, pero con un nombre que ningun departamento tiene:
+                # era texto, y `limpiar` lo juzga igual
+                visible.append(buf[i:i + len(ABRE)])
+                buf = buf[i + len(ABRE):]
+                continue
             nombre = buf[i + len(ABRE):j].strip()
             if nombre:
                 self._focos.append(nombre)
@@ -72,8 +78,10 @@ class Filtro:
         return focos
 
 
-_MARCA = re.compile(re.escape(ABRE) + "[^" + re.escape(CIERRA) + "]*"
-                    + re.escape(CIERRA))
+# el mismo juicio que el Filtro, tope de nombre incluido: si los dos no
+# coinciden en que es una marca, uno de los dos se come texto visible
+_MARCA = re.compile(re.escape(ABRE) + "[^" + re.escape(CIERRA) + "]{0,"
+                    + str(MAX_NOMBRE) + "}" + re.escape(CIERRA))
 
 
 def limpiar(texto: str) -> str:

@@ -2023,7 +2023,7 @@ async def _run_subscription_text_live(
                     "label": label, "client": client, "model": model,
                     "elapsed": round(now - started),
                     "tokens": max(1, ((len(system) + len(user_msg)) + len(partial)) // 4),
-                    "partial": _limpiar_marcas(partial[-3000:]) if partial else "",
+                    "partial": _limpiar_marcas(partial)[-3000:] if partial else "",
                     "hint": "sigue corriendo; envia /stop para cancelar o escribe y lo atiendo al terminar"})
                 jobs.event(
                     str(ROOT), job["id"], "running",

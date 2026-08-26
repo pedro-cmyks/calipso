@@ -172,3 +172,37 @@ def test_los_edificios_livianos_no_tocan_el_libro(tmp_path, monkeypatch):
 def test_sin_economia_no_hay_a_quien_enfocar(tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "_ECO_BASE", tmp_path / "vacio")
     assert srv._edificios_livianos() == []
+
+
+def visible_del_filtro(texto):
+    """Lo que un `Filtro` deja ver de un texto que le llega de una sola vez,
+    lo retenido incluido: el equivalente exacto de `limpiar(texto)`."""
+    f = foco.Filtro()
+    return f.comer(texto) + f.cerrar()
+
+
+def test_un_nombre_larguisimo_no_es_marca_ni_para_el_filtro_ni_para_limpiar():
+    """`limpiar` y el `Filtro` tienen que juzgar igual: si uno cree que hay
+    marca donde el otro ve texto, el que la ve de mas se come texto visible.
+    Un nombre de miles de caracteres no es un departamento, es texto."""
+    texto = "ojo " + foco.ABRE + "y" * 5000 + foco.CIERRA + " con esto"
+    assert foco.limpiar(texto) == texto
+    assert visible_del_filtro(texto) == texto      # entero en un solo trozo
+    f = foco.Filtro()
+    f.comer(texto)
+    assert f.tomar_focos() == []
+    # y partido, donde la retencion entra en juego, el juicio no cambia
+    g = foco.Filtro()
+    partido = (g.comer("ojo " + foco.ABRE + "y" * 5000)
+               + g.comer(foco.CIERRA + " con esto") + g.cerrar())
+    assert partido == texto
+    assert g.tomar_focos() == []
+
+
+def test_el_tope_del_nombre_es_el_mismo_de_los_dos_lados():
+    """El borde exacto: MAX_NOMBRE todavia es marca, uno mas ya es texto."""
+    justo = foco.ABRE + "z" * foco.MAX_NOMBRE + foco.CIERRA
+    pasado = foco.ABRE + "z" * (foco.MAX_NOMBRE + 1) + foco.CIERRA
+    assert foco.limpiar(justo) == "" and visible_del_filtro(justo) == ""
+    assert foco.limpiar(pasado) == pasado
+    assert visible_del_filtro(pasado) == pasado
