@@ -57,6 +57,26 @@ def test_tolera_mayusculas_y_dos_puntos():
     assert dec.parsear("NADA")[0] == "nada"
 
 
+def test_la_prosa_cae_en_nada():
+    """Un modelo que escribe una oracion completa en vez del comando cae en nada."""
+    accion, ref, _ = dec.parsear("Trabajar en el radar seria una buena idea\nporque hace falta")
+    assert accion == "nada"
+    assert ref is None
+    accion, ref, _ = dec.parsear("Comentar esto es innecesario, mejor dejarlo\nmotivo")
+    assert accion == "nada"
+    assert ref is None
+
+
+def test_proponer_devuelve_ref_none():
+    """Proponer no recibe un id: solo ofrece una idea nueva."""
+    accion, ref, motivo = dec.parsear("proponer\nhiay hueco en precios")
+    assert accion == "proponer"
+    assert ref is None
+    accion, ref, _ = dec.parsear("proponer p3\nmotivo")
+    assert accion == "proponer"
+    assert ref is None
+
+
 def test_el_prompt_lleva_los_numeros_que_hacen_falta():
     s = {"nombre": "atlas", "disponible_mm": 400_000, "saldo_mm": 400_000,
          "presupuesto_semanal_mm": 25_000, "salidas_semana_mm": 7_000,
@@ -65,11 +85,11 @@ def test_el_prompt_lleva_los_numeros_que_hacen_falta():
                        "presupuesto_mm": 10_000}],
          "propuestas_ajenas": [{"id": "p2", "titulo": "encuesta",
                                 "dueno": "dep:mercado"}],
-         "capacidad": {"nombre": "claude_max", "precio_mm": 40,
+         "capacidad": {"nombre": "claude_max", "precio_mm": 50,
                        "precio_base_mm": 100}}
     p = dec.prompt(s, 60)
     for dato in ("atlas", "400000", "25000", "7000", "p1", "radar", "p2",
-                 "claude_max", "40"):
+                 "claude_max", "50"):
         assert dato in p, f"al prompt le falta {dato}"
     assert "explorar" in p
     # y ofrece exactamente las cuatro acciones

@@ -77,12 +77,14 @@ def parsear(texto: str) -> tuple[str, str | None, str]:
         return "nada", None, "no contesto"
     motivo = lineas[1] if len(lineas) > 1 else ""
     partes = lineas[0].replace(":", " ").lower().split()
-    if not partes or partes[0] not in ACCIONES:
+    if not partes or partes[0] not in ACCIONES or len(partes) > 2:
         return "nada", None, motivo or "no se entendio la respuesta"
     accion = partes[0]
     ref = partes[1] if len(partes) > 1 else None
     if accion == "nada":
         return "nada", None, motivo
+    if accion == "proponer":
+        return "proponer", None, motivo
     if accion in ("trabajar", "comentar") and not ref:
         return "nada", None, motivo or f"{accion} sin id"
     return accion, ref, motivo
