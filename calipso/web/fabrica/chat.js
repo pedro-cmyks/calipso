@@ -10,7 +10,7 @@ import {crearSocketQueReconecta} from "./socket.js";
 export function estadoInicial() {
   return {turnos: [], pensando: false, chatId: null, ruta: null,
           modelo: null, costo_usd: 0, tokens: 0, costo_mm: 0, cuenta: null,
-          conectado: false, epoca: 0};
+          conectado: false, epoca: 0, streamViejo: false};
 }
 
 export function paquete(texto, chatId, departamento = null) {
@@ -27,8 +27,26 @@ export function turnosDeHistorial(mensajes) {
     texto: m.text || "", abierto: false}));
 }
 
+// Eventos del turno que `cargar()` deja en vuelo: el socket es uno solo y
+// persistente, asi que el resto del stream del chat anterior sigue llegando
+// despues de cargar otro. Un "chat" (accion "updated") es parte de esto: si
+// se aplicara, el chatId volveria al chat viejo y el proximo mensaje de
+// Pedro se guardaria en la conversacion equivocada.
+const EVENTOS_DEL_STREAM = new Set(["chunk", "done", "meta", "cost", "chat"]);
+
 export function aplicarEvento(estado, ev) {
   const e = {...estado, turnos: [...estado.turnos]};
+  // Mientras el stream viejo este marcado, se descarta entero: no se pega
+  // sobre el historial recien cargado. La marca se levanta con el proximo
+  // "thinking", que solo llega cuando arranca un turno nuevo de verdad (o
+  // sea, cuando Pedro le escribe al chat que acaba de abrir).
+  if (e.streamViejo) {
+    if (ev.type === "thinking") {
+      e.streamViejo = false;
+    } else if (EVENTOS_DEL_STREAM.has(ev.type)) {
+      return e;
+    }
+  }
   switch (ev.type) {
     case "thinking":
       e.pensando = true;
@@ -123,11 +141,16 @@ export function crearChat(alCambiar, ConstructorWS = WebSocket) {
       return true;
     },
     /** Otro chat: los turnos se reemplazan enteros y la epoca sube para que
-     *  quien pinta sepa que tiene que rehacer los nodos, no agregarles. */
+     *  quien pinta sepa que tiene que rehacer los nodos, no agregarles.
+     *  El turno viejo puede seguir en vuelo -el socket es uno solo- asi que
+     *  se marca para que el reductor descarte lo que quede de su stream, y
+     *  se resetea lo que ese turno traia puesto (ruta, modelo, costo). */
     cargar(chat) {
       estado = {...estado, chatId: chat.id,
                 turnos: turnosDeHistorial(chat.messages),
-                epoca: estado.epoca + 1};
+                epoca: estado.epoca + 1,
+                pensando: false, ruta: null, modelo: null, costo_usd: 0,
+                tokens: 0, costo_mm: 0, cuenta: null, streamViejo: true};
       alCambiar(estado);
     },
   };

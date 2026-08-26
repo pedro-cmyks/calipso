@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {estadoInicial, aplicarEvento, paquete, crearChat,
         turnosDeHistorial} from "./chat.js";
+import {textoDeCosto} from "./paneles.js";
 
 const aplicar = (eventos, e0 = estadoInicial()) =>
   eventos.reduce((e, ev) => aplicarEvento(e, ev), e0);
@@ -273,4 +274,51 @@ test("cargar otro chat reemplaza los turnos y sube la epoca", () => {
   assert.equal(estado.chatId, "c9");
   assert.equal(estado.turnos.length, 1);
   assert.ok(estado.epoca > estadoInicial().epoca);
+});
+
+// El socket de /ws/chat es uno solo y persistente: si Pedro cambia de chat
+// mientras Calipso le esta respondiendo al anterior, el resto de ese stream
+// (chunk/done/meta/cost/chat) sigue llegando por la misma conexion. Sin
+// filtrarlo se pega sobre el historial que `cargar` acaba de poner.
+function wsAbierto() {
+  let ultimoWs;
+  class WSCapturado extends WSFalso {
+    constructor(url) { super(url); ultimoWs = this; this.readyState = WSFalso.OPEN; }
+  }
+  const chat = crearChat(() => {}, WSCapturado);
+  return {chat, disparar: (ev) => ultimoWs.disparar("message", {data: JSON.stringify(ev)})};
+}
+
+test("un chunk que llega despues de cargar otro chat no toca los turnos cargados", () => {
+  const {chat, disparar} = wsAbierto();
+  disparar({type: "thinking"});
+  disparar({type: "chunk", text: "empezando"});
+  chat.cargar({id: "c9", messages: [{role: "user", text: "viejo"}]});
+  const antes = chat.estado().turnos;
+  // el resto del turno que quedo respondiendo sigue llegando por el mismo
+  // socket, y no tiene que pegarse sobre el historial recien cargado
+  disparar({type: "chunk", text: "resto del turno viejo"});
+  disparar({type: "done"});
+  assert.deepEqual(chat.estado().turnos, antes);
+});
+
+test("un thinking despues de cargar levanta la marca y el chunk siguiente se pinta", () => {
+  const {chat, disparar} = wsAbierto();
+  chat.cargar({id: "c9", messages: [{role: "user", text: "viejo"}]});
+  disparar({type: "chunk", text: "resto del turno viejo"});   // se descarta
+  disparar({type: "thinking"});                                // turno nuevo
+  disparar({type: "chunk", text: "hola de nuevo"});
+  assert.equal(chat.estado().turnos.length, 2,
+              "el turno nuevo se agrego sin mezclarse con el viejo");
+  assert.equal(chat.estado().turnos.at(-1).texto, "hola de nuevo");
+});
+
+test("la barra de costo se vacia al cargar otro chat", () => {
+  const {chat, disparar} = wsAbierto();
+  disparar({type: "meta", route: "api", model: "sonnet"});
+  disparar({type: "cost", tokens: 500, cost_usd: 0.01,
+            cuenta: "dep:atlas", mm: 50});
+  assert.notEqual(textoDeCosto(chat.estado()), "", "no habia costo que vaciar");
+  chat.cargar({id: "c9", messages: []});
+  assert.equal(textoDeCosto(chat.estado()), "");
 });

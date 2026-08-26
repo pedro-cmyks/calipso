@@ -3,7 +3,7 @@
  *
  * Todo lo que decide QUE se muestra vive aca y es puro; el DOM lo toca
  * app.js. El nombre de un departamento lo escribe Pedro, asi que se
- * escapa antes de meterlo en el HTML de la tarjeta.
+ * escapa antes de meterlo en el HTML de la tarjeta y de la etiqueta de foco.
  */
 import {monedas} from "./ciudad.js";
 
