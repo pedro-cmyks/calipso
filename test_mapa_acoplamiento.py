@@ -25,7 +25,12 @@ EDIFICIO = {"id": "dep:atlas", "nombre": "atlas", "zona": "fabrica",
 
 def test_la_cuenta_pagadora_sale_del_id_del_edificio():
     assert ficha.cuenta_pagadora("dep:atlas") == "dep:atlas"
-    assert ficha.cuenta_pagadora("personal:finanzas") == "personal:finanzas"
+    # `personal:` COLAPSA a `personal`, no se queda como esta: la zona
+    # personal no compra capacidad ni API de la fabrica (invariante 12), asi
+    # que un cargo a `personal:finanzas` lo rechaza `Mercado._politica` y
+    # queda pendiente para siempre. `personal` es la cuenta que el camino de
+    # reserva personal espera.
+    assert ficha.cuenta_pagadora("personal:finanzas") == ficha.CUENTA_PERSONAL
     # la casa de Pedro no es un departamento: su gasto queda fuera del libro
     # de la fabrica, que es donde lo lleva calipso/costs.py
     assert ficha.cuenta_pagadora("cuenta_pedro") == ficha.CUENTA_PERSONAL
@@ -168,3 +173,71 @@ def test_el_modelo_de_ciudad_se_deriva_una_sola_vez_y_sin_coordenadas(economia):
     cuerpo = c.get("/api/mapa/ciudad").json()
     assert cuerpo["activa"] is True
     assert all("x" in e for e in cuerpo["ciudad"]["edificios"])
+
+
+def test_un_cargo_a_un_departamento_inventado_no_se_aplica_nunca(economia):
+    """Por que el turno degrada a `personal` cuando el edificio no existe.
+
+    El id del departamento llega del paquete del WebSocket, o sea de afuera.
+    Un cargo a una cuenta sin departamento detras lo rechaza el mercado, el
+    pagador lo apila, y ningun reintento lo va a aplicar: una linea por turno
+    en cargos_pendientes.jsonl, sin techo."""
+    srv._cobrar_turno("dep:inventado", "api", None, "deepseek-chat",
+                      {"prompt_tokens": 1_000_000, "completion_tokens": 0})
+    p = pag.Pagador(economia)
+    assert len(p.pendientes()) == 1
+    assert p.reintentar_pendientes() == 0
+    assert len(p.pendientes()) == 1   # y sigue ahi despues del reintento
+
+
+def test_la_zona_personal_no_le_paga_a_la_fabrica(tmp_path, monkeypatch):
+    """Invariante 12, ejecutada: un departamento de zona personal no compra
+    capacidad. Es lo que hace que `cuenta_pagadora` tenga que colapsar
+    `personal:` antes de que el cargo llegue al mercado."""
+    eco = tmp_path / ".calipso" / "economia"
+    eco.mkdir(parents=True)
+    k = Kernel(Libro(eco / "libro.jsonl"))
+    r = deps.Registro(eco / "departamentos.json")
+    r.alta(deps.Departamento("finanzas", deps.ZONA_PERSONAL))
+    (eco / "suscripciones.json").write_text(json.dumps({
+        "claude_max": {"nombre": "claude_max", "costo_mensual_mm": 100_000,
+                       "capacidad_ciclo": 1_000, "reserva_personal": 200,
+                       "costo_api_mm_por_unidad": 500}}), encoding="utf-8")
+    pt.emitir_semana(k, TS, W, 4_000, 0)
+    p = pag.Pagador(eco)
+    p.cargar_suscripcion(TS, W, "personal:finanzas", "claude_max")
+    assert len(p.pendientes()) == 1
+    assert p.reintentar_pendientes() == 0   # la invariante lo prohibe siempre
+    # y por eso el turno nunca manda una cuenta `personal:` al pagador
+    assert ficha.cuenta_pagadora("personal:finanzas") == ficha.CUENTA_PERSONAL
+
+
+def test_el_foco_es_pegajoso_por_conexion_y_no_por_paquete():
+    """Pedro interrumpe con el edificio todavia tocado en pantalla: ese turno
+    tiene que seguir en el mismo departamento.
+
+    La vuelta que consume `pending` saltea el parseo del paquete, asi que si
+    `departamento` se reiniciara en cada vuelta del bucle de turnos, un turno
+    encolado por steering iria sin ficha y sin cobrarle a nadie. Se afirma
+    sobre el AST porque la propiedad ES el alcance de la variable: manejar un
+    turno encolado de verdad pide el WebSocket, los probes de ruteo y un
+    modelo respondiendo."""
+    import ast
+    import inspect
+
+    def reinicia_departamento(cuerpo) -> bool:
+        """Solo las sentencias DIRECTAS del cuerpo: la reasignacion desde el
+        paquete vive anidada en el `try`/`if` del parseo y no cuenta."""
+        return any(isinstance(n, ast.Assign)
+                   and any(isinstance(t, ast.Name) and t.id == "departamento"
+                           for t in n.targets)
+                   for n in cuerpo)
+
+    fn = ast.parse(inspect.getsource(srv.ws_chat)).body[0]
+    assert reinicia_departamento(fn.body), (
+        "`departamento` tiene que declararse en el cuerpo de ws_chat, afuera "
+        "del bucle de turnos: es estado de la conexion, como _last_verdict")
+    for bucle in [n for n in ast.walk(fn) if isinstance(n, ast.While)]:
+        assert not reinicia_departamento(bucle.body), (
+            "`departamento` se reinicia en cada vuelta de un bucle: el turno "
+            "que consume `pending` perderia el foco que Pedro tiene tocado")

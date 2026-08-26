@@ -2170,11 +2170,15 @@ async def ws_chat(ws: WebSocket) -> None:
     pending = None
     _last_features: dict = {}   # features del turno anterior para contexto
     _last_verdict: dict = {}    # route/model del turno anterior
+    # el edificio que Pedro tiene tocado. Es estado de la CONEXION, no del
+    # paquete: la vuelta que consume `pending` (steering) saltea el parseo, y
+    # ahi Pedro sigue con el mismo edificio tocado en pantalla. Cada paquete
+    # nuevo la reasigna, asi que el cliente la apaga mandando el campo vacio.
+    departamento = None
     try:
         while True:
             chat_id = chats.active_id()
             attachment_ids: list[str] = []
-            departamento = None      # el edificio que Pedro tiene tocado
             if pending is not None:
                 user_msg, pending = pending, None
             else:
@@ -2255,11 +2259,27 @@ async def ws_chat(ws: WebSocket) -> None:
                       if _mapa_ficha else "personal")
             bloque_dep = ""
             if departamento and _mapa_ficha is not None:
-                # derivar la ciudad toma el candado del libro: va en un hilo
-                modelo = await asyncio.to_thread(_ciudad_modelo)
-                edificio = _mapa_ficha.edificio_de(modelo, departamento)
+                edificio = None
+                try:
+                    # derivar la ciudad toma el candado del libro: va en un hilo
+                    modelo = await asyncio.to_thread(_ciudad_modelo)
+                    edificio = _mapa_ficha.edificio_de(modelo, departamento)
+                except Exception as exc:
+                    # invariante 5: una ficha que no se puede derivar degrada
+                    # a "sin ficha". El libro se repara truncando, asi que
+                    # leerlo puede reventar; que eso mate el WebSocket dejaria
+                    # a Pedro sin `done` y al escritorio del pulso sin `fin`.
+                    print(f"[calipso] no se pudo derivar la ficha de "
+                          f"{departamento}: {exc}", file=sys.stderr)
                 if edificio:
                     bloque_dep = _mapa_ficha.bloque(edificio)
+                else:
+                    # el id sale del paquete del WebSocket: si no hay edificio
+                    # que lo respalde, no hay departamento que pueda pagar.
+                    # Un cargo a una cuenta sin departamento detras lo rechaza
+                    # el mercado y queda pendiente para siempre, una linea por
+                    # turno y sin techo.
+                    cuenta = _mapa_ficha.CUENTA_PERSONAL
             route = verdict["route"]
             model = verdict.get("model")
             note = "; ".join(f"{r['persona']}={r['score']}" for r in ranked[:3]) or None

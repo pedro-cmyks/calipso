@@ -22,7 +22,7 @@ def id_de_nombre(nombre: str, edificios: list[dict]) -> str | None:
 
 
 CUENTA_PERSONAL = "personal"
-PREFIJOS = ("dep:", "personal:")
+PREFIJO_FABRICA = "dep:"
 
 
 def _monedas(mm: int) -> str:
@@ -31,15 +31,21 @@ def _monedas(mm: int) -> str:
 
 
 def cuenta_pagadora(id_edificio: str | None) -> str:
-    """La cuenta que paga el turno.
+    """La cuenta que paga el turno. Solo un departamento de la fabrica paga.
 
     La casa de Pedro (`cuenta_pedro`) y cualquier cosa que no sea un
-    departamento caen en `personal`, que queda FUERA del libro de la
-    fabrica. El id llega del cliente, asi que esto es tambien la validacion:
-    `tesoro` no puede pagar un chat."""
+    departamento de la fabrica caen en `personal`, que queda FUERA del libro
+    de la fabrica. El id llega del cliente, asi que esto es tambien la
+    validacion: `tesoro` no puede pagar un chat.
+
+    Un `personal:` COLAPSA a `personal` en vez de quedarse como esta: la zona
+    personal no compra capacidad ni API de la fabrica (invariante 12), asi
+    que un cargo a `personal:finanzas` lo rechaza el mercado y queda pendiente
+    para siempre. `personal` es ademas la cuenta que el camino de reserva
+    personal espera."""
     if not id_edificio:
         return CUENTA_PERSONAL
-    if any(id_edificio.startswith(p) for p in PREFIJOS):
+    if id_edificio.startswith(PREFIJO_FABRICA):
         return id_edificio
     return CUENTA_PERSONAL
 
