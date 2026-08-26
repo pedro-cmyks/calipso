@@ -22,7 +22,7 @@ from typing import Any, Callable
 CALIPSO_HOME = pathlib.Path(os.environ.get(
     "CALIPSO_HOME", os.path.expanduser("~/.calipso")))
 
-KINDS = ("reflect", "learn", "backup")
+KINDS = ("reflect", "learn", "backup", "departamento")
 
 # Rutinas por defecto la primera vez (deshabilitadas: Pedro decide encenderlas).
 DEFAULTS = [
@@ -87,7 +87,7 @@ def get(routine_id: str) -> dict[str, Any] | None:
 
 
 def add(kind: str, label: str, interval_minutes: int,
-        enabled: bool = False) -> dict[str, Any]:
+        enabled: bool = False, cuenta: str | None = None) -> dict[str, Any]:
     if kind not in KINDS:
         raise ValueError(f"kind no soportado: {kind}")
     routine = {
@@ -98,6 +98,10 @@ def add(kind: str, label: str, interval_minutes: int,
         "enabled": bool(enabled),
         "last_run": None,
         "last_status": None,
+        # que departamento despierta esta rutina. None para las de siempre;
+        # el ticker le pasa la rutina entera al handler y sin esto no sabria
+        # a quien despertar
+        "cuenta": cuenta,
     }
     routines = load()
     routines.append(routine)

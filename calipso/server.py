@@ -2590,7 +2590,10 @@ def api_discover() -> dict:
 # --------------------------------------------------------------------------
 
 def _routine_handlers() -> dict:
-    """Mapea kind -> accion local segura. No escala a API ni abre red."""
+    """Mapea kind -> accion. Las tres viejas son locales y no abren red; la
+    de departamento SI gasta: despierta al jefe, que decide en el escalon
+    local y puede contratar. Sus frenos viven en calipso/plantel/interruptor.
+    """
     def _reflect(_r):
         mem.reflect()
 
@@ -2601,7 +2604,31 @@ def _routine_handlers() -> dict:
     def _backup(_r):
         calipso_backup.create_backup()
 
-    return {"reflect": _reflect, "learn": _learn, "backup": _backup}
+    def _departamento(r):
+        cuenta = r.get("cuenta")
+        if not cuenta:
+            return
+        eco = _economia()
+        if eco is None:
+            return
+        _, semana = _eco_ahora()
+        m = eco["pagador"].mercado_fresco()
+        ts, _ = _eco_ahora()
+        ctx = _plantel_jefe.Contexto(
+            base=_ECO_BASE, kernel=m.k, registro=m.registro,
+            bus=eco["bus"], cola=eco["cola"], suscripciones=m.suscripciones,
+            memoria=mem.departamento(cuenta.split(":", 1)[1]),
+            pensar=_pensar_local,
+            contratar=_contratar_para(cuenta, eco["bus"], ts, semana),
+            publicar=_publicar_jefe(cuenta))
+        # SIN candado envolvente: el tic incluye una llamada a un modelo, y
+        # tener el flock del libro tomado durante segundos serializa el chat
+        # y a dispatch contra el. La unica escritura al libro es la de
+        # `_cobrar_turno`, que ya toma el candado por su cuenta.
+        _plantel_jefe.tic(ctx, cuenta, semana)
+
+    return {"reflect": _reflect, "learn": _learn, "backup": _backup,
+            "departamento": _departamento}
 
 
 @app.get("/api/routines")
@@ -2617,7 +2644,8 @@ async def api_routines_add(request: Request) -> dict:
         return calipso_routines.add(
             data.get("kind", ""), data.get("label", ""),
             int(data.get("interval_minutes", 1440)),
-            enabled=bool(data.get("enabled", False)))
+            bool(data.get("enabled", False)),
+            cuenta=data.get("cuenta"))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -3525,6 +3553,52 @@ def api_eco_reloj_conciliar(body: EcoConciliarBody) -> dict:
     return {"ok": True}
 
 
+class PlantelModoBody(BaseModel):
+    modo: str
+
+
+def _plantel_vista() -> dict:
+    """Si el plantel no se pudo importar, el tablero lo dice en vez de
+    reventar con un AttributeError sobre None."""
+    if _plantel_it is None:
+        return {"activo": False}
+    e = _plantel_it.leer(_ECO_BASE)
+    return {"activo": True, "encendido": e.encendido, "modo": e.modo,
+            "techo_tics": e.techo_tics}
+
+
+@app.get("/api/plantel")
+def api_plantel() -> dict:
+    return _plantel_vista()
+
+
+@app.post("/api/plantel/parar")
+def api_plantel_parar() -> dict:
+    if _plantel_it is None:
+        return _plantel_vista()
+    _plantel_it.parar(_ECO_BASE)
+    return _plantel_vista()
+
+
+@app.post("/api/plantel/reanudar")
+def api_plantel_reanudar() -> dict:
+    if _plantel_it is None:
+        return _plantel_vista()
+    _plantel_it.reanudar(_ECO_BASE)
+    return _plantel_vista()
+
+
+@app.put("/api/plantel/modo")
+def api_plantel_modo(body: PlantelModoBody) -> dict:
+    if _plantel_it is None:
+        return _plantel_vista()
+    try:
+        _plantel_it.poner_modo(_ECO_BASE, body.modo)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return _plantel_vista()
+
+
 # --------------------------------------------------------------------------
 # MAPA (spec 2026-08-25): el modelo de ciudad
 # --------------------------------------------------------------------------
@@ -3534,12 +3608,15 @@ try:
     from calipso.mapa import ficha as _mapa_ficha
     from calipso.mapa import foco as _mapa_foco
     from calipso.mapa import urbanismo as _mapa_urbanismo
+    from calipso.plantel import interruptor as _plantel_it
+    from calipso.plantel import jefe as _plantel_jefe
 except Exception:  # el mapa no esta disponible: el endpoint responde inactivo
     _mapa_ciudad = None
     _mapa_urbanismo = None
     _mapa_cap = None
     _mapa_ficha = None
     _mapa_foco = None
+    _plantel_it = _plantel_jefe = None
 
 
 # --------------------------------------------------------------------------
@@ -3551,6 +3628,95 @@ try:
 except Exception:  # sin pulso el mapa sigue mostrando la foto
     _pulso_mod = None
     EL_PULSO = None
+
+
+def _pensar_local(prompt: str) -> str:
+    """El escalon barato de verdad.
+
+    OJO: NO se usa `_chunks_for("local", ...)`. En este server la ruta
+    "local" no es Ollama — `_local_via_sub` ejecuta `claude -p`, o sea que
+    decidir consumiria una unidad de suscripcion por tic y por departamento,
+    y "decidir es gratis" seria falso. El camino local real es el del
+    clasificador, el mismo que usa `_plan_dynamic_team`.
+    """
+    cfg = dispatch.CONFIG["classifier"]
+    data = dispatch._http_post_json(
+        cfg["base_url"],
+        {"model": cfg["model"], "prompt": prompt, "stream": False,
+         "options": {"temperature": 0}})
+    return str(data.get("response") or "")
+
+
+def _publicar_jefe(cuenta: str):
+    def publicar(evento: str, **campos):
+        if EL_PULSO is None:
+            return
+        EL_PULSO.publicar(f"jefe:{cuenta}", evento, **campos)
+    return publicar
+
+
+def _contratar_para(cuenta: str, bus, ts: str, semana: str):
+    """Lo que el jefe hace cuando decidio que hay algo que hacer.
+
+    `comentar` no toca el bus: el bus no tiene superficie de comentarios, asi
+    que la opinion queda en la memoria del departamento (la escribe el jefe)
+    y en el pulso.
+    """
+    def contratar(situacion: dict, accion: str, ref: str | None):
+        if accion == "comentar":
+            # opinar es barato: no contrata a nadie y no cobra
+            return {"accion": "comentar", "ref": ref, "en": "memoria"}
+
+        # `_plan_dynamic_team` devuelve `orchestrator.plan`, que NO trae ruta
+        # ni modelo: eso lo agrega `build_team`. Sin este paso, cobrar seria
+        # cobrar contra un agente sin backend, y el chat ya hace lo mismo
+        # (server.py, la rama del equipo dinamico).
+        plan_obj = _plan_dynamic_team(
+            f"Departamento {situacion['nombre']}: {accion} {ref or ''}".strip(),
+            {"type": "analysis", "complexity": "media"})
+        equipo = orchestrator.build_team(plan_obj, _backend_availability(),
+                                         project_root=str(ROOT))
+        agentes = equipo.get("agents", [])
+
+        propuesta = None
+        if accion == "proponer":
+            # SIN ESTO el jefe "propone" y no queda rastro: el criterio de
+            # exito del spec (un departamento propone algo sin que Pedro le
+            # hable) se mide en el bus, no en el pulso.
+            #
+            # Los numeros los declara el jefe desde sus PERILLAS, no el
+            # modelo: pedirle un presupuesto a un modelo de 3b es pedirle un
+            # numero alucinado que gasta plata de verdad.
+            tope = (situacion["presupuesto_semanal_mm"]
+                    * situacion["agresividad_pct"] // 100)
+            presupuesto = max(1, tope - situacion["salidas_semana_mm"])
+            propuesta = f"{situacion['nombre']}-{uuid.uuid4().hex[:8]}"
+            titulo = (plan_obj.get("synthesis")
+                      or (agentes[0]["task"] if agentes else accion))[:120]
+            bus.alta(ts, semana, propuesta, cuenta, titulo, presupuesto,
+                     presupuesto, {"gasto_max_mm": presupuesto})
+
+        # Y ACA se cobra, que es el punto de todo esto.
+        unidades = 0
+        for a in agentes:
+            if cuenta.startswith("personal:"):
+                # La zona personal no compra capacidad de fabrica (invariante
+                # 12): su computo va contra la reserva personal, que es lo que
+                # el pagador entiende por la cuenta exacta "personal".
+                pagadora = _mapa_ficha.CUENTA_PERSONAL if _mapa_ficha else "personal"
+            else:
+                pagadora = cuenta
+            _cobrar_turno(pagadora, a.get("route") or "local",
+                          a.get("client"), a.get("model"),
+                          {"prompt_tokens": 0, "completion_tokens": 0})
+            unidades += 1
+        # No se informa en milimonedas: `_cobrar_turno` devuelve 0 para
+        # suscripcion (se cobra en unidades de capacidad) y decir "cobrado_mm"
+        # seria anunciar plata que el libro no movio.
+        return {"accion": accion, "ref": ref, "propuesta": propuesta,
+                "agentes": len(agentes), "unidades_cobradas": unidades}
+    return contratar
+
 
 SONDEO_S = 0.25
 LATIDO_CADA = 40          # sondeos: un latido cada diez segundos
