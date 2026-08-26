@@ -17,6 +17,8 @@ from . import decision as dec
 from . import interruptor as it
 from . import situacion as sit
 
+TECHO_PROPUESTAS = 3   # propuestas propias sin financiar, antes de frenar
+
 
 @dataclass
 class Contexto:
@@ -60,6 +62,14 @@ def _puede(estado, s: dict, accion: str, ref: str | None) -> tuple[bool, str]:
     if s["disponible_mm"] <= 0:
         return False, "sin saldo disponible"
     if accion == "proponer":
+        # Techo de propuestas propias sin financiar. El modelo ve las que ya
+        # tiene en pie y propone otra igual igual, asi que a 200 tics por
+        # semana el bus de Pedro se llena de duplicados y deja de servir para
+        # lo unico que sirve: que Pedro elija. Que despeje la bandeja primero.
+        propias = len(s.get("propuestas_propias", []))
+        if propias >= TECHO_PROPUESTAS:
+            return False, (f"ya tiene {propias} propuestas sin financiar: "
+                           f"que Pedro despeje antes de sumar otra")
         tope = s["presupuesto_semanal_mm"] * s["agresividad_pct"] // 100
         if s["salidas_semana_mm"] >= tope:
             return False, (f"agresividad: ya comprometio "

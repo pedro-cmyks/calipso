@@ -269,3 +269,63 @@ def test_comentar_con_id_inventado_no_actua(tmp_path):
     assert out["actuo"] is False
     assert "no existe" in out["freno"] and "p9" in out["freno"]
     assert contratos == []
+
+def test_el_techo_de_propuestas_frena_proponer(tmp_path):
+    """A 200 tics por semana, el modelo ve sus propias propuestas sin
+    financiar y propone otra igual: el bus de Pedro se llena de duplicados
+    y deja de servir para lo unico que sirve, que Pedro elija."""
+    ctx, contratos, _ = armar(tmp_path, "proponer\notra idea mas")
+    for i in range(j.TECHO_PROPUESTAS):
+        ctx.bus.alta(TS, W, f"p{i}", "dep:atlas", f"propuesta {i}", 1_000,
+                    2_000, {"gasto_max_mm": 5_000})
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["actuo"] is False
+    assert "propuestas sin financiar" in out["freno"]
+    assert contratos == []
+
+
+def test_con_menos_propuestas_que_el_techo_sigue_pudiendo_proponer(tmp_path):
+    """El techo no puede volverse un cero disfrazado: por debajo, proponer
+    sigue pasando."""
+    ctx, contratos, _ = armar(tmp_path, "proponer\notra idea mas")
+    for i in range(j.TECHO_PROPUESTAS - 1):
+        ctx.bus.alta(TS, W, f"p{i}", "dep:atlas", f"propuesta {i}", 1_000,
+                    2_000, {"gasto_max_mm": 5_000})
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["actuo"] is True
+    assert contratos == [("proponer", None, "otra idea mas")]
+
+
+def test_el_techo_de_propuestas_no_tapa_la_agresividad(tmp_path):
+    """El chequeo nuevo va primero por ser mas barato, pero no puede dejar
+    inalcanzable el de agresividad: con pocas propuestas en pie, la perilla
+    sigue frenando proponer y el freno lo sigue diciendo."""
+    ctx, contratos, _ = armar(tmp_path, "proponer\notra apuesta")
+    ctx.bus.alta(TS, W, "p0", "dep:atlas", "una nomas", 1_000, 2_000,
+                {"gasto_max_mm": 5_000})
+    it.poner_modo(tmp_path, "vivo")
+    # agresividad 40% de 25.000 = 10.000; sacamos 12.000 de la semana
+    ctx.kernel.destruir(TS, W, "dep:atlas", 12_000, motivo="api")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["actuo"] is False
+    assert "agresividad" in out["freno"]
+    assert contratos == []
+
+
+def test_el_techo_de_propuestas_no_afecta_comentar_ni_nada(tmp_path):
+    """El techo nuevo es especifico de `proponer`: con la bandeja llena,
+    `comentar` sobre un id real y `nada` siguen sin verse afectados."""
+    ctx, contratos, _ = armar(tmp_path, "nada\ntodo tranquilo")
+    for i in range(j.TECHO_PROPUESTAS):
+        ctx.bus.alta(TS, W, f"p{i}", "dep:atlas", f"propuesta {i}", 1_000,
+                    2_000, {"gasto_max_mm": 5_000})
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["accion"] == "nada" and out["freno"] == "no hay nada que hacer"
+
+    ctx.pensar = lambda _p: "comentar p0\nopino sobre esta"
+    out2 = j.tic(ctx, "dep:atlas", W)
+    assert out2["actuo"] is True
+    assert contratos == [("comentar", "p0", "opino sobre esta")]
