@@ -88,9 +88,9 @@ def test_el_prompt_lleva_los_numeros_que_hacen_falta():
          "capacidad": {"nombre": "claude_max", "precio_mm": 50,
                        "precio_base_mm": 100}}
     p = dec.prompt(s, 60)
-    for dato in ("atlas", "400000", "25000", "7000", "p1", "radar", "p2",
-                 "claude_max", "50"):
+    for dato in ("atlas", "400000", "25000", "7000", "p1", "radar", "p2"):
         assert dato in p, f"al prompt le falta {dato}"
+    assert "Capacidad de computo: 50 mm por unidad de claude_max (lista 100)." in p
     assert "explorar" in p
     # y ofrece exactamente las cuatro acciones
     for accion in dec.ACCIONES:
