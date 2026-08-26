@@ -187,6 +187,13 @@ Tres cosas quedaron medidas y ruladas afuera del Plan 1. Se anotan acá porque l
 
 Medida de techo: a 71 edificios la derivación tarda 162 ms y la distancia mínima entre dos edificios es 25,8, contra un umbral de 20.
 
+## 12 ter. Pendientes conocidos del Plan 2
+
+- **La cascada del CSS no tiene test.** Dos arreglos viven solo en `estilo.css` y no hay forma de testearlos sin meter un navegador en la suite: que `#app.mapa-entero` esté encerrado en el complemento exacto del media query del teléfono (si no, por debajo de 820px queda una trampa sin salida: plantilla de tres columnas sobre una grilla de una, sin barra de pestañas y con el botón de salir escondido), y que `.sin-fabrica` tenga fondo propio. Los dos se verificaron con capturas; si alguien los toca, nada lo agarra.
+- **El piso de tests de JavaScript es 90 y hoy pasan 118.** `test_fabrica_js.py` exige que el conteo TAP de `node --test` supere ese piso, porque un directorio sin tests sale con código cero. Es una red contra que desaparezcan todos, no un trinquete sobre cuántos hay: un archivo entero podría irse sin que la suite lo note.
+- **`arranque.test.js` importa `app.js` una sola vez** y sus tests comparten ese estado en orden. Es inevitable —un módulo ES es un singleton por proceso, y no hay forma de reimportarlo limpio sin jsdom— pero significa que meter un test en el medio del archivo puede correr a los de abajo.
+- **Dos superficies quedan cableadas a medias, a propósito**: la lista de chats se ve interactiva (`cursor: pointer`, un `data-id`) y todavía no responde al click, y el estado del chat acumula ruta, modelo, costo y tokens sin que nada los muestre. Las dos las usa el Plan 3, que cablea el acoplamiento y muestra el costo corriendo.
+
 ## 13. Criterios de éxito
 
 - Pedro abre `/fabrica` en el teléfono y en treinta segundos sabe si la fábrica está bien o mal, sin leer un número.
