@@ -3439,6 +3439,56 @@ except Exception:  # el mapa no esta disponible: el endpoint responde inactivo
     _mapa_cap = None
 
 
+# --------------------------------------------------------------------------
+# EL PULSO (spec 2026-08-25 secciones 5 y 6): la capa viva
+# --------------------------------------------------------------------------
+try:
+    from calipso.mapa import pulso as _pulso_mod
+    EL_PULSO = _pulso_mod.EL_PULSO
+except Exception:  # sin pulso el mapa sigue mostrando la foto
+    _pulso_mod = None
+    EL_PULSO = None
+
+SONDEO_S = 0.25
+LATIDO_CADA = 40          # sondeos: un latido cada diez segundos
+
+
+@app.websocket("/ws/mapa")
+async def ws_mapa(ws: WebSocket) -> None:
+    """El pulso, en vivo.
+
+    Se sondea el anillo con un cursor en vez de que el publicador empuje:
+    los agentes publican desde hilos de trabajo (`asyncio.to_thread`) y
+    tocar el event loop desde otro hilo es la clase de cosa que anda hasta
+    que no. El costo es un cuarto de segundo de latencia para ver pensar a
+    un agente."""
+    if not _valid(ws.cookies.get(COOKIE)):
+        await ws.close(code=1008)   # politica violada: sin token valido
+        return
+    await ws.accept()
+    if EL_PULSO is None:
+        await ws.send_json({"evento": "sin-pulso"})
+        await ws.close()
+        return
+    cursor = 0            # cero, no el presente: el que llega tarde recibe
+    vueltas = 0           # lo que el anillo todavia guarda
+    try:
+        while True:
+            cursor, nuevos = EL_PULSO.desde(cursor)
+            for ev in nuevos:
+                await ws.send_json(ev)
+            vueltas += 1
+            if vueltas % LATIDO_CADA == 0:
+                # sin trafico, un socket muerto no se nota hasta el proximo
+                # evento, que puede no llegar nunca
+                await ws.send_json({"evento": "latido", "seq": cursor})
+            await asyncio.sleep(SONDEO_S)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass              # el cliente reconecta solo; el mapa sigue con la foto
+
+
 @app.get("/api/mapa/ciudad")
 def api_mapa_ciudad() -> dict:
     if _mapa_ciudad is None:
