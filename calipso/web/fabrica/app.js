@@ -203,6 +203,12 @@ const chat = crearChat(estado => {
               `${escapar(t.texto)}</div>`)
     .join("");
   conversacion.scrollTop = conversacion.scrollHeight;
+  // el estado de conexion se pinta DESDE el estado. El aviso que agrega el
+  // submit es pasajero y el proximo render lo borra; esto no, y por eso es
+  // lo que Pedro mira para saber si Calipso lo esta escuchando.
+  formulario.classList.toggle("sin-conexion", !estado.conectado);
+  campo.placeholder = estado.conectado
+    ? "Escribi a Calipso" : "Sin conexion con Calipso";
 });
 
 formulario.addEventListener("submit", ev => {

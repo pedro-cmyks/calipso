@@ -69,6 +69,9 @@ html, body {
   background: var(--linea); color: var(--texto); border: 0;
   border-radius: 4px; padding: 7px 12px; cursor: pointer;
 }
+/* mientras el socket este caido se ve, y no por dos segundos */
+#entrada.sin-conexion input { border-color: #ff7b72; }
+#entrada.sin-conexion button { opacity: .45; }
 
 .lienzo { position: relative; flex: 1; min-height: 0; }
 #mapa {
