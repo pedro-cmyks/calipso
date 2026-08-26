@@ -33,11 +33,24 @@ class Contexto:
         default=lambda evento, **campos: None)
 
 
-def _puede(estado, s: dict, accion: str) -> tuple[bool, str]:
+def _puede(estado, s: dict, accion: str, ref: str | None) -> tuple[bool, str]:
     """Los frenos, del mas barato de chequear al mas caro de violar."""
     if accion == "nada":
         return False, "no hay nada que hacer"
+
+    # El jefe solo puede referirse a lo que su propia situacion le mostro.
+    # Un modelo de 3b nombra ids que no existen: se lo vio contestar
+    # "trabajar 1" con la lista de trabajos vivos vacia. El parser valida la
+    # FORMA de la respuesta; esto valida la REFERENCIA.
+    if accion == "trabajar":
+        if ref not in {t["id"] for t in s["trabajos"]}:
+            return False, f"no existe el trabajo {ref!r}"
     if accion == "comentar":
+        conocidos = {p["id"] for p in s.get("propuestas_propias", [])}
+        conocidos |= {p["id"] for p in s["propuestas_ajenas"]}
+        conocidos |= {t["id"] for t in s["trabajos"]}
+        if ref not in conocidos:
+            return False, f"no existe la propuesta {ref!r}"
         # opinar no contrata a nadie ni cobra (el contratista lo devuelve como
         # no-op), asi que no hay gasto que frenar — y en ensayo formar criterio
         # es exactamente lo que queremos ver pasar
@@ -113,7 +126,7 @@ def tic(ctx: Contexto, cuenta: str, semana: str) -> dict:
         ctx.publicar("razonando",
                      texto=f"{accion} {ref or ''} — {motivo}".strip())
 
-        permiso, freno = _puede(estado, s, accion)
+        permiso, freno = _puede(estado, s, accion, ref)
         resultado = None
         if permiso:
             resultado = ctx.contratar(s, accion, ref, motivo)

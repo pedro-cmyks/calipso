@@ -127,6 +127,9 @@ def test_la_agresividad_frena_proponer_pero_no_trabajar(tmp_path):
     # agresividad 40% de 25.000 = 10.000; sacamos 12.000 de la semana
     ctx.kernel.destruir(TS, W, "dep:atlas", 12_000, motivo="api")
     assert j.tic(ctx, "dep:atlas", W)["actuo"] is False
+    ctx.bus.alta(TS, W, "p1", "dep:atlas", "ya en marcha", 1_000, 2_000,
+                {"gasto_max_mm": 5_000})
+    ctx.bus.marcar(TS, W, "p1", "financiada")
     ctx.pensar = lambda _p: "trabajar p1\nya esta financiado"
     assert j.tic(ctx, "dep:atlas", W)["actuo"] is True
 
@@ -196,6 +199,8 @@ def test_comentar_en_ensayo_llega_a_la_memoria(tmp_path):
     justo el modo en el que arranca la fabrica, donde ver el nucleo
     formarse importa mas."""
     ctx, contratos, _ = armar(tmp_path, "comentar p2\nno me cierra el precio")
+    ctx.bus.alta(TS, W, "p2", "dep:otro", "propuesta ajena", 1_000, 2_000,
+                {"gasto_max_mm": 5_000})
     out = j.tic(ctx, "dep:atlas", W)
     assert out["accion"] == "comentar" and out["actuo"] is True
     assert contratos == [("comentar", "p2", "no me cierra el precio")]
@@ -241,3 +246,26 @@ def test_el_motivo_del_parser_llega_al_contratista(tmp_path):
     it.poner_modo(tmp_path, "vivo")
     j.tic(ctx, "dep:atlas", W)
     assert contratos == [("proponer", None, "hay hueco en precios de GPU")]
+
+
+def test_trabajar_con_id_inventado_no_actua(tmp_path):
+    """El jefe solo puede referirse a lo que su propia situacion le mostro:
+    un modelo de 3b nombra ids que no existen -se lo vio contestar
+    "trabajar 1" con la lista de trabajos vivos vacia."""
+    ctx, contratos, _ = armar(tmp_path, "trabajar p9\nsigo con esto")
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["actuo"] is False
+    assert "no existe" in out["freno"] and "p9" in out["freno"]
+    assert contratos == []
+
+
+def test_comentar_con_id_inventado_no_actua(tmp_path):
+    """Comentar es gratis, pero no gratis para inventar un id: si no esta
+    en ninguna de las tres listas que el jefe vio (propuestas propias,
+    ajenas o trabajos), se frena igual."""
+    ctx, contratos, _ = armar(tmp_path, "comentar p9\nesto no me cierra")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["actuo"] is False
+    assert "no existe" in out["freno"] and "p9" in out["freno"]
+    assert contratos == []
