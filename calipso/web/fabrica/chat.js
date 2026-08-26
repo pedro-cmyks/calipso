@@ -31,8 +31,11 @@ export function turnosDeHistorial(mensajes) {
 // persistente, asi que el resto del stream del chat anterior sigue llegando
 // despues de cargar otro. Un "chat" (accion "updated") es parte de esto: si
 // se aplicara, el chatId volveria al chat viejo y el proximo mensaje de
-// Pedro se guardaria en la conversacion equivocada.
-const EVENTOS_DEL_STREAM = new Set(["chunk", "done", "meta", "cost", "chat"]);
+// Pedro se guardaria en la conversacion equivocada. Y un "error" no es solo
+// el caso de la conexion cortada: el servidor lo manda tambien en medio de
+// un turno normal (ruta local sin fallback) y sigue con cost/done despues.
+const EVENTOS_DEL_STREAM = new Set(["chunk", "done", "meta", "cost", "chat",
+                                     "error"]);
 
 export function aplicarEvento(estado, ev) {
   const e = {...estado, turnos: [...estado.turnos]};

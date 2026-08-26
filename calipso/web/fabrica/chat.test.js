@@ -322,3 +322,25 @@ test("la barra de costo se vacia al cargar otro chat", () => {
   chat.cargar({id: "c9", messages: []});
   assert.equal(textoDeCosto(chat.estado()), "");
 });
+
+test("un error del chat anterior no agrega ningun turno tras cargar", () => {
+  // el servidor puede mandar un error EN MEDIO de un turno normal (ruta
+  // local, la generacion tira sin ruta de fallback) y seguir con cost/done
+  // despues: no es solo el caso de la conexion cortada
+  const {chat, disparar} = wsAbierto();
+  chat.cargar({id: "c9", messages: [{role: "user", text: "viejo"}]});
+  const antes = chat.estado().turnos;
+  disparar({type: "error", text: "se cayo la ruta local"});
+  assert.deepEqual(chat.estado().turnos, antes,
+                   "el error del chat viejo se pego sobre el historial nuevo");
+});
+
+test("un error de un turno nuevo si se pinta, porque llega despues de su thinking", () => {
+  const {chat, disparar} = wsAbierto();
+  chat.cargar({id: "c9", messages: [{role: "user", text: "viejo"}]});
+  disparar({type: "thinking"});           // arranca el turno nuevo de verdad
+  disparar({type: "error", text: "se cayo de nuevo"});
+  const ultimo = chat.estado().turnos.at(-1);
+  assert.equal(ultimo.quien, "error");
+  assert.ok(ultimo.texto.includes("se cayo de nuevo"));
+});
