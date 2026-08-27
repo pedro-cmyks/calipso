@@ -37,6 +37,22 @@ test("el titulo se escapa: lo escribe un modelo, no es de confianza", () => {
   assert.match(html, /&lt;img/);
 });
 
+test("el id, la cuenta y el departamento tambien se escapan", () => {
+  // una etiqueta distinta por campo, y ninguna que la plantilla emita por su
+  // cuenta: asi un fallo dice cual se colo. El <b> no sirve de payload
+  // porque fila() ya lo usa para el nombre del departamento.
+  const venenoso = {...P1, id: '"><img src=x onerror="alert(1)">',
+                    departamento: 'dep:<iframe src=x>'};
+  const deps = [{cuenta: '"><script>alert(1)</script>', nombre: "raro",
+                 zona: "fabrica", disponible_mm: 999999}];
+  const html = textoDeMesa({activa: true, semana: "2026-W35",
+                            semana_abierta: true, propuestas: [venenoso],
+                            departamentos: deps});
+  assert.ok(!html.includes("<img"), "se colo una etiqueta por el id");
+  assert.ok(!html.includes("<script"), "se colo una etiqueta por la cuenta");
+  assert.ok(!html.includes("<iframe"), "se colo una etiqueta por el departamento");
+});
+
 test("el selector ofrece los departamentos y preselecciona al dueno", () => {
   const html = textoDeMesa(datos([P1]));
   assert.match(html, /<option value="dep:atlas" selected/);
