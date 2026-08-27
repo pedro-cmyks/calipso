@@ -28,11 +28,28 @@ def main() -> int:
     fails: list[str] = []
     now = datetime.datetime(2026, 6, 16, 12, 0, 0)
 
-    # seed inicial: 3 rutinas, todas deshabilitadas
+    # seed inicial: 4 rutinas. Las tres viejas nacen deshabilitadas;
+    # "catastro" nace habilitada a proposito (ver el comentario de
+    # routines.DEFAULTS): es la que existe para que Pedro no tenga que
+    # acordarse de prenderla.
     seeded = routines.load()
-    check("seed crea 3 rutinas", len(seeded) == 3, fails)
-    check("seed todas deshabilitadas", all(not r["enabled"] for r in seeded), fails)
-    check("kinds esperados", {r["kind"] for r in seeded} == {"reflect", "learn", "backup"}, fails)
+    check("seed crea 4 rutinas", len(seeded) == 4, fails)
+    viejas = [r for r in seeded if r["kind"] != "catastro"]
+    check("las tres viejas nacen deshabilitadas",
+         all(not r["enabled"] for r in viejas), fails)
+    catastro_rt = next((r for r in seeded if r["kind"] == "catastro"), None)
+    check("catastro nace habilitada",
+         catastro_rt is not None and catastro_rt["enabled"] is True, fails)
+    check("kinds esperados",
+         {r["kind"] for r in seeded} == {"reflect", "learn", "backup", "catastro"},
+         fails)
+
+    # el resto de esta prueba ejercita el vencimiento de UNA rutina
+    # puntual (reflect); catastro nace habilitada y por lo tanto "vence"
+    # desde el primer load() (nunca corrio), lo que interferiria con esas
+    # aserciones. Ya quedo probado arriba que nace habilitada -- se apaga
+    # aca para el resto del escenario.
+    routines.update(catastro_rt["id"], {"enabled": False})
 
     # rutina deshabilitada nunca vence
     check("deshabilitada no vence", routines.due(routines.load(), now) == [], fails)
@@ -134,8 +151,10 @@ def main() -> int:
     # corrupto", el caso de arriba) sigue dando el seed, como siempre
     ruta_routines.unlink()
     reseed = routines.load()
+    reseed_viejas = [r for r in reseed if r["kind"] != "catastro"]
     check("archivo ausente sigue dando el seed",
-         len(reseed) == 3 and all(not r["enabled"] for r in reseed), fails)
+         len(reseed) == 4 and all(not r["enabled"] for r in reseed_viejas),
+         fails)
 
     # add/remove
     extra = routines.add("backup", "Backup manual", 720, enabled=True)

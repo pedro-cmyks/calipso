@@ -12,6 +12,7 @@ import os
 import pathlib
 from typing import Any
 
+from calipso import catastro
 from calipso.economia import bus as eco_bus
 from calipso.economia import departamentos as eco_deps
 from calipso.economia.candado import candado as eco_candado
@@ -26,6 +27,14 @@ from calipso.economia.tipos import CUENTA_PEDRO, DIRECCION, TESORO
 ECONOMIA_BRIEF_MAX = 2000
 ECONOMIA_MAX_DEPARTAMENTOS = 15
 ECONOMIA_MAX_PROYECTOS = 10
+
+# Techo del bloque "Proyectos": tambien entra en CADA turno (3.4 del spec
+# de catastro). 1200 caracteres y 20 proyectos son el techo duro decidido
+# ahi -- veinte lineas de sesenta caracteres son unos trescientos tokens
+# por turno, y es lo que cuesta que Calipso no vuelva a decir "no se" de
+# un proyecto que tiene al lado, en el disco.
+PROYECTOS_BRIEF_MAX = 1200
+PROYECTOS_MAX_ITEMS = 20
 
 
 def internal_contract(features: dict[str, Any] | None = None) -> str:
@@ -65,6 +74,7 @@ def context_sections(system: str, identity: str = "", core: str = "",
                      recalled: list[dict[str, Any]] | None = None,
                      repo_brief: str = "", goal_block: str = "",
                      runtime: str = "", economia: str = "",
+                     proyectos: str = "",
                      features: dict[str, Any] | None = None,
                      core_limit: int = 5000) -> list[tuple[str, str]]:
     """Devuelve secciones ordenadas de contexto: estable -> volatil -> estado."""
@@ -83,6 +93,8 @@ def context_sections(system: str, identity: str = "", core: str = "",
             sections.append(("Recuerdos relevantes", lines))
     if repo_brief:
         sections.append(("Repo", repo_brief))
+    if proyectos:
+        sections.append(("Proyectos", proyectos))
     if goal_block:
         sections.append(("Meta activa", goal_block))
     if economia:
@@ -119,12 +131,14 @@ def compile_context(system: str, identity: str = "", core: str = "",
                     recalled: list[dict[str, Any]] | None = None,
                     repo_brief: str = "", goal_block: str = "",
                     runtime: str = "", economia: str = "",
+                    proyectos: str = "",
                     features: dict[str, Any] | None = None,
                     core_limit: int = 5000) -> str:
     return render_context(context_sections(
         system, identity=identity, core=core, recalled=recalled,
         repo_brief=repo_brief, goal_block=goal_block, runtime=runtime,
-        economia=economia, features=features, core_limit=core_limit))
+        economia=economia, proyectos=proyectos, features=features,
+        core_limit=core_limit))
 
 
 def economia_brief(base: pathlib.Path | str | None = None) -> str:
@@ -256,3 +270,62 @@ def _formatear_economia(deptos: list[tuple[str, str, int, bool]],
             f"gastos {resumen_personal['gastos_mm']} mm, neto "
             f"{resumen_personal['neto_mm']} mm.")
     return "\n".join(lineas)[:ECONOMIA_BRIEF_MAX]
+
+
+def _linea_proyecto(p: dict[str, Any], home: pathlib.Path,
+                    ruta_actual: str | None) -> str:
+    ruta = pathlib.Path(p["ruta"])
+    try:
+        etiqueta_ruta = f"~/{ruta.relative_to(home)}"
+    except ValueError:
+        etiqueta_ruta = str(ruta)
+    rama = p.get("rama") or "sin rama"
+    commit = (p.get("ultimo_commit") or "")[:10] or "sin commits"
+    if p["ruta"] == ruta_actual:
+        cola = "en foco"
+    elif p.get("departamento"):
+        cola = f"dep {p['departamento']}"
+    else:
+        cola = "sin departamento"
+    return f"{p['nombre']} ({etiqueta_ruta}) rama {rama}, ult. {commit}, {cola}"
+
+
+def proyectos_brief(ruta_actual: pathlib.Path | str | None = None) -> str:
+    """Seccion "Proyectos" que entra en CADA turno (3.4 del spec de
+    catastro, el mismo tipo de funcion pura que `economia_brief`): una
+    linea por proyecto del catastro (calipso/catastro.py), ordenada por
+    "visto" descendente, con el proyecto en foco marcado en vez de listar
+    su departamento. Es un indice, no contenido -- nunca lee ni cita nada
+    de adentro de los repos, esa regla la fija `_build_context` en
+    calipso/server.py y el catastro la respeta desde el escaneo (3.4).
+
+    Techo duro: PROYECTOS_BRIEF_MAX caracteres y PROYECTOS_MAX_ITEMS
+    proyectos. Lo que no entra se resume en una linea "y N proyecto(s)
+    mas; preguntame por nombre." en vez de cortarse a la mitad."""
+    proyectos = catastro.cargar()
+    if not proyectos:
+        return ("No hay proyectos en el catastro todavia: el escaneo de "
+                "raices (~/.calipso/catastro.json) no encontro ninguno.")
+    ruta_actual_str = None
+    if ruta_actual:
+        try:
+            ruta_actual_str = str(pathlib.Path(ruta_actual).resolve())
+        except OSError:
+            ruta_actual_str = None
+    home = pathlib.Path.home().resolve()
+    total = len(proyectos)
+    mostrados = proyectos[:PROYECTOS_MAX_ITEMS]
+
+    def _armar(mostrados: list[dict[str, Any]]) -> str:
+        lineas = [_linea_proyecto(p, home, ruta_actual_str) for p in mostrados]
+        extra = total - len(mostrados)
+        if extra > 0:
+            lineas.append(f"y {extra} proyecto(s) mas; preguntame por nombre.")
+        lineas.append("Para el detalle de cualquiera, pedimelo por nombre.")
+        return "\n".join(lineas)
+
+    texto = _armar(mostrados)
+    while len(texto) > PROYECTOS_BRIEF_MAX and mostrados:
+        mostrados = mostrados[:-1]
+        texto = _armar(mostrados)
+    return texto[:PROYECTOS_BRIEF_MAX]

@@ -5,15 +5,46 @@ calipso/tools/commands.py - comandos allowlist para el loop desarrollador.
 Nunca ejecuta texto libre ni usa shell. Cada comando tiene un id estable, una
 lista de argumentos y una descripcion humana para que la UI pueda mostrarlo sin
 exponer a Pedro a detalles innecesarios.
+
+Dos cosas del allowlist que no eran ciertas hasta este cambio, verificadas
+con un repo de prueba antes de arreglarlas:
+
+1. La mayoria de las entradas (py_compile_core, ui_syntax, docs_check,
+   docs_links, toda la familia test_*) traen argumentos RELATIVOS
+   ("test_ui.py", "calipso/server.py") y `run()` las corria con
+   `cwd=project_root`. Como `project_root` es lo que el catastro (y antes,
+   `/api/project/open`) haya abierto, un repo ajeno con su propio
+   "test_ui.py" en la raiz se ejecutaba EN VEZ del test_ui.py de Calipso --
+   confirmado corriendo `commands.run(<repo ajeno>, "ui_syntax")` antes de
+   este arreglo. Estos comandos existen para validar el codigo de Calipso,
+   no el proyecto que este abierto; ahora corren siempre con
+   `cwd=CALIPSO_REPO_ROOT`, sin importar que `project_root` se les pase.
+2. Los cuatro comandos de git (`git_status`, `git_diff`, `git_diff_staged`,
+   `git_log`) SI tienen que correr contra `project_root` -- ese es su punto
+   -- pero `git` ejecuta lo que declare el `.git/config` del repo que lee.
+   Un `.git/config` con `core.fsmonitor = "comando; false"` corre ese
+   comando en un `git status` normal, sin pedir permiso -- confirmado con
+   un repo de prueba antes de este arreglo, y tambien confirmado que
+   `commands.run(<repo con ese config>, "git_status")` lo disparaba. Ahora
+   estos cuatro van con `-c core.fsmonitor= -c diff.external=
+   -c core.pager=cat` y `GIT_CONFIG_GLOBAL=/dev/null` en el entorno.
 """
 from __future__ import annotations
 
 import json
+import os
+import pathlib
 import subprocess
 import sys
 from typing import Any
 
 from calipso import goals, jobs
+
+# Raiz del repo de Calipso (el que contiene el paquete calipso/): dos
+# niveles arriba de este archivo (calipso/tools/commands.py). Los comandos
+# de "scope": "calipso" siempre corren aca, nunca en project_root -- ver
+# el punto 1 del docstring de arriba.
+CALIPSO_REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 
 
 def _python() -> str:
@@ -222,24 +253,31 @@ ALLOWLIST: dict[str, dict[str, Any]] = {
         "description": "Muestra el estado actual del repositorio (archivos modificados, staged, untracked).",
         "args": ["git", "status"],
         "timeout": 10,
+        # a diferencia de todo lo de arriba, este SI corre contra el
+        # proyecto que este abierto -- es su punto -- y por eso lleva el
+        # blindaje de git en _args()/run().
+        "scope": "project",
     },
     "git_diff": {
         "title": "Git diff",
         "description": "Muestra los cambios sin stagear en el repositorio.",
         "args": ["git", "diff"],
         "timeout": 10,
+        "scope": "project",
     },
     "git_diff_staged": {
         "title": "Git diff staged",
         "description": "Muestra los cambios ya en staging area (listos para commit).",
         "args": ["git", "diff", "--staged"],
         "timeout": 10,
+        "scope": "project",
     },
     "git_log": {
         "title": "Git log reciente",
         "description": "Muestra los ultimos 10 commits del repositorio.",
         "args": ["git", "log", "--oneline", "-10"],
         "timeout": 10,
+        "scope": "project",
     },
 }
 
@@ -260,10 +298,34 @@ def _args(command_id: str) -> list[str]:
     item = ALLOWLIST.get(command_id)
     if not item:
         raise KeyError(command_id)
-    return [
+    args = [
         _python() if part == "{python}" else part
         for part in item["args"]
     ]
+    if args and args[0] == "git":
+        # blindaje contra lo que declare el .git/config del repo que se
+        # lee: ver el punto 2 del docstring del modulo.
+        args = ["git", "-c", "core.fsmonitor=", "-c", "diff.external=",
+                "-c", "core.pager=cat", *args[1:]]
+    return args
+
+
+def _cwd_para(command_id: str, project_root: str) -> str:
+    """Los comandos que validan el codigo de Calipso (compilar, tests,
+    docs) corren siempre en el repo de Calipso, nunca en project_root: ver
+    el punto 1 del docstring del modulo. Los de "scope": "project" (los
+    cuatro de git) son al reves -- su punto es leer el proyecto abierto."""
+    item = ALLOWLIST[command_id]
+    if item.get("scope") == "project":
+        return project_root
+    return str(CALIPSO_REPO_ROOT)
+
+
+def _env_seguro(args: list[str]) -> dict[str, str]:
+    env = os.environ.copy()
+    if args and args[0] == "git":
+        env["GIT_CONFIG_GLOBAL"] = os.devnull
+    return env
 
 
 def run(project_root: str, command_id: str, goal_id: str | None = None,
@@ -272,13 +334,15 @@ def run(project_root: str, command_id: str, goal_id: str | None = None,
     if not item:
         raise KeyError(command_id)
     args = _args(command_id)
+    cwd = _cwd_para(command_id, project_root)
+    env = _env_seguro(args)
     max_time = int(timeout or item.get("timeout") or 120)
     job = jobs.start(
         "command", item["title"], project_root=project_root,
         command_id=command_id, args=args, goal_id=goal_id)
     try:
         result = subprocess.run(
-            args, cwd=project_root, text=True, encoding="utf-8",
+            args, cwd=cwd, env=env, text=True, encoding="utf-8",
             errors="replace", capture_output=True, timeout=max_time)
         status = "done" if result.returncode == 0 else "failed"
         jobs.write_artifact(project_root, job["id"], "stdout.txt", result.stdout or "")

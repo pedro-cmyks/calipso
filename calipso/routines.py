@@ -26,7 +26,7 @@ from typing import Any, Callable
 CALIPSO_HOME = pathlib.Path(os.environ.get(
     "CALIPSO_HOME", os.path.expanduser("~/.calipso")))
 
-KINDS = ("reflect", "learn", "backup", "departamento")
+KINDS = ("reflect", "learn", "backup", "departamento", "catastro")
 
 
 class ErrorRutinas(Exception):
@@ -37,11 +37,28 @@ class ErrorRutinas(Exception):
     verdad, incluida la de departamento con su `cuenta`."""
 
 
-# Rutinas por defecto la primera vez (deshabilitadas: Pedro decide encenderlas).
+# Rutinas por defecto la primera vez. Las tres viejas nacen deshabilitadas
+# (Pedro decide encenderlas): son mantenimiento -- reflexionar, aprender,
+# hacer backup -- y no hay sintoma que dependa de que corran solas.
+#
+# "catastro" es la excepcion, y nace HABILITADA. La diferencia no es
+# capricho: es justamente la rutina que existe para que Pedro no tenga que
+# acordarse de prenderla. El pedido que la motiva fue textual -- "todos mis
+# proyectos deberian de estar en contexto de calipso de alguna manera o pues
+# ser accesible" -- y una rutina que nace apagada no cumple eso hasta que
+# alguien la prenda a mano, que es exactamente el estado de hoy que el spec
+# ataca. Ademas es la unica de las cuatro sin costo real: no llama a ningun
+# modelo, no gasta de la economia, no escribe fuera de ~/.calipso -- son
+# `stat()` y `git rev-parse`/`git log` de solo lectura sobre las raices
+# declaradas. `catastro.cargar()` igual no depende de que esta rutina haya
+# corrido: la primera lectura de la vida del catastro escanea sola aunque
+# la rutina siga deshabilitada (ver calipso/catastro.py:cargar).
 DEFAULTS = [
     {"kind": "reflect", "label": "Reflexionar memoria episodica", "interval_minutes": 1440},
     {"kind": "learn", "label": "Aprender preferencias", "interval_minutes": 1440},
     {"kind": "backup", "label": "Backup de runtime", "interval_minutes": 1440},
+    {"kind": "catastro", "label": "Escanear catastro de proyectos",
+     "interval_minutes": 60, "enabled_por_defecto": True},
 ]
 
 
@@ -67,7 +84,7 @@ def _seed() -> list[dict[str, Any]]:
             "kind": d["kind"],
             "label": d["label"],
             "interval_minutes": d["interval_minutes"],
-            "enabled": False,
+            "enabled": bool(d.get("enabled_por_defecto", False)),
             "last_run": None,
             "last_status": None,
         })

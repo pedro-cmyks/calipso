@@ -58,6 +58,7 @@ from calipso import attachments  # noqa: E402
 from calipso import chats  # noqa: E402
 from calipso import config as calipso_config  # noqa: E402
 from calipso import browser as calipso_browser  # noqa: E402
+from calipso import catastro  # noqa: E402
 from calipso import chronology as calipso_chronology  # noqa: E402
 from calipso import connectors as calipso_connectors  # noqa: E402
 from calipso import costs  # noqa: E402
@@ -956,28 +957,58 @@ def api_project() -> dict:
 
 @app.post("/api/project/open")
 async def api_project_open(request: Request) -> dict:
-    global ROOT, mem
     data = await request.json()
     raw = str(data.get("path") or "").strip().strip('"')
     if not raw:
         raise HTTPException(status_code=400, detail="falta ruta")
-    p = pathlib.Path(os.path.expandvars(os.path.expanduser(raw))).resolve()
-    if not p.exists() or not p.is_dir():
-        raise HTTPException(status_code=400, detail="la ruta no existe o no es carpeta")
-    ROOT = p
-    mem = Memory(project_root=str(ROOT))
-    _remember_project(ROOT)
+    _switch_project(raw)
     return {"ok": True, "name": ROOT.name, "path": str(ROOT)}
 
 
 def _switch_project(path: str) -> None:
+    """Unico lugar que de verdad reasigna ROOT -- las cuatro puertas que
+    cambian de proyecto (este endpoint, POST /api/chats, activate y el
+    turno del websocket) pasan todas por aca, directo o via
+    api_project_open. Por eso el techo del catastro (hallazgo S4 del spec
+    de ojos y manos) va aca y no en un solo endpoint: ponerlo solo en
+    /api/project/open dejaba las otras tres puertas abiertas -- un
+    POST /api/chats con {"project_path": "/"} en el body reasignaba ROOT
+    igual, y la reasignacion sobrevive al reinicio via _remember_project."""
     global ROOT, mem
     p = pathlib.Path(os.path.expandvars(os.path.expanduser(path))).resolve()
     if not p.exists() or not p.is_dir():
-        raise HTTPException(status_code=400, detail="la ruta del chat no existe")
+        raise HTTPException(status_code=400, detail="la ruta no existe o no es carpeta")
+    if not catastro.dentro_de_alguna_raiz(p):
+        raise HTTPException(
+            status_code=400,
+            detail="la ruta esta fuera de las raices declaradas del catastro "
+                   "(~/.calipso/catastro.json)")
     ROOT = p
     mem = Memory(project_root=str(ROOT))
     _remember_project(ROOT)
+    catastro.marcar_visto(ROOT)
+
+
+@app.get("/api/catastro")
+def api_catastro() -> dict:
+    """El indice completo (3.4 del spec de ojos y manos): lo que entra al
+    prompt de cada turno es un resumen acotado de esto mismo
+    (`prompt_compiler.proyectos_brief`); esto es la lista entera, sin
+    techo, para la UI."""
+    return {"proyectos": catastro.cargar()}
+
+
+@app.get("/api/catastro/{nombre}")
+def api_catastro_detalle(nombre: str) -> dict:
+    """El detalle de un proyecto que no esta en foco, sin mover ROOT ni la
+    memoria (3.4): `_repo_brief` recibe la raiz del proyecto pedido, no
+    lee el global ROOT."""
+    proyecto = catastro.obtener(nombre)
+    if proyecto is None:
+        raise HTTPException(status_code=404,
+                            detail="proyecto no encontrado en el catastro")
+    raiz = pathlib.Path(proyecto["ruta"])
+    return {"proyecto": proyecto, "brief": _repo_brief(raiz)}
 
 
 def _chat_view(chat: dict) -> dict:
@@ -1729,12 +1760,17 @@ def _identity_doc() -> str:
         return ""
 
 
-def _repo_brief() -> str:
-    """Mapa compacto del repo para fallbacks sin herramientas de archivo."""
+def _repo_brief(raiz: pathlib.Path) -> str:
+    """Mapa compacto del repo para fallbacks sin herramientas de archivo.
+
+    Recibe la raiz como parametro en vez de leer el global ROOT: asi el
+    catastro puede pedir el brief de un proyecto que no esta en foco
+    (GET /api/catastro/{nombre}) sin mover ROOT ni la memoria (3.4 del spec
+    de ojos y manos)."""
     files: list[str] = []
-    for p in ROOT.rglob("*"):
+    for p in raiz.rglob("*"):
         try:
-            rel = p.relative_to(ROOT)
+            rel = p.relative_to(raiz)
         except ValueError:
             continue
         parts = rel.parts
@@ -1747,7 +1783,7 @@ def _repo_brief() -> str:
     files.sort()
     blocks = ["Archivos principales:\n" + "\n".join(f"- {f}" for f in files[:80])]
     for name in ("AGENTS.md", "CALIPSO.md", "LIBRARY.md", "SPEC.md", "README.md", "SETUP.md"):
-        p = ROOT / name
+        p = raiz / name
         if not p.exists() or not p.is_file():
             continue
         try:
@@ -1830,7 +1866,7 @@ def _build_context(user_msg: str, runtime: str, features: dict | None = None) ->
                 if r["score"] >= RECALL_MIN_SCORE][:RECALL_MAX]
     repo_brief = ""
     if features and features.get("needs_repo"):
-        repo_brief = _repo_brief()
+        repo_brief = _repo_brief(ROOT)
     goal_block = _goal_context()
     # la economia entra en CADA turno (no solo cuando needs_repo o el tema
     # ya se noto financiero): Calipso no sabe de antemano cuando Pedro va a
@@ -1841,10 +1877,18 @@ def _build_context(user_msg: str, runtime: str, features: dict | None = None) ->
     # entera se despacha con `asyncio.to_thread` desde el websocket, nunca
     # se llama directo sobre el event loop.
     economia = prompt_compiler.economia_brief(_ECO_BASE)
+    # el catastro (calipso/catastro.py) entra en CADA turno, igual que la
+    # economia y por la misma razon (3.4 del spec de ojos y manos): Calipso
+    # tenia los datos de sus otros proyectos al lado, en el disco, y
+    # contestaba "no se" por no tenerlos en el prompt, nunca por no poder
+    # leerlos. `cargar()` solo lee catastro.json (o escanea una vez si es
+    # la primera vez de la vida del catastro); no toma ningun candado.
+    proyectos = prompt_compiler.proyectos_brief(ROOT)
     return prompt_compiler.compile_context(
         SYSTEM, identity=ident, core=core, recalled=recalled,
         repo_brief=repo_brief, goal_block=goal_block, runtime=runtime,
-        economia=economia, features=features, core_limit=CONTEXT_CORE_MAX)
+        economia=economia, proyectos=proyectos, features=features,
+        core_limit=CONTEXT_CORE_MAX)
 
 
 def _HISTORY_TURNS_CONST():
@@ -2621,6 +2665,12 @@ def _routine_handlers() -> dict:
     def _backup(_r):
         calipso_backup.create_backup()
 
+    def _catastro(_r):
+        # forzar_escaneo=True: la rutina existe justamente para mantener
+        # el catastro fresco, no para reusar el cache que otro turno ya
+        # calento (eso ya lo hace `catastro.cargar()` sin forzar).
+        catastro.cargar(forzar_escaneo=True)
+
     def _departamento(r):
         cuenta = r.get("cuenta")
         if not cuenta:
@@ -2655,7 +2705,7 @@ def _routine_handlers() -> dict:
         _plantel_jefe.tic(ctx, cuenta, semana)
 
     return {"reflect": _reflect, "learn": _learn, "backup": _backup,
-            "departamento": _departamento}
+            "catastro": _catastro, "departamento": _departamento}
 
 
 @app.get("/api/routines")
@@ -4203,6 +4253,24 @@ def _cobrar_turno(cuenta: str, route: str, client: str | None,
     return 0
 
 
+def _asegurar_rutina_catastro() -> None:
+    """`routines.DEFAULTS` solo siembra al crear routines.json por primera
+    vez (`routines._seed`): una maquina como esta, que ya tenia
+    routines.json de antes de que "catastro" existiera como kind, nunca lo
+    ve aparecer solo -- confirmado en esta maquina, con GET /api/routines
+    mostrando las tres rutinas viejas y ninguna de catastro. Sin esto, el
+    catastro igual contesta bien (la primera lectura de `catastro.cargar()`
+    escanea sola), pero nunca se refresca solo despues. Se corre una vez
+    en cada arranque; agregar la rutina si falta es barato e idempotente."""
+    try:
+        if not any(r.get("kind") == "catastro" for r in calipso_routines.load()):
+            calipso_routines.add(
+                "catastro", "Escanear catastro de proyectos",
+                60, enabled=True)
+    except Exception:
+        pass
+
+
 @app.on_event("startup")
 async def _startup_warm() -> None:
     try:
@@ -4212,6 +4280,7 @@ async def _startup_warm() -> None:
         await asyncio.to_thread(_backend_availability)  # pre-calienta el cache de probes
     except Exception:
         pass
+    await asyncio.to_thread(_asegurar_rutina_catastro)
     try:
         asyncio.create_task(_routines_ticker())
     except Exception:
