@@ -3567,15 +3567,27 @@ def api_eco_bus_financiar(id: str, body: MesaFinanciarBody) -> dict:
 
 @app.post("/api/economia/bus/{id}/descartar")
 def api_eco_bus_descartar(id: str) -> dict:
-    """Pedro dice que no. Sin esto el jefe se frena al llegar a su techo."""
+    """Pedro dice que no. Sin esto el jefe se frena al llegar a su techo.
+
+    Mismo corte que su gemelo `financiar`, y por la misma razon: `financiar`
+    transfiere ANTES de marcar, asi que si el proceso muere entre las dos
+    escrituras (disco lleno, crash a mitad de los appends) la plata ya salio
+    pero la propuesta queda en `alta`. Si esta funcion solo mirara el
+    estado, ese caso se podria descartar -- y `descartada` es terminal,
+    invisible para la mesa y para `evaluar_y_liquidar_muertos` (que solo
+    recorre `activas()`), asi que la plata en `trabajo:<id>` quedaria
+    enterrada sin ningun camino de vuelta salvo editar bus.jsonl a mano.
+    """
     p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
     if not p0:
         raise HTTPException(status_code=400, detail="la economia no esta activa")
     ts, semana = _eco_ahora()
     try:
         with _eco_candado(p0.ruta_libro):
+            m = p0.mercado_fresco()
             bus = _eco_bus.Bus(p0.ruta_bus)
-            if bus.estado(id) != "alta":
+            if (bus.estado(id) != "alta"
+                    or _eco_bus.aportes(m.k.libro.asientos(), id)):
                 raise HTTPException(
                     status_code=400,
                     detail=f"la propuesta {id} ya no se puede descartar")

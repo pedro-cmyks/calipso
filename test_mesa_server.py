@@ -216,6 +216,26 @@ def test_no_se_descarta_una_ya_financiada(cliente):
     assert r.status_code == 400
 
 
+def test_no_se_descarta_una_alta_con_aporte_ya_en_el_libro(cliente):
+    """Calcado de test_no_se_financia_una_alta_con_aporte_ya_en_el_libro:
+    `descartar` es el gemelo de `financiar` y tenia el mismo hueco. Si el
+    proceso muere entre la transferencia y la marca (disco lleno, crash a
+    mitad de los appends), la plata ya salio pero la propuesta queda en
+    `alta`. Sin este chequeo, descartarla la manda a `descartada` -terminal
+    e invisible- y esa plata queda enterrada en trabajo:<id> sin ningun
+    camino de vuelta salvo editar bus.jsonl a mano."""
+    c, base = cliente
+    _propuesta(base)
+    k = Kernel(Libro(base / "economia" / "libro.jsonl"))
+    k.transferir(TS, W, "dep:atlas", cuenta_trabajo("p1"), 10_000,
+                 motivo="financiacion")
+    r = c.post("/api/economia/bus/p1/descartar", params={"token": srv.TOKEN})
+    assert r.status_code == 400
+    assert "ya no se puede descartar" in r.json()["detail"]
+    d = c.get("/api/economia/bus", params={"token": srv.TOKEN}).json()
+    assert d["propuestas"][0]["estado"] == "alta"
+
+
 def test_sin_token_no_se_financia(tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
     monkeypatch.setattr(srv, "_eco_ahora", lambda: (TS, W))
