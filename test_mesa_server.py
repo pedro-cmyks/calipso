@@ -82,6 +82,27 @@ def test_una_propuesta_llega_con_lo_que_la_mesa_necesita(cliente):
     assert p["aportes"] == {}
 
 
+def test_una_propuesta_con_un_campo_faltante_no_tumba_la_mesa(cliente):
+    """Hasta esta rama la unica salida era editar bus.jsonl a mano (spec).
+    Si en el bus real de Pedro hay una linea de un esquema anterior o
+    editada asi, el GET no puede tirar KeyError y devolver un 500 mudo: el
+    resto de la mesa tiene que seguir siendo legible."""
+    c, base = cliente
+    ruta = base / "economia" / "bus.jsonl"
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    linea = {"ts": TS, "semana": W, "evento": "alta", "id": "vieja",
+             "departamento": "dep:atlas", "titulo": "de otro esquema"}
+    with ruta.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(linea) + "\n")
+    r = c.get("/api/economia/bus", params={"token": srv.TOKEN})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    p = next(x for x in d["propuestas"] if x["id"] == "vieja")
+    assert p["presupuesto_mm"] == 0
+    assert p["retorno_mm"] == 0
+    assert p["criterio"] == {}
+
+
 def test_los_departamentos_son_solo_los_de_la_fabrica(cliente):
     """El libro rechaza cualquier financiador fuera de la zona fabrica, asi
     que ofrecer otro en el selector seria ofrecer un boton que falla. Hay un

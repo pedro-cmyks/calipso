@@ -3499,34 +3499,41 @@ def api_eco_bus() -> dict:
     if not p0:
         return {"activa": False}
     _, semana = _eco_ahora()
-    with _eco_candado(p0.ruta_libro):
-        eco = _economia()
-        m = eco["pagador"].mercado_fresco()
-        bus = _eco_bus.Bus(p0.ruta_bus)
-        asientos = m.k.libro.asientos()
-        propuestas = []
-        for id_ in bus.ids():
-            estado = bus.estado(id_)
-            # la mesa es para decidir, no un historial: lo descartado, muerto
-            # y liquidado no vuelve a aparecer
-            if estado not in ("alta", "financiada"):
-                continue
-            d = bus.datos(id_)
-            propuestas.append({
-                "id": id_, "estado": estado,
-                "departamento": d["departamento"],
-                "titulo": d["titulo"],
-                "presupuesto_mm": d["presupuesto_mm"],
-                "retorno_mm": d["retorno_mm"],
-                "criterio": d["criterio"],
-                "gastado_mm": _eco_bus.gastado(asientos, id_),
-                "aportes": _eco_bus.aportes(asientos, id_),
-            })
-        deps_fabrica = [
-            {"cuenta": f"dep:{x.nombre}", "nombre": x.nombre, "zona": x.zona,
-             "disponible_mm": m.k.saldo(f"dep:{x.nombre}")}
-            for x in m.registro.todos() if x.zona == _eco_deps.ZONA_FABRICA]
-        abierta = semana in _eco_cap.semanas_operativas(asientos)
+    try:
+        with _eco_candado(p0.ruta_libro):
+            eco = _economia()
+            m = eco["pagador"].mercado_fresco()
+            bus = _eco_bus.Bus(p0.ruta_bus)
+            asientos = m.k.libro.asientos()
+            propuestas = []
+            for id_ in bus.ids():
+                estado = bus.estado(id_)
+                # la mesa es para decidir, no un historial: lo descartado,
+                # muerto y liquidado no vuelve a aparecer
+                if estado not in ("alta", "financiada"):
+                    continue
+                d = bus.datos(id_)
+                # .get() con default, como situacion.py: una linea vieja o
+                # de un esquema anterior en el bus real de Pedro no puede
+                # tumbar la mesa entera con un 500 mudo.
+                propuestas.append({
+                    "id": id_, "estado": estado,
+                    "departamento": d.get("departamento", ""),
+                    "titulo": d.get("titulo", ""),
+                    "presupuesto_mm": d.get("presupuesto_mm", 0),
+                    "retorno_mm": d.get("retorno_mm", 0),
+                    "criterio": d.get("criterio", {}),
+                    "gastado_mm": _eco_bus.gastado(asientos, id_),
+                    "aportes": _eco_bus.aportes(asientos, id_),
+                })
+            deps_fabrica = [
+                {"cuenta": f"dep:{x.nombre}", "nombre": x.nombre,
+                 "zona": x.zona,
+                 "disponible_mm": m.k.saldo(f"dep:{x.nombre}")}
+                for x in m.registro.todos() if x.zona == _eco_deps.ZONA_FABRICA]
+            abierta = semana in _eco_cap.semanas_operativas(asientos)
+    except _eco_errores_economicos as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     return {"activa": True, "semana": semana, "semana_abierta": abierta,
             "propuestas": propuestas, "departamentos": deps_fabrica}
 
