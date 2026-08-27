@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import dataclasses
 import datetime
 import datetime as _dt
 import difflib
@@ -3468,7 +3469,8 @@ try:
                                   departamentos as _eco_deps,
                                   operacion as _eco_op,
                                   personal as _eco_personal,
-                                  reloj as _eco_reloj)
+                                  reloj as _eco_reloj,
+                                  tipos as _eco_tipos)
     from calipso.economia.candado import candado as _eco_candado
     from calipso.economia.pagador import (Pagador as _EcoPagador,
                                           suscripcion_de_cliente as
@@ -3480,6 +3482,7 @@ except Exception:  # economia no disponible: los endpoints responden inactivo
     _eco_suscripcion = None
     _eco_bus = _eco_cola = _eco_op = _eco_personal = _eco_reloj = _eco_candado = None
     _eco_deps = None
+    _eco_tipos = None
     _eco_errores_economicos = None
 
 _ECO_BASE = pathlib.Path(os.environ.get(
@@ -3537,6 +3540,54 @@ class EcoConciliarBody(BaseModel):
 class MesaFinanciarBody(BaseModel):
     cuenta: str
     mm: int
+
+
+class EcoSembrarDepartamentoBody(BaseModel):
+    nombre: str
+    zona: str  # "fabrica" | "personal" (deps.ZONA_FABRICA / ZONA_PERSONAL)
+    presupuesto_semanal_mm: int = 0
+    techo_api_ciclo_mm: int = 0
+    explorar_explotar_pct: int = 50
+    agresividad_pct: int = 30
+
+
+class EcoSembrarSuscripcionBody(BaseModel):
+    costo_mensual_mm: int  # el que Pedro paga de verdad; sin default
+    # cuantas unidades da el plan por ciclo de 4 semanas. Nadie lo sabe
+    # todavia (ni Pedro ni este endpoint pueden derivarlo del codigo):
+    # ESTIMACION A AJUSTAR cuando se mida el uso real.
+    capacidad_ciclo: int = 1_000
+    # unidades del ciclo reservadas para el uso personal de Pedro, afuera
+    # de la capacidad de la fabrica (capacidad.py:47-48). ESTIMACION A
+    # AJUSTAR junto con capacidad_ciclo.
+    reserva_personal: int = 200
+    # precio equivalente por unidad si se comprara suelta via API en vez
+    # de por el plan; es el tope de la escalada por escasez
+    # (capacidad.py:59-60, 0.9x este numero). ESTIMACION A AJUSTAR.
+    costo_api_mm_por_unidad: int = 3_000
+
+
+class EcoSembrarBody(BaseModel):
+    departamentos: list[EcoSembrarDepartamentoBody]
+    suscripciones: dict[str, EcoSembrarSuscripcionBody] = {}
+
+
+class EcoPersonalMovimientoBody(BaseModel):
+    tipo: str  # "ingreso" | "gasto" (validado por LibroPersonal.registrar)
+    monto_mm: int
+    categoria: str
+    nota: str = ""
+
+
+class EcoFronteraAcunarBody(BaseModel):
+    subtipo: str  # "capital" | "venta"
+    destino: str
+    monto_mm: int
+    evidencia: dict
+    # el slug del proyecto que vendio (spec 8.5): SIEMPRE requerido en una
+    # venta, incluso si destino es trabajo:<id> -- el bus no sabe de que
+    # proyecto es un trabajo, asi que no hay forma de derivarlo aca.
+    proyecto: str | None = None
 
 
 @app.get("/api/economia/tablero")
@@ -3779,6 +3830,193 @@ def api_eco_reloj_conciliar(body: EcoConciliarBody) -> dict:
         eco = _economia()  # fresco BAJO el candado
         eco["reloj"].conciliar(ts, semana, body.ts_in, body.minutos)
     return {"ok": True}
+
+
+@app.post("/api/economia/sembrar")
+def api_eco_sembrar(body: EcoSembrarBody) -> dict:
+    """Crea la economia desde cero: libro.jsonl vacio, departamentos.json y
+    suscripciones.json (el plan maestro la llama Etapa 2 -- los specs 8.4 y
+    8.5 la dan por hecha sin que exista). Parametrizado: Pedro manda la
+    lista de departamentos con sus perillas y las suscripciones; nada de
+    eso se hardcodea aca.
+
+    Se NIEGA si la economia ya existe. El libro es append-only: sembrar dos
+    veces no se deshace, asi que el corte es antes de escribir una sola
+    linea, no un merge silencioso.
+
+    Sin pagador, con cuidado: `Pagador.desde_entorno` exige que los tres
+    archivos YA existan (por eso los ~20 fixtures de test que arman su
+    propia economia siempre crean exactamente esos tres, ni uno mas ni uno
+    menos), asi que antes de sembrar no hay pagador que devolver: p0 es
+    None por construccion, siempre, en este endpoint. Lo que hace falta del
+    pagador para tomar el MISMO candado que protege al resto de las
+    escrituras no es el objeto validado por `desde_entorno` -- son solo sus
+    rutas. `Pagador(eco_dir)` las da sin exigir que nada exista todavia
+    (su __init__ solo arma pathlib.Path, no toca disco), asi que se
+    construye un pagador "crudo" con eso alcanza para candado(pagador.ruta_libro).
+    """
+    if _EcoPagador is None:
+        raise HTTPException(
+            status_code=400,
+            detail="la economia no esta disponible en este build")
+    if not body.departamentos:
+        raise HTTPException(
+            status_code=400,
+            detail="sembrar exige al menos un departamento (Pedro decide "
+                   "cuales, no hay default)")
+    eco_dir = _ECO_BASE / "economia"
+    pagador = _EcoPagador(eco_dir)  # crudo: no pasa por desde_entorno
+    try:
+        with _eco_candado(pagador.ruta_libro):
+            eco_dir.mkdir(parents=True, exist_ok=True)
+            existentes = [str(p) for p in
+                         (pagador.ruta_libro, pagador.ruta_registro,
+                          pagador.ruta_sus) if p.exists()]
+            if existentes:
+                raise HTTPException(
+                    status_code=400,
+                    detail=("la economia ya esta sembrada "
+                            f"({', '.join(existentes)}); para resetear, "
+                            f"borra {eco_dir} a mano -- el libro es "
+                            "append-only, sembrar de nuevo no lo deshace"))
+            # validar TODO en memoria antes de escribir una sola linea: un
+            # sembrado a medias (por un departamento invalido a mitad de
+            # lista, por ejemplo) es un estado corrupto que nadie deshace
+            departamentos = [_eco_deps.Departamento(**d.model_dump())
+                             for d in body.departamentos]
+            nombres = [d.nombre for d in departamentos]
+            if len(nombres) != len(set(nombres)):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"departamentos repetidos en el pedido: {nombres}")
+            suscripciones = {nombre: _eco_cap.Suscripcion(nombre=nombre,
+                                                          **s.model_dump())
+                             for nombre, s in body.suscripciones.items()}
+
+            registro = _eco_deps.Registro(pagador.ruta_registro)
+            for d in departamentos:
+                registro.alta(d)
+            pagador.ruta_sus.write_text(
+                json.dumps({n: dataclasses.asdict(s)
+                           for n, s in suscripciones.items()},
+                          ensure_ascii=False, indent=1),
+                encoding="utf-8")
+            pagador.ruta_libro.touch()
+    except HTTPException:
+        raise
+    except (_eco_deps.ErrorDepartamento, _eco_cap.ErrorCapacidad) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"ok": True, "departamentos": nombres,
+            "suscripciones": list(suscripciones)}
+
+
+@app.post("/api/economia/personal/movimiento")
+def api_eco_personal_movimiento(body: EcoPersonalMovimientoBody) -> dict:
+    """El banco de Pedro (spec 8.4): un ingreso o un egreso SUYO, en
+    personal.jsonl. Nunca acuna, nunca toca el libro de la fabrica --
+    LibroPersonal.registrar ni siquiera abre el Kernel -- asi que la
+    invariante 11 (los libros personales son privados) no se toca.
+    """
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
+    if not p0:
+        raise HTTPException(status_code=400, detail="la economia no esta activa")
+    ts, semana = _eco_ahora()
+    try:
+        with _eco_candado(p0.ruta_libro):
+            eco = _economia()  # fresco BAJO el candado
+            eco["personal"].registrar(ts, semana, body.tipo, body.monto_mm,
+                                      body.categoria, nota=body.nota)
+    except _eco_personal.ErrorPersonal as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"ok": True}
+
+
+@app.post("/api/economia/frontera/acunar")
+def api_eco_frontera_acunar(body: EcoFronteraAcunarBody) -> dict:
+    """La unica puerta por la que entra plata de afuera (spec 8.5,
+    invariante 1). Mismo molde que el resto de las escrituras de economia:
+    candado, estado fresco adentro, errores de dominio a 400.
+
+    Reglas taxativas, aplicadas ANTES de tocar el libro:
+      - subtipo "capital" -> destino SOLO tesoro (Pedro pone plata suya).
+      - subtipo "venta" -> destino SOLO proyecto:<slug> o trabajo:<id>
+        vivo. Lo de "proyecto activo" no se puede verificar aca: el
+        registro de proyectos es de otro spec (seccion 3) y todavia no
+        existe en este repo, asi que solo se valida la FORMA del slug; lo
+        de trabajo:<id> "vivo" si se verifica de verdad, contra el bus
+        real (activas() = financiada, ni muerta ni liquidada ni
+        descartada).
+      - nunca dep:*, nunca direccion, nunca cuenta_pedro: el que vende es
+        el proyecto, el departamento es el que trabaja (spec 8.5).
+    """
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
+    if not p0:
+        raise HTTPException(status_code=400, detail="la economia no esta activa")
+
+    if body.subtipo not in ("capital", "venta"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"subtipo invalido: {body.subtipo!r} (capital|venta)")
+
+    detalle_extra: dict | None = None
+    if body.subtipo == "capital":
+        if body.destino != _eco_tipos.TESORO:
+            raise HTTPException(
+                status_code=400,
+                detail="capital entra solo al tesoro (spec 8.5)")
+    else:  # venta
+        if (body.destino.startswith("dep:")
+                or body.destino in (_eco_tipos.DIRECCION,
+                                    _eco_tipos.CUENTA_PEDRO)):
+            raise HTTPException(
+                status_code=400,
+                detail="una venta no entra a un departamento, direccion ni "
+                       "cuenta_pedro: el que vende es el proyecto (spec 8.5)")
+        if not body.proyecto:
+            raise HTTPException(
+                status_code=400,
+                detail="una venta exige el proyecto que vendio "
+                       "(detalle['proyecto'])")
+        if body.destino.startswith("proyecto:"):
+            slug = body.destino.split(":", 1)[1]
+            if not slug:
+                raise HTTPException(
+                    status_code=400,
+                    detail="proyecto:<slug> con slug vacio")
+            if slug != body.proyecto:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"proyecto ({body.proyecto!r}) no coincide con "
+                           f"el destino ({body.destino!r})")
+        elif not body.destino.startswith("trabajo:"):
+            raise HTTPException(
+                status_code=400,
+                detail="venta exige destino proyecto:<slug> o trabajo:<id>")
+        detalle_extra = {"proyecto": body.proyecto}
+
+    ts, semana = _eco_ahora()
+    try:
+        with _eco_candado(p0.ruta_libro):
+            if body.subtipo == "venta" and body.destino.startswith("trabajo:"):
+                id_trabajo = body.destino.split(":", 1)[1]
+                if id_trabajo not in _eco_bus.Bus(p0.ruta_bus).activas():
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"trabajo no vivo: {body.destino}")
+                detalle_extra = {**detalle_extra, "trabajo": id_trabajo}
+            asiento = p0.leer_kernel().acunar(
+                ts, semana, body.destino, body.monto_mm,
+                _eco_tipos.SubtipoAcunacion(body.subtipo), body.evidencia,
+                detalle_extra=detalle_extra)
+    except HTTPException:
+        raise
+    except _eco_errores_economicos as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"ok": True, "asiento": {"seq": asiento.seq, "ts": asiento.ts,
+                                    "destino": asiento.destino,
+                                    "monto": asiento.monto,
+                                    "subtipo": asiento.subtipo,
+                                    "detalle": asiento.detalle}}
 
 
 # El plantel tiene su PROPIO try/except, separado del bloque MAPA de abajo:
