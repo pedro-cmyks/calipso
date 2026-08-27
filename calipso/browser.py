@@ -11,10 +11,52 @@ y reintenta una vez.
 """
 from __future__ import annotations
 
+import ipaddress
 import pathlib
 import re
+import socket
+import urllib.parse
 
 from calipso import deps
+
+
+class UrlNoPermitida(Exception):
+    """La URL apunta adentro de la red de Pedro, o no es web."""
+
+
+def exigir_url_publica(url: str) -> str:
+    """Rechaza todo lo que no sea una pagina publica de internet.
+
+    Sin esto, cualquiera que consiga disparar una captura convierte a Calipso
+    en un escaner de la red de Pedro: le pasa http://127.0.0.1:8000 o la IP de
+    su router y se lleva la foto. Y como la captura se pide por GET desde un
+    <img>, con la cookie en SameSite=lax alcanza con que Pedro abra una
+    pestana cualquiera para dispararla.
+
+    Limitacion conocida y aceptada: se resuelve el nombre una vez aca y el
+    navegador lo resuelve de nuevo despues, asi que un DNS que conteste
+    distinto entre las dos consultas se escapa. Cerrar eso exige fijar la IP
+    en el navegador, que es mucho mas caro; esto tapa el caso directo, que es
+    el que esta abierto hoy.
+    """
+    partes = urllib.parse.urlsplit(url)
+    if partes.scheme not in ("http", "https"):
+        raise UrlNoPermitida(f"esquema no permitido: {partes.scheme or 'ninguno'}")
+    host = partes.hostname
+    if not host:
+        raise UrlNoPermitida("la URL no tiene host")
+    try:
+        infos = socket.getaddrinfo(host, partes.port or
+                                   (443 if partes.scheme == "https" else 80),
+                                   proto=socket.IPPROTO_TCP)
+    except OSError as exc:
+        raise UrlNoPermitida(f"no se pudo resolver {host}: {exc}") from None
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            raise UrlNoPermitida(f"{host} resuelve a una direccion interna: {ip}")
+    return url
 
 
 def _ensure() -> None:
@@ -33,6 +75,7 @@ def _needs_browser_install(exc: Exception) -> bool:
 
 def screenshot(url: str, path: str | None = None, full_page: bool = True,
                width: int = 1280, height: int = 900, timeout: int = 25000) -> bytes:
+    exigir_url_publica(url)   # la defensa vive aca, no solo en el endpoint
     _ensure()
     from playwright.sync_api import sync_playwright
 

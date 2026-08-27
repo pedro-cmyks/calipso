@@ -2810,8 +2810,16 @@ async def api_deps_install(request: Request) -> dict:
     if body.get("tool"):
         return await asyncio.to_thread(deps.ensure, body["tool"])
     if body.get("package"):
-        return await asyncio.to_thread(deps.ensure_pip, body["package"], body.get("module"))
-    raise HTTPException(status_code=400, detail="falta 'tool' o 'package'")
+        # `deps.ensure_pip` corre `pip install <lo que venga>`, o sea ejecucion
+        # de codigo arbitrario para cualquiera que tenga el token. La rama se
+        # cierra: lo que se puede instalar es el catalogo cerrado de
+        # `deps.TOOLS`, y para sumar algo se edita ese catalogo, no se manda
+        # por HTTP.
+        raise HTTPException(
+            status_code=403,
+            detail="instalar un paquete arbitrario esta cerrado: usa 'tool' "
+                   "del catalogo de deps.TOOLS")
+    raise HTTPException(status_code=400, detail="falta 'tool'")
 
 
 @app.get("/api/browser/screenshot")
@@ -2819,6 +2827,9 @@ async def api_browser_screenshot(url: str, full: bool = False):
     """Screenshot real de una URL con el navegador (instala Playwright si falta)."""
     try:
         png = await asyncio.to_thread(calipso_browser.screenshot, url, None, full)
+    except calipso_browser.UrlNoPermitida as e:
+        # 400 y no 502: no es que el sitio fallo, es que no se va a mirar
+        raise HTTPException(status_code=400, detail=str(e)) from None
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"no se pudo capturar: {e}")
     return Response(content=png, media_type="image/png")
