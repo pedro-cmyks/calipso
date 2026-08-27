@@ -204,7 +204,9 @@ font-size:15px;margin-top:10px;cursor:pointer}.l{color:#4ea1ff;font-weight:700;f
 <form method=post action="/login">
 <input name=code inputmode=numeric autocomplete=one-time-code pattern="[0-9 ]{{6,8}}"
 autofocus placeholder="000000" maxlength=8><br><button>Entrar</button></form>
-<p class=m>Recuperacion: <code>?token=RTN8OL7M0ZZHjFMG</code></p></div>
+<p class=m>Recuperacion: agrega <code>?token=</code> con el token de
+<code>~/.calipso/token</code>. NUNCA se imprime aca: esta pagina la sirve
+el server sin autenticar.</p></div>
 </html>"""
 
 

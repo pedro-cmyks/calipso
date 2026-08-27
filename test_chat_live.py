@@ -9,7 +9,11 @@ import sys
 import httpx
 import websockets
 
-TOKEN = "RTN8OL7M0ZZHjFMG"
+import os, pathlib
+# el token NO se escribe aca: este archivo esta en git
+TOKEN = (os.environ.get("CALIPSO_TOKEN")
+         or pathlib.Path.home().joinpath(".calipso/token")
+                        .read_text(encoding="utf-8").strip())
 BASE   = "http://localhost:8000"
 WS     = "ws://localhost:8000/ws/chat"
 MSG    = sys.argv[1] if len(sys.argv) > 1 else "hola, di solo 'Calipso operativo en Linux' y nada mas"
