@@ -26,6 +26,7 @@ def _economia_de_prueba(base, abrir=True):
                              presupuesto_semanal_mm=25_000))
     r.alta(deps.Departamento("mercado", deps.ZONA_FABRICA,
                              presupuesto_semanal_mm=25_000))
+    r.alta(deps.Departamento("finanzas", deps.ZONA_PERSONAL))
     if abrir:
         pt.emitir_semana(k, TS, W, 4_000, 1_000)
     k.acunar(TS, W, "dep:atlas", 400_000, t.SubtipoAcunacion.CAPITAL,
@@ -46,7 +47,7 @@ def cliente(tmp_path, monkeypatch):
 
 def _propuesta(base, id="p1", cuenta="dep:atlas", titulo="radar de precios"):
     b = Bus(base / "economia" / "bus.jsonl")
-    b.alta(TS, W, id, cuenta, titulo, 10_000, 10_000,
+    b.alta(TS, W, id, cuenta, titulo, 10_000, 30_000,
            {"gasto_max_mm": 10_000, "semanas_max": 4})
     return b
 
@@ -57,6 +58,7 @@ def test_el_bus_vacio_devuelve_una_lista_vacia(cliente):
     assert r.status_code == 200
     d = r.json()
     assert d["activa"] is True
+    assert d["semana_abierta"] is True
     assert d["propuestas"] == []
 
 
@@ -71,17 +73,22 @@ def test_una_propuesta_llega_con_lo_que_la_mesa_necesita(cliente):
     assert p["departamento"] == "dep:atlas"
     assert p["titulo"] == "radar de precios"
     assert p["presupuesto_mm"] == 10_000
+    assert p["retorno_mm"] == 30_000
+    assert p["criterio"] == {"gasto_max_mm": 10_000, "semanas_max": 4}
     assert p["gastado_mm"] == 0
     assert p["aportes"] == {}
 
 
 def test_los_departamentos_son_solo_los_de_la_fabrica(cliente):
     """El libro rechaza cualquier financiador fuera de la zona fabrica, asi
-    que ofrecer otro en el selector seria ofrecer un boton que falla."""
+    que ofrecer otro en el selector seria ofrecer un boton que falla. Hay un
+    departamento personal a proposito: sin el, borrar el filtro dejaria este
+    test verde igual."""
     c, base = cliente
     d = c.get("/api/economia/bus", params={"token": srv.TOKEN}).json()
     cuentas = {x["cuenta"] for x in d["departamentos"]}
     assert cuentas == {"dep:atlas", "dep:mercado"}
+    assert "dep:finanzas" not in cuentas
     assert all(x["zona"] == deps.ZONA_FABRICA for x in d["departamentos"])
     atlas = next(x for x in d["departamentos"] if x["cuenta"] == "dep:atlas")
     assert atlas["disponible_mm"] == 400_000
