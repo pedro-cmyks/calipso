@@ -78,6 +78,14 @@ test("la fila lleva el presupuesto, que es lo que se manda al financiar", () => 
   assert.match(html, /data-presupuesto="10000"/);
 });
 
+test("el numero del presupuesto dice que es un presupuesto", () => {
+  // un numero pelado no dice si es plata, milimonedas o tics; en la fila
+  // financiable (a diferencia de la financiada, que ya dice "gastado") no
+  // hay contexto que lo aclare, asi que la etiqueta va al lado.
+  const html = textoDeMesa(datos([P1]));
+  assert.match(html, /presupuesto 10\b/);
+});
+
 test("con la semana cerrada hay que avisar", () => {
   assert.equal(hayQueAvisarDeLaSemana(datos([P1], {semana_abierta: false})), true);
   assert.equal(hayQueAvisarDeLaSemana(datos([P1])), false);

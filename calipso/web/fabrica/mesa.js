@@ -38,7 +38,7 @@ function fila(propuesta, departamentos) {
   return `<div class="propuesta" ` +
     `data-presupuesto="${escapar(propuesta.presupuesto_mm)}">` +
     `<div class="cabeza"><b>${dep}</b> · ${escapar(propuesta.titulo)}</div>` +
-    `<div class="datos">${plata}</div>` + aviso +
+    `<div class="datos">presupuesto ${plata}</div>` + aviso +
     `<div class="acciones">paga ${selector(propuesta, departamentos)}` +
     `<button data-accion="financiar" data-id="${escapar(propuesta.id)}">` +
     `financiar</button>` +

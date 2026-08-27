@@ -226,7 +226,8 @@ html, body {
   display: flex; align-items: center; gap: 6px; margin-top: 8px;
   flex-wrap: wrap;
 }
-.mesa .acciones button { cursor: pointer; }
+.mesa .acciones button { cursor: pointer; min-height: 40px; padding: 0 14px; }
+.mesa .acciones select { min-height: 40px; }
 .mesa .vacio { color: var(--tenue); padding: 8px; }
 
 .plantel {
