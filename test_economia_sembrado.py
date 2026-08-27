@@ -30,10 +30,35 @@ SUSCRIPCIONES = {
 
 @pytest.fixture
 def crudo(tmp_path, monkeypatch):
-    """HOME temporal SIN economia: el caso que sembrar tiene que manejar."""
+    """HOME temporal SIN economia: el caso que sembrar tiene que manejar.
+
+    Dos cosas hay que pisar, no una. `srv._ECO_BASE` es un CALIPSO_HOME
+    congelado al importar y solo se cambia asi; el motor de permisos, en
+    cambio, resuelve el home en CADA llamada -- justamente para no repetir
+    ese error -- y lee la variable de entorno. Sin el setenv, las
+    solicitudes de permiso de estos tests terminaban en el ~/.calipso real
+    de Pedro.
+    """
     monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
+    monkeypatch.setenv("CALIPSO_HOME", str(tmp_path))
     monkeypatch.setattr(srv, "_eco_ahora", lambda: (TS, W))
     return TestClient(srv.app, cookies={srv.COOKIE: srv.TOKEN}), tmp_path
+
+
+def firmar(c):
+    """Contesta que si al ultimo prompt de permiso.
+
+    Desde la seccion 5 del spec de ojos y manos, una accion de plata por
+    encima del techo (100 monedas) no pasa sola: queda esperando y Pedro
+    la firma. Los montos grandes de este archivo -- un sueldo, el capital
+    inicial -- caen ahi, y el camino real es este.
+    """
+    sol = c.get("/api/permisos").json()["pendientes"][-1]
+    r = c.post(f"/api/permisos/solicitudes/{sol['id']}/responder",
+               json={"respuesta": "si"})
+    assert r.status_code == 200, r.text
+    assert r.json()["ejecucion"]["ejecutada"] is True, r.text
+    return r.json()["ejecucion"]["resultado"]
 
 
 @pytest.fixture
@@ -136,15 +161,18 @@ def test_sembrar_usa_los_defaults_comentados_si_no_vienen(crudo):
 
 def test_personal_movimiento_ingreso_y_gasto(cliente):
     c, base = cliente
+    # los dos superan el techo de plata: quedan esperando y Pedro los firma
     r = c.post("/api/economia/personal/movimiento",
               json={"tipo": "ingreso", "monto_mm": 2_500_000,
                     "categoria": "sueldo"})
-    assert r.status_code == 200 and r.json()["ok"] is True
+    assert r.status_code == 409
+    assert firmar(c)["ok"] is True
     r = c.post("/api/economia/personal/movimiento",
               json={"tipo": "gasto", "monto_mm": 220_000,
                     "categoria": "suscripciones",
                     "nota": "claude max + chatgpt plus"})
-    assert r.status_code == 200
+    assert r.status_code == 409
+    assert firmar(c)["ok"] is True
 
     tab = c.get("/api/economia/tablero").json()["tablero"]
     assert tab["personal"] == {"ingresos_mm": 2_500_000,
@@ -206,8 +234,9 @@ def test_acunar_capital_al_tesoro(cliente):
               json={"subtipo": "capital", "destino": "tesoro",
                     "monto_mm": 1_200_000,
                     "evidencia": {"tipo": "firma_pedro"}})
-    assert r.status_code == 200
-    asiento = r.json()["asiento"]
+    # 1.200 monedas: muy por encima del techo, asi que la firma Pedro
+    assert r.status_code == 409
+    asiento = firmar(c)["asiento"]
     assert asiento["destino"] == "tesoro"
     assert asiento["monto"] == 1_200_000
     assert asiento["subtipo"] == "capital"

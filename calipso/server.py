@@ -3577,6 +3577,14 @@ class EcoPersonalMovimientoBody(BaseModel):
     monto_mm: int
     categoria: str
     nota: str = ""
+    # quien pide, para el motor de permisos. Ver `_permisos_contexto`: el
+    # default "pedro" es porque este endpoint es hoy el formulario de
+    # /fabrica; una rutina de departamento declara lo suyo y cae sola en el
+    # camino desatendido de 5.6.
+    origen: str = "pedro"
+    chat: str | None = None
+    departamento: str | None = None
+    corrida: str | None = None
 
 
 # Pedro pidio el banco con estas palabras, textual: "ingresos y egresos"
@@ -3596,6 +3604,11 @@ class EcoFronteraAcunarBody(BaseModel):
     # venta, incluso si destino es trabajo:<id> -- el bus no sabe de que
     # proyecto es un trabajo, asi que no hay forma de derivarlo aca.
     proyecto: str | None = None
+    # quien pide, para el motor de permisos (ver `_permisos_contexto`)
+    origen: str = "pedro"
+    chat: str | None = None
+    departamento: str | None = None
+    corrida: str | None = None
 
 
 @app.get("/api/economia/tablero")
@@ -3918,13 +3931,88 @@ def api_eco_sembrar(body: EcoSembrarBody) -> dict:
             "suscripciones": list(suscripciones)}
 
 
-@app.post("/api/economia/personal/movimiento")
-def api_eco_personal_movimiento(body: EcoPersonalMovimientoBody) -> dict:
-    """El banco de Pedro (spec 8.4): un ingreso o un egreso SUYO, en
-    personal.jsonl. Nunca acuna, nunca toca el libro de la fabrica --
-    LibroPersonal.registrar ni siquiera abre el Kernel -- asi que la
-    invariante 11 (los libros personales son privados) no se toca.
+# --------------------------------------------------------------------------
+# PERMISOS (spec de ojos y manos, seccion 5): el motor, y su primer
+# consumidor -- las acciones de plata.
+#
+# Acunar 500 monedas y correr un `rm -rf` son la misma pregunta: una accion
+# que no se deshace sola. Por eso el umbral de plata no es un mecanismo
+# aparte sino el primer llamador de `permisos.evaluar`. Cuando se enchufen
+# la terminal, los archivos y las apps, van por la misma puerta.
+# --------------------------------------------------------------------------
+try:
+    from calipso import permisos as _permisos
+    from calipso.permisos import almacen as _permisos_almacen
+    from calipso.permisos import motor as _permisos_motor
+except Exception:  # sin motor de permisos los endpoints lo dicen, no mienten
+    _permisos = _permisos_almacen = _permisos_motor = None
+
+
+class EcoPermisoResponderBody(BaseModel):
+    respuesta: str  # "si" | "si_siempre" | "no" (las tres salidas de 5.4)
+    # una forma MAS ANCHA para el permiso permanente ("escribir bajo
+    # ~/Downloads" en vez de ese archivo suelto). Tiene que cubrir la
+    # accion que se esta aprobando o `conceder` la rechaza.
+    forma: dict | None = None
+
+
+class PermisoTechoBody(BaseModel):
+    nombre: str = "plata_mm"
+    valor: int
+
+
+def _permisos_contexto(body) -> "_permisos.Contexto":
+    """Quien pide, desde el cuerpo del request.
+
+    El default es "pedro" y no el lado desatendido porque estos endpoints
+    SON hoy la superficie de Pedro: los dispara el formulario de /fabrica,
+    con el a un dedo del boton. Una rutina que llame por HTTP declara su
+    `origen`, su `departamento` y su `corrida` y cae sola en el camino de
+    5.6. Y el default no es una puerta: con origen "pedro" una accion por
+    encima del techo igual queda PENDIENTE y no se ejecuta -- nadie se
+    auto-aprueba, solo cambia si el pedido espera en un prompt o se
+    estaciona.
     """
+    return _permisos.Contexto(
+        origen=getattr(body, "origen", None) or "pedro",
+        chat=getattr(body, "chat", None),
+        departamento=getattr(body, "departamento", None),
+        corrida=getattr(body, "corrida", None))
+
+
+def _permisos_puerta(accion, body) -> None:
+    """Pasa por el motor, o corta el request.
+
+    Corta con 409 y no con 202 a proposito. 202 es el codigo semanticamente
+    correcto para "aceptado, todavia no hecho", pero la UI que ya existe
+    (`calipso/web/fabrica/app.js`) trata cualquier `r.ok` como exito y le
+    dice a Pedro "listo: se pusieron 500 monedas en el tesoro". Decirle que
+    la plata entro cuando no entro es peor que un codigo menos elegante, y
+    la tira de 5.9 -- que es la que va a leer el cuerpo estructurado -- se
+    construye despues. Con 409, la UI de hoy muestra el `detail`, que dice
+    exactamente que paso y con que id.
+    """
+    if _permisos is None:
+        raise HTTPException(
+            status_code=503,
+            detail="el motor de permisos no esta disponible en este build")
+    res = _permisos.evaluar(accion, _permisos_contexto(body))
+    if res.permitido:
+        return
+    if res.estado == _permisos.ESTADO_NEGADO:
+        raise HTTPException(status_code=403, detail=res.motivo)
+    sol = res.solicitud or {}
+    raise HTTPException(
+        status_code=409,
+        detail=(f"{res.estado}: {sol.get('texto') or accion.titulo}. "
+                f"{res.motivo}. Contestala en /api/permisos "
+                f"(solicitud {sol.get('id')})"))
+
+
+def _eco_movimiento_ahora(tipo: str, monto_mm: int, categoria: str,
+                          nota: str) -> dict:
+    """El movimiento en si, sin permisos: lo llama el endpoint cuando el
+    motor deja pasar, y el ejecutor cuando Pedro contesta que si."""
     p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
     if not p0:
         raise HTTPException(status_code=400, detail="la economia no esta activa")
@@ -3932,12 +4020,148 @@ def api_eco_personal_movimiento(body: EcoPersonalMovimientoBody) -> dict:
     try:
         with _eco_candado(p0.ruta_libro):
             eco = _economia()  # fresco BAJO el candado
-            tipo = _ECO_PERSONAL_TIPO_SINONIMOS.get(body.tipo, body.tipo)
-            eco["personal"].registrar(ts, semana, tipo, body.monto_mm,
-                                      body.categoria, nota=body.nota)
+            eco["personal"].registrar(
+                ts, semana, _ECO_PERSONAL_TIPO_SINONIMOS.get(tipo, tipo),
+                monto_mm, categoria, nota=nota)
     except _eco_personal.ErrorPersonal as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     return {"ok": True}
+
+
+def _eco_acunar_ahora(subtipo: str, destino: str, monto_mm: int,
+                      evidencia: dict, detalle_extra: dict | None) -> dict:
+    """La acunacion en si, ya validada por el endpoint. Misma separacion
+    que el movimiento: la validacion de forma corre ANTES de pedir permiso
+    (no tiene sentido estacionar un pedido invalido y hacer que Pedro lo
+    apruebe para que despues falle), y esto es solo la escritura."""
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
+    if not p0:
+        raise HTTPException(status_code=400, detail="la economia no esta activa")
+    ts, semana = _eco_ahora()
+    try:
+        with _eco_candado(p0.ruta_libro):
+            if subtipo == "venta" and destino.startswith("trabajo:"):
+                id_trabajo = destino.split(":", 1)[1]
+                if id_trabajo not in _eco_bus.Bus(p0.ruta_bus).activas():
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"trabajo no vivo: {destino}")
+                detalle_extra = {**(detalle_extra or {}),
+                                 "trabajo": id_trabajo}
+            asiento = p0.leer_kernel().acunar(
+                ts, semana, destino, monto_mm,
+                _eco_tipos.SubtipoAcunacion(subtipo), evidencia,
+                detalle_extra=detalle_extra)
+    except HTTPException:
+        raise
+    except _eco_errores_economicos as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"ok": True, "asiento": {"seq": asiento.seq, "ts": asiento.ts,
+                                    "destino": asiento.destino,
+                                    "monto": asiento.monto,
+                                    "subtipo": asiento.subtipo,
+                                    "detalle": asiento.detalle}}
+
+
+def _ejecutor_movimiento(a) -> dict:
+    return _eco_movimiento_ahora(a.forma["tipo"], a.forma["monto_mm"],
+                                 a.forma["categoria"],
+                                 a.detalle.get("nota", ""))
+
+
+def _ejecutor_acunar(a) -> dict:
+    return _eco_acunar_ahora(a.forma["subtipo"], a.forma["destino"],
+                             a.forma["monto_mm"],
+                             a.detalle.get("evidencia") or {},
+                             a.detalle.get("detalle_extra"))
+
+
+if _permisos_motor is not None:
+    # el contrato de enchufe: la respuesta de Pedro tiene que poder
+    # COMPLETAR la accion, no solo autorizarla, porque quien la pidio ya
+    # se volvio con un 409.
+    _permisos_motor.registrar_ejecutor("plata", "movimiento",
+                                       _ejecutor_movimiento)
+    _permisos_motor.registrar_ejecutor("plata", "acunar", _ejecutor_acunar)
+
+
+@app.get("/api/permisos")
+def api_permisos() -> dict:
+    """La tira de 5.9: prompts pendientes, solicitudes estacionadas de los
+    departamentos, y los permisos permanentes con su id para revocar.
+
+    Endpoint propio y no el bus ni la cola: una propuesta del bus y una
+    carta de la cola son objetos economicos -- con escrow, con asientos, y
+    su atencion la lee `cerrar_ciclo` -- y un permiso no lo es. Meterlo ahi
+    convertiria el libro contable en un log de permisos."""
+    if _permisos is None:
+        return {"activo": False}
+    return {"activo": True, **_permisos.vista()}
+
+
+@app.post("/api/permisos/solicitudes/{id_solicitud}/responder")
+def api_permisos_responder(id_solicitud: str,
+                           body: EcoPermisoResponderBody) -> dict:
+    """Las tres salidas de 5.4. El modelo puede PEDIR; conceder es de
+    Pedro, siempre, y este endpoint es el unico camino que escribe un
+    permiso permanente."""
+    if _permisos is None:
+        raise HTTPException(status_code=503,
+                            detail="el motor de permisos no esta disponible")
+    try:
+        return _permisos_motor.responder(id_solicitud, body.respuesta,
+                                         quien="pedro",
+                                         forma_permanente=body.forma)
+    except _permisos.ErrorPermisos as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@app.post("/api/permisos/concedidos/{id_permiso}/revocar")
+def api_permisos_revocar(id_permiso: str) -> dict:
+    if _permisos is None:
+        raise HTTPException(status_code=503,
+                            detail="el motor de permisos no esta disponible")
+    if not _permisos_almacen.revocar(id_permiso):
+        raise HTTPException(status_code=404,
+                            detail=f"no hay permiso {id_permiso}")
+    return {"ok": True}
+
+
+@app.post("/api/permisos/techo")
+def api_permisos_techo(body: PermisoTechoBody) -> dict:
+    """El techo de plata, configurable y no una constante escondida. En
+    milimonedas: 100.000 mm = 100 monedas, que es donde Pedro lo puso."""
+    if _permisos is None:
+        raise HTTPException(status_code=503,
+                            detail="el motor de permisos no esta disponible")
+    try:
+        return {"ok": True,
+                "techos": _permisos_almacen.poner_techo(body.nombre,
+                                                        body.valor)}
+    except _permisos.ErrorPermisos as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@app.post("/api/economia/personal/movimiento")
+def api_eco_personal_movimiento(body: EcoPersonalMovimientoBody) -> dict:
+    """El banco de Pedro (spec 8.4): un ingreso o un egreso SUYO, en
+    personal.jsonl. Nunca acuna, nunca toca el libro de la fabrica --
+    LibroPersonal.registrar ni siquiera abre el Kernel -- asi que la
+    invariante 11 (los libros personales son privados) no se toca.
+
+    Pasa por el motor de permisos: por debajo del techo de plata se
+    registra solo, por encima queda esperando la respuesta de Pedro.
+    """
+    accion = _permisos.Accion(
+        familia="plata", operacion="movimiento",
+        forma={"tipo": body.tipo, "monto_mm": body.monto_mm,
+               "categoria": body.categoria},
+        detalle={"nota": body.nota},
+        titulo=f"registrar un {body.tipo} de {body.monto_mm} mm en "
+               f"{body.categoria}") if _permisos else None
+    _permisos_puerta(accion, body)
+    return _eco_movimiento_ahora(body.tipo, body.monto_mm, body.categoria,
+                                 body.nota)
 
 
 @app.post("/api/economia/frontera/acunar")
@@ -4003,29 +4227,21 @@ def api_eco_frontera_acunar(body: EcoFronteraAcunarBody) -> dict:
                 detail="venta exige destino proyecto:<slug> o trabajo:<id>")
         detalle_extra = {"proyecto": body.proyecto}
 
-    ts, semana = _eco_ahora()
-    try:
-        with _eco_candado(p0.ruta_libro):
-            if body.subtipo == "venta" and body.destino.startswith("trabajo:"):
-                id_trabajo = body.destino.split(":", 1)[1]
-                if id_trabajo not in _eco_bus.Bus(p0.ruta_bus).activas():
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"trabajo no vivo: {body.destino}")
-                detalle_extra = {**detalle_extra, "trabajo": id_trabajo}
-            asiento = p0.leer_kernel().acunar(
-                ts, semana, body.destino, body.monto_mm,
-                _eco_tipos.SubtipoAcunacion(body.subtipo), body.evidencia,
-                detalle_extra=detalle_extra)
-    except HTTPException:
-        raise
-    except _eco_errores_economicos as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
-    return {"ok": True, "asiento": {"seq": asiento.seq, "ts": asiento.ts,
-                                    "destino": asiento.destino,
-                                    "monto": asiento.monto,
-                                    "subtipo": asiento.subtipo,
-                                    "detalle": asiento.detalle}}
+    # el motor de permisos va DESPUES de las reglas taxativas y ANTES de
+    # abrir el libro: estacionar un pedido invalido haria que Pedro apruebe
+    # algo que despues falla, y el prompt tiene que mostrar exactamente lo
+    # que va a pasar si dice que si.
+    accion = _permisos.Accion(
+        familia="plata", operacion="acunar",
+        forma={"subtipo": body.subtipo, "destino": body.destino,
+               "monto_mm": body.monto_mm, "proyecto": body.proyecto},
+        detalle={"evidencia": body.evidencia,
+                 "detalle_extra": detalle_extra},
+        titulo=f"acunar {body.monto_mm} mm ({body.subtipo}) a "
+               f"{body.destino}") if _permisos else None
+    _permisos_puerta(accion, body)
+    return _eco_acunar_ahora(body.subtipo, body.destino, body.monto_mm,
+                             body.evidencia, detalle_extra)
 
 
 # El plantel tiene su PROPIO try/except, separado del bloque MAPA de abajo:
