@@ -299,9 +299,9 @@ function textoDePlantel(estado) {
   return `<div class="estado">${prendido} · modo ${escapar(estado.modo)} ` +
     `· techo ${escapar(String(estado.techo_tics))} tics</div>` + peligro +
     `<div class="botones">` +
-    `<button data-plantel="parar">parar</button>` +
-    `<button data-plantel="reanudar">reanudar</button>` +
-    `<button data-plantel="modo" data-modo="${estado.modo === "vivo"
+    `<button type="button" data-plantel="parar">parar</button>` +
+    `<button type="button" data-plantel="reanudar">reanudar</button>` +
+    `<button type="button" data-plantel="modo" data-modo="${estado.modo === "vivo"
       ? "ensayo" : "vivo"}">pasar a ${estado.modo === "vivo"
       ? "ensayo" : "vivo"}</button>` +
     `</div>` +
