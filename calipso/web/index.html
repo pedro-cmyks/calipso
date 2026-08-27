@@ -164,6 +164,10 @@
   .artifact-body { display: none; max-height: 280px; overflow: auto; padding: 9px;
                    color: var(--text); white-space: pre-wrap; font: 12px/1.45 'JetBrains Mono', Consolas, monospace; }
   .artifact-card.open .artifact-body { display: block; }
+  .artifact-svg { display: flex; justify-content: center; align-items: center;
+                  padding: 10px; background: var(--bg); }
+  .artifact-svg-frame { width: 100%; max-width: 420px; max-height: 420px;
+                         border: 0; background: transparent; }
   .msg.meta { align-self: center; background: transparent; color: var(--muted);
               font-size: 11px; padding: 1px 6px; max-width: 100%; }
   .msg.detail { align-self: stretch; max-width: 100%; background: #232326;
@@ -569,6 +573,14 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
+<script type="module">
+// El resto de esta pagina es un unico script clasico (no type="module"),
+// asi que el modulo puro de saneado de SVG se cuelga de window aca -es la
+// unica forma de compartirlo sin volver a esta pagina entera un modulo.
+import {pareceSvg, extraerSvgDelTexto, sanearSvg, dimensionesSvg}
+  from "/static/fabrica/svg.js";
+window.SvgSeguro = {pareceSvg, extraerSvgDelTexto, sanearSvg, dimensionesSvg};
+</script>
 <script>
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
@@ -1672,9 +1684,50 @@ function appendBotText(el, text) {
 }
 function artifactKind(text) {
   if (!text) return null;
+  if (window.SvgSeguro?.extraerSvgDelTexto(text)) return "grafico svg";
   if (text.includes("```")) return "codigo o documento";
   if (text.length >= ARTIFACT_MIN_CHARS) return "respuesta larga";
   return null;
+}
+// Un SVG que manda el modelo es texto no confiable: puede traer <script>,
+// atributos on* (onload...), <foreignObject> con HTML adentro o un <use>
+// apuntando a otro host. sanearSvg() (calipso/web/fabrica/svg.js) es HIGIENE
+// -saca lo obvio y sobre todo lo que fuerce una request de red a otro host-
+// pero la FRONTERA real es este iframe: sandbox="" sin allow-scripts ni
+// allow-same-origin. Sin allow-scripts el navegador no ejecuta NADA adentro
+// -ni <script>, ni onload, ni javascript:- pase lo que pase con el saneado;
+// y sin allow-same-origin el iframe queda en un origen opaco que no puede
+// leer la cookie de sesion de Pedro ni tocar el resto de la pagina. Las dos
+// capas son independientes a proposito: si el saneado tiene un agujero, el
+// sandbox lo sigue tapando.
+function renderSvgArtifact(card, text) {
+  const util = window.SvgSeguro;
+  const crudo = util ? util.extraerSvgDelTexto(text) : null;
+  let visor = card.querySelector(".artifact-svg");
+  if (!crudo) {
+    if (visor) visor.remove();
+    return;
+  }
+  if (visor && visor.dataset.fuente === crudo) return; // sin cambios, no reconstruir el iframe
+  const limpio = util.sanearSvg(crudo);
+  if (!visor) {
+    visor = document.createElement("div");
+    visor.className = "artifact-svg";
+    card.insertBefore(visor, card.querySelector(".artifact-body"));
+  }
+  visor.dataset.fuente = crudo;
+  const dims = util.dimensionesSvg(limpio);
+  const doc = `<!doctype html><html><head><meta charset="utf-8">` +
+    `<style>html,body{margin:0;padding:0;background:transparent}` +
+    `svg{display:block;width:100%;height:100%}</style></head>` +
+    `<body>${limpio}</body></html>`;
+  const iframe = document.createElement("iframe");
+  iframe.className = "artifact-svg-frame";
+  iframe.setAttribute("sandbox", "");
+  iframe.setAttribute("srcdoc", doc);
+  iframe.title = "vista previa del svg";
+  iframe.style.aspectRatio = dims ? `${dims.ancho} / ${dims.alto}` : "4 / 3";
+  visor.replaceChildren(iframe);
 }
 function maybeRenderArtifact(el) {
   if (!el || !el.classList?.contains("bot")) return;
@@ -1705,6 +1758,7 @@ function maybeRenderArtifact(el) {
   }
   card.querySelector(".artifact-head span").textContent = `${kind} - ${text.length.toLocaleString("es-CO")} caracteres`;
   card.querySelector(".artifact-body").textContent = text;
+  renderSvgArtifact(card, text);
 }
 function renderAttachments() {
   attachmentChips.innerHTML = "";
