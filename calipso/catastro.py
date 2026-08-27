@@ -52,8 +52,31 @@ from typing import Any
 
 from calipso import config as calipso_config
 
-CALIPSO_HOME = pathlib.Path(os.environ.get(
-    "CALIPSO_HOME", os.path.expanduser("~/.calipso")))
+def calipso_home() -> pathlib.Path:
+    """Carpeta base de Calipso, resuelta DE NUEVO en cada llamada -- nunca
+    cacheada en una constante de modulo.
+
+    La alternativa obvia (`CALIPSO_HOME = pathlib.Path(os.environ.get(...))`
+    a nivel de modulo, el patron que usa el resto del repo) se resuelve
+    UNA sola vez, la primera vez que algo importa este archivo. Python
+    cachea modulos en `sys.modules`: si otro archivo de la suite de tests
+    ya importo `calipso.server` (que importa este modulo) con el
+    `CALIPSO_HOME` real de la maquina, cualquier test posterior que fije
+    la variable de entorno y recien despues importe `calipso.catastro` se
+    encuentra con el modulo ya cacheado -- la variable de entorno nueva no
+    hace nada, y las funciones de este archivo siguen escribiendo en el
+    `~/.calipso` real. Pasó exactamente eso: verificado corriendo la
+    suite completa, `~/.calipso/catastro.json` de la maquina real
+    terminaba pisado por tests que se pensaban aislados.
+
+    La funcion evita el problema de raiz: no hay nada que quede fijado al
+    importar, asi que no importa CUANDO se fijo `CALIPSO_HOME` en el
+    entorno, sino que este seteado en el momento en que se LLAMA a esta
+    funcion -- que es lo que un test puede controlar con total certeza
+    (`monkeypatch.setenv`), sin depender de que su archivo sea el primero
+    en importar nada."""
+    return pathlib.Path(os.environ.get(
+        "CALIPSO_HOME", os.path.expanduser("~/.calipso")))
 
 # Carpetas que no vale la pena pisar durante el escaneo de raices: ni son
 # proyectos ni tiene sentido bajar mas adentro buscando otro .git ahi.
@@ -77,8 +100,9 @@ GIT_TIMEOUT = 5
 
 
 def _file() -> pathlib.Path:
-    CALIPSO_HOME.mkdir(parents=True, exist_ok=True)
-    return CALIPSO_HOME / "catastro.json"
+    home = calipso_home()
+    home.mkdir(parents=True, exist_ok=True)
+    return home / "catastro.json"
 
 
 def _slug(path: pathlib.Path) -> str:
@@ -360,7 +384,7 @@ def _raices_extra_por_slug(ya_encontrados: list[pathlib.Path]) -> list[pathlib.P
     la raiz entera con carpetas ocultas permitidas: antes de llegar a
     calipso/.claude, un recorrido asi se gasta el techo entero adentro de
     esas carpetas de cache, que ordenan antes alfabeticamente."""
-    carpeta = CALIPSO_HOME / "projects"
+    carpeta = calipso_home() / "projects"
     if not carpeta.is_dir():
         return []
     try:

@@ -42,7 +42,11 @@ def _repo(path: pathlib.Path, con_readme: str | None = None) -> pathlib.Path:
 def home(tmp_path, monkeypatch):
     calipso_home = tmp_path / "calipso_home"
     calipso_home.mkdir()
-    monkeypatch.setattr(catastro, "CALIPSO_HOME", calipso_home)
+    # setenv, no monkeypatch.setattr sobre un atributo de modulo:
+    # catastro.calipso_home() lee la variable de entorno EN CADA LLAMADA
+    # (ver su docstring), asi que esto aisla sin importar si `catastro` ya
+    # estaba importado por otro archivo de la suite antes de este fixture.
+    monkeypatch.setenv("CALIPSO_HOME", str(calipso_home))
     return calipso_home
 
 
