@@ -209,6 +209,9 @@ for (const boton of document.querySelectorAll("#pestanas button")) {
     for (const otro of document.querySelectorAll("#pestanas button")) {
       otro.classList.toggle("activa", otro === boton);
     }
+    // sin esto, tocar la pestana muestra la foto del momento en que cargo
+    // la pagina en vez de lo que hay ahora (spec seccion 9)
+    if (boton.dataset.pestana === "mesa") pintarMesa();
   });
 }
 app.dataset.pestana = "chat";
@@ -506,6 +509,17 @@ fetch("/api/chats")
 
 pintarMesa();
 pintarPlantel();
+
+// La mesa no tiene push: sin este refresco, Pedro abre /fabrica, hace otra
+// cosa, toca la pestana "Mesa" y ve la foto del momento de la carga (spec
+// seccion 9). Lo que la cambia es una rutina del jefe tiqueando, que se
+// mide en minutos, no en segundos: 60s alcanza para que una propuesta
+// nueva aparezca sin que Pedro tenga que forzar nada, y no pide el bus a
+// cada rato mientras la pantalla esta quieta. `.unref?.()` es defensivo:
+// en Node (los tests) evita que el timer sostenga el proceso vivo; en el
+// navegador `setInterval` devuelve un numero sin ese metodo, y el opcional
+// lo saltea sin romper nada.
+setInterval(pintarMesa, 60_000).unref?.();
 
 const panelCentro = document.getElementById("panel-centro");
 const panelRazonamiento = document.getElementById("razonamiento");
