@@ -64,6 +64,21 @@ test("un departamento sin plata suficiente queda anotado", () => {
   assert.match(html, /sin saldo|no alcanza/i);
 });
 
+test("si el dueno no esta en la lista, igual queda una opcion seleccionada", () => {
+  // sin esto el navegador elige la primera opcion sola y financiar paga
+  // desde ahi sin que nada lo diga
+  const ajena = {...P1, departamento: "dep:finanzas"};
+  const html = textoDeMesa(datos([ajena]));
+  assert.match(html, /<option value="dep:atlas" selected/,
+              "ninguna opcion quedo seleccionada de forma explicita");
+});
+
+test("si el dueno no esta en la lista, se nota", () => {
+  const ajena = {...P1, departamento: "dep:finanzas"};
+  const html = textoDeMesa(datos([ajena]));
+  assert.match(html, /dep:finanzas.*no esta en la lista|no esta en la lista.*dep:finanzas/is);
+});
+
 test("una financiada muestra lo gastado y no ofrece botones", () => {
   const fin = {...P1, estado: "financiada", gastado_mm: 3000,
                aportes: {"dep:atlas": 10000}};

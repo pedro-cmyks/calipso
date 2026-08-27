@@ -9,12 +9,19 @@ import {escapar} from "./paneles.js";
 import {monedas} from "./ciudad.js";
 
 function selector(propuesta, departamentos) {
-  const opciones = departamentos.map(d => {
-    const elegido = d.cuenta === propuesta.departamento ? " selected" : "";
-    return `<option value="${escapar(d.cuenta)}"${elegido}>` +
+  // si el dueno no esta en la lista de departamentos de fabrica, ninguna
+  // opcion coincide con el; sin una seleccion EXPLICITA el navegador elige
+  // la primera solo, y financiar paga desde ahi sin ningun indicio
+  const dueno = departamentos.some(d => d.cuenta === propuesta.departamento);
+  const opciones = departamentos.map((d, i) => {
+    const elegido = dueno ? d.cuenta === propuesta.departamento : i === 0;
+    return `<option value="${escapar(d.cuenta)}"${elegido ? " selected" : ""}>` +
            `${escapar(d.nombre)}</option>`;
   }).join("");
-  return `<select class="paga" data-id="${escapar(propuesta.id)}">` +
+  const aviso = dueno ? "" : `<div class="aviso">el dueno ` +
+    `(${escapar(propuesta.departamento)}) no esta en la lista: revisa ` +
+    `quien paga antes de financiar</div>`;
+  return aviso + `<select class="paga" data-id="${escapar(propuesta.id)}">` +
          `${opciones}</select>`;
 }
 
