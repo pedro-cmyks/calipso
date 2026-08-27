@@ -143,11 +143,30 @@ test("una ciudad ancha se encuadra por el lado que aprieta", () => {
   assert.ok(e.escala <= VISTA.ancho / 2000 + 1e-9, `escala ${e.escala}`);
 });
 
-test("encuadrar respeta los topes de escala", () => {
-  const lejos = encuadrar([{x: 0, y: 0}, {x: 1e9, y: 1e9}], VISTA);
-  assert.equal(lejos.escala, ESCALA_MIN);
+test("encuadrar respeta el techo de escala con una ciudad chica", () => {
   const juntos = encuadrar([{x: 0, y: 0}, {x: 1, y: 1}], VISTA);
   assert.equal(juntos.escala, ESCALA_MAX);
+});
+
+test("encuadrar no tiene piso: una ciudad mas ancha que ESCALA_MIN se " +
+     "achica lo que haga falta para entrar entera", () => {
+  // Este es el bug que reporto Pedro: con el panel del mapa angosto (una
+  // fraccion de la pantalla), una ciudad ancha necesita una escala menor
+  // que ESCALA_MIN para entrar completa. Si encuadrar respetara ese piso
+  // -como hacia antes- el zoom quedaria MAS cerca de lo que hace falta y
+  // algunos edificios quedarian afuera de la vista; recien apretando
+  // "Sobrevolar" (vista mas ancha) se corregia solo. encuadrar tiene que
+  // poder bajar de ESCALA_MIN: ese piso es para el zoom manual, no para
+  // el encuadre automatico.
+  const edificios = [{x: -2000, y: 0}, {x: 2000, y: 0}];
+  const e = encuadrar(edificios, VISTA);
+  assert.ok(e.escala < ESCALA_MIN, `no se achico lo suficiente: ${e.escala}`);
+  const cam = crearCamara(e.x, e.y, e.escala);
+  for (const b of edificios) {
+    const p = aPantalla(cam, b, VISTA);
+    assert.ok(p.x >= 0 && p.x <= VISTA.ancho,
+              `quedo afuera de la vista en x: ${p.x}`);
+  }
 });
 
 test("encuadrar un solo edificio lo pone en el centro sin dividir por cero", () => {

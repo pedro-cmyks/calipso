@@ -99,6 +99,13 @@ export function encuadrar(edificios, vista, margen = 60) {
   const ancho = x1 - x0, alto = y1 - y0;
   const cabe = Math.min(ancho > 0 ? util.ancho / ancho : ESCALA_MAX,
                         alto > 0 ? util.alto / alto : ESCALA_MAX);
-  const escala = Math.max(ESCALA_MIN, Math.min(ESCALA_MAX, cabe));
+  // ESCALA_MIN es el piso del zoom MANUAL (que Pedro no se pierda arrastrando
+  // la rueda); encuadrar NO lo respeta a proposito. El panel del mapa mide
+  // una fraccion de la pantalla, y una ciudad mas ancha de lo que ese piso
+  // deja ver ahi (el caso real: "Sobrevolar" -pantalla entera- si encuadra,
+  // el panel angosto no) forzaria un zoom MAS cerca del que hace falta y
+  // empujaria edificios afuera de la vista -exactamente lo contrario de lo
+  // que esta funcion promete.
+  const escala = Math.min(ESCALA_MAX, cabe);
   return {x: (x0 + x1) / 2, y: (y0 + y1) / 2, escala};
 }
