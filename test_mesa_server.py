@@ -243,3 +243,31 @@ def test_sin_token_no_se_financia(tmp_path, monkeypatch):
     r = c.post("/api/economia/bus/p1/financiar",
                json={"cuenta": "dep:atlas", "mm": 1})
     assert r.status_code == 401
+
+
+def test_leer_el_bus_toma_el_candado_sobre_el_libro(cliente, monkeypatch):
+    """Molde: test_contratar_escribe_el_alta_bajo_candado, en
+    test_plantel_server.py (spec seccion 8: "el lector bajo candado"). El
+    GET es un lector mas de economia y tiene que serializarse igual que las
+    escrituras -- sin este test, sacar el `with _eco_candado(...)` de
+    api_eco_bus deja el resto de la suite en verde."""
+    c, base = cliente
+    _propuesta(base)
+
+    import contextlib as _ctxlib
+
+    rutas_tomadas = []
+    candado_original = srv._eco_candado
+
+    @_ctxlib.contextmanager
+    def candado_espia(ruta, no_bloquear=False):
+        with candado_original(ruta, no_bloquear=no_bloquear):
+            rutas_tomadas.append(ruta)
+            yield
+
+    monkeypatch.setattr(srv, "_eco_candado", candado_espia)
+
+    r = c.get("/api/economia/bus", params={"token": srv.TOKEN})
+    assert r.status_code == 200
+    assert rutas_tomadas == [base / "economia" / "libro.jsonl"], (
+        "api_eco_bus no tomo el candado sobre ruta_libro")
