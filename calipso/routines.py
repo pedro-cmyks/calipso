@@ -8,6 +8,8 @@ significa "se ejecuta cuando toca mientras el server este vivo". Persistimos
 (reflect, learn, backup) son tareas locales seguras que no abren red; la
 rutina "departamento" (Tarea 6 del plan de plantel) SI escala a API: despierta
 al jefe de un departamento, que decide en el escalon local y puede contratar.
+La rutina "cierre" dispara el pulso semanal de la economia (ver DEFAULTS,
+mas abajo, para por que nace apagada).
 
 El modulo es puro de I/O + logica de vencimiento; el server inyecta los handlers
 que ejecutan cada `kind`. La logica de "due" recibe `now` para poder probarse.
@@ -26,7 +28,7 @@ from typing import Any, Callable
 CALIPSO_HOME = pathlib.Path(os.environ.get(
     "CALIPSO_HOME", os.path.expanduser("~/.calipso")))
 
-KINDS = ("reflect", "learn", "backup", "departamento", "catastro")
+KINDS = ("reflect", "learn", "backup", "departamento", "catastro", "cierre")
 
 
 class ErrorRutinas(Exception):
@@ -53,12 +55,23 @@ class ErrorRutinas(Exception):
 # declaradas. `catastro.cargar()` igual no depende de que esta rutina haya
 # corrido: la primera lectura de la vida del catastro escanea sola aunque
 # la rutina siga deshabilitada (ver calipso/catastro.py:cargar).
+#
+# "cierre" es la contraparte exactamente opuesta: nace deshabilitada como
+# las tres viejas, y a proposito. El handler dispara
+# `economia.operacion.cerrar_semana_operativa` -- el mismo pulso que hoy
+# solo corre a mano via POST /api/economia/cierre -- y eso significa
+# expirar pedro-tokens, declarar quiebras de departamentos y liquidar
+# trabajos que no rinden, todo solo mientras Pedro no esta mirando.
+# Prender ese piloto automatico es una decision suya, no una que el
+# codigo tome por default.
 DEFAULTS = [
     {"kind": "reflect", "label": "Reflexionar memoria episodica", "interval_minutes": 1440},
     {"kind": "learn", "label": "Aprender preferencias", "interval_minutes": 1440},
     {"kind": "backup", "label": "Backup de runtime", "interval_minutes": 1440},
     {"kind": "catastro", "label": "Escanear catastro de proyectos",
      "interval_minutes": 60, "enabled_por_defecto": True},
+    {"kind": "cierre", "label": "Cerrar semana operativa de la economia",
+     "interval_minutes": 1440},
 ]
 
 

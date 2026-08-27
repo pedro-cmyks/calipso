@@ -2655,6 +2655,8 @@ def _routine_handlers() -> dict:
     """Mapea kind -> accion. Las tres viejas son locales y no abren red; la
     de departamento SI gasta: despierta al jefe, que decide en el escalon
     local y puede contratar. Sus frenos viven en calipso/plantel/interruptor.
+    La de cierre SI escribe el libro de la economia: dispara el mismo pulso
+    semanal que hoy solo corre a mano via POST /api/economia/cierre.
     """
     def _reflect(_r):
         mem.reflect()
@@ -2705,8 +2707,35 @@ def _routine_handlers() -> dict:
         # en `_contratar_para`.
         _plantel_jefe.tic(ctx, cuenta, semana)
 
+    def _cierre(_r):
+        # el sexto kind: dispara el pulso semanal de la economia (expirar
+        # PT, declarar quiebras, liquidar trabajos que no rinden, repartir
+        # presupuesto de direccion, reintentar cargos pendientes). No
+        # reimplementa nada -- es el mismo llamador que POST
+        # /api/economia/cierre (api_eco_cierre), con el mismo candado y el
+        # mismo cuidado de reconstruir el estado FRESCO adentro.
+        eco = _economia()
+        if eco is None:
+            return  # sin ~/.calipso/economia todavia: nada que cerrar
+        ts, semana = _eco_ahora()
+        with _eco_candado(eco["pagador"].ruta_libro):
+            eco = _economia()  # fresco BAJO el candado (reentrante adentro)
+            _eco_op.cerrar_semana_operativa(
+                eco["pagador"].mercado_fresco(), eco["bus"], eco["cola"],
+                ts, semana,
+                # api_eco_cierre recibe este monto en el cuerpo del pedido;
+                # una rutina no tiene quien se lo pase. Su propio default
+                # (0) ya significa "no asignar presupuesto de direccion en
+                # este cierre" -- heredar ese default es la decision
+                # explicita de no inventarle a Pedro una politica fiscal
+                # que nunca pidio. Si el la quiere, la corre a mano con el
+                # monto que decida via el endpoint.
+                presupuesto_direccion_mm=0)
+            eco["pagador"].reintentar_pendientes()
+
     return {"reflect": _reflect, "learn": _learn, "backup": _backup,
-            "catastro": _catastro, "departamento": _departamento}
+            "catastro": _catastro, "departamento": _departamento,
+            "cierre": _cierre}
 
 
 @app.get("/api/routines")
@@ -4734,6 +4763,24 @@ def _asegurar_rutina_catastro() -> None:
         pass
 
 
+def _asegurar_rutina_cierre() -> None:
+    """Mismo problema que `_asegurar_rutina_catastro`, mismo arreglo: un
+    ~/.calipso que ya tenia routines.json antes de que "cierre" existiera
+    como kind nunca lo ve aparecer solo. A diferencia de catastro, esta
+    rutina nace APAGADA (ver el comentario junto a routines.DEFAULTS):
+    encender el cierre automatico de la economia -- expirar PT, declarar
+    quiebras, liquidar trabajos -- es decision de Pedro, no nuestra. Sin
+    este arreglo la rutina existiria en el codigo pero Pedro nunca la
+    veria en su panel para poder prenderla."""
+    try:
+        if not any(r.get("kind") == "cierre" for r in calipso_routines.load()):
+            calipso_routines.add(
+                "cierre", "Cerrar semana operativa de la economia",
+                1440, enabled=False)
+    except Exception:
+        pass
+
+
 @app.on_event("startup")
 async def _startup_warm() -> None:
     try:
@@ -4744,6 +4791,7 @@ async def _startup_warm() -> None:
     except Exception:
         pass
     await asyncio.to_thread(_asegurar_rutina_catastro)
+    await asyncio.to_thread(_asegurar_rutina_cierre)
     try:
         asyncio.create_task(_routines_ticker())
     except Exception:

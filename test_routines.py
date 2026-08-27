@@ -28,20 +28,23 @@ def main() -> int:
     fails: list[str] = []
     now = datetime.datetime(2026, 6, 16, 12, 0, 0)
 
-    # seed inicial: 4 rutinas. Las tres viejas nacen deshabilitadas;
-    # "catastro" nace habilitada a proposito (ver el comentario de
-    # routines.DEFAULTS): es la que existe para que Pedro no tenga que
-    # acordarse de prenderla.
+    # seed inicial: 5 rutinas. Las tres viejas y "cierre" nacen
+    # deshabilitadas; "catastro" nace habilitada a proposito (ver el
+    # comentario de routines.DEFAULTS): es la que existe para que Pedro no
+    # tenga que acordarse de prenderla. "cierre" es la excepcion opuesta:
+    # nace apagada porque encender el cierre automatico de la economia es
+    # decision de Pedro, no del codigo.
     seeded = routines.load()
-    check("seed crea 4 rutinas", len(seeded) == 4, fails)
-    viejas = [r for r in seeded if r["kind"] != "catastro"]
-    check("las tres viejas nacen deshabilitadas",
-         all(not r["enabled"] for r in viejas), fails)
+    check("seed crea 5 rutinas", len(seeded) == 5, fails)
+    deshabilitadas_por_defecto = [r for r in seeded if r["kind"] != "catastro"]
+    check("las cuatro deshabilitadas por defecto (viejas + cierre) nacen apagadas",
+         all(not r["enabled"] for r in deshabilitadas_por_defecto), fails)
     catastro_rt = next((r for r in seeded if r["kind"] == "catastro"), None)
     check("catastro nace habilitada",
          catastro_rt is not None and catastro_rt["enabled"] is True, fails)
     check("kinds esperados",
-         {r["kind"] for r in seeded} == {"reflect", "learn", "backup", "catastro"},
+         {r["kind"] for r in seeded} ==
+         {"reflect", "learn", "backup", "catastro", "cierre"},
          fails)
 
     # el resto de esta prueba ejercita el vencimiento de UNA rutina
@@ -153,7 +156,7 @@ def main() -> int:
     reseed = routines.load()
     reseed_viejas = [r for r in reseed if r["kind"] != "catastro"]
     check("archivo ausente sigue dando el seed",
-         len(reseed) == 4 and all(not r["enabled"] for r in reseed_viejas),
+         len(reseed) == 5 and all(not r["enabled"] for r in reseed_viejas),
          fails)
 
     # add/remove
