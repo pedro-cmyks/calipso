@@ -115,3 +115,81 @@ def test_sin_token_no_se_lee_el_bus(tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
     c = TestClient(srv.app)
     assert c.get("/api/economia/bus").status_code == 401
+
+
+def test_financiar_mueve_la_plata_y_marca(cliente):
+    c, base = cliente
+    _propuesta(base)
+    r = c.post("/api/economia/bus/p1/financiar", params={"token": srv.TOKEN},
+               json={"cuenta": "dep:atlas", "mm": 10_000})
+    assert r.status_code == 200, r.text
+    d = c.get("/api/economia/bus", params={"token": srv.TOKEN}).json()
+    p = d["propuestas"][0]
+    assert p["estado"] == "financiada"
+    assert p["aportes"] == {"dep:atlas": 10_000}
+    atlas = next(x for x in d["departamentos"] if x["cuenta"] == "dep:atlas")
+    assert atlas["disponible_mm"] == 390_000
+
+
+def test_el_segundo_toque_no_paga_dos_veces(cliente):
+    """`financiar` acepta financiar algo ya financiada (es cofinanciacion),
+    asi que dos toques en un telefono lento pagarian dos veces. Se cierra por
+    construccion: el endpoint solo acepta propuestas en `alta`."""
+    c, base = cliente
+    _propuesta(base)
+    ok = c.post("/api/economia/bus/p1/financiar", params={"token": srv.TOKEN},
+                json={"cuenta": "dep:atlas", "mm": 10_000})
+    assert ok.status_code == 200
+    otra = c.post("/api/economia/bus/p1/financiar", params={"token": srv.TOKEN},
+                  json={"cuenta": "dep:atlas", "mm": 10_000})
+    assert otra.status_code == 400
+    d = c.get("/api/economia/bus", params={"token": srv.TOKEN}).json()
+    assert d["propuestas"][0]["aportes"] == {"dep:atlas": 10_000}
+
+
+def test_un_error_del_bus_es_400_con_su_mensaje(tmp_path, monkeypatch):
+    """Esta es la primera pantalla de economia cuyos errores los lee un
+    humano: "semana no operativa" tiene que llegar como texto, no como un 500
+    opaco."""
+    monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
+    _economia_de_prueba(tmp_path, abrir=False)
+    c = TestClient(srv.app)
+    _propuesta(tmp_path)
+    r = c.post("/api/economia/bus/p1/financiar", params={"token": srv.TOKEN},
+               json={"cuenta": "dep:atlas", "mm": 10_000})
+    assert r.status_code == 400
+    assert r.json()["detail"]
+
+
+def test_financiar_una_propuesta_que_no_existe_es_400(cliente):
+    c, base = cliente
+    r = c.post("/api/economia/bus/fantasma/financiar",
+               params={"token": srv.TOKEN},
+               json={"cuenta": "dep:atlas", "mm": 1_000})
+    assert r.status_code == 400
+
+
+def test_descartar_libera_el_lugar(cliente):
+    c, base = cliente
+    _propuesta(base)
+    r = c.post("/api/economia/bus/p1/descartar", params={"token": srv.TOKEN})
+    assert r.status_code == 200, r.text
+    d = c.get("/api/economia/bus", params={"token": srv.TOKEN}).json()
+    assert d["propuestas"] == []
+
+
+def test_no_se_descarta_una_ya_financiada(cliente):
+    c, base = cliente
+    _propuesta(base)
+    c.post("/api/economia/bus/p1/financiar", params={"token": srv.TOKEN},
+           json={"cuenta": "dep:atlas", "mm": 10_000})
+    r = c.post("/api/economia/bus/p1/descartar", params={"token": srv.TOKEN})
+    assert r.status_code == 400
+
+
+def test_sin_token_no_se_financia(tmp_path, monkeypatch):
+    monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
+    c = TestClient(srv.app)
+    r = c.post("/api/economia/bus/p1/financiar",
+               json={"cuenta": "dep:atlas", "mm": 1})
+    assert r.status_code == 401

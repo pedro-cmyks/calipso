@@ -3453,6 +3453,11 @@ class EcoConciliarBody(BaseModel):
     minutos: int
 
 
+class MesaFinanciarBody(BaseModel):
+    cuenta: str
+    mm: int
+
+
 @app.get("/api/economia/tablero")
 def api_eco_tablero() -> dict:
     p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
@@ -3521,6 +3526,58 @@ def api_eco_bus() -> dict:
         abierta = semana in _eco_cap.semanas_operativas(asientos)
     return {"activa": True, "semana": semana, "semana_abierta": abierta,
             "propuestas": propuestas, "departamentos": deps_fabrica}
+
+
+@app.post("/api/economia/bus/{id}/financiar")
+def api_eco_bus_financiar(id: str, body: MesaFinanciarBody) -> dict:
+    """Pedro dice que si.
+
+    SOLO acepta propuestas en `alta`. `financiar` permite cofinanciar una ya
+    financiada, asi que sin este corte dos toques en un telefono lento
+    pagarian dos veces. Deshabilitar el boton en la UI es la segunda linea de
+    defensa, no la primera.
+    """
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
+    if not p0:
+        raise HTTPException(status_code=400, detail="la economia no esta activa")
+    ts, semana = _eco_ahora()
+    try:
+        with _eco_candado(p0.ruta_libro):
+            eco = _economia()
+            m = eco["pagador"].mercado_fresco()
+            bus = _eco_bus.Bus(p0.ruta_bus)
+            if bus.estado(id) != "alta":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"la propuesta {id} ya no esta esperando plata")
+            _eco_bus.financiar(m, bus, ts, semana, id, body.cuenta, body.mm)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"ok": True}
+
+
+@app.post("/api/economia/bus/{id}/descartar")
+def api_eco_bus_descartar(id: str) -> dict:
+    """Pedro dice que no. Sin esto el jefe se frena al llegar a su techo."""
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
+    if not p0:
+        raise HTTPException(status_code=400, detail="la economia no esta activa")
+    ts, semana = _eco_ahora()
+    try:
+        with _eco_candado(p0.ruta_libro):
+            bus = _eco_bus.Bus(p0.ruta_bus)
+            if bus.estado(id) != "alta":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"la propuesta {id} ya no se puede descartar")
+            _eco_bus.descartar(bus, ts, semana, id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"ok": True}
 
 
 @app.post("/api/economia/cola/{item_id}/atender")
