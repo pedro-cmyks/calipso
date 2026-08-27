@@ -113,3 +113,18 @@ test("sin economia activa no se avisa de la semana", () => {
 test("sin economia activa la mesa lo dice", () => {
   assert.match(textoDeMesa({activa: false}), /economia no esta activa/i);
 });
+
+test("el selector y los dos botones van en filas separadas, no sueltos " +
+     "juntos en la misma", () => {
+  // Bug reportado: en escritorio la fila de acciones se parte sola
+  // ("paga [selector] [financiar]" en una linea, "descartar" en la
+  // siguiente) porque los botones comparten fila con el selector y con
+  // flex-wrap. La correccion es estructural: "pagar" (la etiqueta y el
+  // selector) y "botones" (financiar y descartar) son dos contenedores
+  // propios, cada uno su fila, para que los botones nunca tengan de que
+  // envolver.
+  const html = textoDeMesa(datos([P1]));
+  assert.match(html, /<div class="pagar">paga <select class="paga"/);
+  assert.match(html,
+    /<div class="botones"><button data-accion="financiar"[^]*?<button data-accion="descartar"/);
+});

@@ -42,15 +42,22 @@ function fila(propuesta, departamentos) {
   }
   const aviso = alcanza(propuesta, departamentos)
     ? "" : `<div class="aviso">sin saldo suficiente</div>`;
+  // Dos filas a proposito, en vez de una sola que se parte sola cuando no
+  // entra: "paga" + el selector arriba, los dos botones abajo. Asi el
+  // ancho angosto de escritorio (donde antes "descartar" se caia a una
+  // segunda linea desprolija) y el dedo en el telefono (que necesita los
+  // 40px de alto) quedan resueltos con el MISMO marcado.
   return `<div class="propuesta" ` +
     `data-presupuesto="${escapar(propuesta.presupuesto_mm)}">` +
     `<div class="cabeza"><b>${dep}</b> · ${escapar(propuesta.titulo)}</div>` +
     `<div class="datos">presupuesto ${plata}</div>` + aviso +
-    `<div class="acciones">paga ${selector(propuesta, departamentos)}` +
+    `<div class="acciones">` +
+    `<div class="pagar">paga ${selector(propuesta, departamentos)}</div>` +
+    `<div class="botones">` +
     `<button data-accion="financiar" data-id="${escapar(propuesta.id)}">` +
     `financiar</button>` +
     `<button data-accion="descartar" data-id="${escapar(propuesta.id)}">` +
-    `descartar</button></div></div>`;
+    `descartar</button></div></div></div>`;
 }
 
 export function hayQueAvisarDeLaSemana(datos) {

@@ -222,10 +222,19 @@ html, body {
 .mesa .cabeza { margin-bottom: 4px; }
 .mesa .datos { color: var(--tenue); font-size: 12px; }
 .mesa .aviso { color: var(--acento); font-size: 12px; margin-top: 4px; }
-.mesa .acciones {
-  display: flex; align-items: center; gap: 6px; margin-top: 8px;
-  flex-wrap: wrap;
+/* Dos filas fijas, nunca una sola que se parte sola: "paga" + selector
+   arriba, los dos botones abajo repartiendo el ancho a la mitad cada uno.
+   flex-wrap serviria para el telefono pero en escritorio (columna angosta,
+   ~320px) partia "descartar" a una segunda linea sola y quedaba desprolijo;
+   con la fila propia, los botones no tienen de que envolver. */
+.mesa .acciones { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.mesa .acciones .pagar {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
 }
+.mesa .acciones .pagar select { flex: 1; min-width: 0; }
+.mesa .acciones .pagar .aviso { flex: 1 1 100%; margin-top: 0; }
+.mesa .acciones .botones { display: flex; gap: 6px; }
+.mesa .acciones .botones button { flex: 1; }
 .mesa .acciones button { cursor: pointer; min-height: 40px; padding: 0 14px; }
 .mesa .acciones select { min-height: 40px; }
 .mesa .vacio { color: var(--tenue); padding: 8px; }
