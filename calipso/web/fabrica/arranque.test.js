@@ -115,7 +115,8 @@ function montarNavegador() {
   for (const id of ["app", "panel-chats", "lista-chats", "panel-centro",
                     "conversacion", "entrada", "texto", "panel-mapa",
                     "expandir", "tarjeta", "sin-fabrica", "pestanas",
-                    "avisos", "costo", "foco", "razonamiento", "empleado"]) {
+                    "avisos", "costo", "foco", "razonamiento", "empleado",
+                    "mesa", "plantel"]) {
     nodos.set(id, nodo(id));
   }
   const pestanas = [nodo("", "button"), nodo("", "button")];
@@ -160,8 +161,14 @@ function montarNavegador() {
   };
 
   const pedidos = [];
+  // pedidos guarda solo la URL (los tests viejos hacen .includes() sobre
+  // eso); peticiones guarda tambien las opciones -metodo y body- que es lo
+  // que necesita el test del clic en financiar para afirmar que se armo el
+  // POST correcto.
+  const peticiones = [];
   globalThis.fetch = (url, opciones) => {
     pedidos.push(String(url));
+    peticiones.push({url: String(url), opciones});
     // solo la lista cuelga: es el caso que este archivo fija (el mapa
     // arranca sin esperarla). El activate tiene que poder resolver
     if (String(url).endsWith("/api/chats")) return new Promise(() => {});
@@ -174,7 +181,7 @@ function montarNavegador() {
                                                 ciudad: ciudadDePrueba()})});
   };
 
-  return {ctx, canvas, nodos, pedidos, cuadros, sockets,
+  return {ctx, canvas, nodos, pedidos, peticiones, cuadros, sockets,
           medidaDelLienzo: () => ({ancho, alto})};
 }
 
@@ -438,4 +445,61 @@ test("cerrar el popup tocando el mapa devuelve el panel del medio al chat",
   assert.equal(razonamiento.escriturasDeHtml(), escrituras,
                "el panel de razonamiento se siguio pintando: quedo mirando " +
                "a un empleado que Pedro ya cerro");
+});
+
+// --- La mesa y el plantel: antes de sumar sus ids a la lista de arriba,
+// cajaMesa y cajaPlantel quedaban null y las guardas de app.js
+// (`if (!cajaMesa) return`, `cajaPlantel?.`) hacian que esta linea no
+// corriera en NINGUN test -- ni pintarMesa, ni pintarPlantel, ni
+// accionDeMesa, ni el armado del body de financiar, ni los manejadores del
+// plantel. ---
+
+test("con el id sumado, la mesa se pinta sola (la guarda ya no la bloquea)",
+     async () => {
+  await new Promise(r => setTimeout(r, 0));
+  const cajaMesa = nav.nodos.get("mesa");
+  assert.ok(cajaMesa.innerHTML, "pintarMesa nunca escribio nada");
+});
+
+test("con el id sumado, el plantel se pinta solo (la guarda ya no lo " +
+     "bloquea)", async () => {
+  await new Promise(r => setTimeout(r, 0));
+  const cajaPlantel = nav.nodos.get("plantel");
+  assert.ok(cajaPlantel.innerHTML, "pintarPlantel nunca escribio nada");
+});
+
+test("un clic en financiar arma el POST con la cuenta del selector y el " +
+     "presupuesto de la fila", async () => {
+  const cajaMesa = nav.nodos.get("mesa");
+  // cajaMesa es un nodo de mentira sin querySelector real: se lo agrega
+  // aca, apuntado, en vez de forzar todo el arnes de closest/querySelector
+  // del DOM completo para un solo caso.
+  const selsPedidos = [];
+  cajaMesa.querySelector = sel => {
+    selsPedidos.push(sel);
+    return {value: "dep:atlas"};
+  };
+  const fila = {dataset: {presupuesto: "10000"}};
+  const boton = {
+    dataset: {accion: "financiar", id: "p1"},
+    disabled: false,
+    // el mismo boton hace de target.closest("button[data-accion]") (se
+    // devuelve a si mismo) y de boton.closest(".propuesta") (devuelve la
+    // fila), que es exactamente como los usa accionDeMesa en app.js
+    closest(sel) { return sel === ".propuesta" ? fila : boton; },
+  };
+
+  const antes = nav.peticiones.length;
+  for (const f of cajaMesa.oyentes.get("click") || []) f({target: boton});
+  await new Promise(r => setTimeout(r, 0));
+  await new Promise(r => setTimeout(r, 0));
+
+  const pedido = nav.peticiones.slice(antes)
+    .find(p => p.url.includes("/financiar"));
+  assert.ok(pedido, "el clic no armo ningun POST a /financiar");
+  assert.equal(pedido.opciones.method, "POST");
+  assert.deepEqual(JSON.parse(pedido.opciones.body),
+                   {cuenta: "dep:atlas", mm: 10000});
+  assert.ok(selsPedidos.includes('select.paga[data-id="p1"]'),
+            "no se pidio el selector de la propuesta p1");
 });

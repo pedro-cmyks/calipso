@@ -154,3 +154,14 @@ def test_la_fabrica_registra_el_service_worker_y_su_manifest():
         "index.html de la fabrica no registra el service worker")
     assert 'rel="manifest"' in html and "/fabrica/manifest.json" in html, (
         "index.html de la fabrica no enlaza el manifest de la fabrica")
+
+
+def test_la_mesa_y_el_plantel_tienen_su_div_en_el_html():
+    """app.js hace document.getElementById("mesa") y ("plantel"); sin el div
+    en el HTML, cajaMesa y cajaPlantel quedan null, las guardas de app.js
+    hacen que pintarMesa/pintarPlantel nunca escriban nada, y la mesa entera
+    desaparece con todos los tests de mesa.js y de plantel.js en verde
+    igual -- porque ninguno de esos tests toca el HTML real."""
+    html = (srv.WEB / "fabrica" / "index.html").read_text(encoding="utf-8")
+    assert 'id="mesa"' in html, "index.html de la fabrica no tiene #mesa"
+    assert 'id="plantel"' in html, "index.html de la fabrica no tiene #plantel"
