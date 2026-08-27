@@ -260,3 +260,70 @@ html, body {
 .plantel .peligro { color: var(--acento); font-size: 12px; }
 .plantel form { display: flex; gap: 6px; flex-wrap: wrap; }
 .plantel input { min-width: 0; flex: 1 1 90px; }
+
+/* La segunda pestana de la mesa: "Decidir" (plantel+propuestas, lo de
+   siempre) contra "Plata" (las dos perillas de Pedro). Local a
+   #panel-mesa, no toca la grilla de #app ni el #pestanas del telefono. */
+#submesa {
+  display: flex; gap: 6px; padding: 6px 8px;
+  border-bottom: 1px solid var(--linea);
+}
+#submesa button {
+  background: transparent; border: 1px solid var(--linea); color: var(--tenue);
+  border-radius: 4px; padding: 5px 10px; font-size: 12px; cursor: pointer;
+  min-height: 30px;
+}
+#submesa button.activa { color: var(--acento); border-color: var(--acento); }
+
+.perillas-panel { padding: 8px; display: flex; flex-direction: column; gap: 10px; }
+.perillas-panel .subtitulo {
+  color: var(--tenue); font-size: 11px; letter-spacing: .4px;
+  text-transform: uppercase;
+}
+.perillas-panel .listo {
+  color: var(--acento); font-size: 12px; padding: 7px 8px;
+  border: 1px solid var(--linea); border-radius: 4px; background: var(--panel);
+}
+.perillas-panel .suscripciones {
+  border: 1px solid var(--linea); border-radius: 6px; padding: 8px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.perillas-panel .fila {
+  display: flex; justify-content: space-between; gap: 8px; font-size: 12px;
+}
+.perillas-panel .fila.total {
+  color: var(--acento); border-top: 1px solid var(--linea);
+  padding-top: 4px; margin-top: 2px;
+}
+.perillas-panel .dosperillas { display: flex; gap: 8px; }
+.perillas-panel .perilla {
+  flex: 1; min-width: 0; border: 1px solid var(--linea); border-radius: 6px;
+  padding: 10px; display: flex; flex-direction: column; gap: 4px;
+  background: var(--panel);
+}
+.perillas-panel .perilla .etiqueta {
+  color: var(--tenue); font-size: 11px; text-transform: uppercase;
+}
+.perillas-panel .perilla .valor {
+  font-size: 20px; font-weight: 600; overflow-wrap: anywhere;
+}
+.perillas-panel .datos { display: flex; flex-direction: column; gap: 3px; }
+.perillas-panel .departamentos { display: flex; flex-direction: column; gap: 3px; }
+.perillas-panel .departamentos .congelado { color: #ff7b72; font-size: 11px; }
+.perillas-panel .vacio { color: var(--tenue); }
+.perillas-panel form {
+  display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--linea);
+  border-radius: 6px; padding: 8px;
+}
+.perillas-panel form label {
+  display: flex; flex-direction: column; gap: 3px; font-size: 12px;
+  color: var(--tenue);
+}
+.perillas-panel input, .perillas-panel select {
+  background: var(--fondo); color: var(--texto); border: 1px solid var(--linea);
+  border-radius: 4px; padding: 7px 9px; min-height: 36px; font-size: 16px;
+}
+.perillas-panel button[type="submit"] {
+  background: var(--linea); color: var(--texto); border: 0; border-radius: 4px;
+  padding: 8px 12px; cursor: pointer; min-height: 40px;
+}

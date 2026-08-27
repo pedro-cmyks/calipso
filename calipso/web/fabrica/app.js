@@ -7,7 +7,7 @@
  */
 import {crearCamara, arrastrar, acercar, paso, encuadrar,
         volarA} from "./camara.js";
-import {cargarCiudad, enPunto, fichaDe} from "./ciudad.js";
+import {cargarCiudad, enPunto, fichaDe, monedas} from "./ciudad.js";
 import {escritorioEnPunto, opacidadDeTecho} from "./interior.js";
 import {crearMapa} from "./mapa.js";
 import {disposicion, escapar, textoDeTarjeta, posicionDeTarjeta,
@@ -17,6 +17,7 @@ import {crearChat} from "./chat.js";
 import {crearPulso, empleadosDe, estadoVisible} from "./pulso.js";
 import {textoDeMesa} from "./mesa.js";
 import {textoDePlantel} from "./plantel.js";
+import {textoDePerillas, aMilimonedas, cuerpoDeSuscripciones} from "./perillas.js";
 
 const lienzo = document.getElementById("mapa");
 const sinFabrica = document.getElementById("sin-fabrica");
@@ -373,6 +374,160 @@ cajaPlantel?.addEventListener("submit", async evento => {
   }
 });
 
+// --- Las perillas: el tesoro de la fabrica y el banco de Pedro ---------
+//
+// Viven en la misma columna que la mesa, detras de una segunda pestana
+// local ("Decidir" / "Plata"): la mesa financia o descarta con la plata
+// que ya esta puesta, las perillas son de donde esa plata sale. No es una
+// pestana global de #pestanas -esa grilla es del telefono y de las cuatro
+// columnas de escritorio, y esta pantalla no necesita una columna propia-
+// sino un segundo modo DENTRO de "La mesa", que es donde Pedro ya decide
+// sobre plata.
+const cajaPerillas = document.getElementById("perillas");
+let mensajePerillas = null;              // el aviso pasajero de "salio bien"
+
+async function pintarPerillas() {
+  // mismo motivo que la guarda de cajaMesa/cajaPlantel: arranque.test.js
+  // no declara "perillas" en su DOM de mentira.
+  if (!cajaPerillas) return;
+  try {
+    const r = await fetch("/api/economia/tablero");
+    if (!r.ok) {
+      cajaPerillas.innerHTML = '<div class="vacio">No se pudo leer el tablero.</div>';
+      return;
+    }
+    cajaPerillas.innerHTML = textoDePerillas(await r.json(), mensajePerillas);
+  } catch (_) {
+    cajaPerillas.innerHTML = '<div class="vacio">No se pudo leer el tablero.</div>';
+  }
+}
+
+/** El mensaje se ve un rato despues de una accion y despues se apaga solo
+ *  -mismo patron que avisoPasajero del chat- para que la prueba de que
+ *  "salio bien" no dependa de que Pedro llegue a leerlo en el instante
+ *  exacto en que la pantalla se repinta. */
+function avisarEnPerillas(texto) {
+  mensajePerillas = texto;
+  pintarPerillas();
+  setTimeout(() => {
+    if (mensajePerillas === texto) { mensajePerillas = null; pintarPerillas(); }
+  }, 5000);
+}
+
+for (const boton of document.querySelectorAll("#submesa button")) {
+  boton.addEventListener("click", () => {
+    const vista = boton.dataset.vista;
+    for (const otro of document.querySelectorAll("#submesa button")) {
+      otro.classList.toggle("activa", otro === boton);
+    }
+    cajaPlantel?.classList.toggle("oculto", vista === "plata");
+    cajaMesa?.classList.toggle("oculto", vista === "plata");
+    cajaPerillas?.classList.toggle("oculto", vista !== "plata");
+    // igual que la pestana global de "Mesa" (spec seccion 9): sin esto,
+    // tocar "Plata" muestra la foto del momento en que cargo la pagina.
+    if (vista === "plata") pintarPerillas();
+  });
+}
+
+cajaPerillas?.addEventListener("submit", async evento => {
+  evento.preventDefault();
+  const form = evento.target;
+  const cual = form.dataset.perillas;
+  const boton = form.querySelector('button[type="submit"]');
+
+  if (cual === "sembrar") {
+    const nombres = form.departamentos.value.split(",")
+      .map(s => s.trim()).filter(Boolean);
+    if (!nombres.length) { alert("escribi al menos un departamento"); return; }
+    if (!confirm(`Sembrar la economia con estos departamentos: ` +
+                 `${nombres.join(", ")}? No se puede deshacer.`)) return;
+    // el freno del doble toque es el mismo que ya usa financiar/descartar
+    // en la mesa: deshabilitar ANTES del await, no despues -asi un segundo
+    // toque mientras el primero sigue en vuelo no dispara un segundo pedido
+    boton.disabled = true;
+    try {
+      const r = await fetch("/api/economia/sembrar", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          departamentos: nombres.map(nombre => ({nombre, zona: "fabrica"})),
+          suscripciones: cuerpoDeSuscripciones(),
+        })});
+      if (!r.ok) {
+        let detalle = "no se pudo sembrar";
+        try { detalle = (await r.json()).detail || detalle; } catch (_) {}
+        alert(detalle);
+      } else {
+        form.reset();
+        avisarEnPerillas("listo: la economia esta sembrada");
+      }
+    } finally {
+      boton.disabled = false;
+      await pintarPerillas();
+    }
+    return;
+  }
+
+  if (cual === "acunar") {
+    const mm = aMilimonedas(form.monto.value);
+    if (mm === null) { alert("el monto tiene que ser un numero mayor que cero"); return; }
+    // acunar es append-only: una vez asentado en el libro no hay forma de
+    // deshacerlo, asi que -a diferencia de financiar/descartar en la
+    // mesa, que solo mueven plata ya puesta- esto pide una confirmacion
+    // explicita ademas del freno del doble toque.
+    if (!confirm(`Poner ${monedas(mm)} monedas en el tesoro? Es capital ` +
+                 `tuyo entrando a la fabrica: no se puede deshacer.`)) return;
+    boton.disabled = true;
+    try {
+      const r = await fetch("/api/economia/frontera/acunar", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({subtipo: "capital", destino: "tesoro",
+                              monto_mm: mm, evidencia: {tipo: "firma_pedro"}})});
+      if (!r.ok) {
+        let detalle = "no se pudo acunar";
+        try { detalle = (await r.json()).detail || detalle; } catch (_) {}
+        alert(detalle);
+      } else {
+        form.reset();
+        avisarEnPerillas(`listo: se pusieron ${monedas(mm)} monedas en el tesoro`);
+      }
+    } finally {
+      boton.disabled = false;
+      await pintarPerillas();
+    }
+    return;
+  }
+
+  if (cual === "movimiento") {
+    const mm = aMilimonedas(form.monto.value);
+    const tipo = form.tipo.value;
+    const categoria = form.categoria.value.trim();
+    if (mm === null) { alert("el monto tiene que ser un numero mayor que cero"); return; }
+    if (!categoria) { alert("escribi una categoria"); return; }
+    // el banco personal nunca acuna y nunca toca el libro de la fabrica
+    // (spec): un movimiento de mas se corrige con otro movimiento, no con
+    // un asiento irreversible, asi que no pide la confirmacion de acunar.
+    boton.disabled = true;
+    try {
+      const r = await fetch("/api/economia/personal/movimiento", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({tipo, monto_mm: mm, categoria,
+                              nota: form.nota.value.trim()})});
+      if (!r.ok) {
+        let detalle = "no se pudo registrar";
+        try { detalle = (await r.json()).detail || detalle; } catch (_) {}
+        alert(detalle);
+      } else {
+        form.reset();
+        avisarEnPerillas(`listo: se registro un ` +
+          `${tipo === "ingreso" ? "ingreso" : "egreso"} de ${monedas(mm)} monedas`);
+      }
+    } finally {
+      boton.disabled = false;
+      await pintarPerillas();
+    }
+  }
+});
+
 let tarjetaPintada = "";                 // el html que ya esta en la tarjeta
 let medidaTarjeta = {ancho: 0, alto: 0};
 
@@ -526,6 +681,7 @@ fetch("/api/chats")
 
 pintarMesa();
 pintarPlantel();
+pintarPerillas();
 
 // La mesa no tiene push: sin este refresco, Pedro abre /fabrica, hace otra
 // cosa, toca la pestana "Mesa" y ve la foto del momento de la carga (spec
@@ -537,6 +693,9 @@ pintarPlantel();
 // navegador `setInterval` devuelve un numero sin ese metodo, y el opcional
 // lo saltea sin romper nada.
 setInterval(pintarMesa, 60_000).unref?.();
+// Las perillas cambian por las mismas razones que la mesa -un cierre
+// semanal, un jefe gastando- asi que el mismo refresco de fondo aplica.
+setInterval(pintarPerillas, 60_000).unref?.();
 
 const panelCentro = document.getElementById("panel-centro");
 const panelRazonamiento = document.getElementById("razonamiento");
