@@ -16,6 +16,7 @@ import {disposicion, escapar, textoDeTarjeta, posicionDeTarjeta,
 import {crearChat} from "./chat.js";
 import {crearPulso, empleadosDe, estadoVisible} from "./pulso.js";
 import {textoDeMesa} from "./mesa.js";
+import {textoDePlantel} from "./plantel.js";
 
 const lienzo = document.getElementById("mapa");
 const sinFabrica = document.getElementById("sin-fabrica");
@@ -288,28 +289,6 @@ cajaMesa?.addEventListener("click", evento => {
 });
 
 const cajaPlantel = document.getElementById("plantel");
-
-function textoDePlantel(estado) {
-  if (!estado || estado.activo === false) {
-    return '<div class="estado">El plantel no esta disponible.</div>';
-  }
-  const prendido = estado.encendido ? "encendido" : "apagado";
-  const peligro = estado.modo === "vivo"
-    ? '<div class="peligro">En vivo: la fabrica gasta sola.</div>' : "";
-  return `<div class="estado">${prendido} · modo ${escapar(estado.modo)} ` +
-    `· techo ${escapar(String(estado.techo_tics))} tics</div>` + peligro +
-    `<div class="botones">` +
-    `<button type="button" data-plantel="parar">parar</button>` +
-    `<button type="button" data-plantel="reanudar">reanudar</button>` +
-    `<button type="button" data-plantel="modo" data-modo="${estado.modo === "vivo"
-      ? "ensayo" : "vivo"}">pasar a ${estado.modo === "vivo"
-      ? "ensayo" : "vivo"}</button>` +
-    `</div>` +
-    `<form data-plantel="rutina">` +
-    `<input name="cuenta" placeholder="dep:atlas" required>` +
-    `<input name="minutos" type="number" value="60" min="1" required>` +
-    `<button type="submit">crear rutina</button></form>`;
-}
 
 async function pintarPlantel() {
   // arranque.test.js monta un DOM de mentira que no declara "plantel": sin
