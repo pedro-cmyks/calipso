@@ -228,3 +228,14 @@ html, body {
 }
 .mesa .acciones button { cursor: pointer; }
 .mesa .vacio { color: var(--tenue); padding: 8px; }
+
+.plantel {
+  padding: 8px; border-bottom: 1px solid var(--linea);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.plantel .estado { color: var(--tenue); font-size: 12px; }
+.plantel .botones { display: flex; gap: 6px; flex-wrap: wrap; }
+.plantel button, .plantel select, .plantel input { cursor: pointer; }
+.plantel .peligro { color: var(--acento); font-size: 12px; }
+.plantel form { display: flex; gap: 6px; flex-wrap: wrap; }
+.plantel input { min-width: 0; flex: 1 1 90px; }

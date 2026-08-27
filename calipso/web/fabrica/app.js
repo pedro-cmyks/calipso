@@ -287,6 +287,87 @@ cajaMesa?.addEventListener("click", evento => {
   if (boton) accionDeMesa(boton);
 });
 
+const cajaPlantel = document.getElementById("plantel");
+
+function textoDePlantel(estado) {
+  if (!estado || estado.activo === false) {
+    return '<div class="estado">El plantel no esta disponible.</div>';
+  }
+  const prendido = estado.encendido ? "encendido" : "apagado";
+  const peligro = estado.modo === "vivo"
+    ? '<div class="peligro">En vivo: la fabrica gasta sola.</div>' : "";
+  return `<div class="estado">${prendido} · modo ${escapar(estado.modo)} ` +
+    `· techo ${escapar(String(estado.techo_tics))} tics</div>` + peligro +
+    `<div class="botones">` +
+    `<button data-plantel="parar">parar</button>` +
+    `<button data-plantel="reanudar">reanudar</button>` +
+    `<button data-plantel="modo" data-modo="${estado.modo === "vivo"
+      ? "ensayo" : "vivo"}">pasar a ${estado.modo === "vivo"
+      ? "ensayo" : "vivo"}</button>` +
+    `</div>` +
+    `<form data-plantel="rutina">` +
+    `<input name="cuenta" placeholder="dep:atlas" required>` +
+    `<input name="minutos" type="number" value="60" min="1" required>` +
+    `<button type="submit">crear rutina</button></form>`;
+}
+
+async function pintarPlantel() {
+  // arranque.test.js monta un DOM de mentira que no declara "plantel": sin
+  // esta guarda, importar el modulo ahi revienta antes de llegar a un solo
+  // test que sea de esta pantalla (mismo problema que cajaMesa mas arriba).
+  if (!cajaPlantel) return;
+  try {
+    const r = await fetch("/api/plantel");
+    cajaPlantel.innerHTML = textoDePlantel(r.ok ? await r.json() : null);
+  } catch (_) {
+    cajaPlantel.innerHTML = textoDePlantel(null);
+  }
+}
+
+cajaPlantel?.addEventListener("click", async evento => {
+  const boton = evento.target.closest("button[data-plantel]");
+  if (!boton || boton.type === "submit") return;
+  const que = boton.dataset.plantel;
+  boton.disabled = true;
+  try {
+    if (que === "modo") {
+      await fetch("/api/plantel/modo", {
+        method: "PUT", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({modo: boton.dataset.modo})});
+    } else {
+      await fetch(`/api/plantel/${que}`, {method: "POST"});
+    }
+  } finally {
+    boton.disabled = false;
+    await pintarPlantel();
+  }
+});
+
+cajaPlantel?.addEventListener("submit", async evento => {
+  evento.preventDefault();
+  const form = evento.target;
+  const cuenta = form.cuenta.value.trim();
+  const minutos = Number(form.minutos.value);
+  const boton = form.querySelector('button[type="submit"]');
+  if (boton) boton.disabled = true;
+  try {
+    const r = await fetch("/api/routines", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({kind: "departamento", label: `jefe de ${cuenta}`,
+                            interval_minutes: minutos, enabled: true,
+                            cuenta})});
+    if (!r.ok) {
+      let detalle = "no se pudo crear la rutina";
+      try { detalle = (await r.json()).detail || detalle; } catch (_) {}
+      alert(detalle);
+    } else {
+      form.reset();
+    }
+  } finally {
+    if (boton) boton.disabled = false;
+  }
+});
+
 let tarjetaPintada = "";                 // el html que ya esta en la tarjeta
 let medidaTarjeta = {ancho: 0, alto: 0};
 
@@ -439,6 +520,7 @@ fetch("/api/chats")
   .catch(() => { listaChats.innerHTML = '<div class="chat">sin chats</div>'; });
 
 pintarMesa();
+pintarPlantel();
 
 const panelCentro = document.getElementById("panel-centro");
 const panelRazonamiento = document.getElementById("razonamiento");
