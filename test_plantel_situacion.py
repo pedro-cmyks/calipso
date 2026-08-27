@@ -137,3 +137,17 @@ def test_es_deterministica(fabrica):
     k, r, bus, cola, sus = fabrica
     assert sit.situacion(k, r, bus, cola, sus, W, "dep:atlas") == \
            sit.situacion(k, r, bus, cola, sus, W, "dep:atlas")
+
+
+def test_una_propuesta_descartada_desaparece_de_las_propias(fabrica):
+    """El jefe tiene un techo de propuestas sin financiar. Descartar una tiene
+    que devolverle lugar, o la fabrica se apaga sola al cuarto dia."""
+    from calipso.economia import bus as bus_mod
+    k, r, b, cola, sus = fabrica
+    b.alta(TS, W, "p1", "dep:atlas", "una", 10_000, 10_000,
+           {"gasto_max_mm": 10_000})
+    antes = sit.situacion(k, r, b, cola, sus, W, "dep:atlas")
+    assert len(antes["propuestas_propias"]) == 1
+    bus_mod.descartar(b, TS, W, "p1")
+    despues = sit.situacion(k, r, b, cola, sus, W, "dep:atlas")
+    assert despues["propuestas_propias"] == []

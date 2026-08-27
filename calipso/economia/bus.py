@@ -103,7 +103,7 @@ class Bus:
 
 
 _TRANSICIONES = {
-    "alta": frozenset({"financiada"}),
+    "alta": frozenset({"financiada", "descartada"}),
     "financiada": frozenset({"muerta"}),
     "muerta": frozenset({"liquidada"}),
 }
@@ -135,6 +135,20 @@ def financiar(mercado: Mercado, bus: Bus, ts: str, semana: str, id: str,
     if bus.estado(id) == "alta":
         bus.marcar(ts, semana, id, "financiada")
     return a
+
+
+def descartar(bus: Bus, ts: str, semana: str, id: str) -> None:
+    """Pedro dice que no.
+
+    No hay plata que devolver: nada se transfiere a `trabajo:<id>` hasta que
+    alguien financia, asi que descartar es solo la marca. Es terminal a
+    proposito — en un log append-only, "deshacer" es un estado mas y una regla
+    mas; si hace falta una red, que la pida el boton y no el modelo de
+    estados. Y no se reusa `muerta` porque mezclaria "nunca arranco" con
+    "arranco y fracaso", y el criterio de muerte lee `semana_financiada`, una
+    clave que una propuesta en `alta` no tiene.
+    """
+    bus.marcar(ts, semana, id, "descartada")
 
 
 def aportes(asientos: list[Asiento], id: str) -> dict[str, int]:

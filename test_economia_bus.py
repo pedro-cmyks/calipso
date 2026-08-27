@@ -216,3 +216,44 @@ def test_vivo_no_se_liquida(entorno):
                ref="trabajo:p1")
     assert bus_mod.evaluar_y_liquidar_muertos(m, b, TS, "2026-W30") == []
     assert b.estado("p1") == "financiada"
+
+
+def test_una_propuesta_en_alta_se_puede_descartar(entorno):
+    """Sin esto, una propuesta que Pedro no quiere no tiene salida, y el jefe
+    se frena para siempre al llegar a su techo de propuestas."""
+    k, m, b = entorno
+    b.alta(TS, "2026-W30", "p1", "dep:a", "radar", 100_000, 300_000, CRITERIO)
+    bus_mod.descartar(b, TS, "2026-W30", "p1")
+    assert b.estado("p1") == "descartada"
+
+
+def test_descartada_es_terminal(entorno):
+    k, m, b = entorno
+    b.alta(TS, "2026-W30", "p1", "dep:a", "radar", 100_000, 300_000, CRITERIO)
+    bus_mod.descartar(b, TS, "2026-W30", "p1")
+    with pytest.raises(bus_mod.ErrorBus):
+        bus_mod.descartar(b, TS, "2026-W30", "p1")
+    with pytest.raises(bus_mod.ErrorBus):
+        bus_mod.financiar(m, b, TS, "2026-W30", "p1", "dep:a", 1_000)
+
+
+def test_una_financiada_no_se_puede_descartar(entorno):
+    """Ahi ya hay plata en trabajo:<id>, y devolverla prorrateada es trabajo
+    de evaluar_y_liquidar_muertos, no de una marca cruda."""
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 100_000, "dep:a")
+    b.alta(TS, "2026-W30", "p1", "dep:a", "radar", 100_000, 300_000, CRITERIO)
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", "dep:a", 50_000)
+    with pytest.raises(bus_mod.ErrorBus):
+        bus_mod.descartar(b, TS, "2026-W30", "p1")
+
+
+def test_descartar_no_mueve_el_libro(entorno):
+    """Nada se transfiere a trabajo:<id> hasta que alguien financia, asi que
+    descartar no tiene plata que devolver."""
+    k, m, b = entorno
+    b.alta(TS, "2026-W30", "p1", "dep:a", "radar", 100_000, 300_000, CRITERIO)
+    antes = len(k.libro.asientos())
+    bus_mod.descartar(b, TS, "2026-W30", "p1")
+    assert len(k.libro.asientos()) == antes
