@@ -114,6 +114,68 @@ test("sin economia activa la mesa lo dice", () => {
   assert.match(textoDeMesa({activa: false}), /economia no esta activa/i);
 });
 
+// --- El filtro por departamento (punto 4): tocar un edificio en el mapa
+// acota la mesa a lo suyo. ---
+
+const P2 = {id: "p2", estado: "alta", departamento: "dep:mercado",
+            titulo: "campana de lanzamiento", presupuesto_mm: 5000,
+            retorno_mm: 8000, criterio: {}, gastado_mm: 0, aportes: {}};
+
+test("sin filtro se ven las propuestas de todos los departamentos, como hoy",
+     () => {
+  const html = textoDeMesa(datos([P1, P2]));
+  assert.match(html, /radar de precios/);
+  assert.match(html, /campana de lanzamiento/);
+  assert.ok(!html.includes('class="filtro"'),
+            "aparecio el encabezado de filtro sin ningun filtro activo");
+});
+
+test("con filtro solo aparecen las propuestas de ese departamento", () => {
+  const html = textoDeMesa(datos([P1, P2]), "dep:atlas");
+  assert.match(html, /radar de precios/);
+  assert.ok(!html.includes("campana de lanzamiento"),
+            "una propuesta de otro departamento se colo en el filtro");
+});
+
+test("con filtro aparece el encabezado con el nombre del departamento y " +
+     "un boton para ver todas", () => {
+  const html = textoDeMesa(datos([P1, P2]), "dep:atlas");
+  assert.match(html, /<div class="filtro">/);
+  assert.match(html, /<b>atlas<\/b>/);
+  assert.match(html, /data-accion="ver-todas"/);
+});
+
+test("un departamento sin propuestas en el filtro no deja a Pedro sin " +
+     "salida: el vacio se ve, pero el boton de volver sigue ahi", () => {
+  // Si el boton de "ver todas" desaparece junto con las propuestas, tocar
+  // un edificio sin nada pendiente le rompe la pantalla: no hay forma de
+  // volver a ver el resto salvo recargar.
+  const html = textoDeMesa(datos([P1]), "dep:mercado");
+  assert.match(html, /data-accion="ver-todas"/,
+              "desaparecio la salida del filtro con la mesa vacia");
+  assert.match(html, /vacio/);
+});
+
+test("el filtro tambien alcanza a un departamento sin plata: solo cambia " +
+     "que propuestas se listan, no como se calcula cada una", () => {
+  const html = textoDeMesa(datos([{...P1, departamento: "dep:mercado"}]),
+                           "dep:mercado");
+  assert.match(html, /sin saldo|no alcanza/i);
+});
+
+test("el id del departamento filtrado se escapa: no es texto libre, pero " +
+     "nada que entra por innerHTML queda exento", () => {
+  const malo = '<img src=x onerror="alert(1)">';
+  const html = textoDeMesa(datos([P1]), malo);
+  assert.ok(!html.includes("<img"), "se colo una etiqueta por el filtro");
+  assert.match(html, /&lt;img/);
+});
+
+test("sin economia activa, un filtro no cambia el mensaje", () => {
+  assert.match(textoDeMesa({activa: false}, "dep:atlas"),
+               /economia no esta activa/i);
+});
+
 test("el selector y los dos botones van en filas separadas, no sueltos " +
      "juntos en la misma", () => {
   // Bug reportado: en escritorio la fila de acciones se parte sola

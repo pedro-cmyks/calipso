@@ -64,19 +64,48 @@ export function hayQueAvisarDeLaSemana(datos) {
   return Boolean(datos && datos.activa && datos.semana_abierta === false);
 }
 
-export function textoDeMesa(datos) {
+/** El nombre del departamento para el encabezado del filtro: el de la
+ *  lista de fabrica si esta, o el id pelado (sin "dep:") si no -por
+ *  ejemplo cuando el edificio tocado es el personal de Pedro, que nunca
+ *  es dueno de ninguna propuesta pero igual se puede tocar en el mapa. */
+function nombreDeDepartamento(id, departamentos) {
+  const d = departamentos.find(x => x.cuenta === id);
+  return d ? d.nombre : id.replace(/^dep:/, "");
+}
+
+/**
+ * `filtro`: la cuenta del departamento tocado en el mapa (`enFoco` en
+ * app.js), o null/undefined para ver la mesa entera -el estado de hoy.
+ * Acotar la lista es solo un filtro sobre lo que ya trajo el bus: el
+ * campo `departamento` de cada propuesta ya viene del servidor (spec del
+ * punto 4), asi que no hace falta ningun pedido nuevo.
+ */
+export function textoDeMesa(datos, filtro = null) {
   if (!datos || !datos.activa) {
     return `<div class="vacio">La economia no esta activa.</div>`;
   }
   const deps = datos.departamentos || [];
-  const props = datos.propuestas || [];
+  const todas = datos.propuestas || [];
+  const props = filtro ? todas.filter(p => p.departamento === filtro) : todas;
   const semana = hayQueAvisarDeLaSemana(datos)
     ? `<div class="aviso semana">La semana ${escapar(datos.semana)} no esta ` +
       `abierta: financiar va a fallar hasta que la abras.` +
       `<button data-accion="abrir-semana">abrir la semana</button></div>`
     : "";
+  // El boton "ver todas" tiene que estar SIEMPRE que hay un filtro activo,
+  // incluso si el departamento no tiene ninguna propuesta: sin el, tocar
+  // un edificio sin propuestas deja a Pedro mirando una mesa vacia sin
+  // forma de salir del filtro.
+  const cabecera = filtro
+    ? `<div class="filtro">mostrando solo ` +
+      `<b>${escapar(nombreDeDepartamento(filtro, deps))}</b>` +
+      `<button type="button" data-accion="ver-todas">ver todas</button></div>`
+    : "";
   if (!props.length) {
-    return semana + `<div class="vacio">Ninguna propuesta esperando.</div>`;
+    const vacio = filtro
+      ? "Este departamento no tiene propuestas en la mesa."
+      : "Ninguna propuesta esperando.";
+    return semana + cabecera + `<div class="vacio">${vacio}</div>`;
   }
-  return semana + props.map(p => fila(p, deps)).join("");
+  return semana + cabecera + props.map(p => fila(p, deps)).join("");
 }

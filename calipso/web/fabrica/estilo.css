@@ -238,6 +238,17 @@ html, body {
 .mesa .acciones button { cursor: pointer; min-height: 40px; padding: 0 14px; }
 .mesa .acciones select { min-height: 40px; }
 .mesa .vacio { color: var(--tenue); padding: 8px; }
+.mesa .filtro {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 6px 8px; border-radius: 6px; background: var(--panel);
+  border: 1px solid var(--linea); color: var(--tenue); font-size: 12px;
+}
+.mesa .filtro b { color: var(--acento); font-weight: 600; }
+.mesa .filtro button {
+  background: transparent; border: 1px solid var(--linea); color: var(--texto);
+  border-radius: 4px; padding: 4px 10px; font-size: 11px; cursor: pointer;
+  min-height: 28px;
+}
 
 .plantel {
   padding: 8px; border-bottom: 1px solid var(--linea);

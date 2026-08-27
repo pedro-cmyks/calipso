@@ -146,7 +146,10 @@ function soltar(ev) {
       // ver la conversacion, y la salida que queda -el boton "volver al
       // chat"- esta en el panel que justo dejo de mirar
       volverAlChat();
-      if (resaltado) { enFoco = resaltado; pintarFoco(); }
+      // tocar un departamento tambien acota la mesa a sus propuestas
+      // (punto 4): la senal ya existia para el chat, la mesa solo tenia
+      // que enterarse
+      if (resaltado) { enFoco = resaltado; pintarFoco(); pintarMesa(); }
     }
   }
   punteros.delete(ev.pointerId);
@@ -192,6 +195,10 @@ barraFoco.addEventListener("click", ev => {
   if (ev.target && ev.target.dataset.accion === "quitar") {
     enFoco = null;
     pintarFoco();
+    // la mesa tambien esta filtrada por este mismo foco (punto 4): sacarlo
+    // desde la barra del chat tiene que destrabar la mesa igual que el
+    // boton "ver todas" que vive ahi
+    pintarMesa();
   }
 });
 
@@ -245,7 +252,7 @@ async function pintarMesa() {
       cajaMesa.innerHTML = '<div class="vacio">No se pudo leer el bus.</div>';
       return;
     }
-    cajaMesa.innerHTML = textoDeMesa(await r.json());
+    cajaMesa.innerHTML = textoDeMesa(await r.json(), enFoco);
   } catch (_) {
     cajaMesa.innerHTML = '<div class="vacio">No se pudo leer el bus.</div>';
   }
@@ -288,7 +295,17 @@ async function accionDeMesa(boton) {
 
 cajaMesa?.addEventListener("click", evento => {
   const boton = evento.target.closest("button[data-accion]");
-  if (boton) accionDeMesa(boton);
+  if (!boton) return;
+  if (boton.dataset.accion === "ver-todas") {
+    // sacar el filtro es local, no pide nada al servidor: la misma salida
+    // que el boton "quitar" de la barra del chat, para que la mesa nunca
+    // deje a Pedro sin forma de volver a ver todas las propuestas
+    enFoco = null;
+    pintarFoco();
+    pintarMesa();
+    return;
+  }
+  accionDeMesa(boton);
 });
 
 const cajaPlantel = document.getElementById("plantel");
