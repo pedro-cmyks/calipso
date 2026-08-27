@@ -289,6 +289,31 @@ def test_el_techo_de_propuestas_frena_proponer(tmp_path):
     assert contratos == []
 
 
+def test_descartar_una_propuesta_destraba_el_techo(tmp_path):
+    """La razon de ser de todo esto (spec seccion 8): con la bandeja llena el
+    jefe queda frenado, y descartar una -la salida que le da la mesa de
+    Pedro- tiene que devolverle el lugar para volver a proponer. El
+    escalon de abajo (que la propuesta desaparezca de propuestas_propias) ya
+    esta cubierto en test_plantel_situacion.py; esto prueba el circuito
+    entero via j.tic."""
+    from calipso.economia import bus as bus_mod
+    ctx, contratos, _ = armar(tmp_path, "proponer\notra idea mas")
+    for i in range(j.TECHO_PROPUESTAS):
+        ctx.bus.alta(TS, W, f"p{i}", "dep:atlas", f"propuesta {i}", 1_000,
+                    2_000, {"gasto_max_mm": 5_000})
+    it.poner_modo(tmp_path, "vivo")
+    frenado = j.tic(ctx, "dep:atlas", W)
+    assert frenado["actuo"] is False
+    assert "propuestas sin financiar" in frenado["freno"]
+    assert contratos == []
+
+    bus_mod.descartar(ctx.bus, TS, W, "p0")
+
+    destrabado = j.tic(ctx, "dep:atlas", W)
+    assert destrabado["actuo"] is True
+    assert contratos == [("proponer", None, "otra idea mas")]
+
+
 def test_con_menos_propuestas_que_el_techo_sigue_pudiendo_proponer(tmp_path):
     """El techo no puede volverse un cero disfrazado: por debajo, proponer
     sigue pasando."""
