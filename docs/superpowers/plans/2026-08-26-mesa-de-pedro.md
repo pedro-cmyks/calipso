@@ -329,7 +329,7 @@ def api_eco_bus() -> dict:
             d = bus.datos(id_)
             propuestas.append({
                 "id": id_, "estado": estado,
-                "departamento": d["departamento_cuenta"],
+                "departamento": d["departamento"],
                 "titulo": d["titulo"],
                 "presupuesto_mm": d["presupuesto_mm"],
                 "retorno_mm": d["retorno_mm"],
@@ -346,11 +346,11 @@ def api_eco_bus() -> dict:
             "propuestas": propuestas, "departamentos": deps_fabrica}
 ```
 
-**Antes de escribirlo, verifica tres cosas leyendo el codigo, y adapta si no coinciden:**
+**Tres cosas ya verificadas contra el repo — usalas tal cual, no las redescubras:**
 
-1. Que `bus.datos(id)` devuelva las claves `departamento_cuenta`, `titulo`, `presupuesto_mm`, `retorno_mm` y `criterio`. Si alguna se llama distinto, usa el nombre real.
-2. Como se llaman en `server.py` los alias de `calipso.economia.departamentos` y `calipso.economia.capacidad`. Arriba escribi `_eco_deps` y `_eco_cap`, pero **puede que no existan**: mira el bloque de imports de economia (cerca de la linea 3376) y usa los alias que de verdad estan; si el modulo no esta importado, agregalo a ese mismo bloque siguiendo el patron.
-3. Como se pide el saldo de una cuenta. Arriba escribi `m.k.saldo(cuenta)`; verifica el nombre real del metodo en `calipso/economia/kernel.py` y usa ese.
+1. `bus.datos(id)` devuelve exactamente estas claves: `criterio`, `departamento`, `evento`, `id`, `presupuesto_mm`, `retorno_mm`, `semana`, `titulo`, `ts`. **La cuenta del dueno esta en `departamento`, NO en `departamento_cuenta`** — usar el nombre equivocado es un `KeyError` en el primer request.
+2. `_eco_deps` YA existe en el bloque de imports de economia de `server.py`. **`capacidad` NO esta importado**: hay que agregarlo a ese mismo bloque (cerca de la linea 3388), como `capacidad as _eco_cap`, respetando el orden alfabetico de los que ya estan y sin sacar ninguno.
+3. El saldo se pide con `m.k.saldo(cuenta)` — la firma real es `Kernel.saldo(self, cuenta: str, divisa: Divisa = Divisa.MONEDA) -> int`, y el default de monedas es el que queremos.
 
 - [ ] **Step 4: Correr y ver que pasan**
 
@@ -621,6 +621,11 @@ test("una financiada muestra lo gastado y no ofrece botones", () => {
   assert.match(html, /financiada/i);
 });
 
+test("la fila lleva el presupuesto, que es lo que se manda al financiar", () => {
+  const html = textoDeMesa(datos([P1]));
+  assert.match(html, /data-presupuesto="10000"/);
+});
+
 test("con la semana cerrada hay que avisar", () => {
   assert.equal(hayQueAvisarDeLaSemana(datos([P1], {semana_abierta: false})), true);
   assert.equal(hayQueAvisarDeLaSemana(datos([P1])), false);
@@ -682,7 +687,8 @@ function fila(propuesta, departamentos) {
   }
   const aviso = alcanza(propuesta, departamentos)
     ? "" : `<div class="aviso">sin saldo suficiente</div>`;
-  return `<div class="propuesta">` +
+  return `<div class="propuesta" ` +
+    `data-presupuesto="${escapar(propuesta.presupuesto_mm)}">` +
     `<div class="cabeza"><b>${dep}</b> · ${escapar(propuesta.titulo)}</div>` +
     `<div class="datos">${plata}</div>` + aviso +
     `<div class="acciones">paga ${selector(propuesta, departamentos)}` +
@@ -719,7 +725,7 @@ export function textoDeMesa(datos) {
 - [ ] **Step 4: Correr y ver que pasa**
 
 Run: `cd /var/home/pedro/calipso/calipso/web/fabrica && node --test mesa.test.js`
-Expected: PASS (9 tests)
+Expected: PASS (10 tests)
 
 - [ ] **Step 5: Correr la suite entera de /fabrica**
 
@@ -893,9 +899,7 @@ cajaMesa.addEventListener("click", evento => {
 
 Llamar `pintarMesa()` una vez al arrancar, donde el archivo ya hace su carga inicial de datos.
 
-**Ojo con el `mm`:** el codigo de arriba lo lee de `fila.dataset.presupuesto`, asi que `mesa.js` tiene que ponerlo. En la Tarea 4 el `<div class="propuesta">` no lo lleva. **Agregalo**: que el div de una propuesta financiable sea
-`<div class="propuesta" data-presupuesto="${escapar(propuesta.presupuesto_mm)}">`
-y sumale un test en `mesa.test.js` que lo afirme. Sin eso, financiar manda `mm: 0` y el libro lo rechaza.
+**Sobre el `mm`:** el codigo de arriba lo lee de `fila.dataset.presupuesto`. La Tarea 4 ya lo pone en el `<div class="propuesta">` y tiene un test que lo afirma, asi que aca no hay nada que agregar — pero si al probar a mano ves que financiar manda `mm: 0`, ese atributo es el primer lugar donde mirar.
 
 - [ ] **Step 4: El service worker**
 
@@ -916,8 +920,7 @@ Expected: PASS. Si `test_ui.py` o el test del `SHELL` se derivan de los archivos
 
 ```bash
 git add calipso/web/fabrica/index.html calipso/web/fabrica/estilo.css \
-        calipso/web/fabrica/app.js calipso/web/fabrica/mesa.js \
-        calipso/web/fabrica/mesa.test.js calipso/web/sw.js
+        calipso/web/fabrica/app.js calipso/web/sw.js
 git commit -m "feat(mesa): la mesa en la pantalla, con su pestana y su panel"
 ```
 
