@@ -15,11 +15,17 @@ export function textoDePlantel(estado) {
   const prendido = estado.encendido ? "encendido" : "apagado";
   const peligro = estado.modo === "vivo"
     ? '<div class="peligro">En vivo: la fabrica gasta sola.</div>' : "";
+  // El mismo criterio que ya usaba el boton de modo: se ofrece la accion
+  // CONTRARIA al estado actual, nunca las dos parar/reanudar juntas. Con
+  // las dos siempre presentes, la mitad de las veces Pedro aprieta la que
+  // ya esta en efecto y no pasa nada -ni en el servidor ni en la pantalla-
+  // y eso se lee como un boton roto.
+  const interruptor = estado.encendido
+    ? `<button type="button" data-plantel="parar">parar</button>`
+    : `<button type="button" data-plantel="reanudar">reanudar</button>`;
   return `<div class="estado">${prendido} · modo ${escapar(estado.modo)} ` +
     `· techo ${escapar(String(estado.techo_tics))} tics</div>` + peligro +
-    `<div class="botones">` +
-    `<button type="button" data-plantel="parar">parar</button>` +
-    `<button type="button" data-plantel="reanudar">reanudar</button>` +
+    `<div class="botones">` + interruptor +
     `<button type="button" data-plantel="modo" data-modo="${estado.modo === "vivo"
       ? "ensayo" : "vivo"}">pasar a ${estado.modo === "vivo"
       ? "ensayo" : "vivo"}</button>` +

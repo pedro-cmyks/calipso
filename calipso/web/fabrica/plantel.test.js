@@ -18,15 +18,31 @@ test("el plantel no disponible muestra el aviso y no ofrece botones", () => {
   }
 });
 
-test("los tres botones de accion llevan type=\"button\" y su data-plantel", () => {
+test("los botones de accion llevan type=\"button\" y su data-plantel", () => {
   // sin type="button" el navegador les da "submit" por default -esten o no
   // dentro de un form- y el click handler de app.js descarta justo los
   // botones de tipo submit: este es el test que habria atrapado ese bug.
   const html = textoDePlantel(estado());
   assert.match(html, /<button type="button" data-plantel="parar">parar<\/button>/);
-  assert.match(html,
-    /<button type="button" data-plantel="reanudar">reanudar<\/button>/);
   assert.match(html, /<button type="button" data-plantel="modo" data-modo="/);
+});
+
+test("encendido ofrece parar, no reanudar: reanudar ya esta en efecto", () => {
+  // con los dos botones siempre presentes, apretar el que ya esta en
+  // efecto no produce NINGUNA senal (el servidor contesta 200 igual, la
+  // tira se repinta identica): asi lo vivio Pedro. Cada estado ofrece
+  // solo la accion que todavia puede cambiar algo.
+  const html = textoDePlantel(estado({encendido: true}));
+  assert.match(html, /data-plantel="parar"/);
+  assert.ok(!html.includes('data-plantel="reanudar"'),
+            "aparecio 'reanudar' con el plantel ya encendido");
+});
+
+test("apagado ofrece reanudar, no parar: parar ya esta en efecto", () => {
+  const html = textoDePlantel(estado({encendido: false}));
+  assert.match(html, /data-plantel="reanudar"/);
+  assert.ok(!html.includes('data-plantel="parar"'),
+            "aparecio 'parar' con el plantel ya apagado");
 });
 
 test("el boton de modo ofrece pasar a vivo cuando esta en ensayo", () => {
