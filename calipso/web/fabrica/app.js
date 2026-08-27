@@ -15,6 +15,7 @@ import {disposicion, escapar, textoDeTarjeta, posicionDeTarjeta,
         textoDeEmpleado, textoDeRazonamiento} from "./paneles.js";
 import {crearChat} from "./chat.js";
 import {crearPulso, empleadosDe, estadoVisible} from "./pulso.js";
+import {textoDeMesa} from "./mesa.js";
 
 const lienzo = document.getElementById("mapa");
 const sinFabrica = document.getElementById("sin-fabrica");
@@ -227,6 +228,65 @@ function pintarAvisos() {
     .join("");
 }
 
+const cajaMesa = document.getElementById("mesa");
+
+async function pintarMesa() {
+  // arranque.test.js monta un DOM de mentira que no declara "mesa": sin
+  // esta guarda, importar el modulo ahi revienta antes de llegar a un
+  // solo test que sea de esta pantalla.
+  if (!cajaMesa) return;
+  try {
+    const r = await fetch("/api/economia/bus");
+    if (!r.ok) {
+      cajaMesa.innerHTML = '<div class="vacio">No se pudo leer el bus.</div>';
+      return;
+    }
+    cajaMesa.innerHTML = textoDeMesa(await r.json());
+  } catch (_) {
+    cajaMesa.innerHTML = '<div class="vacio">No se pudo leer el bus.</div>';
+  }
+}
+
+async function accionDeMesa(boton) {
+  const accion = boton.dataset.accion;
+  const id = boton.dataset.id;
+  boton.disabled = true;
+  try {
+    let r;
+    if (accion === "abrir-semana") {
+      r = await fetch("/api/economia/abrir", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({cuota_firmable_mpt: 4000,
+                              reserva_personal_mpt: 1000})});
+    } else if (accion === "financiar") {
+      const sel = cajaMesa.querySelector(`select.paga[data-id="${id}"]`);
+      const fila = boton.closest(".propuesta");
+      const mm = Number(fila?.dataset.presupuesto || 0);
+      r = await fetch(`/api/economia/bus/${encodeURIComponent(id)}/financiar`, {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({cuenta: sel ? sel.value : "", mm})});
+    } else if (accion === "descartar") {
+      r = await fetch(`/api/economia/bus/${encodeURIComponent(id)}/descartar`,
+                      {method: "POST"});
+    } else {
+      return;
+    }
+    if (!r.ok) {
+      let detalle = "no se pudo";
+      try { detalle = (await r.json()).detail || detalle; } catch (_) {}
+      alert(detalle);
+    }
+  } finally {
+    boton.disabled = false;
+    await pintarMesa();
+  }
+}
+
+cajaMesa?.addEventListener("click", evento => {
+  const boton = evento.target.closest("button[data-accion]");
+  if (boton) accionDeMesa(boton);
+});
+
 let tarjetaPintada = "";                 // el html que ya esta en la tarjeta
 let medidaTarjeta = {ancho: 0, alto: 0};
 
@@ -377,6 +437,8 @@ fetch("/api/chats")
   .then(r => (r.ok ? r.json() : null))
   .then(datos => { if (datos) pintarChats(datos); })
   .catch(() => { listaChats.innerHTML = '<div class="chat">sin chats</div>'; });
+
+pintarMesa();
 
 const panelCentro = document.getElementById("panel-centro");
 const panelRazonamiento = document.getElementById("razonamiento");
