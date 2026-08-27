@@ -1816,6 +1816,10 @@ def _build_context(user_msg: str, runtime: str, features: dict | None = None) ->
     Estable (prefijo, se cachea en sub/api): identidad + memoria núcleo.
     Volátil (sufijo): recuerdos relevantes (podados por score) + estado real.
     Just-in-time: los archivos del repo NO se precargan; se piden bajo demanda.
+
+    Arma el brief de economia, que toma el candado del libro (flock
+    exclusivo y bloqueante): se llama SIEMPRE desde un hilo, igual que
+    `_ficha_y_cuenta` y `_cobrar_turno`.
     """
     # --- prefijo estable (cacheable) ---
     ident = _identity_doc()
@@ -1828,10 +1832,19 @@ def _build_context(user_msg: str, runtime: str, features: dict | None = None) ->
     if features and features.get("needs_repo"):
         repo_brief = _repo_brief()
     goal_block = _goal_context()
+    # la economia entra en CADA turno (no solo cuando needs_repo o el tema
+    # ya se noto financiero): Calipso no sabe de antemano cuando Pedro va a
+    # preguntar por plata, y ese hueco -verla en su propia API en vez de
+    # asumir que el sandbox se lo impide- es justo lo que esta seccion
+    # cierra. `economia_brief` toma el candado del libro para leer
+    # consistente (invariante de `Libro._cargar`); por eso esta funcion
+    # entera se despacha con `asyncio.to_thread` desde el websocket, nunca
+    # se llama directo sobre el event loop.
+    economia = prompt_compiler.economia_brief(_ECO_BASE)
     return prompt_compiler.compile_context(
         SYSTEM, identity=ident, core=core, recalled=recalled,
         repo_brief=repo_brief, goal_block=goal_block, runtime=runtime,
-        features=features, core_limit=CONTEXT_CORE_MAX)
+        economia=economia, features=features, core_limit=CONTEXT_CORE_MAX)
 
 
 def _HISTORY_TURNS_CONST():
@@ -2324,7 +2337,9 @@ async def ws_chat(ws: WebSocket) -> None:
 
             # 2) contexto (core + recuerdos) y 3) streaming
             runtime = _harness_context(verdict, route, model, note)
-            system = _build_context(chat_msg, runtime, features)
+            # `_build_context` arma el brief de economia bajo el candado del
+            # libro (flock bloqueante); en un hilo, igual que `_ficha_y_cuenta`.
+            system = await asyncio.to_thread(_build_context, chat_msg, runtime, features)
             # vision: describir imágenes antes de inyectar contexto de adjuntos
             if attachments.has_images(str(ROOT), attachment_ids):
                 vision_text = await asyncio.to_thread(
@@ -2354,7 +2369,7 @@ async def ws_chat(ws: WebSocket) -> None:
                     runtime = _harness_context(
                         verdict, "orchestrator", model,
                         f"equipo dinamico sobre ruta base {route}")
-                    system = _build_context(chat_msg, runtime, features)
+                    system = await asyncio.to_thread(_build_context, chat_msg, runtime, features)
                     if attachment_context:
                         system += "\n\n" + attachment_context
                     if bloque_dep:
@@ -2421,7 +2436,7 @@ async def ws_chat(ws: WebSocket) -> None:
                                 runtime = _harness_context(
                                     verdict, "subscription", model,
                                     f"fallback de suscripcion a {alternate}")
-                                system = _build_context(chat_msg, runtime, features)
+                                system = await asyncio.to_thread(_build_context, chat_msg, runtime, features)
                                 if attachment_context:
                                     system += "\n\n" + attachment_context
                                 if bloque_dep:
@@ -2462,7 +2477,7 @@ async def ws_chat(ws: WebSocket) -> None:
                         used_route, usage = "local", {}
                         model = _route_model_name("local")
                         runtime = _harness_context(verdict, "local", model, f"ruta {route} fallo; fallback local")
-                        system = _build_context(chat_msg, runtime, features)
+                        system = await asyncio.to_thread(_build_context, chat_msg, runtime, features)
                         if attachment_context:
                             system += "\n\n" + attachment_context
                         if bloque_dep:
