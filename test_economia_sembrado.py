@@ -157,6 +157,33 @@ def test_personal_movimiento_ingreso_y_gasto(cliente):
     assert k.saldo(t.TESORO) == 0
 
 
+def test_personal_movimiento_acepta_egreso_como_sinonimo_de_gasto(cliente):
+    # Pedro pidio el banco con estas palabras, textual: "ingresos y
+    # egresos" -- pero personal.py (preexistente, no tocado) solo conoce
+    # "ingreso"/"gasto". La normalizacion vive en el endpoint.
+    c, base = cliente
+    r = c.post("/api/economia/personal/movimiento",
+              json={"tipo": "egreso", "monto_mm": 50_000,
+                    "categoria": "comida"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    linea = json.loads(
+        (base / "economia" / "personal.jsonl").read_text().splitlines()[-1])
+    assert linea["tipo"] == "gasto"  # normalizado antes de llegar a registrar
+    tab = c.get("/api/economia/tablero").json()["tablero"]
+    assert tab["personal"]["gastos_mm"] == 50_000
+
+
+def test_personal_movimiento_gasto_sigue_funcionando(cliente):
+    c, base = cliente
+    r = c.post("/api/economia/personal/movimiento",
+              json={"tipo": "gasto", "monto_mm": 30_000,
+                    "categoria": "transporte"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    linea = json.loads(
+        (base / "economia" / "personal.jsonl").read_text().splitlines()[-1])
+    assert linea["tipo"] == "gasto"
+
+
 def test_personal_movimiento_tipo_invalido_falla(cliente):
     c, base = cliente
     r = c.post("/api/economia/personal/movimiento",

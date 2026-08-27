@@ -3573,10 +3573,18 @@ class EcoSembrarBody(BaseModel):
 
 
 class EcoPersonalMovimientoBody(BaseModel):
-    tipo: str  # "ingreso" | "gasto" (validado por LibroPersonal.registrar)
+    tipo: str  # "ingreso" | "gasto" (personal.py), o su sinonimo "egreso"
     monto_mm: int
     categoria: str
     nota: str = ""
+
+
+# Pedro pidio el banco con estas palabras, textual: "ingresos y egresos"
+# (ver el encargo). personal.py -- vocabulario preexistente, con sus
+# propios tests y llamadores -- solo conoce "ingreso"/"gasto". La
+# normalizacion vive ACA, en la frontera http, que es donde entran las
+# palabras del usuario; personal.py no se toca.
+_ECO_PERSONAL_TIPO_SINONIMOS = {"egreso": "gasto"}
 
 
 class EcoFronteraAcunarBody(BaseModel):
@@ -3924,7 +3932,8 @@ def api_eco_personal_movimiento(body: EcoPersonalMovimientoBody) -> dict:
     try:
         with _eco_candado(p0.ruta_libro):
             eco = _economia()  # fresco BAJO el candado
-            eco["personal"].registrar(ts, semana, body.tipo, body.monto_mm,
+            tipo = _ECO_PERSONAL_TIPO_SINONIMOS.get(body.tipo, body.tipo)
+            eco["personal"].registrar(ts, semana, tipo, body.monto_mm,
                                       body.categoria, nota=body.nota)
     except _eco_personal.ErrorPersonal as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
