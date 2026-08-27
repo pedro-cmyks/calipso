@@ -963,3 +963,12 @@ plantel, sin roles y sin memoria propia. Nada propone y nada produce, así que e
 **Por qué importa:** DESIGN.md:4 se declara la unica fuente de toda decision visual y DESIGN.md:51 dice que los fondos son solo --void/--surface/--elevated: hoy Calipso tiene dos identidades visuales y ninguna esta declarada como excepcion, asi que la proxima sesion que toque UI no sabe cual respetar.
 **Evidencia:** calipso/web/fabrica/estilo.css:3 `--fondo: #0b0f14` y :8 `--acento: #66d9ff`; calipso/web/fabrica/paleta.js:24 'la fabrica es acero frio'; DESIGN.md no menciona fabrica, mapa ni pixel art en sus 255 lineas
 
+
+## Pedido de Pedro, 2026-08-27: revision de seguridad de Calipso
+
+Pedro pidio "una nota aparte para hacer una revision de seguridad para calipso". Queda abierto como trabajo propio, no como parte del rediseno de proyectos/departamentos.
+
+Lo que ya sabemos que entra en esa revision, para que no se pierda:
+- El token en la URL: auth_guard acepta ?token= y uvicorn loguea el query string entero, asi que el token queda en texto plano en el log del server en cada request. Confirmado por observacion directa. La cascara Tauri (src-tauri/src/lib.rs, sin trackear) navega el webview a http://127.0.0.1:8000/?token={tok}, que es el mismo patron.
+- El remedio conocido: POST del token a un endpoint que devuelva Set-Cookie, y navegar despues sin query string.
+- La superficie nueva de la mesa (financiar y descartar) mueve plata y hereda el mismo auth_guard que el resto; conviene mirarla con ojos de seguridad ahora que existe.
