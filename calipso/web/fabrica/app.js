@@ -330,12 +330,18 @@ cajaPlantel?.addEventListener("click", async evento => {
   const que = boton.dataset.plantel;
   boton.disabled = true;
   try {
+    let r;
     if (que === "modo") {
-      await fetch("/api/plantel/modo", {
+      r = await fetch("/api/plantel/modo", {
         method: "PUT", headers: {"Content-Type": "application/json"},
         body: JSON.stringify({modo: boton.dataset.modo})});
     } else {
-      await fetch(`/api/plantel/${que}`, {method: "POST"});
+      r = await fetch(`/api/plantel/${que}`, {method: "POST"});
+    }
+    if (!r.ok) {
+      let detalle = "no se pudo";
+      try { detalle = (await r.json()).detail || detalle; } catch (_) {}
+      alert(detalle);
     }
   } finally {
     boton.disabled = false;
