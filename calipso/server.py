@@ -3385,7 +3385,8 @@ async def _routines_ticker() -> None:
 # ECONOMIA (spec 2026-08-24): tablero, cola, reloj y cierre
 # --------------------------------------------------------------------------
 try:
-    from calipso.economia import (bus as _eco_bus, cola as _eco_cola,
+    from calipso.economia import (bus as _eco_bus, capacidad as _eco_cap,
+                                  cola as _eco_cola,
                                   departamentos as _eco_deps,
                                   operacion as _eco_op,
                                   personal as _eco_personal,
@@ -3476,6 +3477,50 @@ def api_eco_cola() -> dict:
     if not eco:
         return {"activa": False}
     return {"activa": True, "pendientes": eco["cola"].pendientes()}
+
+
+@app.get("/api/economia/bus")
+def api_eco_bus() -> dict:
+    """Lo que Pedro necesita para decidir sobre cada propuesta.
+
+    Lector serializado, como el resto de economia: el libro se repara
+    truncando, asi que leerlo a medio append se come un asiento. El unico
+    lector sin candado del archivo es `api_eco_cola`, y no es un ejemplo.
+    """
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
+    if not p0:
+        return {"activa": False}
+    _, semana = _eco_ahora()
+    with _eco_candado(p0.ruta_libro):
+        eco = _economia()
+        m = eco["pagador"].mercado_fresco()
+        bus = _eco_bus.Bus(p0.ruta_bus)
+        asientos = m.k.libro.asientos()
+        propuestas = []
+        for id_ in bus.ids():
+            estado = bus.estado(id_)
+            # la mesa es para decidir, no un historial: lo descartado, muerto
+            # y liquidado no vuelve a aparecer
+            if estado not in ("alta", "financiada"):
+                continue
+            d = bus.datos(id_)
+            propuestas.append({
+                "id": id_, "estado": estado,
+                "departamento": d["departamento"],
+                "titulo": d["titulo"],
+                "presupuesto_mm": d["presupuesto_mm"],
+                "retorno_mm": d["retorno_mm"],
+                "criterio": d["criterio"],
+                "gastado_mm": _eco_bus.gastado(asientos, id_),
+                "aportes": _eco_bus.aportes(asientos, id_),
+            })
+        deps_fabrica = [
+            {"cuenta": f"dep:{x.nombre}", "nombre": x.nombre, "zona": x.zona,
+             "disponible_mm": m.k.saldo(f"dep:{x.nombre}")}
+            for x in m.registro.todos() if x.zona == _eco_deps.ZONA_FABRICA]
+        abierta = semana in _eco_cap.semanas_operativas(asientos)
+    return {"activa": True, "semana": semana, "semana_abierta": abierta,
+            "propuestas": propuestas, "departamentos": deps_fabrica}
 
 
 @app.post("/api/economia/cola/{item_id}/atender")
