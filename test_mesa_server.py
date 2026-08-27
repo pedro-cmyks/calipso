@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from calipso.economia import departamentos as deps
 from calipso.economia import pt
 from calipso.economia import tipos as t
-from calipso.economia.bus import Bus
+from calipso.economia.bus import Bus, cuenta_trabajo
 from calipso.economia.kernel import Kernel
 from calipso.economia.libro import Libro
 import calipso.server as srv
@@ -41,6 +41,9 @@ def _economia_de_prueba(base, abrir=True):
 @pytest.fixture
 def cliente(tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
+    # el reloj real avanza; el libro de prueba solo abre W35. Sin esto los
+    # tests se ponen en rojo solos en cuanto el calendario cruza de semana.
+    monkeypatch.setattr(srv, "_eco_ahora", lambda: (TS, W))
     _economia_de_prueba(tmp_path)
     return TestClient(srv.app), tmp_path
 
@@ -98,6 +101,7 @@ def test_dice_si_la_semana_esta_abierta(tmp_path, monkeypatch):
     """Sin emision de PT esa semana, TODA financiacion falla. Que la mesa lo
     diga antes es la diferencia entre un aviso y un error incomprensible."""
     monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
+    monkeypatch.setattr(srv, "_eco_ahora", lambda: (TS, W))
     _economia_de_prueba(tmp_path, abrir=False)
     c = TestClient(srv.app)
     d = c.get("/api/economia/bus", params={"token": srv.TOKEN}).json()
@@ -106,6 +110,7 @@ def test_dice_si_la_semana_esta_abierta(tmp_path, monkeypatch):
 
 def test_sin_economia_no_esta_activa(tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
+    monkeypatch.setattr(srv, "_eco_ahora", lambda: (TS, W))
     c = TestClient(srv.app)
     d = c.get("/api/economia/bus", params={"token": srv.TOKEN}).json()
     assert d["activa"] is False
@@ -113,6 +118,7 @@ def test_sin_economia_no_esta_activa(tmp_path, monkeypatch):
 
 def test_sin_token_no_se_lee_el_bus(tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
+    monkeypatch.setattr(srv, "_eco_ahora", lambda: (TS, W))
     c = TestClient(srv.app)
     assert c.get("/api/economia/bus").status_code == 401
 
@@ -143,8 +149,30 @@ def test_el_segundo_toque_no_paga_dos_veces(cliente):
     otra = c.post("/api/economia/bus/p1/financiar", params={"token": srv.TOKEN},
                   json={"cuenta": "dep:atlas", "mm": 10_000})
     assert otra.status_code == 400
+    assert "ya no esta esperando plata" in otra.json()["detail"]
     d = c.get("/api/economia/bus", params={"token": srv.TOKEN}).json()
     assert d["propuestas"][0]["aportes"] == {"dep:atlas": 10_000}
+
+
+def test_no_se_financia_una_alta_con_aporte_ya_en_el_libro(cliente):
+    """`financiar` transfiere ANTES de marcar. Si el proceso muere entre las
+    dos escrituras (disco lleno, crash a mitad de los appends), la plata ya
+    salio pero la propuesta queda en `alta`: el corte no puede confiar solo
+    en la marca, tiene que mirar el libro, la fuente de verdad. Se simula el
+    aporte a mano, con el mismo motivo que usa `financiar`, sin pasar por
+    `bus.marcar` -- asi queda el estado a medio camino que dejaria un
+    crash."""
+    c, base = cliente
+    _propuesta(base)
+    k = Kernel(Libro(base / "economia" / "libro.jsonl"))
+    k.transferir(TS, W, "dep:atlas", cuenta_trabajo("p1"), 10_000,
+                 motivo="financiacion")
+    r = c.post("/api/economia/bus/p1/financiar", params={"token": srv.TOKEN},
+               json={"cuenta": "dep:atlas", "mm": 10_000})
+    assert r.status_code == 400
+    assert "ya no esta esperando plata" in r.json()["detail"]
+    d = c.get("/api/economia/bus", params={"token": srv.TOKEN}).json()
+    assert d["propuestas"][0]["estado"] == "alta"
 
 
 def test_un_error_del_bus_es_400_con_su_mensaje(tmp_path, monkeypatch):
@@ -152,13 +180,14 @@ def test_un_error_del_bus_es_400_con_su_mensaje(tmp_path, monkeypatch):
     humano: "semana no operativa" tiene que llegar como texto, no como un 500
     opaco."""
     monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
+    monkeypatch.setattr(srv, "_eco_ahora", lambda: (TS, W))
     _economia_de_prueba(tmp_path, abrir=False)
     c = TestClient(srv.app)
     _propuesta(tmp_path)
     r = c.post("/api/economia/bus/p1/financiar", params={"token": srv.TOKEN},
                json={"cuenta": "dep:atlas", "mm": 10_000})
     assert r.status_code == 400
-    assert r.json()["detail"]
+    assert "semana no operativa" in r.json()["detail"]
 
 
 def test_financiar_una_propuesta_que_no_existe_es_400(cliente):
@@ -189,6 +218,7 @@ def test_no_se_descarta_una_ya_financiada(cliente):
 
 def test_sin_token_no_se_financia(tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
+    monkeypatch.setattr(srv, "_eco_ahora", lambda: (TS, W))
     c = TestClient(srv.app)
     r = c.post("/api/economia/bus/p1/financiar",
                json={"cuenta": "dep:atlas", "mm": 1})

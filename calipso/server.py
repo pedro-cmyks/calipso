@@ -3394,12 +3394,15 @@ try:
     from calipso.economia.candado import candado as _eco_candado
     from calipso.economia.pagador import (Pagador as _EcoPagador,
                                           suscripcion_de_cliente as
-                                          _eco_suscripcion)
+                                          _eco_suscripcion,
+                                          _ERRORES_ECONOMICOS as
+                                          _eco_errores_economicos)
 except Exception:  # economia no disponible: los endpoints responden inactivo
     _EcoPagador = None
     _eco_suscripcion = None
     _eco_bus = _eco_cola = _eco_op = _eco_personal = _eco_reloj = _eco_candado = None
     _eco_deps = None
+    _eco_errores_economicos = None
 
 _ECO_BASE = pathlib.Path(os.environ.get(
     "CALIPSO_HOME", os.path.expanduser("~/.calipso")))
@@ -3532,10 +3535,14 @@ def api_eco_bus() -> dict:
 def api_eco_bus_financiar(id: str, body: MesaFinanciarBody) -> dict:
     """Pedro dice que si.
 
-    SOLO acepta propuestas en `alta`. `financiar` permite cofinanciar una ya
-    financiada, asi que sin este corte dos toques en un telefono lento
-    pagarian dos veces. Deshabilitar el boton en la UI es la segunda linea de
-    defensa, no la primera.
+    SOLO acepta propuestas en `alta` y sin ningun aporte ya asentado en el
+    libro. `financiar` permite cofinanciar una ya financiada, asi que el
+    primer corte cierra el doble toque en un telefono lento. Pero
+    `financiar` tambien transfiere ANTES de marcar: si el proceso muere
+    entre las dos escrituras (disco lleno, crash a mitad de los appends), la
+    plata ya salio y la propuesta queda igual en `alta`. Por eso el segundo
+    corte mira el LIBRO (la fuente de verdad), no la marca. Deshabilitar el
+    boton en la UI es la tercera linea de defensa, no la primera.
     """
     p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
     if not p0:
@@ -3543,17 +3550,17 @@ def api_eco_bus_financiar(id: str, body: MesaFinanciarBody) -> dict:
     ts, semana = _eco_ahora()
     try:
         with _eco_candado(p0.ruta_libro):
-            eco = _economia()
-            m = eco["pagador"].mercado_fresco()
+            m = p0.mercado_fresco()
             bus = _eco_bus.Bus(p0.ruta_bus)
-            if bus.estado(id) != "alta":
+            if (bus.estado(id) != "alta"
+                    or _eco_bus.aportes(m.k.libro.asientos(), id)):
                 raise HTTPException(
                     status_code=400,
                     detail=f"la propuesta {id} ya no esta esperando plata")
             _eco_bus.financiar(m, bus, ts, semana, id, body.cuenta, body.mm)
     except HTTPException:
         raise
-    except Exception as exc:
+    except _eco_errores_economicos as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     return {"ok": True}
 
@@ -3575,7 +3582,7 @@ def api_eco_bus_descartar(id: str) -> dict:
             _eco_bus.descartar(bus, ts, semana, id)
     except HTTPException:
         raise
-    except Exception as exc:
+    except _eco_errores_economicos as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     return {"ok": True}
 
