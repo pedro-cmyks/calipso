@@ -122,24 +122,23 @@ def descartar(bus: Bus, ts: str, semana: str, id: str) -> None:
 Este es el que justifica la tarea. Agregar al final de `test_plantel_situacion.py`:
 
 ```python
-def test_una_propuesta_descartada_desaparece_de_las_propias(tmp_path):
+def test_una_propuesta_descartada_desaparece_de_las_propias(fabrica):
     """El jefe tiene un techo de propuestas sin financiar. Descartar una tiene
     que devolverle lugar, o la fabrica se apaga sola al cuarto dia."""
     from calipso.economia import bus as bus_mod
-    eco = _entorno(tmp_path)
-    b = eco["bus"]
+    k, r, b, cola, sus = fabrica
     b.alta(TS, W, "p1", "dep:atlas", "una", 10_000, 10_000,
            {"gasto_max_mm": 10_000})
-    antes = sit.situacion(eco["kernel"], eco["registro"], b, eco["cola"],
-                          eco["suscripciones"], W, "dep:atlas")
+    antes = sit.situacion(k, r, b, cola, sus, W, "dep:atlas")
     assert len(antes["propuestas_propias"]) == 1
     bus_mod.descartar(b, TS, W, "p1")
-    despues = sit.situacion(eco["kernel"], eco["registro"], b, eco["cola"],
-                            eco["suscripciones"], W, "dep:atlas")
+    despues = sit.situacion(k, r, b, cola, sus, W, "dep:atlas")
     assert despues["propuestas_propias"] == []
 ```
 
-**Importante:** `test_plantel_situacion.py` ya tiene su propia forma de armar el entorno. Leelo primero y adapta el test a los helpers y nombres que ese archivo ya usa (`TS`, `W`, y como construye kernel/registro/bus/cola/suscripciones). No inventes un `_entorno` si el archivo ya tiene otro nombre para lo mismo; si no existe ninguno, extraelo de los tests que ya estan ahi. Lo que no puede cambiar es lo que el test afirma.
+El fixture `fabrica` ya existe en ese archivo y devuelve la tupla
+`(k, r, bus, cola, suscripciones)`; `TS` y `W` tambien estan definidos arriba.
+Usalos tal cual, no armes un entorno nuevo.
 
 - [ ] **Step 5: Correr y ver que pasan**
 
@@ -1040,7 +1039,7 @@ cajaPlantel.addEventListener("submit", async evento => {
 });
 ```
 
-Importar `escapar` desde `./paneles.js` si `app.js` todavia no lo importa, y llamar `pintarPlantel()` en el arranque, al lado de `pintarMesa()`.
+`escapar` **ya esta importado** en `app.js` (viene de `./paneles.js` junto con `disposicion` y `textoDeTarjeta`), asi que no agregues un import nuevo. Llama `pintarPlantel()` en el arranque, al lado de `pintarMesa()`.
 
 - [ ] **Step 4: El enlace que falta**
 
