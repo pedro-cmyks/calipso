@@ -49,16 +49,20 @@
     <nav id="submesa">
       <button data-vista="decidir" class="activa" type="button">Decidir</button>
       <button data-vista="plata" type="button">Plata</button>
+      <button data-vista="permisos" type="button">Permisos
+        <span id="badge-submesa" class="badge oculto"></span></button>
     </nav>
     <div id="plantel" class="plantel"></div>
     <div id="mesa" class="mesa"></div>
     <div id="perillas" class="perillas-panel oculto"></div>
+    <div id="permisos" class="permisos-panel oculto"></div>
   </section>
 
   <nav id="pestanas">
     <button data-pestana="chat" class="activa" type="button">Chat</button>
     <button data-pestana="mapa" type="button">Mapa</button>
-    <button data-pestana="mesa" type="button">Mesa</button>
+    <button data-pestana="mesa" type="button">Mesa
+      <span id="badge-pestana-mesa" class="badge oculto"></span></button>
   </nav>
 
   <div id="avisos" class="avisos"></div>

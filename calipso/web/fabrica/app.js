@@ -18,6 +18,7 @@ import {crearPulso, empleadosDe, estadoVisible} from "./pulso.js";
 import {textoDeMesa} from "./mesa.js";
 import {textoDePlantel} from "./plantel.js";
 import {textoDePerillas, aMilimonedas, cuerpoDeSuscripciones} from "./perillas.js";
+import {textoDePermisos, contadorPendientes} from "./permisos.js";
 
 const lienzo = document.getElementById("mapa");
 const sinFabrica = document.getElementById("sin-fabrica");
@@ -219,7 +220,11 @@ for (const boton of document.querySelectorAll("#pestanas button")) {
     }
     // sin esto, tocar la pestana muestra la foto del momento en que cargo
     // la pagina en vez de lo que hay ahora (spec seccion 9)
-    if (boton.dataset.pestana === "mesa") pintarMesa();
+    // permisos tambien, y no solo la mesa: es la otra mitad de "sin
+    // buscarlo" (punto 1) -si algo quedo pendiente mientras Pedro miraba
+    // el chat o el mapa, tocar "Mesa" tiene que traerlo ya, no esperar a
+    // los proximos 60s del refresco de fondo.
+    if (boton.dataset.pestana === "mesa") { pintarMesa(); pintarPermisos(); }
   });
 }
 app.dataset.pestana = "chat";
@@ -414,18 +419,147 @@ function avisarEnPerillas(texto) {
   }, 5000);
 }
 
+// --- Permisos: lo que Calipso quiere hacer y no se deshace solo --------
+//
+// Tercera sub-pestana de "La mesa", al lado de "Decidir" (propuestas ya
+// financiables) y "Plata" (mover el capital de Pedro): esta es donde se
+// aprueba o se niega, no donde se decide cuanto gastar ni de donde sale.
+// Acunar por encima del techo es el primer consumidor del motor de
+// permisos; comandos y archivos van a caer en la misma pantalla el dia que
+// se enchufen (calipso/permisos/motor.py), asi que el lugar donde se
+// contesta tambien tiene que ser uno solo.
+//
+// El badge (aca y en la pestana global "Mesa") es lo que hace que Pedro se
+// entere SIN buscarlo: si algo queda esperando su respuesta mientras esta
+// mirando el chat o el mapa, el numero ya esta puesto cuando llegue.
+const cajaPermisos = document.getElementById("permisos");
+const badgeSubmesa = document.getElementById("badge-submesa");
+const badgePestanaMesa = document.getElementById("badge-pestana-mesa");
+let mensajePermisos = null;
+
+function pintarBadgesDePermisos(datos) {
+  const n = contadorPendientes(datos);
+  for (const badge of [badgeSubmesa, badgePestanaMesa]) {
+    if (!badge) continue;
+    badge.textContent = String(n);
+    badge.classList.toggle("oculto", n === 0);
+  }
+}
+
+async function pintarPermisos() {
+  // mismo motivo que la guarda de cajaMesa/cajaPlantel/cajaPerillas:
+  // arranque.test.js no declara "permisos" en su DOM de mentira.
+  if (!cajaPermisos) return;
+  try {
+    const r = await fetch("/api/permisos");
+    if (!r.ok) {
+      cajaPermisos.innerHTML = '<div class="vacio">No se pudo leer los permisos.</div>';
+      pintarBadgesDePermisos(null);
+      return;
+    }
+    const datos = await r.json();
+    cajaPermisos.innerHTML = textoDePermisos(datos, mensajePermisos);
+    pintarBadgesDePermisos(datos);
+  } catch (_) {
+    cajaPermisos.innerHTML = '<div class="vacio">No se pudo leer los permisos.</div>';
+    pintarBadgesDePermisos(null);
+  }
+}
+
+/** Mismo patron que avisarEnPerillas: el aviso de "salio bien" se ve un
+ *  rato y se apaga solo. */
+function avisarEnPermisos(texto) {
+  mensajePermisos = texto;
+  pintarPermisos();
+  setTimeout(() => {
+    if (mensajePermisos === texto) { mensajePermisos = null; pintarPermisos(); }
+  }, 5000);
+}
+
+cajaPermisos?.addEventListener("click", async evento => {
+  const boton = evento.target.closest("button[data-accion]");
+  if (!boton) return;
+  const accion = boton.dataset.accion;
+  const id = boton.dataset.id;
+  // deshabilitar TODOS los botones de la tarjeta, no solo el que se toco:
+  // un permiso concedido con un solo toque en cada lado no se puede pedir
+  // dos veces (revocar dos veces es inofensivo, pero acunar dos monedas en
+  // vez de una por un doble toque no se deshace).
+  const tarjeta = boton.closest(".solicitud, .permiso") || boton;
+  const botones = tarjeta.querySelectorAll
+    ? tarjeta.querySelectorAll("button") : [boton];
+  for (const b of botones) b.disabled = true;
+  try {
+    let r;
+    if (accion === "responder") {
+      r = await fetch(
+        `/api/permisos/solicitudes/${encodeURIComponent(id)}/responder`,
+        {method: "POST", headers: {"Content-Type": "application/json"},
+         body: JSON.stringify({respuesta: boton.dataset.respuesta})});
+    } else if (accion === "revocar") {
+      r = await fetch(
+        `/api/permisos/concedidos/${encodeURIComponent(id)}/revocar`,
+        {method: "POST"});
+    } else {
+      return;
+    }
+    if (!r.ok) {
+      let detalle = "no se pudo";
+      try { detalle = (await r.json()).detail || detalle; } catch (_) {}
+      alert(detalle);
+    } else if (accion === "responder") {
+      const etiqueta = {si: "aprobada una vez", si_siempre: "aprobada para siempre",
+                        no: "rechazada"}[boton.dataset.respuesta] || "contestada";
+      avisarEnPermisos(`listo: la solicitud quedo ${etiqueta}`);
+    } else {
+      avisarEnPermisos("listo: se revoco el permiso");
+    }
+  } finally {
+    for (const b of botones) b.disabled = false;
+    await pintarPermisos();
+  }
+});
+
+cajaPermisos?.addEventListener("submit", async evento => {
+  evento.preventDefault();
+  const form = evento.target;
+  if (form.dataset.accion !== "techo") return;
+  const mm = aMilimonedas(form.techo.value);
+  if (mm === null) { alert("el techo tiene que ser un numero mayor que cero"); return; }
+  const boton = form.querySelector('button[type="submit"]');
+  if (boton) boton.disabled = true;
+  try {
+    const r = await fetch("/api/permisos/techo", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({nombre: "plata_mm", valor: mm})});
+    if (!r.ok) {
+      let detalle = "no se pudo cambiar el techo";
+      try { detalle = (await r.json()).detail || detalle; } catch (_) {}
+      alert(detalle);
+    } else {
+      avisarEnPermisos(`listo: el techo de plata ahora es ${monedas(mm)} monedas`);
+    }
+  } finally {
+    if (boton) boton.disabled = false;
+    await pintarPermisos();
+  }
+});
+
 for (const boton of document.querySelectorAll("#submesa button")) {
   boton.addEventListener("click", () => {
     const vista = boton.dataset.vista;
     for (const otro of document.querySelectorAll("#submesa button")) {
       otro.classList.toggle("activa", otro === boton);
     }
-    cajaPlantel?.classList.toggle("oculto", vista === "plata");
-    cajaMesa?.classList.toggle("oculto", vista === "plata");
+    cajaPlantel?.classList.toggle("oculto", vista !== "decidir");
+    cajaMesa?.classList.toggle("oculto", vista !== "decidir");
     cajaPerillas?.classList.toggle("oculto", vista !== "plata");
+    cajaPermisos?.classList.toggle("oculto", vista !== "permisos");
     // igual que la pestana global de "Mesa" (spec seccion 9): sin esto,
-    // tocar "Plata" muestra la foto del momento en que cargo la pagina.
+    // tocar una sub-pestana muestra la foto del momento en que cargo la
+    // pagina.
     if (vista === "plata") pintarPerillas();
+    if (vista === "permisos") pintarPermisos();
   });
 }
 
@@ -682,6 +816,10 @@ fetch("/api/chats")
 pintarMesa();
 pintarPlantel();
 pintarPerillas();
+// Se pinta (y con ella, el badge) desde el arranque y sin esperar a que
+// Pedro toque "Permisos": es la unica forma de que se entere de algo
+// estacionado SIN buscarlo, si arranca la pantalla en Chat o en Mapa.
+pintarPermisos();
 
 // La mesa no tiene push: sin este refresco, Pedro abre /fabrica, hace otra
 // cosa, toca la pestana "Mesa" y ve la foto del momento de la carga (spec
@@ -696,6 +834,9 @@ setInterval(pintarMesa, 60_000).unref?.();
 // Las perillas cambian por las mismas razones que la mesa -un cierre
 // semanal, un jefe gastando- asi que el mismo refresco de fondo aplica.
 setInterval(pintarPerillas, 60_000).unref?.();
+// Y los permisos, con el mismo intervalo: es lo que mantiene el badge al
+// dia mientras Pedro esta en otra pestana.
+setInterval(pintarPermisos, 60_000).unref?.();
 
 const panelCentro = document.getElementById("panel-centro");
 const panelRazonamiento = document.getElementById("razonamiento");

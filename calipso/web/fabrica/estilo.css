@@ -327,3 +327,79 @@ html, body {
   background: var(--linea); color: var(--texto); border: 0; border-radius: 4px;
   padding: 8px 12px; cursor: pointer; min-height: 40px;
 }
+
+/* El numero de "algo espera tu respuesta", sin que Pedro tenga que ir a
+   buscarlo: aparece junto al boton de la sub-pestana "Permisos" y junto a
+   la pestana global "Mesa" (visible desde Chat o Mapa). */
+.badge {
+  display: inline-block; min-width: 15px; margin-left: 5px; padding: 0 4px;
+  border-radius: 999px; background: var(--aviso); color: #1b1b1b;
+  font-size: 10px; line-height: 15px; text-align: center; font-weight: 700;
+}
+
+/* La tercera sub-pestana de la mesa: "Permisos", lo que no se deshace solo
+   y espera un si o un no de Pedro. Mismo molde que .perillas-panel. */
+.permisos-panel { padding: 8px; display: flex; flex-direction: column; gap: 10px; }
+.permisos-panel .subtitulo {
+  color: var(--tenue); font-size: 11px; letter-spacing: .4px;
+  text-transform: uppercase;
+}
+.permisos-panel .vacio { color: var(--tenue); }
+.permisos-panel .aviso {
+  color: var(--aviso); font-size: 12px; padding: 7px 8px;
+  border: 1px solid var(--linea); border-radius: 4px; background: var(--panel);
+}
+.permisos-panel .listo {
+  color: var(--acento); font-size: 12px; padding: 7px 8px;
+  border: 1px solid var(--linea); border-radius: 4px; background: var(--panel);
+}
+.permisos-panel .solicitud, .permisos-panel .permiso {
+  border: 1px solid var(--linea); border-radius: 6px; padding: 8px;
+  background: var(--panel); display: flex; flex-direction: column; gap: 4px;
+}
+.permisos-panel .solicitud .etiqueta {
+  color: var(--aviso); font-size: 11px; text-transform: uppercase;
+}
+.permisos-panel .solicitud .cabeza, .permisos-panel .permiso .cabeza {
+  font-size: 13px; font-weight: 600;
+}
+.permisos-panel .fila { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.permisos-panel .fila span:first-child { color: var(--tenue); }
+.permisos-panel .rodeo { color: #ff7b72; font-size: 11px; }
+.permisos-panel .crudo { font-size: 11px; }
+.permisos-panel .crudo summary { color: var(--tenue); cursor: pointer; }
+.permisos-panel .crudo pre {
+  background: var(--fondo); border: 1px solid var(--linea); border-radius: 4px;
+  padding: 8px; overflow-x: auto; font-size: 11px; margin: 6px 0 0;
+  white-space: pre-wrap; word-break: break-word;
+}
+/* Los tres botones de 5.4 comparten fila y ancho -si, si-siempre, no- salvo
+   cuando el permiso permanente no esta disponible: ahi la nota ocupa el
+   lugar del boton que no se dibuja, para no dejar un hueco que parezca un
+   error de layout. */
+.permisos-panel .botones { display: flex; gap: 6px; flex-wrap: wrap; }
+.permisos-panel .botones button {
+  flex: 1 1 90px; min-height: 40px; cursor: pointer;
+}
+.permisos-panel .botones .nota {
+  flex: 1 1 100%; color: var(--tenue); font-size: 11px;
+}
+.permisos-panel .permiso button {
+  align-self: flex-start; min-height: 32px; cursor: pointer;
+}
+.permisos-panel form {
+  display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--linea);
+  border-radius: 6px; padding: 8px;
+}
+.permisos-panel form label {
+  display: flex; flex-direction: column; gap: 3px; font-size: 12px;
+  color: var(--tenue);
+}
+.permisos-panel input {
+  background: var(--fondo); color: var(--texto); border: 1px solid var(--linea);
+  border-radius: 4px; padding: 7px 9px; min-height: 36px; font-size: 16px;
+}
+.permisos-panel button[type="submit"] {
+  background: var(--linea); color: var(--texto); border: 0; border-radius: 4px;
+  padding: 8px 12px; cursor: pointer; min-height: 40px;
+}

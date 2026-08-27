@@ -20,7 +20,8 @@ const SHELL = [
   "/static/fabrica/mesa.js",
   "/static/fabrica/plantel.js",
   "/static/fabrica/perillas.js",
-  "/static/fabrica/svg.js"
+  "/static/fabrica/svg.js",
+  "/static/fabrica/permisos.js"
 ];
 
 self.addEventListener("install", event => {
