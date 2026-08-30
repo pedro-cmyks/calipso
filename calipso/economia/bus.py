@@ -146,6 +146,16 @@ def financiar(mercado: Mercado, bus: Bus, ts: str, semana: str, id: str,
                 f"billetera de departamento: {financiador_cuenta}")
         destino = dueno
         motivo = "preseed"
+        # `ref` = el id de la propuesta. Un trabajo se identifica por su
+        # cuenta destino (`trabajo:<id>`); un pre-seed cae en la cuenta DEL
+        # departamento, que es la misma para todos sus pre-seeds, asi que
+        # sin esto no hay forma de saber que pedido pago una transferencia
+        # -- y el corte de `api_eco_bus_financiar` contra el LIBRO (la
+        # fuente de verdad cuando el proceso muere entre la transferencia y
+        # la marca) no tendria nada que mirar. `ref` es libre en una
+        # transferencia: `balances.reservas_activas` solo lo lee en los tres
+        # tipos del escrow.
+        ref_asiento = id
     else:
         # puerta de origen (FIX C1): solo un departamento de fabrica
         # registrado puede financiar un trabajo; el tesoro y cuentas
@@ -160,8 +170,9 @@ def financiar(mercado: Mercado, bus: Bus, ts: str, semana: str, id: str,
             raise ErrorBus(f"un congelado no financia: {financiador_cuenta}")
         destino = cuenta_trabajo(id)
         motivo = "financiacion"
+        ref_asiento = None
     a = mercado.k.transferir(ts, semana, financiador_cuenta, destino, mm,
-                             motivo=motivo)
+                             motivo=motivo, ref=ref_asiento)
     if bus.estado(id) == "alta":
         bus.marcar(ts, semana, id, "financiada")
     return a
@@ -189,6 +200,20 @@ def aportes(asientos: list[Asiento], id: str) -> dict[str, int]:
                 and a.detalle.get("motivo") == "financiacion"):
             out[a.origen] = out.get(a.origen, 0) + a.monto
     return out
+
+
+def aporte_preseed(asientos: list[Asiento], id: str) -> int:
+    """Lo que el tesoro ya puso en ESE pedido de pre-seed.
+
+    Gemelo de `aportes` para el otro tipo de propuesta. `aportes` mira la
+    cuenta destino (`trabajo:<id>`) y para un pre-seed eso no sirve: la
+    plata cae en la cuenta del departamento, compartida por todos sus
+    pedidos. Se mira el `ref` del asiento, que `financiar` estampa con el
+    id de la propuesta.
+    """
+    return sum(a.monto for a in asientos
+               if a.tipo is TipoAsiento.TRANSFERENCIA
+               and a.detalle.get("motivo") == "preseed" and a.ref == id)
 
 
 def gastado(asientos: list[Asiento], id: str) -> int:

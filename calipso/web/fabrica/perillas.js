@@ -51,6 +51,25 @@ export function aMilimonedas(texto) {
   return mm > 0 ? mm : null;
 }
 
+/** Igual que `aMilimonedas`, pero el cero es un valor legitimo y no un
+ *  error. Hace falta para el techo de pre-seed: cero significa "este
+ *  departamento no pide", que es como nacen todos, asi que rechazarlo
+ *  dejaria a Pedro sin forma de volver a apagar uno que ya autorizo.
+ *  Sigue devolviendo null para lo que no es un numero. */
+export function aMilimonedasConCero(texto) {
+  const limpio = String(texto ?? "").trim().replace(",", ".");
+  if (!/^\d+(\.\d+)?$/.test(limpio)) return null;
+  return Math.round(parseFloat(limpio) * 1000);
+}
+
+/** Un entero positivo de un campo de texto, o null. Las unidades de
+ *  capacidad no son monedas: no se dividen por mil ni admiten decimales. */
+export function aEntero(texto) {
+  const limpio = String(texto ?? "").trim();
+  if (!/^\d+$/.test(limpio)) return null;
+  return parseInt(limpio, 10);
+}
+
 function bloqueSuscripciones() {
   const filas = SUSCRIPCIONES.map(s =>
     `<div class="fila"><span>${escapar(s.etiqueta)}</span>` +
@@ -114,12 +133,117 @@ function formularioMovimiento() {
     `<button type="submit">registrar</button></form>`;
 }
 
+// --------------------------------------------------------------------------
+// Los ajustes: los numeros que hasta hoy solo se cambiaban editando el json
+//
+// `POST /api/economia/sembrar` escribe departamentos.json y
+// suscripciones.json UNA sola vez y se niega a correr de nuevo. Esta es la
+// otra mitad: la cara de los dos endpoints que dejan mover un numero
+// despues del sembrado. Sin cara, las dos superficies quedan muertas -- ya
+// paso hoy con cuatro endpoints de permisos sin pantalla.
+// --------------------------------------------------------------------------
+
+function filaTechoPreseed(dep) {
+  const n = escapar(dep.nombre);
+  return `<form class="ajuste" data-perillas="techo-preseed" ` +
+    `data-departamento="${n}">` +
+    `<label>${n}: techo de pre-seed (en monedas)` +
+    `<input name="monto" inputmode="decimal" ` +
+    `value="${escapar(monedas(dep.techo_preseed_mm || 0))}"></label>` +
+    `<button type="submit">guardar</button></form>`;
+}
+
+function bloquePreseed(departamentos) {
+  const fabrica = departamentos.filter(d => d.zona === "fabrica");
+  if (!fabrica.length) {
+    return `<div class="vacio">Sin departamentos de fabrica.</div>`;
+  }
+  return `<div class="subtitulo">cuanto puede pedir cada departamento</div>` +
+    `<div class="nota">Es autorizacion a PEDIR, no plata: el jefe publica ` +
+    `su ronda pre-seed en la mesa y vos decidis ahi si la financias y por ` +
+    `cuanto. En cero no pide.</div>` +
+    fabrica.map(filaTechoPreseed).join("");
+}
+
+/** Lo que el probe pasivo propone para esta suscripcion, en palabras.
+ *  Distingue los tres "todavia no" -- sin foto, sin proveedor, sin
+ *  historia suficiente-- en vez de dibujar un cero que invitaria a
+ *  aplicar un numero que nadie midio. */
+function bloqueMedido(sus) {
+  const m = sus.medido;
+  if (!m) {
+    return `<div class="nota">Ningun proveedor medido corresponde a esta ` +
+      `suscripcion.</div>`;
+  }
+  const prov = escapar(m.proveedor);
+  if (m.capacidad_ciclo_propuesta === null ||
+      m.capacidad_ciclo_propuesta === undefined) {
+    return `<div class="nota">El probe de ${prov} todavia no propone un ` +
+      `numero. ${escapar(m.nota || "")}</div>`;
+  }
+  const n = Number(m.capacidad_ciclo_propuesta);
+  return `<div class="medido">` +
+    `<span>medido en ${prov}: <b>${escapar(n)}</b> unidades por ciclo</span>` +
+    `<button type="button" data-ajuste="aplicar-medido" ` +
+    `data-suscripcion="${escapar(sus.nombre)}" data-capacidad="${escapar(n)}">` +
+    `aplicar ${escapar(n)}</button></div>` +
+    // la nota va SIEMPRE y sin recortar: es lo que separa una medicion
+    // (Codex expone used_percent real) de una extrapolacion (Claude no
+    // expone ningun porcentaje). Esconderla dejaria a Pedro aplicando dos
+    // numeros que no valen lo mismo como si valieran igual.
+    `<div class="nota">${escapar(m.nota || "")}</div>`;
+}
+
+function filaSuscripcion(sus) {
+  const n = escapar(sus.nombre);
+  return `<div class="ajuste-suscripcion">` +
+    `<div class="subtitulo">${n}</div>` +
+    `<div class="fila"><span>capacidad del ciclo</span>` +
+    `<span>${escapar(sus.capacidad_ciclo)} unidades ` +
+    `(${escapar(sus.capacidad_fabrica)} para la fabrica)</span></div>` +
+    `<div class="fila"><span>precio de la unidad</span>` +
+    `<span>${escapar(monedas(sus.precio_base_mm))}</span></div>` +
+    `<div class="fila"><span>ya comprado en este ciclo</span>` +
+    `<span>${escapar(sus.consumido_ciclo || 0)} unidades</span></div>` +
+    bloqueMedido(sus) +
+    `<form class="ajuste" data-perillas="capacidad" data-suscripcion="${n}">` +
+    `<label>capacidad del ciclo<input name="capacidad" inputmode="numeric" ` +
+    `value="${escapar(sus.capacidad_ciclo)}" required></label>` +
+    `<label>reserva personal<input name="reserva" inputmode="numeric" ` +
+    `value="${escapar(sus.reserva_personal)}" required></label>` +
+    `<button type="submit">aplicar</button></form></div>`;
+}
+
+/**
+ * `config`: la respuesta de GET /api/economia/config, o null si no se pudo
+ * leer. Se separa de `textoDePerillas` porque es otra pregunta -"que
+ * numeros tiene puesta la economia"- y porque asi se testea sola.
+ */
+export function textoDeAjustes(config) {
+  if (!config || !config.activa) return "";
+  const deps = config.departamentos || [];
+  const sus = config.suscripciones || [];
+  const generado = config.medido_generado
+    ? `<div class="nota">Ultima medicion del probe: ` +
+      `${escapar(config.medido_generado)}.</div>`
+    : `<div class="nota">El probe de consumo todavia no dejo ninguna foto ` +
+      `(la deja la rutina "consumo").</div>`;
+  return `<div class="ajustes">` + bloquePreseed(deps) +
+    `<div class="subtitulo">capacidad de las suscripciones</div>` +
+    `<div class="nota">Cambiar esto reprecia la capacidad: el precio de la ` +
+    `unidad se estampa en cada compra que la fabrica escribe despues, y el ` +
+    `libro es append-only. Por encima del techo de plata te lo va a ` +
+    `preguntar.</div>` + generado +
+    sus.map(filaSuscripcion).join("") + `</div>`;
+}
+
 /**
  * `datos`: la respuesta de GET /api/economia/tablero, `{activa: false}` o
  * `{activa: true, tablero: {...}, pendientes}`. `mensaje`: el aviso
- * pasajero de la ultima accion, o null.
+ * pasajero de la ultima accion, o null. `config`: la de
+ * GET /api/economia/config, para los ajustes de abajo.
  */
-export function textoDePerillas(datos, mensaje = null) {
+export function textoDePerillas(datos, mensaje = null, config = null) {
   const suscripciones = bloqueSuscripciones();
   const listo = bloqueListo(mensaje);
   if (!datos || !datos.activa) {
@@ -146,5 +270,5 @@ export function textoDePerillas(datos, mensaje = null) {
     `</div>` +
     `<div class="subtitulo">departamentos</div>` +
     `<div class="departamentos">${filasDeps}</div>` +
-    formularioAcunar() + formularioMovimiento();
+    formularioAcunar() + formularioMovimiento() + textoDeAjustes(config);
 }

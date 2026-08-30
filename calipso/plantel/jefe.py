@@ -75,6 +75,18 @@ def _puede(estado, s: dict, accion: str, ref: str | None) -> tuple[bool, str]:
         if propias >= TECHO_PROPUESTAS:
             return False, (f"ya tiene {propias} propuestas sin financiar: "
                            f"que Pedro despeje antes de sumar otra")
+        if accion == "pedir" and int(s.get("techo_preseed_mm") or 0) <= 0:
+            # El monto del pre-seed sale de la perilla `techo_preseed_mm`,
+            # no del modelo, y en cero significa que Pedro todavia no dijo
+            # cuanto puede pedir este departamento. El freno vive ACA y no
+            # en el prompt: `pedir` sigue en el menu (es Pedro quien decide
+            # si hace falta, no el prompt -- ver decision.prompt), pero un
+            # pedido sin techo no llega al bus, no se anota en la memoria
+            # del jefe y no se reporta como que actuo. El contratista lo
+            # vuelve a chequear antes de escribir: es la segunda linea, no
+            # la primera.
+            return False, ("sin techo de pre-seed: Pedro todavia no "
+                           "autorizo cuanto puede pedir")
         if accion == "proponer" and s["presupuesto_semanal_mm"] > 0:
             # La agresividad mide contra el presupuesto SEMANAL. Un
             # departamento recien dado de alta todavia no tiene presupuesto

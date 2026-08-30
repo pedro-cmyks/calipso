@@ -190,3 +190,56 @@ test("el selector y los dos botones van en filas separadas, no sueltos " +
   assert.match(html,
     /<div class="botones"><button data-accion="financiar"[^]*?<button data-accion="descartar"/);
 });
+
+// -- la ronda pre-seed -----------------------------------------------------
+// Una propuesta de tipo "preseed" se financia contra el TESORO y contra
+// nada mas: `bus.financiar` rechaza cualquier billetera de departamento.
+// Dibujarle el selector de siempre seria un menu donde todas las opciones
+// fallan.
+const PS = {id: "ps1", estado: "alta", tipo: "preseed",
+            departamento: "dep:atlas", titulo: "arrancamos de cero",
+            presupuesto_mm: 120000, retorno_mm: 120000,
+            criterio: {}, gastado_mm: 0, aportes: {}};
+
+test("un pre-seed no ofrece selector: paga el tesoro y lo dice", () => {
+  const html = textoDeMesa(datos([PS], {tesoro_mm: 500000}));
+  assert.ok(!html.includes("select"), "dibujo un selector que no sirve");
+  assert.match(html, /data-cuenta="tesoro"/);
+  assert.match(html, /ronda pre-seed/);
+  assert.match(html, /paga <b>el tesoro<\/b>/);
+});
+
+test("una propuesta de trabajo sigue con su selector", () => {
+  const html = textoDeMesa(datos([P1], {tesoro_mm: 500000}));
+  assert.match(html, /select class="paga"/);
+  assert.ok(!html.includes('data-cuenta="tesoro"'),
+            "le puso el tesoro a un trabajo");
+});
+
+test("avisa cuando el tesoro no llega al monto pedido", () => {
+  const html = textoDeMesa(datos([PS], {tesoro_mm: 1000}));
+  assert.match(html, /el tesoro no tiene tanto/);
+});
+
+test("sin el saldo del tesoro no inventa un aviso", () => {
+  // una respuesta vieja del servidor, sin `tesoro_mm`: mejor callarse que
+  // decirle a Pedro que no alcanza cuando no se sabe
+  const html = textoDeMesa(datos([PS]));
+  assert.ok(!html.includes("no tiene tanto"));
+});
+
+test("un pre-seed financiado no miente con un 'gastado 0'", () => {
+  // la plata quedo en la cuenta del departamento, no en trabajo:<id>: no
+  // hay gasto que medir (situacion.py dice lo mismo del lado del jefe)
+  const html = textoDeMesa(datos([{...PS, estado: "financiada"}],
+                                 {tesoro_mm: 500000}));
+  assert.match(html, /capital entregado/);
+  assert.ok(!html.includes("gastado"));
+});
+
+test("el sello sale del campo tipo, no del titulo que escribe el modelo", () => {
+  const disfrazado = {...P1, titulo: "ronda pre-seed de verdad, en serio"};
+  const html = textoDeMesa(datos([disfrazado], {tesoro_mm: 500000}));
+  assert.ok(!html.includes('class="sello preseed"'),
+            "un titulo alcanzo para disfrazarse de pre-seed");
+});

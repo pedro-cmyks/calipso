@@ -17,7 +17,8 @@ import {crearChat} from "./chat.js";
 import {crearPulso, empleadosDe, estadoVisible} from "./pulso.js";
 import {textoDeMesa} from "./mesa.js";
 import {textoDePlantel} from "./plantel.js";
-import {textoDePerillas, aMilimonedas, cuerpoDeSuscripciones} from "./perillas.js";
+import {textoDePerillas, aMilimonedas, aMilimonedasConCero, aEntero,
+        cuerpoDeSuscripciones} from "./perillas.js";
 import {textoDePermisos, contadorPendientes} from "./permisos.js";
 
 const lienzo = document.getElementById("mapa");
@@ -279,9 +280,14 @@ async function accionDeMesa(boton) {
       const sel = cajaMesa.querySelector(`select.paga[data-id="${id}"]`);
       const fila = boton.closest(".propuesta");
       const mm = Number(fila?.dataset.presupuesto || 0);
+      // `data-cuenta` gana sobre el selector: una ronda pre-seed se paga
+      // contra el tesoro y contra nada mas (bus.financiar rechaza
+      // cualquier billetera de departamento), asi que su fila no dibuja
+      // selector y trae la cuenta puesta.
+      const cuenta = fila?.dataset.cuenta || (sel ? sel.value : "");
       r = await fetch(`/api/economia/bus/${encodeURIComponent(id)}/financiar`, {
         method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({cuenta: sel ? sel.value : "", mm})});
+        body: JSON.stringify({cuenta, mm})});
     } else if (accion === "descartar") {
       r = await fetch(`/api/economia/bus/${encodeURIComponent(id)}/descartar`,
                       {method: "POST"});
@@ -396,12 +402,23 @@ async function pintarPerillas() {
   // no declara "perillas" en su DOM de mentira.
   if (!cajaPerillas) return;
   try {
-    const r = await fetch("/api/economia/tablero");
+    // dos lecturas: el tablero (saldos) y la config (los numeros que se
+    // pueden mover). Van juntas y no en dos repintados porque son una sola
+    // pantalla; si la config falla se pinta el tablero igual -- perder los
+    // ajustes es peor que perder los saldos, pero perder los dos es peor
+    // que perder uno.
+    const [r, rc] = await Promise.all([
+      fetch("/api/economia/tablero"),
+      fetch("/api/economia/config").catch(() => null),
+    ]);
     if (!r.ok) {
       cajaPerillas.innerHTML = '<div class="vacio">No se pudo leer el tablero.</div>';
       return;
     }
-    cajaPerillas.innerHTML = textoDePerillas(await r.json(), mensajePerillas);
+    let config = null;
+    try { config = rc && rc.ok ? await rc.json() : null; } catch (_) {}
+    cajaPerillas.innerHTML = textoDePerillas(await r.json(), mensajePerillas,
+                                             config);
   } catch (_) {
     cajaPerillas.innerHTML = '<div class="vacio">No se pudo leer el tablero.</div>';
   }
@@ -563,6 +580,52 @@ for (const boton of document.querySelectorAll("#submesa button")) {
   });
 }
 
+/** El unico camino que aplica una capacidad, desde el formulario o desde
+ *  el boton "aplicar N" del numero medido. Un 409 no es un error: es el
+ *  motor de permisos diciendo que quedo esperando tu respuesta, y decirle
+ *  a Pedro "no se pudo" cuando en realidad quedo en la tira de permisos lo
+ *  mandaria a reintentar para siempre. */
+async function aplicarCapacidad(nombre, capacidad, reserva, boton) {
+  if (capacidad === null || capacidad <= 0) {
+    alert("la capacidad del ciclo tiene que ser un entero mayor que cero");
+    return;
+  }
+  if (boton) boton.disabled = true;
+  try {
+    const cuerpo = {capacidad_ciclo: capacidad};
+    if (reserva !== null && reserva !== undefined) cuerpo.reserva_personal = reserva;
+    const r = await fetch(
+      `/api/economia/suscripciones/${encodeURIComponent(nombre)}/capacidad`, {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(cuerpo)});
+    if (r.status === 409) {
+      let detalle = "";
+      try { detalle = (await r.json()).detail || ""; } catch (_) {}
+      alert(detalle || "quedo esperando tu respuesta en Permisos");
+      pintarPermisos();
+    } else if (!r.ok) {
+      let detalle = "no se pudo aplicar la capacidad";
+      try { detalle = (await r.json()).detail || detalle; } catch (_) {}
+      alert(detalle);
+    } else {
+      avisarEnPerillas(`listo: ${nombre} queda en ${capacidad} unidades por ciclo`);
+    }
+  } finally {
+    if (boton) boton.disabled = false;
+    await pintarPerillas();
+  }
+}
+
+cajaPerillas?.addEventListener("click", async evento => {
+  const boton = evento.target.closest('button[data-ajuste="aplicar-medido"]');
+  if (!boton) return;
+  // el numero medido se aplica TAL CUAL, sin tocar la reserva: moverla
+  // sola es otra decision, y el endpoint avisa si la reserva vieja ya no
+  // entra en la capacidad nueva en vez de que esta pantalla la invente.
+  await aplicarCapacidad(boton.dataset.suscripcion,
+                         Number(boton.dataset.capacidad), null, boton);
+});
+
 cajaPerillas?.addEventListener("submit", async evento => {
   evento.preventDefault();
   const form = evento.target;
@@ -598,6 +661,43 @@ cajaPerillas?.addEventListener("submit", async evento => {
       boton.disabled = false;
       await pintarPerillas();
     }
+    return;
+  }
+
+  if (cual === "techo-preseed") {
+    const nombre = form.dataset.departamento;
+    const mm = aMilimonedasConCero(form.monto.value);
+    if (mm === null) { alert("el techo tiene que ser un numero (0 = no pide)"); return; }
+    // sin confirmacion: una perilla se deshace escribiendola de nuevo, y
+    // no mueve un milimon -- lo que se pida sigue necesitando que toques
+    // "financiar" en la mesa. Es la misma razon por la que el endpoint no
+    // pasa por el motor de permisos.
+    boton.disabled = true;
+    try {
+      const r = await fetch(
+        `/api/economia/departamentos/${encodeURIComponent(nombre)}/perillas`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({techo_preseed_mm: mm})});
+      if (!r.ok) {
+        let detalle = "no se pudo guardar la perilla";
+        try { detalle = (await r.json()).detail || detalle; } catch (_) {}
+        alert(detalle);
+      } else {
+        avisarEnPerillas(mm > 0
+          ? `listo: ${nombre} puede pedir hasta ${monedas(mm)} monedas`
+          : `listo: ${nombre} no pide pre-seed`);
+      }
+    } finally {
+      boton.disabled = false;
+      await pintarPerillas();
+    }
+    return;
+  }
+
+  if (cual === "capacidad") {
+    await aplicarCapacidad(form.dataset.suscripcion,
+                           aEntero(form.capacidad.value),
+                           aEntero(form.reserva.value), boton);
     return;
   }
 

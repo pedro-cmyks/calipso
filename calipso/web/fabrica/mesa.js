@@ -25,34 +25,74 @@ function selector(propuesta, departamentos) {
          `${opciones}</select>`;
 }
 
-function alcanza(propuesta, departamentos) {
+function esPreseed(propuesta) {
+  return propuesta.tipo === "preseed";
+}
+
+/** Quien paga, cuando no hay nada que elegir. Un pre-seed se financia
+ *  contra el TESORO y contra nada mas: `bus.financiar` rechaza cualquier
+ *  billetera de departamento, asi que un selector aca seria un menu donde
+ *  todas las opciones fallan. La cuenta va en el dataset de la fila, que
+ *  es de donde app.js la saca. */
+function pagaElTesoro() {
+  return `<div class="pagar">paga <b>el tesoro</b> ` +
+    `<span class="nota">una ronda pre-seed es capital, no plata de otro ` +
+    `departamento</span></div>`;
+}
+
+function alcanza(propuesta, departamentos, tesoro_mm) {
+  if (esPreseed(propuesta)) {
+    // sin el dato (una respuesta vieja del servidor) no se inventa un
+    // aviso: mejor callarse que decirle a Pedro que no alcanza cuando no
+    // se sabe
+    return typeof tesoro_mm !== "number" ||
+           tesoro_mm >= propuesta.presupuesto_mm;
+  }
   const dueno = departamentos.find(d => d.cuenta === propuesta.departamento);
   return !dueno || dueno.disponible_mm >= propuesta.presupuesto_mm;
 }
 
-function fila(propuesta, departamentos) {
+function fila(propuesta, departamentos, tesoro_mm) {
   const dep = escapar(propuesta.departamento.replace(/^dep:/, ""));
   const plata = escapar(monedas(propuesta.presupuesto_mm));
+  const preseed = esPreseed(propuesta);
+  // La etiqueta no sale del titulo -que lo escribe un modelo- sino del
+  // campo `tipo` del bus: es la unica forma de que Pedro sepa que esto
+  // sale del tesoro y no de una billetera, aunque el modelo haya escrito
+  // cualquier cosa arriba.
+  const sello = preseed
+    ? `<span class="sello preseed">ronda pre-seed</span> ` : "";
   if (propuesta.estado === "financiada") {
     const gastado = escapar(monedas(propuesta.gastado_mm));
+    // un pre-seed financiado no tiene gasto que mostrar: la plata quedo en
+    // la cuenta del departamento, no en trabajo:<id> (situacion.py lo dice
+    // igual del lado del jefe). Mostrar "gastado 0" seria un cero que no
+    // significa nada.
+    const cola = preseed ? "capital entregado" : `gastado ${gastado}`;
     return `<div class="propuesta financiada">` +
-      `<div class="cabeza"><b>${dep}</b> · ${escapar(propuesta.titulo)}</div>` +
-      `<div class="datos">financiada · ${plata} · gastado ${gastado}</div>` +
+      `<div class="cabeza">${sello}<b>${dep}</b> · ` +
+      `${escapar(propuesta.titulo)}</div>` +
+      `<div class="datos">financiada · ${plata} · ${cola}</div>` +
       `</div>`;
   }
-  const aviso = alcanza(propuesta, departamentos)
-    ? "" : `<div class="aviso">sin saldo suficiente</div>`;
+  const aviso = alcanza(propuesta, departamentos, tesoro_mm)
+    ? "" : `<div class="aviso">${preseed ? "el tesoro no tiene tanto"
+                                         : "sin saldo suficiente"}</div>`;
   // Dos filas a proposito, en vez de una sola que se parte sola cuando no
   // entra: "paga" + el selector arriba, los dos botones abajo. Asi el
   // ancho angosto de escritorio (donde antes "descartar" se caia a una
   // segunda linea desprolija) y el dedo en el telefono (que necesita los
   // 40px de alto) quedan resueltos con el MISMO marcado.
   return `<div class="propuesta" ` +
-    `data-presupuesto="${escapar(propuesta.presupuesto_mm)}">` +
-    `<div class="cabeza"><b>${dep}</b> · ${escapar(propuesta.titulo)}</div>` +
-    `<div class="datos">presupuesto ${plata}</div>` + aviso +
+    `data-presupuesto="${escapar(propuesta.presupuesto_mm)}"` +
+    (preseed ? ` data-cuenta="tesoro"` : "") + `>` +
+    `<div class="cabeza">${sello}<b>${dep}</b> · ` +
+    `${escapar(propuesta.titulo)}</div>` +
+    `<div class="datos">${preseed ? "pide" : "presupuesto"} ${plata}</div>` +
+    aviso +
     `<div class="acciones">` +
-    `<div class="pagar">paga ${selector(propuesta, departamentos)}</div>` +
+    (preseed ? pagaElTesoro()
+             : `<div class="pagar">paga ${selector(propuesta, departamentos)}</div>`) +
     `<div class="botones">` +
     `<button data-accion="financiar" data-id="${escapar(propuesta.id)}">` +
     `financiar</button>` +
@@ -107,5 +147,6 @@ export function textoDeMesa(datos, filtro = null) {
       : "Ninguna propuesta esperando.";
     return semana + cabecera + `<div class="vacio">${vacio}</div>`;
   }
-  return semana + cabecera + props.map(p => fila(p, deps)).join("");
+  return semana + cabecera +
+         props.map(p => fila(p, deps, datos.tesoro_mm)).join("");
 }

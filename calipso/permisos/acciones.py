@@ -242,14 +242,25 @@ def raices_de_escritura() -> list[pathlib.Path]:
 # --------------------------------------------------------------------------
 
 def _clasificar_plata(a: Accion, techos: dict) -> Veredicto:
-    """Las acciones de plata: acunar y mover. El unico consumidor
-    enchufado hoy.
+    """Las acciones de plata: acunar, mover y REPRECIAR. La familia
+    enchufada hoy.
 
     Por debajo del techo pasa sola; por encima pregunta, y pregunta
     SIEMPRE: el libro es append-only y un asiento acunado no se deshace,
     que es literalmente el criterio de 5.4 para la lista sin permiso
     permanente. Conceder "acunar al tesoro para siempre" seria firmar en
     blanco sobre la unica puerta por la que entra plata de afuera.
+
+    La tercera operacion es `capacidad` (repreciar una suscripcion, ver
+    `api_eco_suscripcion_capacidad`): no mueve un milimon en el momento,
+    pero cambia el DENOMINADOR del precio de la capacidad, y ese precio se
+    estampa en cada compra que el mercado escribe despues. El campo del
+    json se puede volver a escribir; los asientos que se escribieron
+    mientras tanto, no. Por eso entra por aca y no se queda del lado de
+    las perillas reversibles (las de un departamento, que no pasan por el
+    motor a proposito). Su `monto_mm` es el costo mensual de la
+    suscripcion que se reprecia -- viaja en `detalle`, no en `forma`,
+    porque no es parte de la identidad del cambio.
     """
     monto = a.forma.get("monto_mm", a.detalle.get("monto_mm", 0))
     try:

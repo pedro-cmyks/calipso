@@ -1,7 +1,7 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
-import {textoDePerillas, aMilimonedas, cuerpoDeSuscripciones,
-        SUSCRIPCIONES} from "./perillas.js";
+import {textoDePerillas, textoDeAjustes, aMilimonedas, aMilimonedasConCero,
+        aEntero, cuerpoDeSuscripciones, SUSCRIPCIONES} from "./perillas.js";
 
 test("las dos suscripciones estan siempre a la vista, este sembrada o no",
      () => {
@@ -132,4 +132,129 @@ test("las dos suscripciones sumadas dan lo que Pedro dijo que paga: 220 al mes",
      () => {
   const total = SUSCRIPCIONES.reduce((s, x) => s + x.costo_mensual_mm, 0);
   assert.equal(total, 220_000);   // 220 monedas = 220 USD
+});
+
+// -- los ajustes: los numeros que hasta hoy solo se cambiaban en el json ---
+const CONFIG = {
+  activa: true, semana: "2026-W35", ciclo: 0,
+  medido_generado: "2026-08-27T09:00:00+00:00",
+  departamentos: [
+    {nombre: "atlas", zona: "fabrica", presupuesto_semanal_mm: 25000,
+     techo_api_ciclo_mm: 0, explorar_explotar_pct: 50, agresividad_pct: 30,
+     techo_preseed_mm: 0},
+    {nombre: "finanzas", zona: "personal", presupuesto_semanal_mm: 0,
+     techo_api_ciclo_mm: 0, explorar_explotar_pct: 50, agresividad_pct: 30,
+     techo_preseed_mm: 0},
+  ],
+  suscripciones: [
+    {nombre: "claude_max", costo_mensual_mm: 200000, capacidad_ciclo: 1000,
+     reserva_personal: 200, costo_api_mm_por_unidad: 3000,
+     capacidad_fabrica: 800, precio_base_mm: 200, consumido_ciclo: 12,
+     medido: {proveedor: "claude", capacidad_ciclo_propuesta: 1360,
+              nota: "extrapolacion lineal: NO mide cuota real", medicion: {}}},
+  ],
+};
+
+test("sin config, los ajustes no dibujan nada", () => {
+  assert.equal(textoDeAjustes(null), "");
+  assert.equal(textoDeAjustes({activa: false}), "");
+});
+
+test("el techo de pre-seed tiene un formulario por departamento de fabrica", () => {
+  const html = textoDeAjustes(CONFIG);
+  assert.match(html, /data-perillas="techo-preseed"/);
+  assert.match(html, /data-departamento="atlas"/);
+  // la zona personal no propone ni pide: no tiene por que tener la perilla
+  assert.ok(!html.includes('data-departamento="finanzas"'));
+});
+
+test("los ajustes dicen que el techo autoriza a pedir, no entrega plata", () => {
+  const html = textoDeAjustes(CONFIG);
+  assert.match(html, /autorizacion a PEDIR/);
+  assert.match(html, /En cero no pide/);
+});
+
+test("el numero medido llega con su boton para aplicarlo", () => {
+  const html = textoDeAjustes(CONFIG);
+  assert.match(html, /data-ajuste="aplicar-medido"/);
+  assert.match(html, /data-suscripcion="claude_max"/);
+  assert.match(html, /data-capacidad="1360"/);
+});
+
+test("la nota del probe va siempre: separa una medicion de una extrapolacion", () => {
+  const html = textoDeAjustes(CONFIG);
+  assert.match(html, /NO mide cuota real/);
+});
+
+test("sin numero propuesto no hay boton que aplique nada", () => {
+  const sinNumero = {...CONFIG, suscripciones: [
+    {...CONFIG.suscripciones[0],
+     medido: {proveedor: "claude", capacidad_ciclo_propuesta: null,
+              nota: "sin suficiente historia todavia"}}]};
+  const html = textoDeAjustes(sinNumero);
+  assert.ok(!html.includes('data-ajuste="aplicar-medido"'),
+            "ofrecio aplicar un numero que nadie midio");
+  assert.match(html, /todavia no propone un numero/);
+  assert.match(html, /sin suficiente historia/);
+});
+
+test("una suscripcion sin proveedor medido lo dice y no muestra un cero", () => {
+  const sinProveedor = {...CONFIG, suscripciones: [
+    {...CONFIG.suscripciones[0], medido: null}]};
+  const html = textoDeAjustes(sinProveedor);
+  assert.match(html, /Ningun proveedor medido/);
+  assert.ok(!html.includes('data-ajuste="aplicar-medido"'));
+});
+
+test("avisa que repreciar se estampa en asientos que no se reescriben", () => {
+  const html = textoDeAjustes(CONFIG);
+  assert.match(html, /append-only/);
+  assert.match(html, /techo de plata/);
+});
+
+test("muestra lo ya comprado del ciclo: es el piso del cambio", () => {
+  // bajar la capacidad por debajo de esto deja la cuota agotada hasta que
+  // el ciclo cierre (el guardia del endpoint), asi que el numero tiene que
+  // estar a la vista ANTES de que Pedro escriba uno mas chico
+  assert.match(textoDeAjustes(CONFIG), /12 unidades/);
+});
+
+test("los ajustes cuelgan de las perillas cuando la economia esta activa", () => {
+  const html = textoDePerillas({activa: true, tablero: {
+    tesoro_mm: 0, direccion_mm: 0, cuenta_pedro_mm: 0, tipo_cambio_mm: 5000,
+    linea_empleo_mm: 0, departamentos: {}, personal: {neto_mm: 0}}},
+    null, CONFIG);
+  assert.match(html, /data-perillas="techo-preseed"/);
+});
+
+test("cero es un techo valido: es como nacen todos los departamentos", () => {
+  // `aMilimonedas` devuelve null para 0 (un monto en cero no es un monto);
+  // el techo si admite el cero, que significa "este no pide"
+  assert.equal(aMilimonedas("0"), null);
+  assert.equal(aMilimonedasConCero("0"), 0);
+  assert.equal(aMilimonedasConCero("1,5"), 1500);
+  assert.equal(aMilimonedasConCero("nada"), null);
+  assert.equal(aMilimonedasConCero(""), null);
+});
+
+test("las unidades de capacidad no son monedas: no se dividen por mil", () => {
+  assert.equal(aEntero("1360"), 1360);
+  assert.equal(aEntero("1.5"), null);
+  assert.equal(aEntero(""), null);
+  assert.equal(aEntero("-3"), null);
+});
+
+test("todo lo de los ajustes pasa por escapar()", () => {
+  const venenoso = {...CONFIG,
+    departamentos: [{...CONFIG.departamentos[0],
+                     nombre: '"><img src=x onerror="alert(1)">'}],
+    suscripciones: [{...CONFIG.suscripciones[0],
+                     nombre: '"><iframe src=x>',
+                     medido: {proveedor: '<svg onload=1>',
+                              capacidad_ciclo_propuesta: 5,
+                              nota: '<object data=x>'}}]};
+  const html = textoDeAjustes(venenoso);
+  for (const etiqueta of ["<img", "<iframe", "<svg", "<object"]) {
+    assert.ok(!html.includes(etiqueta), `se colo ${etiqueta}`);
+  }
 });

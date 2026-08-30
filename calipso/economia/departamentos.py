@@ -32,6 +32,20 @@ class Departamento:
     techo_api_ciclo_mm: int = 0
     explorar_explotar_pct: int = 50
     agresividad_pct: int = 30
+    # Cuanto puede PEDIR este departamento en una ronda pre-seed, como
+    # maximo, por pedido. No es plata: es autorizacion a pedirla. Lo que
+    # sale del tesoro lo decide Pedro en la mesa, propuesta por propuesta.
+    #
+    # La perilla existe porque el monto no lo puede inventar el modelo: el
+    # de 3b alucina numeros y aca los numeros gastan plata de verdad (ver
+    # el docstring de `_contratar_para` en server.py). El jefe pide DENTRO
+    # de este techo; lo que pida de mas se recorta a el.
+    #
+    # Nace en CERO, igual que `presupuesto_semanal_mm` y
+    # `techo_api_ciclo_mm`: un departamento recien sembrado no puede pedir
+    # hasta que Pedro diga cuanto, y no hay ningun default inventado en
+    # ninguna capa. Cero significa "todavia no", no "sin limite".
+    techo_preseed_mm: int = 0
 
     def __post_init__(self):
         if self.zona not in (ZONA_FABRICA, ZONA_PERSONAL):
@@ -75,6 +89,23 @@ class Registro:
         return list(self._deps.values())
 
     def ajustar(self, nombre: str, **perillas) -> Departamento:
+        """Cambia perillas de un departamento ya dado de alta, y guarda.
+
+        Es la contra-cara de que la configuracion de la economia sea de
+        ESCRITURA UNICA: `POST /api/economia/sembrar` escribe
+        departamentos.json una sola vez y se niega a correr de nuevo, asi
+        que sin esto cambiar un numero es editar el json a mano. Su
+        llamador de produccion es
+        `POST /api/economia/departamentos/{nombre}/perillas`.
+
+        `replace` sobre el frozen dataclass hace que una perilla
+        inexistente reviente con TypeError (no se escribe una clave que
+        despues nadie lee) y que `__post_init__` vuelva a validar lo que
+        cambio. El nombre y la zona NO son perillas: cambiarlos moveria la
+        cuenta del departamento, y el libro es append-only -- los asientos
+        viejos seguirian apuntando a la cuenta anterior. El endpoint solo
+        deja pasar los campos numericos.
+        """
         nuevo = replace(self.obtener(nombre), **perillas)
         self._deps[nombre] = nuevo
         self._guardar()

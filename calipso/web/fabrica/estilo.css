@@ -328,6 +328,47 @@ html, body {
   padding: 8px 12px; cursor: pointer; min-height: 40px;
 }
 
+/* Los ajustes: los numeros que hasta hoy solo se cambiaban editando el
+   json a mano (el techo de pre-seed de cada departamento, la capacidad de
+   cada suscripcion). Cuelgan del final de "Plata", separados por una linea
+   porque son otra clase de cosa: arriba se mueve plata, aca se mueven las
+   reglas con las que la plata se mueve. */
+.perillas-panel .ajustes {
+  display: flex; flex-direction: column; gap: 8px;
+  border-top: 1px solid var(--linea); padding-top: 10px; margin-top: 2px;
+}
+.perillas-panel .nota { color: var(--tenue); font-size: 11px; line-height: 1.4; }
+.perillas-panel .ajuste-suscripcion {
+  border: 1px solid var(--linea); border-radius: 6px; padding: 8px;
+  display: flex; flex-direction: column; gap: 6px; background: var(--panel);
+}
+/* El formulario de un ajuste no lleva el borde de los de arriba: ya esta
+   adentro de una tarjeta, y dos bordes anidados se leen como dos cosas. */
+.perillas-panel .ajuste-suscripcion form { border: 0; padding: 0; }
+.perillas-panel .medido {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; flex-wrap: wrap; font-size: 12px;
+}
+.perillas-panel .medido b { color: var(--acento); }
+.perillas-panel .medido button {
+  background: var(--linea); color: var(--texto); border: 0; border-radius: 4px;
+  padding: 6px 12px; cursor: pointer; min-height: 34px; font-size: 12px;
+}
+
+/* La ronda pre-seed en la mesa: se paga contra el tesoro, no contra la
+   billetera de otro departamento, y eso tiene que verse antes de tocar
+   "financiar". El sello sale del campo `tipo` del bus, no del titulo que
+   escribe un modelo. */
+.mesa .sello {
+  display: inline-block; padding: 1px 6px; border-radius: 999px;
+  background: var(--linea); color: var(--acento);
+  font-size: 10px; text-transform: uppercase; letter-spacing: .3px;
+  vertical-align: middle;
+}
+.mesa .acciones .pagar .nota {
+  flex: 1 1 100%; color: var(--tenue); font-size: 11px;
+}
+
 /* El numero de "algo espera tu respuesta", sin que Pedro tenga que ir a
    buscarlo: aparece junto al boton de la sub-pestana "Permisos" y junto a
    la pestana global "Mesa" (visible desde Chat o Mapa). */

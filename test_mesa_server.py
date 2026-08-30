@@ -292,3 +292,94 @@ def test_leer_el_bus_toma_el_candado_sobre_el_libro(cliente, monkeypatch):
     assert r.status_code == 200
     assert rutas_tomadas == [base / "economia" / "libro.jsonl"], (
         "api_eco_bus no tomo el candado sobre ruta_libro")
+
+
+def _preseed(base, id="ps1", cuenta="dep:atlas", mm=120_000):
+    b = Bus(base / "economia" / "bus.jsonl")
+    b.alta(TS, W, id, cuenta, "arrancamos de cero", mm, mm,
+           {"gasto_max_mm": mm}, tipo="preseed")
+    return b
+
+
+def test_la_mesa_ve_de_que_tipo_es_cada_propuesta(cliente):
+    """Sin el `tipo`, la mesa no puede financiar un pre-seed: se paga contra
+    el TESORO y no contra la billetera de otro departamento (bus.financiar
+    lo exige), y el selector de mesa.js solo lista departamentos de
+    fabrica."""
+    c, base = cliente
+    _propuesta(base, id="p1")
+    _preseed(base, id="ps1")
+    d = c.get("/api/economia/bus", params={"token": srv.TOKEN}).json()
+    tipos = {p["id"]: p["tipo"] for p in d["propuestas"]}
+    assert tipos == {"p1": "trabajo", "ps1": "preseed"}
+
+
+def test_una_linea_vieja_del_bus_se_lee_como_trabajo(cliente):
+    """El bus real de Pedro tiene lineas escritas antes de que `tipo`
+    existiera. Que la mesa entera se caiga con un 500 mudo por eso seria el
+    peor final posible -- mismo criterio que el resto de los `.get()` con
+    default de este endpoint."""
+    c, base = cliente
+    ruta = base / "economia" / "bus.jsonl"
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_text(json.dumps(
+        {"ts": TS, "semana": W, "evento": "alta", "id": "viejo",
+         "departamento": "dep:atlas", "titulo": "de antes",
+         "presupuesto_mm": 5_000, "retorno_mm": 9_000,
+         "criterio": {"gasto_max_mm": 5_000}}) + "\n", encoding="utf-8")
+    d = c.get("/api/economia/bus", params={"token": srv.TOKEN}).json()
+    assert d["propuestas"][0]["tipo"] == "trabajo"
+
+
+def test_pedro_financia_un_preseed_contra_el_tesoro(cliente):
+    """El entregable de punta a punta: la plata sale del TESORO y cae en la
+    cuenta DEL DEPARTAMENTO (no en trabajo:<id>: un pre-seed no es un
+    trabajo, entrega capital)."""
+    c, base = cliente
+    _preseed(base, mm=120_000)
+    k = Kernel(Libro(base / "economia" / "libro.jsonl"))
+    k.acunar(TS, W, t.TESORO, 500_000, t.SubtipoAcunacion.CAPITAL,
+             {"tipo": "firma_pedro"})
+    antes = k.saldo("dep:atlas")
+
+    r = c.post("/api/economia/bus/ps1/financiar", params={"token": srv.TOKEN},
+               json={"cuenta": t.TESORO, "mm": 120_000})
+    assert r.status_code == 200, r.text
+
+    k2 = Kernel(Libro(base / "economia" / "libro.jsonl"))
+    assert k2.saldo("dep:atlas") == antes + 120_000
+    assert k2.saldo(cuenta_trabajo("ps1")) == 0
+    assert Bus(base / "economia" / "bus.jsonl").estado("ps1") == "financiada"
+
+
+def test_un_preseed_ya_pagado_no_se_paga_dos_veces(cliente):
+    """El corte mira el LIBRO, no la marca: `financiar` transfiere ANTES de
+    marcar, asi que un crash entre las dos escrituras deja la plata afuera
+    y la propuesta en `alta`. Para un trabajo eso lo ve `aportes`
+    (`trabajo:<id>`); un pre-seed cae en la cuenta del departamento, que es
+    la misma para todos sus pedidos, y por eso hace falta `aporte_preseed`,
+    que mira el `ref` del asiento."""
+    from calipso.economia import bus as bus_mod
+
+    c, base = cliente
+    b = _preseed(base, mm=120_000)
+    k = Kernel(Libro(base / "economia" / "libro.jsonl"))
+    k.acunar(TS, W, t.TESORO, 500_000, t.SubtipoAcunacion.CAPITAL,
+             {"tipo": "firma_pedro"})
+    c.post("/api/economia/bus/ps1/financiar", params={"token": srv.TOKEN},
+           json={"cuenta": t.TESORO, "mm": 120_000})
+
+    # el crash simulado: la marca se pierde, la plata ya salio
+    asientos = Kernel(Libro(base / "economia" / "libro.jsonl")).libro.asientos()
+    assert bus_mod.aporte_preseed(asientos, "ps1") == 120_000
+    lineas = [x for x in (base / "economia" / "bus.jsonl").read_text(
+        encoding="utf-8").splitlines() if '"financiada"' not in x]
+    (base / "economia" / "bus.jsonl").write_text("\n".join(lineas) + "\n",
+                                                 encoding="utf-8")
+    assert Bus(base / "economia" / "bus.jsonl").estado("ps1") == "alta"
+
+    r = c.post("/api/economia/bus/ps1/financiar", params={"token": srv.TOKEN},
+               json={"cuenta": t.TESORO, "mm": 120_000})
+    assert r.status_code == 400
+    assert Kernel(Libro(base / "economia" / "libro.jsonl")
+                  ).saldo("dep:atlas") == 400_000 + 120_000

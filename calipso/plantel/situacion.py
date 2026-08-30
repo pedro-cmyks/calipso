@@ -100,6 +100,10 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
         "explorar_explotar_pct": dep.explorar_explotar_pct,
         "agresividad_pct": dep.agresividad_pct,
         "techo_api_ciclo_mm": dep.techo_api_ciclo_mm,
+        # el techo de la ronda pre-seed: cuanto puede PEDIR, no cuanto
+        # tiene. Cero es "Pedro todavia no autorizo", y `_puede` lo frena
+        # ahi -- ver el freno de `pedir` en jefe.py.
+        "techo_preseed_mm": dep.techo_preseed_mm,
         "gasto_api_ciclo_mm": mercado_mod.gasto_api_ciclo(
             asientos, cuenta, semanas_ciclo) if semanas_ciclo else 0,
         "salidas_semana_mm": salidas_de(asientos, cuenta, [semana]),

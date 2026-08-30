@@ -298,3 +298,71 @@ def test_contratar_escribe_el_alta_bajo_candado(tmp_path, monkeypatch):
 
     assert altas, "bus.alta nunca se llamo"
     assert resultado["accion"] == "proponer"
+
+
+def _contratar_real(tmp_path, monkeypatch):
+    """El contratista de PRODUCCION contra un bus de verdad en disco."""
+    monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
+    _armar_economia(tmp_path)
+    pagador = srv._EcoPagador.desde_entorno(tmp_path)
+    contratar = srv._contratar_para("dep:atlas", pagador,
+                                    "2026-08-01T09:10:00", "2026-W31")
+    return contratar, srv._eco_bus.Bus(pagador.ruta_bus)
+
+
+def test_pedir_publica_un_preseed_en_el_bus(tmp_path, monkeypatch):
+    """El traductor que faltaba: hasta ahora `pedir` caia en la rama de
+    `proponer` y publicaba un trabajo, que se financia contra la billetera
+    de OTRO departamento -- justo lo que un departamento sin plata no puede
+    conseguir. Tiene que salir como `tipo="preseed"`, que se financia
+    contra el tesoro."""
+    contratar, _ = _contratar_real(tmp_path, monkeypatch)
+    s = {"nombre": "atlas", "presupuesto_semanal_mm": 0,
+         "agresividad_pct": 30, "salidas_semana_mm": 0,
+         "techo_preseed_mm": 150_000}
+    r = contratar(s, "pedir", "120000", "arrancamos de cero")
+
+    assert r["tipo"] == "preseed"
+    assert r["monto_mm"] == 120_000
+    bus = srv._eco_bus.Bus(
+        srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
+    d = bus.datos(r["propuesta"])
+    assert d["tipo"] == "preseed"
+    assert d["departamento"] == "dep:atlas"
+    assert d["presupuesto_mm"] == 120_000
+    assert d["titulo"] == "arrancamos de cero"
+
+
+def test_el_monto_del_preseed_lo_recorta_la_perilla(tmp_path, monkeypatch):
+    """LA REGLA: los numeros los declara el jefe desde sus PERILLAS, no el
+    modelo. `decision.parsear` exige un entero positivo, pero un entero
+    positivo alucinado sigue siendo alucinado -- el de 3b nombra ids que no
+    existen. El peor caso tiene que ser exactamente el techo que puso
+    Pedro."""
+    contratar, _ = _contratar_real(tmp_path, monkeypatch)
+    s = {"nombre": "atlas", "presupuesto_semanal_mm": 0,
+         "agresividad_pct": 30, "salidas_semana_mm": 0,
+         "techo_preseed_mm": 50_000}
+    r = contratar(s, "pedir", "999999999", "quiero todo")
+    assert r["monto_mm"] == 50_000
+
+    bus = srv._eco_bus.Bus(
+        srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
+    assert bus.datos(r["propuesta"])["presupuesto_mm"] == 50_000
+
+
+def test_sin_techo_el_contratista_no_escribe_en_el_bus(tmp_path, monkeypatch):
+    """Segunda linea de defensa: el freno de verdad vive en `jefe._puede`,
+    pero el contratista tambien se llama directo (esta el precedente en
+    este mismo archivo) y no puede escribir un pre-seed de monto inventado
+    si Pedro no dijo cuanto."""
+    contratar, _ = _contratar_real(tmp_path, monkeypatch)
+    s = {"nombre": "atlas", "presupuesto_semanal_mm": 0,
+         "agresividad_pct": 30, "salidas_semana_mm": 0,
+         "techo_preseed_mm": 0}
+    r = contratar(s, "pedir", "120000", "arrancamos de cero")
+    assert r["en"] == "nada" and "techo de pre-seed" in r["motivo"]
+
+    bus = srv._eco_bus.Bus(
+        srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
+    assert bus.ids() == []

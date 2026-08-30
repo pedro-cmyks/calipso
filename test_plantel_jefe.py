@@ -36,14 +36,15 @@ class MemoriaFalsa:
 
 
 def armar(tmp_path, respuesta="nada\nno hay nada", saldo=400_000,
-         presupuesto_semanal_mm=25_000):
+         presupuesto_semanal_mm=25_000, techo_preseed_mm=0):
     eco = tmp_path / "economia"
     eco.mkdir(parents=True, exist_ok=True)
     k = Kernel(Libro(eco / "libro.jsonl"))
     r = deps.Registro(eco / "departamentos.json")
     r.alta(deps.Departamento("atlas", deps.ZONA_FABRICA,
                              presupuesto_semanal_mm=presupuesto_semanal_mm,
-                             techo_api_ciclo_mm=3_000, agresividad_pct=40))
+                             techo_api_ciclo_mm=3_000, agresividad_pct=40,
+                             techo_preseed_mm=techo_preseed_mm))
     pt.emitir_semana(k, TS, W, 4_000, 1_000)
     if saldo:
         k.acunar(TS, W, "dep:atlas", saldo, t.SubtipoAcunacion.CAPITAL,
@@ -160,11 +161,31 @@ def test_pedir_es_la_ronda_preseed_y_no_gasta(tmp_path):
     una accion nueva, separada de `proponer`, para que el modelo declare
     cuanto pide sin que nadie tenga que inventarle una formula."""
     ctx, contratos, _ = armar(tmp_path, "pedir 50000\nnecesito arrancar",
-                              saldo=0, presupuesto_semanal_mm=0)
+                              saldo=0, presupuesto_semanal_mm=0,
+                              techo_preseed_mm=50_000)
     it.poner_modo(tmp_path, "vivo")
     out = j.tic(ctx, "dep:atlas", W)
     assert out["actuo"] is True
     assert contratos == [("pedir", "50000", "necesito arrancar")]
+
+
+def test_sin_techo_de_preseed_el_pedido_no_llega_al_bus(tmp_path):
+    """El monto del pre-seed sale de la perilla `techo_preseed_mm`, no del
+    modelo. En cero, Pedro todavia no dijo cuanto puede pedir este
+    departamento: el jefe puede decidir `pedir` -sigue en el menu- pero el
+    freno corta antes de contratar, y por lo tanto antes del bus y antes de
+    la memoria. Sin este freno el jefe quemaria un tic por semana en un
+    no-op que igual se anotaria como que actuo."""
+    ctx, contratos, _ = armar(tmp_path, "pedir 50000\nnecesito arrancar",
+                              saldo=0, presupuesto_semanal_mm=0,
+                              techo_preseed_mm=0)
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["accion"] == "pedir"      # decidio bien
+    assert out["actuo"] is False         # pero no se ejecuto
+    assert "techo de pre-seed" in out["freno"]
+    assert contratos == []
+    assert ctx.memoria.recordado == []
 
 
 def test_pedir_sin_monto_valido_cae_en_nada(tmp_path):
@@ -204,7 +225,8 @@ def test_dia_uno_pide_preseed_en_el_bus_y_pedro_lo_financia(tmp_path):
     from calipso.economia import mercado as mkt
 
     ctx, contratos, _ = armar(tmp_path, "pedir 200000\narrancamos de cero",
-                              saldo=0, presupuesto_semanal_mm=0)
+                              saldo=0, presupuesto_semanal_mm=0,
+                              techo_preseed_mm=200_000)
     it.poner_modo(tmp_path, "vivo")
 
     # 1. el dia 1: sin un peso y sin presupuesto semanal, publica su pedido.
