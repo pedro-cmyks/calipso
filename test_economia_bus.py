@@ -21,7 +21,11 @@ SUS = cap.Suscripcion(nombre="claude_max", costo_mensual_mm=100_000,
 def entorno(tmp_path):
     k = Kernel(Libro(tmp_path / "libro.jsonl"))
     r = deps.Registro(tmp_path / "departamentos.json")
-    r.alta(deps.Departamento("a", deps.ZONA_FABRICA, techo_api_ciclo_mm=500_000))
+    # `techo_preseed_mm` porque `financiar` lo relee al PAGAR una ronda
+    # pre-seed: la perilla de hoy es la que autoriza, no la que estaba
+    # cuando el pedido se publico.
+    r.alta(deps.Departamento("a", deps.ZONA_FABRICA, techo_api_ciclo_mm=500_000,
+                             techo_preseed_mm=200_000))
     r.alta(deps.Departamento("b", deps.ZONA_FABRICA, techo_api_ciclo_mm=500_000))
     m = mkt.Mercado(k, r, {"claude_max": SUS})
     b = bus_mod.Bus(tmp_path / "bus.jsonl")
@@ -290,7 +294,9 @@ def test_financiar_preseed_va_a_la_cuenta_del_departamento(entorno):
     b.alta(TS, "2026-W30", "p1", "dep:a", "arranco de cero", 150_000,
           150_000, {"gasto_max_mm": 150_000}, tipo="preseed")
     bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 150_000)
-    assert b.estado("p1") == "financiada"
+    # y queda CERRADA en el acto: la plata ya cayo, no hay nada mas que
+    # decidir sobre este pedido y no tiene que seguir ocupando la mesa
+    assert b.estado("p1") == "cerrada"
     assert k.saldo("dep:a") == 150_000
     assert k.saldo(bus_mod.cuenta_trabajo("p1")) == 0
     assert bus_mod.aportes(k.libro.asientos(), "p1") == {}
@@ -321,13 +327,14 @@ def test_trabajo_no_se_financia_con_tesoro_pero_preseed_si(entorno):
     b.alta(TS, "2026-W30", "preseed1", "dep:a", "arranco", 100_000, 100_000,
           {"gasto_max_mm": 100_000}, tipo="preseed")
     bus_mod.financiar(m, b, TS, "2026-W30", "preseed1", t.TESORO, 100_000)
-    assert b.estado("preseed1") == "financiada"
+    assert b.estado("preseed1") == "cerrada"
 
 
 def test_preseed_no_tiene_ciclo_de_muerte(entorno):
     """Un pre-seed financiado no abre trabajo:<id>, asi que no hay gasto que
-    medir contra el criterio de muerte ni liquidacion que hacer: se queda
-    "financiada" -es un estado final, no un trabajo en curso."""
+    medir contra el criterio de muerte ni liquidacion que hacer: se cierra
+    al pagarse -no es un trabajo en curso, y por eso tampoco queda en
+    `activas()` esperando una muerte que no le puede llegar."""
     k, m, b = entorno
     for sem in ["2026-W30", "2026-W31", "2026-W32", "2026-W33"]:
         _semana_op(k, sem)
@@ -336,7 +343,8 @@ def test_preseed_no_tiene_ciclo_de_muerte(entorno):
           {"semanas_max": 1}, tipo="preseed")
     bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 100_000)
     assert bus_mod.evaluar_y_liquidar_muertos(m, b, TS, "2026-W33") == []
-    assert b.estado("p1") == "financiada"
+    assert b.estado("p1") == "cerrada"
+    assert b.activas() == []
     assert k.saldo("dep:a") == 100_000
 
 
@@ -353,3 +361,95 @@ def test_preseed_no_cuenta_para_el_mandato_de_direccion(entorno):
     bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 100_000)
     assert direccion.asignado_semana(k.libro.asientos(), "dep:a",
                                      "2026-W30") == 0
+
+
+# --------------------------------------------------------------------------
+# La ronda pre-seed, con sus tres puertas: de quien es, cuanto, y hasta
+# cuando sigue en la mesa.
+# --------------------------------------------------------------------------
+
+def test_el_tesoro_no_financia_un_preseed_de_la_zona_personal(entorno):
+    """La rama de trabajo tiene puerta de zona sobre el FINANCIADOR; la de
+    pre-seed no tenia ninguna sobre el DUENO, asi que el tesoro terminaba
+    financiando directo una billetera `personal:` -- por encima de
+    `cuenta_pedro.financiar_personal`, que existe para exigir lo contrario.
+    Y el efecto no es cosmetico: `mercado.comprar_capacidad` le cobra a un
+    departamento personal contra la reserva personal de la suscripcion, y
+    `pagador.cargar_api` ignora por completo las cuentas `personal:*`."""
+    k, m, b = entorno
+    m.registro.alta(deps.Departamento("finanzas", deps.ZONA_PERSONAL,
+                                      techo_preseed_mm=400_000))
+    _semana_op(k, "2026-W30")
+    _capital(k, 400_000, t.TESORO)
+    b.alta(TS, "2026-W30", "ps1", "personal:finanzas", "arranco", 400_000,
+           400_000, {"gasto_max_mm": 400_000}, tipo="preseed")
+    with pytest.raises(bus_mod.ErrorBus) as exc:
+        bus_mod.financiar(m, b, TS, "2026-W30", "ps1", t.TESORO, 400_000)
+    assert "cuenta_pedro" in str(exc.value)
+    assert k.saldo("personal:finanzas") == 0
+
+
+def test_un_preseed_no_se_paga_por_mas_de_lo_que_pide(entorno):
+    """`financiar` no comparaba `mm` contra NADA. Un pedido publicado por
+    50.000 -recortado por la perilla, que es toda la gracia del recorte- se
+    pagaba por 4.000.000 sin una queja, y esa plata se quedaba para siempre
+    en la billetera del departamento: un pre-seed no abre `trabajo:<id>` y
+    `evaluar_y_liquidar_muertos` no lo liquida nunca."""
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 4_000_000, t.TESORO)
+    b.alta(TS, "2026-W30", "p1", "dep:a", "arranco", 50_000, 50_000,
+           {"gasto_max_mm": 50_000}, tipo="preseed")
+    with pytest.raises(bus_mod.ErrorBus) as exc:
+        bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 4_000_000)
+    assert "mas de lo autorizado" in str(exc.value)
+    assert k.saldo("dep:a") == 0
+    # por el monto que pide, si
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 50_000)
+    assert k.saldo("dep:a") == 50_000
+
+
+def test_bajar_la_perilla_a_cero_tambien_frena_lo_que_ya_esta_en_la_bandeja(entorno):
+    """El techo se aplicaba una sola vez, al publicar; despues el monto
+    vivia en el bus y nadie lo volvia a comparar contra la perilla de hoy.
+    "En cero no pide" era cierto para los pedidos nuevos y falso para los
+    viejos: el gesto de "me arrepenti, cerra la canilla" no cerraba."""
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 400_000, t.TESORO)
+    b.alta(TS, "2026-W30", "p1", "dep:a", "arranco", 200_000, 200_000,
+           {"gasto_max_mm": 200_000}, tipo="preseed")
+    m.registro.ajustar("a", techo_preseed_mm=0)
+    with pytest.raises(bus_mod.ErrorBus) as exc:
+        bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 200_000)
+    assert "no tiene techo de pre-seed" in str(exc.value)
+    assert k.saldo("dep:a") == 0
+    # y si Pedro la baja a la mitad, se paga hasta la mitad
+    m.registro.ajustar("a", techo_preseed_mm=80_000)
+    with pytest.raises(bus_mod.ErrorBus):
+        bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 200_000)
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 80_000)
+    assert k.saldo("dep:a") == 80_000
+
+
+def test_un_preseed_financiado_no_queda_como_trabajo_vivo(entorno):
+    """`activas()` es de donde `mapa/ciudad` y `prompt_compiler` sacan los
+    trabajos en curso. Un pre-seed financiado se quedaba ahi para siempre
+    -`financiada` es terminal para el, `evaluar_y_liquidar_muertos` lo
+    saltea y `descartar` solo acepta `alta`- asi que cada ronda que Pedro
+    aprobaba sumaba una unidad fantasma en el mapa y un proyecto fantasma
+    en el contexto del chat, los dos con gasto cero eterno porque la cuenta
+    `trabajo:<id>` no existe."""
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 400_000, t.TESORO)
+    b.alta(TS, "2026-W30", "p1", "dep:a", "arranco", 150_000, 150_000,
+           {"gasto_max_mm": 150_000}, tipo="preseed")
+    b.alta(TS, "2026-W30", "t1", "dep:a", "un trabajo de verdad", 10_000,
+           30_000, CRITERIO)
+    _capital(k, 50_000, "dep:b")
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 150_000)
+    bus_mod.financiar(m, b, TS, "2026-W30", "t1", "dep:b", 10_000)
+    # el trabajo si, el pre-seed no
+    assert b.activas() == ["t1"]
+    assert b.estado("p1") == "cerrada"

@@ -45,6 +45,12 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
     ajenas = "\n".join(
         f"  - {p['id']}: {p['titulo']} (de {p['dueno']})"
         for p in s["propuestas_ajenas"]) or "  (ninguna)"
+    # el "no" de Pedro, dicho con todas las letras. El freno mecanico vive
+    # en `jefe._puede` (las descartadas gastan intentos de la semana); esto
+    # es para que el modelo sepa POR QUE, en vez de chocar contra un freno
+    # mudo y volver a proponer lo mismo.
+    rechazadas = "\n".join(f"  - {p['titulo']}"
+                           for p in s.get("descartadas_semana", []))
     cap = s.get("capacidad")
     precio = (f"{cap['precio_mm']} mm por unidad de {cap['nombre']} "
               f"(lista {cap['precio_base_mm']})") if cap else "sin capacidad"
@@ -87,6 +93,8 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
         f"Tus trabajos vivos:\n{trabajos}\n"
         f"Propuestas tuyas todavia sin financiar:\n{propias}\n"
         f"Propuestas de otros departamentos:\n{ajenas}\n"
+        + (f"Pedro DESCARTO esta semana (no las vuelvas a proponer):\n"
+           f"{rechazadas}\n" if rechazadas else "") +
         f"Compuertas tuyas esperando la firma de Pedro: "
         f"{s['compuertas_pendientes']}.\n\n"
         f"Ahora inclinate a {inclinacion}.\n\n"
@@ -118,9 +126,17 @@ def parsear(texto: str) -> tuple[str, str | None, str]:
         return "proponer", None, motivo
     if accion in ("trabajar", "comentar") and not ref:
         return "nada", None, motivo or f"{accion} sin id"
-    if accion == "pedir" and not (ref and ref.isdigit() and int(ref) > 0):
+    if accion == "pedir" and not (ref and ref.isdecimal() and int(ref) > 0):
         # el mismo criterio que un modelo que alucina no gasta: uno que
         # pide sin numero, o un numero que no es un entero positivo, no
         # pide -cae en nada, no en un pedido invalido en el bus
+        #
+        # `.isdecimal()` y no `.isdigit()`: los dos aceptan los digitos
+        # arabes ('٥', que `int()` lee bien), pero `isdigit` tambien acepta
+        # los superindices ('²') -- Numeric_Type=Digit sin ser decimales --
+        # y ahi el `int(ref)` de al lado revienta con ValueError. La
+        # promesa de este parser es que lo que no se entiende es NADA; con
+        # `isdigit`, un `pedir ²` salia por el `except` de `tic` y se
+        # anotaba como "reviento actuando".
         return "nada", None, motivo or "pedir sin un monto valido"
     return accion, ref, motivo

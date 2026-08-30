@@ -100,6 +100,11 @@ class Bus:
         for e in eventos[1:]:
             if e["evento"] == "financiada" and "semana_financiada" not in d:
                 d["semana_financiada"] = e["semana"]
+            # cuando Pedro dijo que no. `descartar` es terminal, asi que
+            # hay a lo sumo una: la lee `situacion` para que el "no" pese
+            # en la semana en que se dijo y no para siempre.
+            elif e["evento"] == "descartada":
+                d["semana_descartada"] = e["semana"]
         return d
 
     def ids(self) -> list[str]:
@@ -117,7 +122,16 @@ class Bus:
 
 _TRANSICIONES = {
     "alta": frozenset({"financiada", "descartada"}),
-    "financiada": frozenset({"muerta"}),
+    # `cerrada` es el final de un PRE-SEED: la plata ya cayo en la cuenta
+    # del departamento y no hay nada mas que decidir sobre ese pedido. Sin
+    # este estado, `financiada` era terminal para un pre-seed pero seguia
+    # contando como propuesta viva: quedaba para siempre en la mesa (que
+    # filtra por "alta" o "financiada" y dice de si misma "es para decidir,
+    # no un historial") y en `activas()`, que es de donde `mapa/ciudad` y
+    # `prompt_compiler` sacan los trabajos en curso -- una unidad fantasma
+    # en el mapa y un proyecto fantasma en el contexto del chat, los dos
+    # con gasto cero eterno porque la cuenta `trabajo:<id>` no existe.
+    "financiada": frozenset({"muerta", "cerrada"}),
     "muerta": frozenset({"liquidada"}),
 }
 
@@ -144,6 +158,47 @@ def financiar(mercado: Mercado, bus: Bus, ts: str, semana: str, id: str,
             raise ErrorBus(
                 "un pre-seed se financia contra el tesoro, no contra una "
                 f"billetera de departamento: {financiador_cuenta}")
+        # puerta de zona del DUENO, gemela de la que la rama de trabajo
+        # tiene sobre el financiador. La rama de trabajo la exige y esta no
+        # la exigia: el tesoro terminaba financiando directo una billetera
+        # `personal:`, por encima de `cuenta_pedro.financiar_personal`, que
+        # existe justamente para lo contrario (la zona personal se financia
+        # SOLO desde la cuenta de Pedro). Y el efecto no es cosmetico:
+        # `mercado.comprar_capacidad` le cobra a un departamento personal
+        # contra la `reserva_personal` de la suscripcion y
+        # `pagador.cargar_api` ignora las cuentas `personal:*`, asi que esa
+        # plata compra capacidad reservada de Pedro y despues gasta fuera
+        # del libro de la fabrica.
+        try:
+            dep = mercado.dep_por_cuenta(dueno)
+        except ErrorMercado:
+            raise ErrorBus(f"departamento sin registrar: {dueno}") from None
+        if dep.zona != deps.ZONA_FABRICA:
+            raise ErrorBus(
+                "un pre-seed es capital de fabrica: la zona personal se "
+                f"financia desde cuenta_pedro, no desde el tesoro ({dueno})")
+        # el monto autorizado, releido en el momento de PAGAR y no una sola
+        # vez cuando se publico. Dos cosas distintas se caian por aca:
+        #
+        #  - `mm` no se comparaba con NADA. Un pedido publicado por 50.000
+        #    -recortado por la perilla, que es toda la gracia del recorte-
+        #    se pagaba por 4.000.000 sin una queja, y esa plata no tiene
+        #    camino de vuelta: un pre-seed no abre `trabajo:<id>` y
+        #    `evaluar_y_liquidar_muertos` no lo liquida nunca.
+        #  - bajar la perilla a cero frenaba los pedidos NUEVOS pero no los
+        #    que ya estaban en la bandeja, que se seguian pagando por el
+        #    monto viejo. "Me arrepenti, cerra la canilla" no cerraba.
+        techo = int(dep.techo_preseed_mm or 0)
+        if techo <= 0:
+            raise ErrorBus(
+                f"{dueno} no tiene techo de pre-seed: la perilla esta en "
+                "cero y un pedido viejo no se paga con la perilla vieja")
+        autorizado = min(techo, int(datos.get("presupuesto_mm", 0)))
+        if mm > autorizado:
+            raise ErrorBus(
+                f"el pre-seed {id} pide {datos.get('presupuesto_mm', 0)} mm "
+                f"con un techo de {techo} mm: {mm} mm es mas de lo "
+                f"autorizado ({autorizado} mm)")
         destino = dueno
         motivo = "preseed"
         # `ref` = el id de la propuesta. Un trabajo se identifica por su
@@ -152,9 +207,19 @@ def financiar(mercado: Mercado, bus: Bus, ts: str, semana: str, id: str,
         # sin esto no hay forma de saber que pedido pago una transferencia
         # -- y el corte de `api_eco_bus_financiar` contra el LIBRO (la
         # fuente de verdad cuando el proceso muere entre la transferencia y
-        # la marca) no tendria nada que mirar. `ref` es libre en una
-        # transferencia: `balances.reservas_activas` solo lo lee en los tres
-        # tipos del escrow.
+        # la marca) no tendria nada que mirar.
+        #
+        # `ref` en una TRANSFERENCIA no es libre del todo, y la garantia no
+        # es la del escrow (`balances.reservas_activas` lee el ref solo en
+        # sus tres tipos): quien tambien lo lee es
+        # `kernel.acreencias_pendientes`, que acumula `pagos[a.ref]` para
+        # CUALQUIER transferencia con ref, sin mirar deudor ni motivo. Lo
+        # que salva de que un pre-seed financiado se cuente como pago de
+        # una deuda es que los dos espacios de nombres no se cruzan:
+        # `bus.alta` prohibe ':' en el id de una propuesta y los dos sitios
+        # que registran acreencias (`cola.py`, `direccion.py`) usan
+        # `ref=f"adelanto:{...}"`. El dia que se afloje una de esas dos
+        # cosas, esto colisiona.
         ref_asiento = id
     else:
         # puerta de origen (FIX C1): solo un departamento de fabrica
@@ -175,6 +240,14 @@ def financiar(mercado: Mercado, bus: Bus, ts: str, semana: str, id: str,
                              motivo=motivo, ref=ref_asiento)
     if bus.estado(id) == "alta":
         bus.marcar(ts, semana, id, "financiada")
+    if tipo == "preseed":
+        # y se cierra en el acto: no queda nada por decidir ni por gastar
+        # contra este pedido. La marca `financiada` queda en el jsonl (es
+        # append-only: `aporte_preseed` y el historial la siguen viendo);
+        # lo que cambia es el estado, que deja de decir "esto sigue en
+        # juego" en las superficies que lo leen -- la mesa de Pedro y
+        # `activas()`.
+        bus.marcar(ts, semana, id, "cerrada")
     return a
 
 

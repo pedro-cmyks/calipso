@@ -87,6 +87,29 @@ def _puede(estado, s: dict, accion: str, ref: str | None) -> tuple[bool, str]:
             # la primera.
             return False, ("sin techo de pre-seed: Pedro todavia no "
                            "autorizo cuanto puede pedir")
+        if accion == "pedir":
+            # El techo ACUMULADO. `techo_preseed_mm` recorta cada pedido,
+            # pero el unico freno de caudal -TECHO_PROPUESTAS- no ve los
+            # pre-seed ya financiados: `situacion` los saca de las dos
+            # listas, asi que cada financiacion vaciaba el contador y
+            # habilitaba otras tres rondas. El techo real terminaba siendo
+            # `techo_preseed_mm` x 200 tics por semana mientras Pedro
+            # siguiera tocando financiar, y la mesa no le mostraba ningun
+            # acumulado: cada fila era un pedido suelto.
+            #
+            # El freno sale de lo que el pre-seed ES: capital para
+            # ARRANCAR, "que un departamento sin plata pueda pedirla". Un
+            # departamento que ya tiene en la billetera lo que una ronda le
+            # daria no esta arrancando. Se cuenta lo que tiene mas lo que ya
+            # pidio y sigue en la mesa, para que tres pedidos en pie no den
+            # tres veces el techo.
+            techo = int(s.get("techo_preseed_mm") or 0)
+            ya = (int(s.get("disponible_mm") or 0)
+                  + int(s.get("preseed_pendiente_mm") or 0))
+            if ya >= techo:
+                return False, (f"ya tiene {ya} mm entre billetera y pedidos "
+                               f"en pie, y el techo de la ronda es {techo}: "
+                               "el pre-seed es para arrancar sin plata")
         if accion == "proponer" and s["presupuesto_semanal_mm"] > 0:
             # La agresividad mide contra el presupuesto SEMANAL. Un
             # departamento recien dado de alta todavia no tiene presupuesto

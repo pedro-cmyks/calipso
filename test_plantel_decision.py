@@ -243,3 +243,14 @@ def test_el_prompt_prohibe_otros_idiomas():
     p = dec.prompt(s, 50)
     assert "castellano" in p
     assert "chino" in p
+
+
+def test_un_superindice_no_es_un_monto():
+    """`'²'.isdigit()` es True y `int('²')` revienta con ValueError: los
+    superindices son Numeric_Type=Digit sin ser decimales. La promesa de
+    este parser es que lo que no se entiende es NADA; con `isdigit`, un
+    `pedir ²` salia por el `except` de `tic` y se anotaba como "reviento
+    actuando" en la memoria del jefe."""
+    assert dec.parsear("pedir ²\nmotivo") == ("nada", None, "motivo")
+    # el digito arabe SI es decimal y `int()` lo lee: sigue pasando
+    assert dec.parsear("pedir ٥\nmotivo") == ("pedir", "٥", "motivo")

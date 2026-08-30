@@ -256,8 +256,10 @@ def test_dia_uno_pide_preseed_en_el_bus_y_pedro_lo_financia(tmp_path):
     m = mkt.Mercado(ctx.kernel, ctx.registro, ctx.suscripciones)
     bus_mod.financiar(m, ctx.bus, TS, W, propuesta_id, t.TESORO, 200_000)
 
-    # 3. la plata esta en SU cuenta, no en trabajo:<id>.
-    assert ctx.bus.estado(propuesta_id) == "financiada"
+    # 3. la plata esta en SU cuenta, no en trabajo:<id>, y el pedido queda
+    # CERRADO: la ronda ya se pago, no hay nada mas que decidir sobre ella
+    # y por eso sale de la mesa y de `activas()`.
+    assert ctx.bus.estado(propuesta_id) == "cerrada"
     assert ctx.kernel.saldo("dep:atlas") == 200_000
     assert ctx.kernel.saldo(bus_mod.cuenta_trabajo(propuesta_id)) == 0
 
@@ -532,3 +534,81 @@ def test_una_memoria_cuyo_recent_revienta_no_propaga(tmp_path):
     assert out["freno"] == "fallo antes de pensar"
     assert "chroma caido" in out["motivo"]
     assert contratos == []
+
+
+def test_el_preseed_es_para_arrancar_sin_plata(tmp_path):
+    """El techo ACUMULADO. `techo_preseed_mm` recortaba cada pedido y nada
+    miraba el total: el unico freno de caudal (TECHO_PROPUESTAS) no ve los
+    pre-seed ya financiados -`situacion` los saca de las dos listas- asi
+    que cada financiacion vaciaba el contador y habilitaba otras tres
+    rondas. El techo real terminaba siendo `techo_preseed_mm` x 200 tics
+    por semana mientras Pedro siguiera tocando financiar."""
+    ctx, contratos, _ = armar(tmp_path, "pedir 50000\nmas capital",
+                              saldo=100_000, presupuesto_semanal_mm=0,
+                              techo_preseed_mm=50_000)
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["accion"] == "pedir"      # decidio bien
+    assert out["actuo"] is False
+    assert "arrancar sin plata" in out["freno"]
+    assert contratos == []
+
+
+def test_los_pedidos_en_pie_cuentan_contra_el_techo_de_la_ronda(tmp_path):
+    """Y lo que ya pidio cuenta igual que lo que ya tiene: sin esto,
+    publicar tres pedidos y que Pedro los financie a los tres da tres veces
+    el techo -- el freno de TECHO_PROPUESTAS deja pasar los tres, porque
+    mide cantidad de propuestas y no plata."""
+    ctx, contratos, _ = armar(tmp_path, "pedir 50000\notra ronda", saldo=0,
+                              presupuesto_semanal_mm=0,
+                              techo_preseed_mm=50_000)
+    ctx.bus.alta(TS, W, "p0", "dep:atlas", "primera ronda", 50_000, 50_000,
+                {"gasto_max_mm": 50_000}, tipo="preseed")
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["actuo"] is False
+    assert "en pie" in out["freno"]      # y no el de "3 propuestas"
+    assert contratos == []
+
+
+def test_lo_que_pedro_descarto_esta_semana_le_llega_al_jefe(tmp_path):
+    """Descartar libera el cupo A PROPOSITO (spec seccion 8: con la bandeja
+    llena el jefe queda frenado, y la salida que le da la mesa de Pedro
+    tiene que devolverle el lugar), asi que el "no" NO puede ser un freno
+    sin romper eso. Lo que si faltaba: que el "no" llegue. `situacion`
+    cortaba en `estado not in ("alta", "financiada")`, o sea que una
+    propuesta descartada desaparecia por completo -- el jefe la volvia a
+    proponer al tic siguiente y lo unico que lo separaba de repetir era un
+    modelo de 3b leyendo "no repitas lo mismo"."""
+    from calipso.economia import bus as bus_mod
+
+    ctx, _contratos, _ = armar(tmp_path, "proponer\notra idea")
+    ctx.bus.alta(TS, W, "p0", "dep:atlas", "radar de precios", 1_000, 2_000,
+                {"gasto_max_mm": 5_000})
+    bus_mod.descartar(ctx.bus, TS, W, "p0")
+
+    s = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
+                     ctx.suscripciones, W, "dep:atlas")
+    # el cupo vuelve (eso no se toca) y ademas queda el rastro
+    assert s["propuestas_propias"] == []
+    assert s["descartadas_semana"] == [{"id": "p0",
+                                        "titulo": "radar de precios"}]
+    # y el prompt se lo dice al modelo con todas las letras
+    texto = dec.prompt(s, 50)
+    assert "Pedro DESCARTO esta semana" in texto
+    assert "radar de precios" in texto
+
+
+def test_una_descartada_de_otra_semana_ya_no_pesa(tmp_path):
+    """El "no" es de la semana en que se dijo: `descartar` es terminal, y
+    arrastrar la lista para siempre convertiria el rastro en una lapida."""
+    from calipso.economia import bus as bus_mod
+
+    ctx, _contratos, _ = armar(tmp_path, "proponer\notra idea")
+    ctx.bus.alta(TS, W, "p0", "dep:atlas", "radar de precios", 1_000, 2_000,
+                {"gasto_max_mm": 5_000})
+    bus_mod.descartar(ctx.bus, TS, W, "p0")
+    s = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
+                     ctx.suscripciones, "2026-W36", "dep:atlas")
+    assert s["descartadas_semana"] == []
+    assert "Pedro DESCARTO" not in dec.prompt(s, 50)

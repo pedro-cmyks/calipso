@@ -23,7 +23,11 @@ def _economia_de_prueba(base, abrir=True):
     k = Kernel(Libro(eco / "libro.jsonl"))
     r = deps.Registro(eco / "departamentos.json")
     r.alta(deps.Departamento("atlas", deps.ZONA_FABRICA,
-                             presupuesto_semanal_mm=25_000))
+                             presupuesto_semanal_mm=25_000,
+                             # la perilla que autoriza la ronda pre-seed:
+                             # `financiar` la relee al pagar, no alcanza con
+                             # que estuviera puesta cuando se publico
+                             techo_preseed_mm=150_000))
     r.alta(deps.Departamento("mercado", deps.ZONA_FABRICA,
                              presupuesto_semanal_mm=25_000))
     r.alta(deps.Departamento("finanzas", deps.ZONA_PERSONAL))
@@ -349,7 +353,8 @@ def test_pedro_financia_un_preseed_contra_el_tesoro(cliente):
     k2 = Kernel(Libro(base / "economia" / "libro.jsonl"))
     assert k2.saldo("dep:atlas") == antes + 120_000
     assert k2.saldo(cuenta_trabajo("ps1")) == 0
-    assert Bus(base / "economia" / "bus.jsonl").estado("ps1") == "financiada"
+    # cerrada, no financiada: la plata cayo y el pedido sale de la mesa
+    assert Bus(base / "economia" / "bus.jsonl").estado("ps1") == "cerrada"
 
 
 def test_un_preseed_ya_pagado_no_se_paga_dos_veces(cliente):
@@ -373,7 +378,8 @@ def test_un_preseed_ya_pagado_no_se_paga_dos_veces(cliente):
     asientos = Kernel(Libro(base / "economia" / "libro.jsonl")).libro.asientos()
     assert bus_mod.aporte_preseed(asientos, "ps1") == 120_000
     lineas = [x for x in (base / "economia" / "bus.jsonl").read_text(
-        encoding="utf-8").splitlines() if '"financiada"' not in x]
+        encoding="utf-8").splitlines()
+        if '"financiada"' not in x and '"cerrada"' not in x]
     (base / "economia" / "bus.jsonl").write_text("\n".join(lineas) + "\n",
                                                  encoding="utf-8")
     assert Bus(base / "economia" / "bus.jsonl").estado("ps1") == "alta"
@@ -383,3 +389,26 @@ def test_un_preseed_ya_pagado_no_se_paga_dos_veces(cliente):
     assert r.status_code == 400
     assert Kernel(Libro(base / "economia" / "libro.jsonl")
                   ).saldo("dep:atlas") == 400_000 + 120_000
+
+
+def test_un_preseed_financiado_sale_de_la_mesa(cliente):
+    """La mesa "es para decidir, no un historial", pero para un pre-seed
+    `financiada` era un estado FINAL: `evaluar_y_liquidar_muertos` lo
+    saltea a proposito, `descartar` solo acepta `alta` y no hay ningun otro
+    camino a `muerta`. Cada ronda de capital que Pedro aprobaba le dejaba
+    una fila permanente en la superficie donde decide -- exactamente el
+    ruido que el techo de propuestas existe para evitar."""
+    c, base = cliente
+    _preseed(base, mm=120_000)
+    k = Kernel(Libro(base / "economia" / "libro.jsonl"))
+    k.acunar(TS, W, t.TESORO, 500_000, t.SubtipoAcunacion.CAPITAL,
+             {"tipo": "firma_pedro"})
+    assert [p["id"] for p in c.get("/api/economia/bus",
+                                   params={"token": srv.TOKEN}
+                                   ).json()["propuestas"]] == ["ps1"]
+
+    r = c.post("/api/economia/bus/ps1/financiar", params={"token": srv.TOKEN},
+               json={"cuenta": t.TESORO, "mm": 120_000})
+    assert r.status_code == 200, r.text
+    assert c.get("/api/economia/bus", params={"token": srv.TOKEN}
+                 ).json()["propuestas"] == []
