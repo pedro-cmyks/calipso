@@ -5,6 +5,15 @@ Una propuesta declara que quiere hacer, cuanto pide y su criterio de
 muerte ANTES de empezar (spec 7). Los eventos van a un JSONL propio
 (no son asientos monetarios); la plata del trabajo vive en la cuenta
 trabajo:<id> del libro, movida siempre via Kernel.
+
+Dos tipos de propuesta comparten el mismo bus. Una de `tipo="trabajo"`
+(el default) se financia desde la billetera de otro departamento de
+fabrica y la plata cae en la cuenta trabajo:<id> — produce un trabajo,
+con su gasto y su criterio de muerte. Una de `tipo="preseed"` es la ronda
+pre-seed: se financia contra el TESORO, no contra ningun departamento, y
+la plata cae en la cuenta DEL DEPARTAMENTO dueno, no en trabajo:<id> —
+produce capital, no un trabajo, asi que no tiene gasto que medir ni
+liquidacion que hacer (`evaluar_y_liquidar_muertos` la ignora).
 """
 from __future__ import annotations
 
@@ -14,9 +23,10 @@ import pathlib
 from . import capacidad as cap
 from . import departamentos as deps
 from .mercado import ErrorMercado, Mercado
-from .tipos import Asiento, TipoAsiento
+from .tipos import Asiento, TESORO, TipoAsiento
 
 _CLAVES_CRITERIO = {"gasto_max_mm", "semanas_max"}
+_TIPOS_PROPUESTA = {"trabajo", "preseed"}
 
 
 class ErrorBus(Exception):
@@ -46,11 +56,13 @@ class Bus:
 
     def alta(self, ts: str, semana: str, id: str, departamento_cuenta: str,
              titulo: str, presupuesto_mm: int, retorno_mm: int,
-             criterio: dict) -> None:
+             criterio: dict, tipo: str = "trabajo") -> None:
         if not id or ":" in id:
             raise ErrorBus(f"id invalido: {id!r}")
         if any(e["id"] == id for e in self._eventos):
             raise ErrorBus(f"propuesta repetida: {id}")
+        if tipo not in _TIPOS_PROPUESTA:
+            raise ErrorBus(f"tipo de propuesta invalido: {tipo!r}")
         if not criterio or not set(criterio) <= _CLAVES_CRITERIO:
             raise ErrorBus(
                 f"criterio de muerte invalido (claves {_CLAVES_CRITERIO}): "
@@ -70,7 +82,8 @@ class Bus:
         self._apilar({"ts": ts, "semana": semana, "evento": "alta", "id": id,
                       "departamento": departamento_cuenta, "titulo": titulo,
                       "presupuesto_mm": presupuesto_mm,
-                      "retorno_mm": retorno_mm, "criterio": criterio})
+                      "retorno_mm": retorno_mm, "criterio": criterio,
+                      "tipo": tipo})
 
     def _eventos_de(self, id: str) -> list[dict]:
         eventos = [e for e in self._eventos if e["id"] == id]
@@ -113,25 +126,42 @@ def financiar(mercado: Mercado, bus: Bus, ts: str, semana: str, id: str,
               financiador_cuenta: str, mm: int) -> Asiento:
     if bus.estado(id) not in ("alta", "financiada"):
         raise ErrorBus(f"propuesta no financiable en estado {bus.estado(id)}")
-    # puerta de origen (FIX C1): solo un departamento de fabrica registrado
-    # puede financiar; el tesoro y cuentas fantasma quedan afuera.
-    try:
-        dep = mercado.dep_por_cuenta(financiador_cuenta)
-    except ErrorMercado:
-        raise ErrorBus(f"financiador invalido: {financiador_cuenta}") from None
-    if dep.zona != deps.ZONA_FABRICA:
-        raise ErrorBus("solo departamentos de fabrica financian propuestas")
+    datos = bus.datos(id)
+    dueno = datos["departamento"]
+    tipo = datos.get("tipo", "trabajo")
     asientos = mercado.k.libro.asientos()
     if semana not in cap.semanas_operativas(asientos):
         raise ErrorBus(f"semana no operativa: {semana}")
-    dueno = bus.datos(id)["departamento"]
     if deps.es_congelado(asientos, dueno):
         raise ErrorBus(
             f"financiar la propuesta de un congelado es rescatarlo: {dueno}")
-    if deps.es_congelado(asientos, financiador_cuenta):
-        raise ErrorBus(f"un congelado no financia: {financiador_cuenta}")
-    a = mercado.k.transferir(ts, semana, financiador_cuenta,
-                             cuenta_trabajo(id), mm, motivo="financiacion")
+    if tipo == "preseed":
+        # Un pre-seed no es plata de otro departamento: es capital del
+        # tesoro para arrancar. No hay "financiador de fabrica" que valga
+        # aca -es Pedro decidiendo desde la mesa, y cae en la cuenta DEL
+        # DEPARTAMENTO, no en trabajo:<id> (no produce un trabajo).
+        if financiador_cuenta != TESORO:
+            raise ErrorBus(
+                "un pre-seed se financia contra el tesoro, no contra una "
+                f"billetera de departamento: {financiador_cuenta}")
+        destino = dueno
+        motivo = "preseed"
+    else:
+        # puerta de origen (FIX C1): solo un departamento de fabrica
+        # registrado puede financiar un trabajo; el tesoro y cuentas
+        # fantasma quedan afuera.
+        try:
+            dep = mercado.dep_por_cuenta(financiador_cuenta)
+        except ErrorMercado:
+            raise ErrorBus(f"financiador invalido: {financiador_cuenta}") from None
+        if dep.zona != deps.ZONA_FABRICA:
+            raise ErrorBus("solo departamentos de fabrica financian propuestas")
+        if deps.es_congelado(asientos, financiador_cuenta):
+            raise ErrorBus(f"un congelado no financia: {financiador_cuenta}")
+        destino = cuenta_trabajo(id)
+        motivo = "financiacion"
+    a = mercado.k.transferir(ts, semana, financiador_cuenta, destino, mm,
+                             motivo=motivo)
     if bus.estado(id) == "alta":
         bus.marcar(ts, semana, id, "financiada")
     return a
@@ -184,6 +214,12 @@ def evaluar_y_liquidar_muertos(mercado: Mercado, bus: Bus, ts: str,
     muertos: list[str] = []
     for id in bus.activas():
         datos = bus.datos(id)
+        if datos.get("tipo") == "preseed":
+            # un pre-seed no abre trabajo:<id>: la plata ya esta en la
+            # cuenta del departamento. No hay gasto que medir contra un
+            # criterio de muerte ni liquidacion proporcional que hacer —
+            # esta "financiada" es un estado final, no un trabajo en curso.
+            continue
         criterio = datos["criterio"]
         gasto = gastado(asientos, id)
         muere = ("gasto_max_mm" in criterio

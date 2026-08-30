@@ -29,11 +29,25 @@ def test_sin_capacidad_la_perilla_pasa_tal_cual():
     assert dec.sesgo_efectivo(30, precio_mm=0, precio_base_mm=0) == 30
 
 
-def test_parsear_las_cuatro_acciones():
+def test_parsear_las_cinco_acciones():
     assert dec.parsear("nada\nno hay plata")[:2] == ("nada", None)
     assert dec.parsear("proponer\nhay hueco en precios")[:2] == ("proponer", None)
     assert dec.parsear("trabajar p1\nva quedando corto")[:2] == ("trabajar", "p1")
     assert dec.parsear("comentar p2\nel criterio es flojo")[:2] == ("comentar", "p2")
+    assert dec.parsear("pedir 20000\nnecesito arrancar")[:2] == ("pedir", "20000")
+
+
+def test_pedir_exige_un_monto_entero_positivo():
+    """La ronda pre-seed: el jefe declara cuanto pide, y el parser sigue
+    siendo estricto con la forma -sin numero, o con algo que no es un
+    entero positivo, no hay pedido."""
+    for basura in ("pedir\nnecesito plata", "pedir mucho\nnecesito plata",
+                   "pedir -5\nnecesito plata", "pedir 0\nnecesito plata",
+                   "pedir 5.5\nnecesito plata"):
+        accion, ref, _ = dec.parsear(basura)
+        assert accion == "nada", f"{basura!r} no cayo en nada"
+        assert ref is None
+    assert dec.parsear("pedir 1\narranco chico")[:2] == ("pedir", "1")
 
 
 def test_el_motivo_sale_de_la_segunda_linea():
@@ -92,7 +106,7 @@ def test_el_prompt_lleva_los_numeros_que_hacen_falta():
         assert dato in p, f"al prompt le falta {dato}"
     assert "Capacidad de computo: 50 mm por unidad de claude_max (lista 100)." in p
     assert "explorar" in p
-    # y ofrece exactamente las cuatro acciones
+    # y ofrece exactamente las cinco acciones
     for accion in dec.ACCIONES:
         assert accion in p
 
@@ -113,14 +127,27 @@ def test_el_prompt_no_ofrece_trabajar_sin_trabajos_vivos():
     """El modelo elige `trabajar` en buena medida porque esta en el menu:
     ofrecerlo sin trabajos vivos invita a inventar un id -se lo vio pasar
     con qwen2.5:3b, razonando sobre proponer y emitiendo trabajar 1 con la
-    lista vacia. `nada` y `proponer` van siempre."""
+    lista vacia. `nada`, `proponer` y `pedir` van siempre."""
     s = {"nombre": "atlas", "disponible_mm": 0, "saldo_mm": 0,
          "presupuesto_semanal_mm": 0, "salidas_semana_mm": 0,
          "compuertas_pendientes": 0, "trabajos": [], "propuestas_ajenas": [],
          "capacidad": None}
     p = dec.prompt(s, 50)
     assert "trabajar" not in p
-    assert "nada" in p and "proponer" in p
+    assert "nada" in p and "proponer" in p and "pedir" in p
+
+
+def test_el_prompt_ofrece_pedir_este_o_no_quebrado():
+    """La ronda pre-seed no depende de que el departamento este quebrado:
+    quien decide si hace falta pedir es Pedro desde la mesa, no este
+    prompt -asi que `pedir <monto>` va en el menu siempre, con billetera
+    llena o vacia."""
+    s = {"nombre": "atlas", "disponible_mm": 400_000, "saldo_mm": 400_000,
+         "presupuesto_semanal_mm": 25_000, "salidas_semana_mm": 0,
+         "compuertas_pendientes": 0, "trabajos": [], "propuestas_ajenas": [],
+         "capacidad": None}
+    p = dec.prompt(s, 50)
+    assert "pedir <monto>" in p
 
 
 def test_el_prompt_ofrece_trabajar_con_trabajos_vivos():

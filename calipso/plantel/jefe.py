@@ -59,21 +59,37 @@ def _puede(estado, s: dict, accion: str, ref: str | None) -> tuple[bool, str]:
         return True, ""
     if not it.puede_gastar(estado):
         return False, f"modo {estado.modo}: mira y decide, no gasta"
-    if s["disponible_mm"] <= 0:
-        return False, "sin saldo disponible"
-    if accion == "proponer":
-        # Techo de propuestas propias sin financiar. El modelo ve las que ya
-        # tiene en pie y propone otra igual igual, asi que a 200 tics por
-        # semana el bus de Pedro se llena de duplicados y deja de servir para
-        # lo unico que sirve: que Pedro elija. Que despeje la bandeja primero.
+    if accion in ("proponer", "pedir"):
+        # Proponer y pedir no gastan: solo escriben en el bus (financiar es
+        # lo que gasta, y eso lo hace Pedro desde la mesa, no el jefe aca).
+        # El freno de saldo protege CONTRATAR sin fondos, no PEDIR fondos —
+        # si viviera aca, un departamento quebrado o recien nacido no podria
+        # ni pedir la ronda pre-seed que lo saca de estar quebrado.
+        #
+        # El techo de propuestas propias sin financiar SI sigue valiendo
+        # para los dos: el modelo ve las que ya tiene en pie y propone otra
+        # igual igual, asi que a 200 tics por semana el bus de Pedro se
+        # llena de duplicados y deja de servir para lo unico que sirve: que
+        # Pedro elija. Que despeje la bandeja primero.
         propias = len(s.get("propuestas_propias", []))
         if propias >= TECHO_PROPUESTAS:
             return False, (f"ya tiene {propias} propuestas sin financiar: "
                            f"que Pedro despeje antes de sumar otra")
-        tope = s["presupuesto_semanal_mm"] * s["agresividad_pct"] // 100
-        if s["salidas_semana_mm"] >= tope:
-            return False, (f"agresividad: ya comprometio "
-                           f"{s['salidas_semana_mm']} de {tope} mm")
+        if accion == "proponer" and s["presupuesto_semanal_mm"] > 0:
+            # La agresividad mide contra el presupuesto SEMANAL. Un
+            # departamento recien dado de alta todavia no tiene presupuesto
+            # semanal (esta esperando justo el pre-seed que "pedir" le
+            # permite pedir): con presupuesto en cero el tope tambien da
+            # cero, y `salidas_semana_mm >= 0` es siempre verdadero, asi que
+            # el freno frenaba para siempre por un motivo que no es
+            # agresividad. Sin presupuesto todavia, este freno no aplica.
+            tope = s["presupuesto_semanal_mm"] * s["agresividad_pct"] // 100
+            if s["salidas_semana_mm"] >= tope:
+                return False, (f"agresividad: ya comprometio "
+                               f"{s['salidas_semana_mm']} de {tope} mm")
+        return True, ""
+    if s["disponible_mm"] <= 0:
+        return False, "sin saldo disponible"
     return True, ""
 
 

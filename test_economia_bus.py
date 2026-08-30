@@ -257,3 +257,99 @@ def test_descartar_no_mueve_el_libro(entorno):
     antes = len(k.libro.asientos())
     bus_mod.descartar(b, TS, "2026-W30", "p1")
     assert len(k.libro.asientos()) == antes
+
+
+# -- pre-seed: la ronda con la que arranca un departamento ------------------
+#
+# Un pre-seed es una propuesta de `tipo="preseed"`: no se financia contra la
+# billetera de otro departamento sino contra el tesoro, y la plata cae en la
+# cuenta DEL DEPARTAMENTO dueno, no en trabajo:<id> -no produce un trabajo,
+# produce capital.
+
+
+def test_alta_default_tipo_trabajo(entorno):
+    """El default no rompe a nadie que ya llamaba `alta` sin `tipo`."""
+    k, m, b = entorno
+    b.alta(TS, "2026-W30", "p1", "dep:a", "radar", 100_000, 300_000, CRITERIO)
+    assert b.datos("p1")["tipo"] == "trabajo"
+
+
+def test_alta_valida_tipo(entorno):
+    k, m, b = entorno
+    with pytest.raises(bus_mod.ErrorBus):
+        b.alta(TS, "2026-W30", "p1", "dep:a", "malo", 1, 1, CRITERIO,
+              tipo="capital")
+
+
+def test_financiar_preseed_va_a_la_cuenta_del_departamento(entorno):
+    """La plata del pre-seed no toca trabajo:<id>: cae directo en la cuenta
+    del departamento, porque no financia un trabajo, financia el arranque."""
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 200_000, t.TESORO)
+    b.alta(TS, "2026-W30", "p1", "dep:a", "arranco de cero", 150_000,
+          150_000, {"gasto_max_mm": 150_000}, tipo="preseed")
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 150_000)
+    assert b.estado("p1") == "financiada"
+    assert k.saldo("dep:a") == 150_000
+    assert k.saldo(bus_mod.cuenta_trabajo("p1")) == 0
+    assert bus_mod.aportes(k.libro.asientos(), "p1") == {}
+
+
+def test_preseed_no_se_financia_con_billetera_de_departamento(entorno):
+    """Solo el tesoro financia un pre-seed: la billetera de otro
+    departamento no es de donde sale la ronda pre-seed."""
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 200_000, "dep:b")
+    b.alta(TS, "2026-W30", "p1", "dep:a", "arranco de cero", 150_000,
+          150_000, {"gasto_max_mm": 150_000}, tipo="preseed")
+    with pytest.raises(bus_mod.ErrorBus):
+        bus_mod.financiar(m, b, TS, "2026-W30", "p1", "dep:b", 150_000)
+
+
+def test_trabajo_no_se_financia_con_tesoro_pero_preseed_si(entorno):
+    """La misma cuenta (tesoro) es invalida para un `trabajo` y es la UNICA
+    valida para un `preseed`: el tipo, no la cuenta, decide la puerta."""
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 100_000, t.TESORO)
+    b.alta(TS, "2026-W30", "trabajo1", "dep:a", "radar", 100_000, 300_000,
+          CRITERIO)  # tipo="trabajo" por default
+    with pytest.raises(bus_mod.ErrorBus):
+        bus_mod.financiar(m, b, TS, "2026-W30", "trabajo1", t.TESORO, 10_000)
+    b.alta(TS, "2026-W30", "preseed1", "dep:a", "arranco", 100_000, 100_000,
+          {"gasto_max_mm": 100_000}, tipo="preseed")
+    bus_mod.financiar(m, b, TS, "2026-W30", "preseed1", t.TESORO, 100_000)
+    assert b.estado("preseed1") == "financiada"
+
+
+def test_preseed_no_tiene_ciclo_de_muerte(entorno):
+    """Un pre-seed financiado no abre trabajo:<id>, asi que no hay gasto que
+    medir contra el criterio de muerte ni liquidacion que hacer: se queda
+    "financiada" -es un estado final, no un trabajo en curso."""
+    k, m, b = entorno
+    for sem in ["2026-W30", "2026-W31", "2026-W32", "2026-W33"]:
+        _semana_op(k, sem)
+    _capital(k, 100_000, t.TESORO)
+    b.alta(TS, "2026-W30", "p1", "dep:a", "arranco", 100_000, 100_000,
+          {"semanas_max": 1}, tipo="preseed")
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 100_000)
+    assert bus_mod.evaluar_y_liquidar_muertos(m, b, TS, "2026-W33") == []
+    assert b.estado("p1") == "financiada"
+    assert k.saldo("dep:a") == 100_000
+
+
+def test_preseed_no_cuenta_para_el_mandato_de_direccion(entorno):
+    """direccion.asignado_semana suma solo motivo == "presupuesto": un
+    pre-seed usa su propio motivo y no cuenta contra el umbral del mandato
+    -un pre-seed no es presupuesto semanal."""
+    from calipso.economia import direccion
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 100_000, t.TESORO)
+    b.alta(TS, "2026-W30", "p1", "dep:a", "arranco", 100_000, 100_000,
+          {"gasto_max_mm": 100_000}, tipo="preseed")
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 100_000)
+    assert direccion.asignado_semana(k.libro.asientos(), "dep:a",
+                                     "2026-W30") == 0

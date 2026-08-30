@@ -7,7 +7,7 @@ porcentaje contra un precio es pedirle lo unico que no sabe hacer.
 """
 from __future__ import annotations
 
-ACCIONES = ("nada", "proponer", "trabajar", "comentar")
+ACCIONES = ("nada", "proponer", "trabajar", "comentar", "pedir")
 
 
 def sesgo_efectivo(explorar_pct: int, precio_mm: int,
@@ -63,7 +63,10 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
     # acepta: esto es solo lo que el prompt OFRECE.
     hay_para_comentar = bool(s.get("propuestas_propias") or
                              s["propuestas_ajenas"] or s["trabajos"])
-    menu = ["  nada", "  proponer"]
+    # "pedir" va siempre en el menu, con o sin presupuesto: es la ronda
+    # pre-seed (spec del bus), y quien decide si hace falta o no es Pedro
+    # desde la mesa, no este prompt.
+    menu = ["  nada", "  proponer", "  pedir <monto>"]
     if s["trabajos"]:
         menu.append("  trabajar <id>")
     if hay_para_comentar:
@@ -77,6 +80,9 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
         f"{s['saldo_mm']}.\n"
         f"Presupuesto de la semana: {s['presupuesto_semanal_mm']}. "
         f"Ya salieron {s['salidas_semana_mm']}.\n"
+        "Si te hace falta capital para arrancar, podes pedirle al tesoro un "
+        "monto en milimonedas con 'pedir <monto>'; lo decide Pedro desde su "
+        "mesa, igual que con una propuesta.\n"
         f"Capacidad de computo: {precio}.\n"
         f"Tus trabajos vivos:\n{trabajos}\n"
         f"Propuestas tuyas todavia sin financiar:\n{propias}\n"
@@ -112,4 +118,9 @@ def parsear(texto: str) -> tuple[str, str | None, str]:
         return "proponer", None, motivo
     if accion in ("trabajar", "comentar") and not ref:
         return "nada", None, motivo or f"{accion} sin id"
+    if accion == "pedir" and not (ref and ref.isdigit() and int(ref) > 0):
+        # el mismo criterio que un modelo que alucina no gasta: uno que
+        # pide sin numero, o un numero que no es un entero positivo, no
+        # pide -cae en nada, no en un pedido invalido en el bus
+        return "nada", None, motivo or "pedir sin un monto valido"
     return accion, ref, motivo

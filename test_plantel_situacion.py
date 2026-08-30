@@ -77,6 +77,32 @@ def test_separa_por_estado_y_por_dueno(fabrica):
     assert s["propuestas_ajenas"][0]["dueno"] == "dep:mercado"
 
 
+def test_un_preseed_financiado_no_es_un_trabajo(fabrica):
+    """Un pre-seed financiado no produce un trabajo, produce capital: la
+    plata ya esta en la cuenta del departamento (no en trabajo:<id>), asi
+    que desaparece de `trabajos` en cuanto se financia -mostrarlo ahi seria
+    mentirle al jefe sobre que tiene algo pendiente que seguir."""
+    k, r, bus, cola, sus = fabrica
+    bus.alta(TS, W, "p1", "dep:atlas", "arranco de cero", 200_000, 200_000,
+             {"gasto_max_mm": 200_000}, tipo="preseed")
+    bus.marcar(TS, W, "p1", "financiada")
+    s = sit.situacion(k, r, bus, cola, sus, W, "dep:atlas")
+    assert s["trabajos"] == []
+    assert s["propuestas_propias"] == []
+
+
+def test_un_preseed_sin_financiar_cuenta_como_propuesta_propia(fabrica):
+    """Mientras espera que Pedro elija, un pre-seed sin financiar SI cuenta
+    para el techo de propuestas propias -el mismo motivo por el que
+    `TECHO_PROPUESTAS` sigue valiendo para un departamento quebrado."""
+    k, r, bus, cola, sus = fabrica
+    bus.alta(TS, W, "p1", "dep:atlas", "arranco de cero", 200_000, 200_000,
+             {"gasto_max_mm": 200_000}, tipo="preseed")
+    s = sit.situacion(k, r, bus, cola, sus, W, "dep:atlas")
+    assert [x["id"] for x in s["propuestas_propias"]] == ["p1"]
+    assert s["trabajos"] == []
+
+
 def test_una_propuesta_muerta_ya_no_se_decide(fabrica):
     """Sobre lo liquidado no se opina ni se trabaja: solo ensuciaria el
     prompt y el jefe podria elegir un id que ya no existe."""

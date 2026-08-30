@@ -10,6 +10,7 @@ from calipso.economia.libro import Libro
 from calipso.plantel import decision as dec
 from calipso.plantel import interruptor as it
 from calipso.plantel import jefe as j
+from calipso.plantel import situacion as sit
 
 TS = "2026-08-26T10:00:00"
 W = "2026-W35"
@@ -34,13 +35,14 @@ class MemoriaFalsa:
         self.recordado.append(texto)
 
 
-def armar(tmp_path, respuesta="nada\nno hay nada", saldo=400_000):
+def armar(tmp_path, respuesta="nada\nno hay nada", saldo=400_000,
+         presupuesto_semanal_mm=25_000):
     eco = tmp_path / "economia"
     eco.mkdir(parents=True, exist_ok=True)
     k = Kernel(Libro(eco / "libro.jsonl"))
     r = deps.Registro(eco / "departamentos.json")
     r.alta(deps.Departamento("atlas", deps.ZONA_FABRICA,
-                             presupuesto_semanal_mm=25_000,
+                             presupuesto_semanal_mm=presupuesto_semanal_mm,
                              techo_api_ciclo_mm=3_000, agresividad_pct=40))
     pt.emitir_semana(k, TS, W, 4_000, 1_000)
     if saldo:
@@ -114,12 +116,134 @@ def test_sin_cuerda_no_despierta(tmp_path):
 
 def test_sin_saldo_no_actua(tmp_path):
     """El freno duro: no hay prompt que lo evite porque no lo decide el
-    prompt."""
-    ctx, contratos, _ = armar(tmp_path, "proponer\ndale", saldo=0)
+    prompt. Frena lo que GASTA -trabajar, que contrata sobre un trabajo ya
+    financiado- no lo que solo PIDE (eso lo cubren los tests de pre-seed de
+    mas abajo: proponer y pedir no gastan un peso)."""
+    ctx, contratos, _ = armar(tmp_path, "trabajar p1\ndale", saldo=0)
+    ctx.bus.alta(TS, W, "p1", "dep:atlas", "ya en marcha", 1_000, 2_000,
+                {"gasto_max_mm": 5_000})
+    ctx.bus.marcar(TS, W, "p1", "financiada")
     it.poner_modo(tmp_path, "vivo")
     out = j.tic(ctx, "dep:atlas", W)
     assert out["actuo"] is False and "saldo" in out["freno"]
     assert contratos == []
+
+
+def test_sin_saldo_si_puede_proponer(tmp_path):
+    """Freno 1 verificado y corregido: el chequeo de saldo estaba ANTES de
+    la rama de `proponer`, asi que un departamento sin plata no podia ni
+    pedir plata. Proponer no gasta -solo escribe en el bus- asi que el
+    freno de saldo no le corresponde."""
+    ctx, contratos, _ = armar(tmp_path, "proponer\nnecesito arrancar", saldo=0)
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["actuo"] is True
+    assert contratos == [("proponer", None, "necesito arrancar")]
+
+
+def test_presupuesto_semanal_cero_no_frena_proponer_por_agresividad(tmp_path):
+    """Freno 2 verificado y corregido: con presupuesto_semanal_mm=0 (un
+    departamento recien dado de alta), el tope de agresividad daba
+    25.000*0//100... no, daba presupuesto*agresividad//100 = 0, y
+    `salidas_semana_mm >= 0` es siempre verdadero -nunca podia proponer, y
+    el freno registrado hablaba de agresividad, que no tenia nada que ver."""
+    ctx, contratos, _ = armar(tmp_path, "proponer\narranco de cero", saldo=100_000,
+                              presupuesto_semanal_mm=0)
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["actuo"] is True
+    assert contratos == [("proponer", None, "arranco de cero")]
+
+
+def test_pedir_es_la_ronda_preseed_y_no_gasta(tmp_path):
+    """El jefe ahora puede decir "pido un stake de N": `pedir <monto>` es
+    una accion nueva, separada de `proponer`, para que el modelo declare
+    cuanto pide sin que nadie tenga que inventarle una formula."""
+    ctx, contratos, _ = armar(tmp_path, "pedir 50000\nnecesito arrancar",
+                              saldo=0, presupuesto_semanal_mm=0)
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["actuo"] is True
+    assert contratos == [("pedir", "50000", "necesito arrancar")]
+
+
+def test_pedir_sin_monto_valido_cae_en_nada(tmp_path):
+    """El parser sigue siendo estricto con la forma: pedir sin numero, o con
+    algo que no es un entero positivo, no pide nada."""
+    ctx, contratos, _ = armar(tmp_path, "pedir mucho\nporfa", saldo=0)
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["accion"] == "nada"
+    assert contratos == []
+
+
+def test_pedir_tambien_respeta_el_techo_de_propuestas(tmp_path):
+    """El techo de propuestas sin financiar es compartido entre `proponer`
+    y `pedir`: sin esto, un departamento sin plata podria llenar el bus de
+    pedidos de pre-seed a 200 tics por semana igual que con propuestas de
+    trabajo."""
+    ctx, contratos, _ = armar(tmp_path, "pedir 10000\notro pedido",
+                              saldo=0, presupuesto_semanal_mm=0)
+    for i in range(j.TECHO_PROPUESTAS):
+        ctx.bus.alta(TS, W, f"p{i}", "dep:atlas", f"pedido {i}", 1_000, 2_000,
+                    {"gasto_max_mm": 5_000}, tipo="preseed")
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["actuo"] is False
+    assert "propuestas sin financiar" in out["freno"]
+    assert contratos == []
+
+
+def test_dia_uno_pide_preseed_en_el_bus_y_pedro_lo_financia(tmp_path):
+    """El entregable: un departamento con saldo cero y presupuesto cero -el
+    estado real del dia 1, recien dado de alta- ahora si puede publicar su
+    pedido de pre-seed en el bus, y despues de que Pedro lo financia contra
+    el tesoro (no contra la billetera de otro departamento), la plata esta
+    en SU cuenta (no en trabajo:<id>: un pre-seed no es un trabajo)."""
+    from calipso.economia import bus as bus_mod
+    from calipso.economia import mercado as mkt
+
+    ctx, contratos, _ = armar(tmp_path, "pedir 200000\narrancamos de cero",
+                              saldo=0, presupuesto_semanal_mm=0)
+    it.poner_modo(tmp_path, "vivo")
+
+    # 1. el dia 1: sin un peso y sin presupuesto semanal, publica su pedido.
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["actuo"] is True
+    assert out["accion"] == "pedir" and out["ref"] == "200000"
+    assert contratos == [("pedir", "200000", "arrancamos de cero")]
+
+    # el "contratar" de produccion vive en server.py (fuera de este scope);
+    # aca se ejercita el mismo camino que va a tomar: una propuesta de
+    # tipo="preseed" en el bus, con el monto que el jefe pidio.
+    propuesta_id = "atlas-preseed-1"
+    ctx.bus.alta(TS, W, propuesta_id, "dep:atlas", "arrancamos de cero",
+                200_000, 200_000, {"gasto_max_mm": 200_000, "semanas_max": 8},
+                tipo="preseed")
+    assert bus_mod.aportes(ctx.kernel.libro.asientos(), propuesta_id) == {}
+    assert ctx.bus.estado(propuesta_id) == "alta"
+    assert [p["id"] for p in
+           sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
+                        ctx.suscripciones, W, "dep:atlas")["propuestas_propias"]
+           ] == [propuesta_id]
+
+    # 2. Pedro elige: lo financia contra el tesoro, no contra otro
+    # departamento.
+    ctx.kernel.acunar(TS, W, t.TESORO, 200_000, t.SubtipoAcunacion.CAPITAL,
+                      {"tipo": "firma_pedro"})
+    m = mkt.Mercado(ctx.kernel, ctx.registro, ctx.suscripciones)
+    bus_mod.financiar(m, ctx.bus, TS, W, propuesta_id, t.TESORO, 200_000)
+
+    # 3. la plata esta en SU cuenta, no en trabajo:<id>.
+    assert ctx.bus.estado(propuesta_id) == "financiada"
+    assert ctx.kernel.saldo("dep:atlas") == 200_000
+    assert ctx.kernel.saldo(bus_mod.cuenta_trabajo(propuesta_id)) == 0
+
+    # y no cuenta contra el umbral del mandato semanal: un pre-seed no es
+    # presupuesto (spec de direccion.asignado_semana).
+    from calipso.economia import direccion
+    assert direccion.asignado_semana(ctx.kernel.libro.asientos(),
+                                     "dep:atlas", W) == 0
 
 
 def test_la_agresividad_frena_proponer_pero_no_trabajar(tmp_path):

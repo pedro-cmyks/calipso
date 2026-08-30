@@ -77,7 +77,11 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
         base = {"id": id_, "titulo": datos.get("titulo", ""),
                 "presupuesto_mm": datos.get("presupuesto_mm", 0)}
         if estado == "financiada":
-            if mio:
+            # un pre-seed financiado no es un trabajo: la plata ya esta en
+            # la cuenta del departamento (no en trabajo:<id>), asi que no
+            # tiene gasto que mostrar ni nada pendiente que el jefe deba
+            # seguir mirando.
+            if mio and datos.get("tipo") != "preseed":
                 trabajos.append({**base,
                                  "gastado_mm": bus_mod.gastado(asientos, id_)})
             continue
