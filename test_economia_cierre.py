@@ -197,3 +197,60 @@ def test_ciclo_incompleto_no_renueva(entorno):
     _semana(k, "2026-W30")
     cierre.cerrar_semana_economia(m, b, TS, "2026-W30")
     assert cierre.cerrar_ciclo(m, TS, "2026-W30") == []
+
+
+def test_repreciar_la_capacidad_no_repinta_un_ciclo_ya_cerrado(entorno):
+    """El circuit breaker de renovacion cuenta ciclos rojos consecutivos, y
+    "rojo" era `recaudacion(ciclo) < sus.costo_fabrica_mm DE HOY`. Ese
+    numero se mueve con la perilla que reprecia la capacidad
+    (`POST /api/economia/suscripciones/{n}/capacidad`), asi que repreciar
+    cambiaba retroactivamente el color de ciclos ya cerrados y con eso
+    armaba o DESARMABA el breaker: dos ciclos rojos que exigian la firma de
+    Pedro pasaban a uno, la suscripcion se renovaba sola y el breaker no
+    aparecia nunca. Un ciclo cerrado tiene su color decidido, como sus
+    asientos: se estampa al cerrar."""
+    k, m, b = entorno
+    m.registro.ajustar("a", presupuesto_semanal_mm=100_000)
+    semanas = [f"2026-W{n}" for n in range(30, 38)]  # dos ciclos
+    for i, sem in enumerate(semanas):
+        _semana(k, sem)
+        cierre.cerrar_semana_economia(m, b, TS, sem)
+        if i == 0:
+            m.comprar_capacidad(TS, sem, "dep:a", "claude_max", 100)
+
+    ciclo_0 = ["2026-W30", "2026-W31", "2026-W32", "2026-W33"]
+    recaudado = cap.recaudacion(k.libro.asientos(), "claude_max", ciclo_0)
+    # rojo con la configuracion de hoy (costo_fabrica 80.000) y verde con
+    # la que Pedro esta por aplicar (capacidad 220 -> costo_fabrica 9.090):
+    # justo la ventana donde el color cambia de signo
+    assert 9_090 < recaudado < 80_000
+
+    informes_0 = cierre.cerrar_ciclo(m, TS, "2026-W33")
+    assert informes_0[0]["rojo"] is True
+
+    # Pedro reprecia la capacidad medida entre los dos cierres
+    m_repreciado = mkt.Mercado(
+        k, m.registro,
+        {"claude_max": cap.Suscripcion("claude_max", 100_000, 220, 200, 500)})
+    assert m_repreciado.suscripciones["claude_max"].costo_fabrica_mm < recaudado
+
+    informes_1 = cierre.cerrar_ciclo(m_repreciado, TS, "2026-W37")
+    inf = informes_1[0]
+    assert inf["rojos_consecutivos"] == 2, "el ciclo 0 se repinto de verde"
+    assert inf["requiere_firma"] is True and inf["renovada"] is False
+
+
+def test_el_color_de_un_ciclo_se_estampa_una_sola_vez(entorno):
+    """Idempotente: cerrar dos veces la misma semana no deja dos estampas,
+    y la segunda corrida lee la primera."""
+    k, m, b = entorno
+    semanas = ["2026-W30", "2026-W31", "2026-W32", "2026-W33"]
+    _ciclo_completo(k, m, b, semanas)
+    cierre.cerrar_ciclo(m, TS, "2026-W33")
+    cierre.cerrar_ciclo(m, TS, "2026-W33")
+    estampas = [a for a in k.libro.asientos()
+                if a.tipo is t.TipoAsiento.APUNTE
+                and a.detalle.get("nota") == cierre.NOTA_COLOR_CICLO]
+    assert len(estampas) == 1
+    assert estampas[0].detalle["suscripcion"] == "claude_max"
+    assert estampas[0].detalle["ciclo"] == 0

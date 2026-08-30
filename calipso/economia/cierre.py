@@ -149,9 +149,49 @@ def cerrar_semana_economia(mercado: Mercado, bus: bus_mod.Bus, ts: str,
                           cierre_pt=cierre_pt)
 
 
+# el apunte que estampa el color de un ciclo al cerrarlo
+NOTA_COLOR_CICLO = "color_ciclo"
+
+
+def _color_estampado(asientos, nombre: str, semanas: list[str]) -> bool | None:
+    """El color que se le puso a ese ciclo cuando cerro, o None si es un
+    ciclo cerrado antes de que esto existiera."""
+    for a in asientos:
+        if (a.tipo is TipoAsiento.APUNTE
+                and a.detalle.get("nota") == NOTA_COLOR_CICLO
+                and a.detalle.get("suscripcion") == nombre
+                and a.semana in semanas):
+            return bool(a.detalle.get("rojo"))
+    return None
+
+
 def _rojo_de_ciclo(asientos, sus: cap.Suscripcion, ciclo: int,
                    ops: list[str]) -> bool:
+    """El color de UN ciclo: el estampado si lo tiene, y si no el calculado.
+
+    El calculo compara la recaudacion de ese ciclo contra el
+    `costo_fabrica_mm` de HOY, y ese numero se mueve: es
+    `costo_mensual_mm * (capacidad_ciclo - reserva_personal) //
+    capacidad_ciclo`, o sea que depende de la perilla que
+    `POST /api/economia/suscripciones/{n}/capacidad` reprecia. Con eso
+    solo, repreciar la capacidad cambiaba RETROACTIVAMENTE el color de
+    ciclos ya cerrados -- y `cerrar_ciclo` camina hacia atras contando
+    rojos consecutivos, asi que armaba o DESARMABA el circuit breaker de
+    renovacion: dos ciclos rojos que exigian la firma de Pedro pasaban a
+    uno, la suscripcion se renovaba sola y el breaker no aparecia nunca.
+    Este es el pliegue que compara ciclos entre si con consecuencia real,
+    y no lo cubria ningun guardia: el del ciclo en curso mira
+    `consumido > capacidad_fabrica`, no el color de los anteriores.
+
+    Un ciclo cerrado tiene su color decidido, como sus asientos: se estampa
+    al cerrar y despues se lee. Los cerrados ANTES de este cambio no tienen
+    estampa y se siguen calculando como antes -- no hay de donde sacarles
+    el numero que tenian, y inventarlo seria peor que declararlo.
+    """
     semanas = cap.semanas_del_ciclo(ciclo, ops)
+    estampado = _color_estampado(asientos, sus.nombre, semanas)
+    if estampado is not None:
+        return estampado
     return cap.recaudacion(asientos, sus.nombre, semanas) < sus.costo_fabrica_mm
 
 
@@ -169,7 +209,18 @@ def cerrar_ciclo(mercado: Mercado, ts: str, semana: str,
     for nombre, sus in sorted(mercado.suscripciones.items()):
         semanas = cap.semanas_del_ciclo(ciclo, ops)
         recaudado = cap.recaudacion(asientos, nombre, semanas)
-        rojo = recaudado < sus.costo_fabrica_mm
+        rojo = _rojo_de_ciclo(asientos, sus, ciclo, ops)
+        if _color_estampado(asientos, nombre, semanas) is None:
+            # se estampa ANTES de caminar hacia atras, para que el ciclo que
+            # cierra hoy se lea igual que los anteriores. Idempotente: una
+            # segunda corrida sobre la misma semana encuentra la estampa y
+            # no escribe otra.
+            k.apuntar(ts, semana, 1,
+                      {"nota": NOTA_COLOR_CICLO, "suscripcion": nombre,
+                       "ciclo": ciclo, "rojo": rojo,
+                       "recaudacion_mm": recaudado,
+                       "costo_fabrica_mm": sus.costo_fabrica_mm})
+            asientos = k.libro.asientos()
         rojos = 0
         c = ciclo
         while c >= 0 and _rojo_de_ciclo(asientos, sus, c, ops):
