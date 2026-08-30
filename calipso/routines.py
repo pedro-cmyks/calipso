@@ -9,7 +9,9 @@ significa "se ejecuta cuando toca mientras el server este vivo". Persistimos
 rutina "departamento" (Tarea 6 del plan de plantel) SI escala a API: despierta
 al jefe de un departamento, que decide en el escalon local y puede contratar.
 La rutina "cierre" dispara el pulso semanal de la economia (ver DEFAULTS,
-mas abajo, para por que nace apagada).
+mas abajo, para por que nace apagada). La rutina "consumo" mide el uso real
+de las suscripciones de CLI (Claude, Codex) leyendo lo que esos procesos ya
+escriben solos en disco -- ver calipso/consumo.py para el porque y el como.
 
 El modulo es puro de I/O + logica de vencimiento; el server inyecta los handlers
 que ejecutan cada `kind`. La logica de "due" recibe `now` para poder probarse.
@@ -28,7 +30,7 @@ from typing import Any, Callable
 CALIPSO_HOME = pathlib.Path(os.environ.get(
     "CALIPSO_HOME", os.path.expanduser("~/.calipso")))
 
-KINDS = ("reflect", "learn", "backup", "departamento", "catastro", "cierre")
+KINDS = ("reflect", "learn", "backup", "departamento", "catastro", "cierre", "consumo")
 
 
 class ErrorRutinas(Exception):
@@ -64,6 +66,17 @@ class ErrorRutinas(Exception):
 # trabajos que no rinden, todo solo mientras Pedro no esta mirando.
 # Prender ese piloto automatico es una decision suya, no una que el
 # codigo tome por default.
+#
+# "consumo" vuelve al grupo de "catastro": nace HABILITADA, por la misma
+# razon. El handler (calipso/consumo.py) solo hace stat()/open() de solo
+# lectura sobre jsonl que Claude Code y Codex YA escriben solos en
+# ~/.claude y ~/.codex -- nada de red, nada de subprocesos, nada de
+# modelos, y sobre todo nada de PREGUNTARLE al CLI su propio estado:
+# medido en esta maquina, dos llamadas triviales para consultarlo subieron
+# el used_percent de la ventana de 5 horas de Codex de 7.0 a 9.0. Un probe
+# que pregunta se come la cuota que quiere medir; uno que solo lee lo que
+# ya esta escrito no gasta nada. No hay ningun costo, ni ninguna decision
+# irreversible (a diferencia de "cierre"), que justifique que nazca apagada.
 DEFAULTS = [
     {"kind": "reflect", "label": "Reflexionar memoria episodica", "interval_minutes": 1440},
     {"kind": "learn", "label": "Aprender preferencias", "interval_minutes": 1440},
@@ -72,6 +85,8 @@ DEFAULTS = [
      "interval_minutes": 60, "enabled_por_defecto": True},
     {"kind": "cierre", "label": "Cerrar semana operativa de la economia",
      "interval_minutes": 1440},
+    {"kind": "consumo", "label": "Medir consumo real de las suscripciones",
+     "interval_minutes": 60, "enabled_por_defecto": True},
 ]
 
 

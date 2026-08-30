@@ -28,31 +28,37 @@ def main() -> int:
     fails: list[str] = []
     now = datetime.datetime(2026, 6, 16, 12, 0, 0)
 
-    # seed inicial: 5 rutinas. Las tres viejas y "cierre" nacen
-    # deshabilitadas; "catastro" nace habilitada a proposito (ver el
-    # comentario de routines.DEFAULTS): es la que existe para que Pedro no
-    # tenga que acordarse de prenderla. "cierre" es la excepcion opuesta:
-    # nace apagada porque encender el cierre automatico de la economia es
-    # decision de Pedro, no del codigo.
+    # seed inicial: 6 rutinas. Las tres viejas y "cierre" nacen
+    # deshabilitadas; "catastro" y "consumo" nacen habilitadas a proposito
+    # (ver el comentario de routines.DEFAULTS): son las que existen para
+    # que Pedro no tenga que acordarse de prenderlas -- ninguna de las dos
+    # gasta nada ni toma una decision economica. "cierre" es la excepcion
+    # opuesta: nace apagada porque encender el cierre automatico de la
+    # economia es decision de Pedro, no del codigo.
     seeded = routines.load()
-    check("seed crea 5 rutinas", len(seeded) == 5, fails)
-    deshabilitadas_por_defecto = [r for r in seeded if r["kind"] != "catastro"]
+    check("seed crea 6 rutinas", len(seeded) == 6, fails)
+    habilitadas_por_defecto = {"catastro", "consumo"}
+    deshabilitadas_por_defecto = [r for r in seeded if r["kind"] not in habilitadas_por_defecto]
     check("las cuatro deshabilitadas por defecto (viejas + cierre) nacen apagadas",
          all(not r["enabled"] for r in deshabilitadas_por_defecto), fails)
     catastro_rt = next((r for r in seeded if r["kind"] == "catastro"), None)
     check("catastro nace habilitada",
          catastro_rt is not None and catastro_rt["enabled"] is True, fails)
+    consumo_rt = next((r for r in seeded if r["kind"] == "consumo"), None)
+    check("consumo nace habilitada",
+         consumo_rt is not None and consumo_rt["enabled"] is True, fails)
     check("kinds esperados",
          {r["kind"] for r in seeded} ==
-         {"reflect", "learn", "backup", "catastro", "cierre"},
+         {"reflect", "learn", "backup", "catastro", "cierre", "consumo"},
          fails)
 
     # el resto de esta prueba ejercita el vencimiento de UNA rutina
-    # puntual (reflect); catastro nace habilitada y por lo tanto "vence"
-    # desde el primer load() (nunca corrio), lo que interferiria con esas
-    # aserciones. Ya quedo probado arriba que nace habilitada -- se apaga
-    # aca para el resto del escenario.
+    # puntual (reflect); catastro y consumo nacen habilitadas y por lo
+    # tanto "vencen" desde el primer load() (nunca corrieron), lo que
+    # interferiria con esas aserciones. Ya quedo probado arriba que nacen
+    # habilitadas -- se apagan aca para el resto del escenario.
     routines.update(catastro_rt["id"], {"enabled": False})
+    routines.update(consumo_rt["id"], {"enabled": False})
 
     # rutina deshabilitada nunca vence
     check("deshabilitada no vence", routines.due(routines.load(), now) == [], fails)
@@ -154,9 +160,9 @@ def main() -> int:
     # corrupto", el caso de arriba) sigue dando el seed, como siempre
     ruta_routines.unlink()
     reseed = routines.load()
-    reseed_viejas = [r for r in reseed if r["kind"] != "catastro"]
+    reseed_viejas = [r for r in reseed if r["kind"] not in ("catastro", "consumo")]
     check("archivo ausente sigue dando el seed",
-         len(reseed) == 5 and all(not r["enabled"] for r in reseed_viejas),
+         len(reseed) == 6 and all(not r["enabled"] for r in reseed_viejas),
          fails)
 
     # add/remove

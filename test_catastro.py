@@ -317,9 +317,11 @@ def test_routines_seed_incluye_catastro_habilitada(tmp_path, monkeypatch):
     seeded = routines.load()
     catastro_rt = next(r for r in seeded if r["kind"] == "catastro")
     assert catastro_rt["enabled"] is True
-    # las tres viejas siguen naciendo apagadas -- este cambio no las toca.
+    # las tres viejas (mas "cierre") siguen naciendo apagadas -- este
+    # cambio no las toca. "consumo" nace habilitada por su propia razon
+    # (calipso/consumo.py), no por esta.
     for r in seeded:
-        if r["kind"] != "catastro":
+        if r["kind"] not in ("catastro", "consumo"):
             assert r["enabled"] is False
 
 

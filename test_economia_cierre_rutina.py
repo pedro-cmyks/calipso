@@ -61,10 +61,10 @@ def test_cierre_nace_deshabilitada_en_el_seed():
     assert rutina["interval_minutes"] == 1440
 
 
-def test_las_seis_rutinas_conocidas_siguen_ahi():
+def test_las_siete_rutinas_conocidas_siguen_ahi():
     seed = calipso_routines._seed()
     assert {r["kind"] for r in seed} == {
-        "reflect", "learn", "backup", "catastro", "cierre"}
+        "reflect", "learn", "backup", "catastro", "cierre", "consumo"}
 
 
 # ---------------------------------------------------------------------

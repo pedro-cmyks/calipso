@@ -62,6 +62,7 @@ from calipso import browser as calipso_browser  # noqa: E402
 from calipso import catastro  # noqa: E402
 from calipso import chronology as calipso_chronology  # noqa: E402
 from calipso import connectors as calipso_connectors  # noqa: E402
+from calipso import consumo as calipso_consumo  # noqa: E402
 from calipso import costs  # noqa: E402
 from calipso import developer  # noqa: E402
 from calipso import deps  # noqa: E402
@@ -2656,7 +2657,9 @@ def _routine_handlers() -> dict:
     de departamento SI gasta: despierta al jefe, que decide en el escalon
     local y puede contratar. Sus frenos viven en calipso/plantel/interruptor.
     La de cierre SI escribe el libro de la economia: dispara el mismo pulso
-    semanal que hoy solo corre a mano via POST /api/economia/cierre.
+    semanal que hoy solo corre a mano via POST /api/economia/cierre. La de
+    consumo (calipso/consumo.py) solo lee jsonl locales -- ningun modelo,
+    ningun CLI, ninguna decision economica.
     """
     def _reflect(_r):
         mem.reflect()
@@ -2733,9 +2736,17 @@ def _routine_handlers() -> dict:
                 presupuesto_direccion_mm=0)
             eco["pagador"].reintentar_pendientes()
 
+    def _consumo(_r):
+        # mismo espiritu que _catastro: barre lo que ya esta en disco
+        # (calipso_consumo.escanear) y deja una foto plegada
+        # (calipso_consumo.resumen) -- nunca llama a `claude`/`codex`, y
+        # por lo tanto nunca gasta la cuota que esta midiendo.
+        calipso_consumo.escanear()
+        calipso_consumo.resumen()
+
     return {"reflect": _reflect, "learn": _learn, "backup": _backup,
             "catastro": _catastro, "departamento": _departamento,
-            "cierre": _cierre}
+            "cierre": _cierre, "consumo": _consumo}
 
 
 @app.get("/api/routines")
@@ -4781,6 +4792,23 @@ def _asegurar_rutina_cierre() -> None:
         pass
 
 
+def _asegurar_rutina_consumo() -> None:
+    """Mismo problema, mismo arreglo, tercera vez: un ~/.calipso que ya
+    tenia routines.json antes de que "consumo" existiera como kind nunca
+    lo ve aparecer solo. Igual que catastro (y a diferencia de cierre) nace
+    HABILITADA: no gasta nada -- solo lee jsonl locales -- y no toma
+    ninguna decision economica, asi que no hay motivo para que Pedro tenga
+    que acordarse de prenderla (ver el comentario junto a
+    routines.DEFAULTS)."""
+    try:
+        if not any(r.get("kind") == "consumo" for r in calipso_routines.load()):
+            calipso_routines.add(
+                "consumo", "Medir consumo real de las suscripciones",
+                60, enabled=True)
+    except Exception:
+        pass
+
+
 @app.on_event("startup")
 async def _startup_warm() -> None:
     try:
@@ -4792,6 +4820,7 @@ async def _startup_warm() -> None:
         pass
     await asyncio.to_thread(_asegurar_rutina_catastro)
     await asyncio.to_thread(_asegurar_rutina_cierre)
+    await asyncio.to_thread(_asegurar_rutina_consumo)
     try:
         asyncio.create_task(_routines_ticker())
     except Exception:
