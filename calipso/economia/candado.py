@@ -13,12 +13,50 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import json
+import os
 import pathlib
 import threading
 
 
 class ErrorCandado(Exception):
     pass
+
+
+def escribir_json_atomico(ruta: pathlib.Path, datos) -> None:
+    """Escribe un json de configuracion sin que exista un estado a medias.
+
+    El candado de arriba resuelve la mitad del problema: que dos
+    ESCRITORES no se pisen. Esta funcion resuelve la otra mitad, que el
+    candado no toca: `Path.write_text` trunca EN EL LUGAR, asi que entre
+    el truncate y el write el archivo existe con cero bytes -- y si la
+    escritura se corta a la mitad (disco lleno, kill, RLIMIT), lo que
+    queda en disco es json invalido. Para departamentos.json o
+    suscripciones.json eso no es un archivo raro: es la economia ENTERA
+    que deja de cargar, y el unico arreglo es abrir el archivo con un
+    editor -- justo lo que los endpoints de configuracion vinieron a
+    eliminar.
+
+    Escribir un temporal en el MISMO directorio y `os.replace` lo hace
+    indivisible: el lector ve el contenido viejo o el nuevo, nunca uno a
+    medias, y una escritura cortada solo ensucia el temporal. Mismo
+    patron que `permisos/almacen.py`, `consumo.py`, `routines.py` y
+    `plantel/interruptor.py`; vive ACA para que economia tenga uno solo y
+    no una quinta copia.
+    """
+    ruta = pathlib.Path(ruta)
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ruta.with_name(f"{ruta.name}.tmp{os.getpid()}."
+                         f"{threading.get_ident()}")
+    try:
+        tmp.write_text(json.dumps(datos, ensure_ascii=False, indent=1),
+                       encoding="utf-8")
+        os.replace(tmp, ruta)
+    finally:
+        # si el replace no llego a pasar (disco lleno, permisos) no dejamos
+        # el temporal tirado
+        with contextlib.suppress(OSError):
+            tmp.unlink()
 
 
 _guardia = threading.Lock()

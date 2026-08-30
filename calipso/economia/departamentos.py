@@ -13,6 +13,7 @@ import json
 import pathlib
 from dataclasses import dataclass, asdict, replace
 
+from .candado import escribir_json_atomico
 from .kernel import Kernel
 from .tipos import Asiento, SubtipoAcunacion, TipoAsiento
 
@@ -68,10 +69,16 @@ class Registro:
             self._deps = {n: Departamento(**campos) for n, campos in datos.items()}
 
     def _guardar(self) -> None:
-        self.ruta.parent.mkdir(parents=True, exist_ok=True)
+        """Atomico: `escribir_json_atomico` y no `write_text`.
+
+        `ajustar` lo hace alcanzable N veces desde http (una por toque de
+        perilla), y `write_text` trunca en el lugar: una escritura cortada
+        a la mitad deja departamentos.json invalido y con eso la economia
+        entera sin cargar -- `/api/economia/config`, `/api/economia/tablero`
+        y `/api/economia/bus` revientan las tres. Ver el docstring del
+        helper."""
         datos = {n: asdict(d) for n, d in self._deps.items()}
-        self.ruta.write_text(json.dumps(datos, ensure_ascii=False, indent=1),
-                             encoding="utf-8")
+        escribir_json_atomico(self.ruta, datos)
 
     def alta(self, dep: Departamento) -> None:
         if dep.nombre in self._deps:
