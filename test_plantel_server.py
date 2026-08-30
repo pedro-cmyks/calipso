@@ -14,6 +14,7 @@ from calipso.economia.candado import candado as candado_real
 from calipso.economia.kernel import Kernel
 from calipso.economia.libro import Libro
 from calipso.plantel import interruptor as it
+from calipso.plantel import jefe as _jefe
 
 
 @pytest.fixture
@@ -279,6 +280,12 @@ def test_contratar_escribe_el_alta_bajo_candado(tmp_path, monkeypatch):
         def __init__(self, ruta):
             self.ruta = ruta
 
+        def ids(self):
+            # el contratista relee el techo de propuestas adentro del
+            # candado (la segunda linea contra la carrera de dos tics
+            # simultaneos): un bus vacio no frena nada
+            return []
+
         def alta(self, *args, **kwargs):
             assert candado_activo, "bus.alta corrio SIN el candado"
             altas.append((args, kwargs))
@@ -366,3 +373,67 @@ def test_sin_techo_el_contratista_no_escribe_en_el_bus(tmp_path, monkeypatch):
     bus = srv._eco_bus.Bus(
         srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
     assert bus.ids() == []
+
+
+def test_un_superindice_no_revienta_el_contratista(tmp_path, monkeypatch):
+    """`'²'.isdigit()` es True y `int('²')` revienta con ValueError: los
+    superindices son Numeric_Type=Digit pero no decimales. El sintoma no
+    era un crash visible sino una mentira en el registro del jefe -- en vez
+    de caer en el recorte al techo, caia en el `except` de `tic` y se
+    anotaba como "reviento actuando". Con `.isdecimal()`, lo que no es un
+    monto se trata como si no hubiera venido: se pide el techo."""
+    contratar, _ = _contratar_real(tmp_path, monkeypatch)
+    s = {"nombre": "atlas", "presupuesto_semanal_mm": 0,
+         "agresividad_pct": 30, "salidas_semana_mm": 0,
+         "techo_preseed_mm": 50_000}
+    r = contratar(s, "pedir", "²", "quiero arrancar")
+    assert r["monto_mm"] == 50_000
+    # y el digito arabe, que `int()` si lee, se sigue leyendo
+    r2 = contratar(s, "pedir", "٥", "cinco")
+    assert r2["monto_mm"] == 5
+
+
+def test_el_techo_de_propuestas_se_relee_adentro_del_candado(
+        tmp_path, monkeypatch):
+    """TOCTOU: `jefe._puede` chequea el techo contra la foto que trajo
+    `situacion`, tomada AFUERA del candado, y el bus se escribe adentro.
+    Dos tics simultaneos del mismo departamento leen el mismo conteo y
+    pasan los dos -- y los dos llamadores que producen la carrera existen,
+    son los que nombra el docstring de `interruptor.tomar_tic`: el ticker
+    de rutinas y el boton de correr a mano."""
+    contratar, bus = _contratar_real(tmp_path, monkeypatch)
+    s = {"nombre": "atlas", "presupuesto_semanal_mm": 10_000,
+         "agresividad_pct": 100, "salidas_semana_mm": 0,
+         "disponible_mm": 100_000}
+
+    salidas, arranque = [], threading.Barrier(6)
+
+    def tic():
+        arranque.wait()
+        salidas.append(contratar(dict(s), "proponer", None, "otra apuesta"))
+
+    hilos = [threading.Thread(target=tic) for _ in range(6)]
+    for h in hilos:
+        h.start()
+    for h in hilos:
+        h.join()
+
+    bus = srv._eco_bus.Bus(srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
+    assert len(bus.ids()) <= _jefe.TECHO_PROPUESTAS
+    assert sum(1 for x in salidas if x.get("en") == "nada") >= 1
+
+
+def test_sin_presupuesto_semanal_el_tope_lo_da_la_billetera(
+        tmp_path, monkeypatch):
+    """El capital del pre-seed llegaba y quedaba inerte: el monto de una
+    propuesta se calculaba contra `presupuesto_semanal_mm`, que el pre-seed
+    no toca y nada mueve solo, asi que un departamento con 300.000 recien
+    financiados publicaba propuestas de UN milimon. El dia 1 no son una
+    perilla sino dos, y nada lo decia."""
+    contratar, _ = _contratar_real(tmp_path, monkeypatch)
+    s = {"nombre": "atlas", "presupuesto_semanal_mm": 0,
+         "agresividad_pct": 30, "salidas_semana_mm": 0,
+         "disponible_mm": 300_000}
+    r = contratar(s, "proponer", None, "ahora si a trabajar")
+    bus = srv._eco_bus.Bus(srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
+    assert bus.datos(r["propuesta"])["presupuesto_mm"] == 90_000

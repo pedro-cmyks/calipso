@@ -283,3 +283,180 @@ def test_una_suscripcion_que_no_existe_da_404(cliente):
     r = cliente.post("/api/economia/suscripciones/gemini_pro/capacidad",
                      json={"capacidad_ciclo": 500})
     assert r.status_code == 404
+
+
+# --------------------------------------------------------------------------
+# Los agujeros de la primera version, cada uno con su puerta
+# --------------------------------------------------------------------------
+
+def _comprar(cliente, unidades=300, semana=W, suscripcion="chatgpt_plus"):
+    """La fabrica compra capacidad de verdad, para que el ciclo tenga
+    consumo que defender."""
+    from calipso.economia.pagador import Pagador
+
+    p = Pagador(cliente.home / "economia")
+    m = p.mercado_fresco()
+    m.k.acunar(TS, semana, "dep:atlas", 400_000, t.SubtipoAcunacion.CAPITAL,
+               {"tipo": "firma_pedro"})
+    m.comprar_capacidad(TS, semana, "dep:atlas", suscripcion, unidades)
+
+
+def test_el_guardia_del_ciclo_muerde_aunque_la_semana_no_este_abierta(
+        cliente, monkeypatch):
+    """El mismo cambio que da 409 el jueves entraba con 200 el lunes.
+
+    El guardia miraba el consumo solo `if ops and semana in ops`, y una
+    semana se vuelve operativa recien cuando alguien emite su PT -- un
+    boton manual, sin ninguna rutina que lo apriete. O sea que TODA semana
+    empieza con `semana not in ops`: no es una ventana rara, es el estado
+    por defecto de cada lunes. Y la semana, cuando se abre, cae en el MISMO
+    ciclo: el consumo de las anteriores sigue contando."""
+    _comprar(cliente, 300)
+    # jueves: la semana de hoy ya emitio su PT
+    r = cliente.post("/api/economia/suscripciones/chatgpt_plus/capacidad",
+                     json={"capacidad_ciclo": 250, "reserva_personal": 20})
+    assert r.status_code == 409, r.text
+
+    # lunes siguiente: mismo ciclo, misma peticion, PT todavia sin emitir
+    monkeypatch.setattr(srv, "_eco_ahora", lambda: (TS, "2026-W36"))
+    r = cliente.post("/api/economia/suscripciones/chatgpt_plus/capacidad",
+                     json={"capacidad_ciclo": 250, "reserva_personal": 20})
+    assert r.status_code == 409, r.text
+    assert "ya compro 300 unidades" in r.json()["detail"]
+    assert _suscripciones(cliente.home)["chatgpt_plus"]["capacidad_ciclo"] == 1_000
+
+
+def test_el_consumido_que_ve_pedro_no_espera_al_boton_de_abrir(
+        cliente, monkeypatch):
+    """El numero que la pantalla dibuja como piso antes de tocar "aplicar"
+    tiene que ser el mismo que va a mirar el guardia. Daba 0 durante toda
+    la ventana en que la semana no estaba abierta."""
+    _comprar(cliente, 300)
+    monkeypatch.setattr(srv, "_eco_ahora", lambda: (TS, "2026-W36"))
+    d = cliente.get("/api/economia/config").json()
+    fila = next(s for s in d["suscripciones"] if s["nombre"] == "chatgpt_plus")
+    assert fila["consumido_ciclo"] == 300
+
+
+def test_una_capacidad_que_apaga_el_precio_no_entra(cliente):
+    """`capacidad_ciclo` tenia piso (`ge=1`) y guardia hacia abajo, y nada
+    hacia arriba: un numero de mas se aplicaba sin preguntar (por debajo
+    del techo de plata el motor de permisos ni se entera), apagaba el
+    precio por escasez y dejaba a la fabrica comprando capacidad que el
+    plan no rinde -- cada compra estampada en el libro append-only con el
+    precio equivocado. El techo no es inventado: pasado ese punto
+    `precio_base_mm` no lo fija la division sino el `max(1, ...)`."""
+    r = cliente.post("/api/economia/suscripciones/chatgpt_plus/capacidad",
+                     json={"capacidad_ciclo": 800_000, "reserva_personal": 0})
+    assert r.status_code == 400, r.text
+    assert "menos de un milimon" in r.json()["detail"]
+    assert _suscripciones(cliente.home)["chatgpt_plus"]["capacidad_ciclo"] == 1_000
+    # y el motor de permisos no vio nada que autorizar: no se estaciono
+    assert cliente.get("/api/permisos").json()["pendientes"] == []
+    # el numero grande pero honesto si entra (20.000 mm de costo, una
+    # unidad por milimon es el limite)
+    r = cliente.post("/api/economia/suscripciones/chatgpt_plus/capacidad",
+                     json={"capacidad_ciclo": 15_000, "reserva_personal": 0})
+    assert r.status_code == 200, r.text
+
+
+def test_una_escritura_cortada_no_deja_suscripciones_json_invalido(
+        cliente, monkeypatch):
+    """`write_text` trunca EN EL LUGAR: una escritura cortada a la mitad
+    (disco lleno, kill) dejaba el json invalido y la economia ENTERA sin
+    cargar -- y el unico arreglo era abrir el archivo con un editor, justo
+    lo que este endpoint vino a eliminar."""
+    import pathlib
+
+    ruta = cliente.home / "economia" / "suscripciones.json"
+    antes = ruta.read_text(encoding="utf-8")
+
+    entero = pathlib.Path.write_text
+
+    def cortado(self, data, *a, **kw):
+        entero(self, data[:len(data) // 2], *a, **kw)
+        raise OSError(27, "File too large")
+
+    monkeypatch.setattr(pathlib.Path, "write_text", cortado)
+    with pytest.raises(OSError):
+        srv._eco_capacidad_ahora("chatgpt_plus", 500, 20)
+    monkeypatch.undo()
+
+    assert ruta.read_text(encoding="utf-8") == antes
+    assert cliente.get("/api/economia/config").status_code == 200
+
+
+def test_una_escritura_cortada_no_deja_departamentos_json_invalido(
+        cliente, monkeypatch):
+    """Gemelo del anterior sobre el otro archivo. `Registro._guardar` es
+    ahora alcanzable N veces desde http (una por toque de perilla), y con
+    `write_text` una escritura cortada dejaba departamentos.json invalido:
+    `/api/economia/config`, `/api/economia/tablero` y `/api/economia/bus`
+    revientan las tres, y tres de los seis departamentos desaparecen del
+    archivo."""
+    import pathlib
+
+    ruta = cliente.home / "economia" / "departamentos.json"
+    antes = ruta.read_text(encoding="utf-8")
+    registro = deps.Registro(ruta)
+
+    entero = pathlib.Path.write_text
+
+    def cortado(self, data, *a, **kw):
+        entero(self, data[:len(data) // 2], *a, **kw)
+        raise OSError(27, "File too large")
+
+    monkeypatch.setattr(pathlib.Path, "write_text", cortado)
+    with pytest.raises(OSError):
+        registro.ajustar("atlas", techo_preseed_mm=5_000)
+    monkeypatch.undo()
+
+    assert ruta.read_text(encoding="utf-8") == antes
+    assert deps.Registro(ruta).obtener("atlas").techo_preseed_mm == 0
+    assert cliente.get("/api/economia/config").status_code == 200
+
+
+def test_sembrar_valida_los_rangos_igual_que_las_perillas(cliente):
+    """Media puerta no es una puerta: los mismos numeros que el endpoint de
+    perillas rechaza con 422 los escribia el sembrado con 200 -- y peor,
+    porque sembrar es de escritura unica: el departamento nacia fuera del
+    rango que la otra puerta define."""
+    for perilla, valor in (("presupuesto_semanal_mm", -100_000),
+                           ("explorar_explotar_pct", 900),
+                           ("agresividad_pct", -50),
+                           ("techo_preseed_mm", -1)):
+        r = cliente.post("/api/economia/sembrar", json={
+            "departamentos": [{"nombre": "raro", "zona": "fabrica",
+                               perilla: valor}]})
+        assert r.status_code == 422, (perilla, r.text)
+
+
+def test_las_perillas_rechazan_booleanos_y_claves_que_no_son_perillas(cliente):
+    """`true` colaba como 1 (pydantic en modo lax), un entero de 401
+    digitos se persistia tal cual, y `nombre`/`zona` -- que el docstring
+    dice que NO acepta -- se descartaban en silencio con 200: quien los
+    mandaba se iba creyendo que movio la cuenta de un departamento."""
+    for cuerpo in ({"techo_preseed_mm": True},
+                   {"techo_preseed_mm": 10 ** 400},
+                   {"nombre": "otro", "techo_preseed_mm": 1},
+                   {"zona": "personal"}):
+        r = cliente.post("/api/economia/departamentos/atlas/perillas",
+                         json=cuerpo)
+        assert r.status_code == 422, (cuerpo, r.text)
+    assert _departamentos(cliente.home)["atlas"]["techo_preseed_mm"] == 0
+
+
+def test_el_techo_de_preseed_no_es_una_perilla_de_la_zona_personal(cliente):
+    """Un departamento personal no tiene jefe que pida ni ronda que
+    financiar: `bus.financiar` rechaza un pre-seed cuyo dueno no sea de
+    fabrica. La perilla ahi seria un numero que no autoriza nada."""
+    r = deps.Registro(cliente.home / "economia" / "departamentos.json")
+    r.alta(deps.Departamento("pedro_personal", deps.ZONA_PERSONAL))
+    resp = cliente.post("/api/economia/departamentos/pedro_personal/perillas",
+                        json={"techo_preseed_mm": 999_999})
+    assert resp.status_code == 400, resp.text
+    assert "perilla de fabrica" in resp.json()["detail"]
+    assert _departamentos(cliente.home)["pedro_personal"]["techo_preseed_mm"] == 0
+    # las otras perillas de un personal siguen entrando
+    assert cliente.post("/api/economia/departamentos/pedro_personal/perillas",
+                        json={"explorar_explotar_pct": 20}).status_code == 200

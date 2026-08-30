@@ -45,3 +45,14 @@ def test_los_modulos_que_lo_congelan_al_importar_no_apuntan_al_real():
     assert congelados
     for m in congelados:
         assert _fuera_del_home_real(m.CALIPSO_HOME), m.__name__
+
+
+def test_el_token_y_el_totp_tampoco_apuntan_al_home_real():
+    """Las dos unicas rutas del paquete que resolvian `~/.calipso` sin
+    mirar CALIPSO_HOME, y las dos ESCRIBEN: `_load_token` genera y guarda
+    un token si no existe. La red del conftest no las cubria -- fija la
+    variable, y estas dos lineas no la leian -- asi que un import de
+    `calipso.server` sin archivo de token escribia en el home REAL."""
+    import calipso.server as srv
+    assert _fuera_del_home_real(srv._TOKEN_FILE)
+    assert _fuera_del_home_real(srv._TOTP_SECRET_FILE)

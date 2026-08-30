@@ -25,6 +25,19 @@ en un `rm` lento sobre las notas de Pedro.
 Es red de seguridad, no permiso para escribir en el home: cada test sigue
 debiendo usar `tmp_path`. Lo que esto garantiza es que un descuido cueste un
 directorio temporal y no la memoria del asistente.
+
+HASTA DONDE LLEGA, dicho con precision porque el agujero se pisa solo:
+pytest importa este archivo solo cuando el test que recolecta esta DEBAJO de
+este directorio. Un archivo de prueba en /tmp que importe `calipso.*` -aunque
+lo lance este mismo interprete- no lo carga, y entonces `memory.Scope` abre
+chroma sobre el ~/.calipso REAL. Lo mismo un `python -c "import
+calipso.server"` suelto. Medido: `pytest /tmp/sonda.py` desde afuera deja
+`CALIPSO_HOME` sin fijar. No hay forma de cubrirlo desde aca -no hay gancho
+que corra antes de un import que no pasa por pytest-, asi que la regla para
+cualquier script fuera del arbol es exportar `CALIPSO_HOME` a mano. Lo que si
+se cerro fueron los caminos del paquete que ignoraban la variable aun estando
+puesta: `server._TOKEN_FILE` y `server._TOTP_SECRET_FILE` (ver
+`_home_calipso`), que ademas ESCRIBEN la primera vez.
 """
 import os
 import pathlib

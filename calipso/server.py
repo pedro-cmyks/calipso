@@ -49,7 +49,7 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                RedirectResponse, Response)
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # El cerebro (router) y la memoria viven en el repo raÃƒÂ­z / paquete calipso.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
@@ -110,8 +110,25 @@ app = FastAPI(title="Calipso")
 # si no existe, se genera uno y se imprime en consola al arrancar.
 
 COOKIE = "calipso_token"
-_TOKEN_FILE = pathlib.Path(os.path.expanduser("~/.calipso")) / "token"
-_TOTP_SECRET_FILE = pathlib.Path(os.path.expanduser("~/.calipso")) / "totp_secret"
+
+
+def _home_calipso() -> pathlib.Path:
+    """El home de Calipso, con CALIPSO_HOME por delante del `~`.
+
+    Los otros veinte modulos que resuelven esta ruta (config.py, memory.py,
+    economia/pagador.py, consumo.py, ...) miran la variable; estas dos
+    lineas eran las unicas del paquete que no, y las dos ESCRIBEN al
+    importarse la primera vez (`_load_token` genera y guarda un token si no
+    existe). O sea que un `import calipso.server` con CALIPSO_HOME puesto
+    -una suite, un script, un subproceso- podia escribir igual en el
+    ~/.calipso real. La red del conftest no lo cubre: fija la variable, y
+    estas dos lineas no la leian."""
+    return pathlib.Path(os.environ.get("CALIPSO_HOME",
+                                       os.path.expanduser("~/.calipso")))
+
+
+_TOKEN_FILE = _home_calipso() / "token"
+_TOTP_SECRET_FILE = _home_calipso() / "totp_secret"
 
 
 def _load_token() -> str:
@@ -3511,7 +3528,9 @@ try:
                                   personal as _eco_personal,
                                   reloj as _eco_reloj,
                                   tipos as _eco_tipos)
-    from calipso.economia.candado import candado as _eco_candado
+    from calipso.economia.candado import (candado as _eco_candado,
+                                          escribir_json_atomico as
+                                          _eco_escribir_json)
     from calipso.economia.pagador import (Pagador as _EcoPagador,
                                           suscripcion_de_cliente as
                                           _eco_suscripcion,
@@ -3524,6 +3543,7 @@ except Exception:  # economia no disponible: los endpoints responden inactivo
     _eco_suscripcion = None
     _ECO_SUS_POR_CLIENTE = {}
     _eco_bus = _eco_cola = _eco_op = _eco_personal = _eco_reloj = _eco_candado = None
+    _eco_escribir_json = None
     _eco_deps = None
     _eco_tipos = None
     _eco_errores_economicos = None
@@ -3585,17 +3605,54 @@ class MesaFinanciarBody(BaseModel):
     mm: int
 
 
+# El techo de los numeros de plata en la frontera http. No sale del
+# dominio -- el libro no tiene monto maximo -- sino del viaje: estas
+# perillas se serializan a json y las dibuja el navegador, y arriba de
+# 2**53-1 un entero deja de sobrevivir el ida y vuelta por JavaScript.
+# Sin esto, un `{"techo_preseed_mm": 10**400}` entraba con 200 y quedaba
+# escrito con sus 401 digitos en departamentos.json.
+_MAX_MM = 2 ** 53 - 1
+
+
+def _no_booleano(v):
+    """`True` es un `int` en Python y pydantic en modo lax lo acepta: un
+    `{"techo_preseed_mm": true}` entraba como 1 y se escribia a disco. En
+    una perilla de plata eso no es una coercion util, es un cuerpo mal
+    armado que nadie quiso mandar."""
+    if isinstance(v, bool):
+        raise ValueError("se esperaba un entero, no un booleano")
+    return v
+
+
 class EcoSembrarDepartamentoBody(BaseModel):
+    """La puerta de rango tambien vale ACA.
+
+    `PerillasDepartamentoBody` -- el otro escritor http del mismo archivo,
+    en el mismo modulo -- documenta por que sus `ge`/`le` existen:
+    `Departamento` no valida rangos, y un porcentaje de 900 o un
+    presupuesto negativo no rompen nada ruidosamente, se convierten en
+    decisiones raras del jefe tres capas mas abajo. Los mismos numeros que
+    aquel rechaza con 422 entraban por este con 200 -- y peor, porque
+    sembrar es de ESCRITURA UNICA: el departamento nacia fuera del rango
+    que la otra puerta define y no habia forma de sacarlo de ahi salvo
+    editando el json. Un caso concreto: con `presupuesto_semanal_mm <= 0`
+    el freno de agresividad de `jefe._puede` ni siquiera corre (esta detras
+    de `if ... > 0`), asi que la perilla nace muda.
+    """
+    model_config = ConfigDict(extra="forbid")
+
     nombre: str
     zona: str  # "fabrica" | "personal" (deps.ZONA_FABRICA / ZONA_PERSONAL)
-    presupuesto_semanal_mm: int = 0
-    techo_api_ciclo_mm: int = 0
-    explorar_explotar_pct: int = 50
-    agresividad_pct: int = 30
+    presupuesto_semanal_mm: int = Field(default=0, ge=0, le=_MAX_MM)
+    techo_api_ciclo_mm: int = Field(default=0, ge=0, le=_MAX_MM)
+    explorar_explotar_pct: int = Field(default=50, ge=0, le=100)
+    agresividad_pct: int = Field(default=30, ge=0, le=100)
     # cuanto puede PEDIR en una ronda pre-seed (departamentos.py). Default
     # cero, igual que las otras dos perillas de plata: sembrar no inventa
     # un monto: hasta que Pedro diga cuanto, el departamento no pide.
-    techo_preseed_mm: int = 0
+    techo_preseed_mm: int = Field(default=0, ge=0, le=_MAX_MM)
+
+    sin_booleanos = field_validator("*", mode="before")(_no_booleano)
 
 
 class SuscripcionCapacidadBody(BaseModel):
@@ -3630,13 +3687,23 @@ class PerillasDepartamentoBody(BaseModel):
     valida rangos (nunca los necesito, porque hasta hoy los numeros solo
     entraban por el sembrado), y un porcentaje de 900 o un techo negativo
     no rompen nada ruidosamente -- se convierten en decisiones raras del
-    jefe tres capas mas abajo.
+    jefe tres capas mas abajo. `EcoSembrarDepartamentoBody` tiene los
+    mismos, por lo mismo: media puerta no es una puerta.
+
+    Y `extra="forbid"` para que el parrafo de arriba sea verdad y no una
+    intencion: sin el, un cuerpo con `nombre` o `zona` se descartaba
+    callado y devolvia 200 -- quien los mandaba se iba creyendo que movio
+    la cuenta de un departamento.
     """
-    presupuesto_semanal_mm: int | None = Field(default=None, ge=0)
-    techo_api_ciclo_mm: int | None = Field(default=None, ge=0)
+    model_config = ConfigDict(extra="forbid")
+
+    presupuesto_semanal_mm: int | None = Field(default=None, ge=0, le=_MAX_MM)
+    techo_api_ciclo_mm: int | None = Field(default=None, ge=0, le=_MAX_MM)
     explorar_explotar_pct: int | None = Field(default=None, ge=0, le=100)
     agresividad_pct: int | None = Field(default=None, ge=0, le=100)
-    techo_preseed_mm: int | None = Field(default=None, ge=0)
+    techo_preseed_mm: int | None = Field(default=None, ge=0, le=_MAX_MM)
+
+    sin_booleanos = field_validator("*", mode="before")(_no_booleano)
 
 
 class EcoSembrarSuscripcionBody(BaseModel):
@@ -4085,7 +4152,20 @@ def api_eco_departamento_perillas(nombre: str,
         # escritores entre adquisiciones del candado)
         with _eco_candado(p0.ruta_libro):
             registro = _eco_deps.Registro(p0.ruta_registro)
+            if (perillas.get("techo_preseed_mm")
+                    and registro.obtener(nombre).zona != _eco_deps.ZONA_FABRICA):
+                # un departamento personal no tiene jefe que pida ni ronda
+                # pre-seed que financiar: `bus.financiar` rechaza un
+                # pre-seed cuyo dueno no sea de fabrica (la zona personal se
+                # financia desde cuenta_pedro, no desde el tesoro), asi que
+                # esta perilla ahi seria un numero que no autoriza nada.
+                raise HTTPException(
+                    status_code=400,
+                    detail=(f"{nombre} es un departamento personal: el techo "
+                            "de pre-seed es una perilla de fabrica"))
             dep = registro.ajustar(nombre, **perillas)
+    except HTTPException:
+        raise
     except _eco_deps.ErrorDepartamento as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
     return {"ok": True, "departamento": dataclasses.asdict(dep)}
@@ -4335,10 +4415,14 @@ def api_eco_config() -> dict:
         suscripciones = dict(m.suscripciones)
     ops = _eco_cap.semanas_operativas(asientos)
     ciclo = None
-    semanas_ciclo: list[str] = []
     if ops and semana in ops:
         ciclo, _fraccion = _eco_cap.posicion_ciclo(semana, ops)
-        semanas_ciclo = _eco_cap.semanas_del_ciclo(ciclo, ops)
+    # el ciclo se informa solo cuando la semana ya emitio su PT (`ciclo`
+    # nombra una posicion real), pero el CONSUMIDO no espera al boton: es
+    # el numero que la pantalla le muestra a Pedro como piso antes de
+    # tocar "aplicar", y tiene que ser el mismo que va a mirar el guardia
+    # de POST .../capacidad. Ver `_eco_semanas_del_ciclo_de_hoy`.
+    semanas_ciclo = _eco_semanas_del_ciclo_de_hoy(asientos, semana)
     resumen = calipso_consumo.cargar_resumen() or {}
     filas = []
     for nombre, sus in sorted(suscripciones.items()):
@@ -4349,8 +4433,8 @@ def api_eco_config() -> dict:
             # lo ya comprado en el ciclo en curso: es el piso por debajo
             # del cual bajar la capacidad deja la cuota agotada hasta que
             # el ciclo termine (ver el guardia de POST .../capacidad)
-            "consumido_ciclo": (_eco_cap.consumo_fabrica(
-                asientos, nombre, semanas_ciclo) if semanas_ciclo else 0),
+            "consumido_ciclo": _eco_cap.consumo_fabrica(
+                asientos, nombre, semanas_ciclo),
             "medido": _eco_capacidad_medida(resumen, nombre),
         })
     return {"activa": True, "semana": semana, "ciclo": ciclo,
@@ -4386,6 +4470,37 @@ def _eco_capacidad_medida(resumen: dict, nombre: str) -> dict | None:
     return None
 
 
+def _eco_semanas_del_ciclo_de_hoy(asientos: list, semana: str) -> list[str]:
+    """Las semanas operativas del ciclo en el que cae HOY, este la semana
+    de hoy ya emitida o no.
+
+    `posicion_ciclo` solo sabe de semanas OPERATIVAS -- las que ya emitieron
+    su PT -- y una semana se vuelve operativa recien cuando alguien aprieta
+    `POST /api/economia/semana/abrir`, que es un boton manual: el unico
+    llamador es la fabrica en el navegador y no hay kind de rutina que lo
+    haga. O sea que TODA semana empieza afuera de `ops` y sigue afuera
+    hasta que Pedro lo toca. No es una ventana rara: es el estado por
+    defecto de cada lunes.
+
+    Preguntar "en que ciclo estoy" con `if semana in ops` contestaba "en
+    ninguno" durante esa ventana, y de ahi el consumo del ciclo daba cero.
+    Aca se contesta con la lista que va a existir cuando la semana se abra:
+    la de hoy insertada en su lugar. Es la MISMA aritmetica que
+    `posicion_ciclo` va a dar despues del boton -- una semana nueva cae en
+    el ciclo de las anteriores hasta completar las cuatro, y el consumo de
+    esas semanas sigue contando.
+    """
+    ops = _eco_cap.semanas_operativas(asientos)
+    if semana in ops:
+        ciclo, _ = _eco_cap.posicion_ciclo(semana, ops)
+        return _eco_cap.semanas_del_ciclo(ciclo, ops)
+    futuras = sorted(set(ops) | {semana})
+    ciclo, _ = _eco_cap.posicion_ciclo(semana, futuras)
+    reales = set(ops)
+    return [x for x in _eco_cap.semanas_del_ciclo(ciclo, futuras)
+            if x in reales]
+
+
 def _eco_capacidad_preparar(nombre: str, capacidad_ciclo: int,
                             reserva_personal: int | None) -> dict:
     """Valida el cambio contra las invariantes y contra el ciclo en curso.
@@ -4394,7 +4509,7 @@ def _eco_capacidad_preparar(nombre: str, capacidad_ciclo: int,
     `_eco_acunar_ahora`: no tiene sentido estacionar un pedido invalido y
     hacer que Pedro lo apruebe para que despues falle.
 
-    Dos puertas, y ninguna es la misma:
+    Tres puertas, y ninguna es la misma:
 
     1. `Suscripcion.__post_init__` -- entero positivo y
        `0 <= reserva_personal < capacidad_ciclo`. Las dos claves estan
@@ -4411,6 +4526,20 @@ def _eco_capacidad_preparar(nombre: str, capacidad_ciclo: int,
        `precio_unidad_mm` al tope, porque divide por `capacidad_fabrica`.
        Eso no es un numero corregido, es la fabrica apagada por cuatro
        semanas. Se corta aca y se dice cuando se puede.
+
+       Y el "ciclo en curso" NO es "la semana de hoy si ya la abrieron":
+       una semana se vuelve operativa recien cuando alguien emite su PT a
+       mano, asi que hasta ese boton `semana not in ops` -- el estado por
+       defecto de cada lunes. Mirar el consumo solo en ese caso dejaba
+       pasar el lunes exactamente el cambio que el jueves daba 409, y la
+       semana, una vez emitida, cae en el MISMO ciclo. Ver
+       `_eco_semanas_del_ciclo_de_hoy`.
+
+    3. El TECHO. `capacidad_ciclo` tenia piso (`ge=1`) y este guardia hacia
+       abajo, y nada hacia arriba: un numero de mas apagaba el precio por
+       escasez sin preguntarle a nadie. El dominio da un solo techo no
+       inventado -- que el precio por unidad no caiga por debajo del
+       milimon -- y es el que se aplica.
     """
     p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
     if not p0:
@@ -4436,12 +4565,28 @@ def _eco_capacidad_preparar(nombre: str, capacidad_ciclo: int,
                     f"juntas: la reserva de hoy es {vieja.reserva_personal} "
                     f"y tiene que quedar dentro de [0, {capacidad_ciclo}) "
                     "-- manda las dos claves en el mismo pedido")) from None
-    ops = _eco_cap.semanas_operativas(asientos)
-    consumido = 0
-    if ops and semana in ops:
-        ciclo, _ = _eco_cap.posicion_ciclo(semana, ops)
-        consumido = _eco_cap.consumo_fabrica(
-            asientos, nombre, _eco_cap.semanas_del_ciclo(ciclo, ops))
+    # el precio por unidad no puede caer por debajo del milimon: pasado ese
+    # punto `precio_base_mm` (= `max(1, costo_fabrica_mm //
+    # capacidad_fabrica)`) no lo fija la division sino el `max`, y el
+    # mercado deja de medir escasez. La fabrica compra a 1 mm capacidad que
+    # el plan no rinde, cada compra queda estampada en el libro
+    # append-only con ese precio, y el guardia de abajo despues impide
+    # volver atras hasta que el ciclo cierre. Es el unico techo que el
+    # dominio da solo: el numero que llega puede venir del probe
+    # (`capacidad_ciclo_propuesta`, una division por un `used_percent` que a
+    # principio de ventana es arbitrariamente chico), y hasta aca entraba
+    # sin que nada lo comparara contra nada.
+    if nueva.capacidad_fabrica > nueva.costo_fabrica_mm:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"capacidad_ciclo {capacidad_ciclo} deja "
+                    f"{nueva.capacidad_fabrica} unidades para la fabrica y "
+                    f"el plan cuesta {nueva.costo_fabrica_mm} mm por ciclo: "
+                    "cada unidad saldria menos de un milimon y el precio "
+                    "dejaria de medir escasez. El techo es una unidad por "
+                    "milimon de costo"))
+    consumido = _eco_cap.consumo_fabrica(
+        asientos, nombre, _eco_semanas_del_ciclo_de_hoy(asientos, semana))
     if consumido > nueva.capacidad_fabrica:
         raise HTTPException(
             status_code=409,
@@ -4483,11 +4628,15 @@ def _eco_capacidad_ahora(nombre: str, capacidad_ciclo: int,
                                         reserva_personal)
         suscripciones = dict(p0.mercado_fresco().suscripciones)
         suscripciones[nombre] = datos["nueva"]
-        p0.ruta_sus.write_text(
-            json.dumps({n: dataclasses.asdict(s)
-                        for n, s in suscripciones.items()},
-                       ensure_ascii=False, indent=1),
-            encoding="utf-8")
+        # ATOMICO, no `write_text`: `write_text` trunca en el lugar, asi que
+        # una escritura cortada a la mitad (disco lleno, kill) deja
+        # suscripciones.json invalido y con eso la economia entera sin
+        # cargar -- y el unico arreglo seria abrir el archivo con un editor,
+        # justo lo que este endpoint vino a eliminar. Ver
+        # `candado.escribir_json_atomico`.
+        _eco_escribir_json(p0.ruta_sus,
+                           {n: dataclasses.asdict(s)
+                            for n, s in suscripciones.items()})
     nueva = datos["nueva"]
     return {"ok": True, "suscripcion": dataclasses.asdict(nueva),
             "precio_base_mm": nueva.precio_base_mm,
@@ -4550,9 +4699,18 @@ def api_eco_suscripcion_capacidad(nombre: str,
     configuracion de hoy, asi que "cuanto de su cuota uso el ciclo 0" se
     responde con la capacidad de hoy y no con la que ese ciclo tenia. Los
     asientos viejos no cambian; la lectura de los ciclos viejos si. El
-    guardia de abajo evita el dano dentro del ciclo EN CURSO -- que es el
-    unico que todavia puede romperse -- y no puede hacer nada por la
-    comparabilidad de los anteriores.
+    guardia de abajo evita el dano dentro del ciclo EN CURSO y el color de
+    los ciclos ya cerrados lo protege `cierre._rojo_de_ciclo`, que desde
+    este cambio lee el color ESTAMPADO al cerrar en vez de recalcularlo con
+    la configuracion de hoy.
+
+    Y un rebote que `cristal` si tiene, para el dia que el pagador lo
+    enchufe (hoy no tiene ningun llamador de produccion): `emitir_ciclo`
+    estampa el split en la emision y exige el MISMO split al re-emitir, asi
+    que si una emision quedo cortada entre los dos pools -- capacidad
+    emitida, reserva no -- y en el medio se reprecia, la re-llamada rebota
+    con "ya iniciado con otro split" (cristal.py). No se pierde nada: hay
+    que terminar la emision con el split viejo antes de aplicar el nuevo.
     """
     if _permisos is None:
         raise HTTPException(
@@ -4828,6 +4986,29 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
     modulo candado es no cachear escritores entre adquisiciones — el Bus se
     construye DE NUEVO, adentro del candado, cada vez que se escribe.
     """
+    def _bandeja_llena(bus_fresco) -> bool:
+        """El techo de propuestas, RELEIDO adentro del candado.
+
+        `jefe._puede` ya lo chequea, pero contra la foto que trajo
+        `situacion`, tomada afuera del candado: dos tics simultaneos del
+        mismo departamento leen el mismo conteo y pasan los dos. No es
+        teorico -- `interruptor.tomar_tic` cerro exactamente esta carrera
+        para el contador de tics y su docstring nombra a los dos llamadores
+        que la producen, "el ticker de rutinas y el boton de correr a
+        mano", y ese boton existe (`POST /api/routines/{id}/run`). Aca es
+        la segunda linea: el conteo se rehace con el Bus fresco, adentro
+        del candado, justo antes de escribir.
+        """
+        if _plantel_jefe is None:
+            return False
+        propias = 0
+        for id_ in bus_fresco.ids():
+            if bus_fresco.estado(id_) != "alta":
+                continue
+            if bus_fresco.datos(id_).get("departamento") == cuenta:
+                propias += 1
+        return propias >= _plantel_jefe.TECHO_PROPUESTAS
+
     def contratar(situacion: dict, accion: str, ref: str | None,
                   motivo: str = ""):
         if accion == "comentar":
@@ -4866,12 +5047,25 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
                         "motivo": "sin techo de pre-seed: Pedro todavia no "
                                   "autorizo cuanto puede pedir este "
                                   "departamento"}
-            pedido = int(ref) if (ref or "").isdigit() else techo
+            # `.isdecimal()` y no `.isdigit()`: los dos aceptan los
+            # digitos arabes ('٥'), pero `isdigit` tambien acepta los
+            # superindices ('²') -- Numeric_Type=Digit sin ser decimales --
+            # y ahi `int()` revienta con ValueError. El sintoma no era un
+            # crash visible sino una mentira en el registro del jefe: en vez
+            # de caer en el recorte al techo, que es la promesa del parser
+            # tolerante, caia en el `except` de `tic` y se reportaba como
+            # "reviento actuando".
+            pedido = int(ref) if (ref or "").isdecimal() else techo
             monto = max(1, min(pedido, techo))
             propuesta = f"{situacion['nombre']}-{uuid.uuid4().hex[:8]}"
             titulo = (motivo or f"ronda pre-seed de {situacion['nombre']}")[:120]
             with _eco_candado(pagador.ruta_libro):
                 bus_fresco = _eco_bus.Bus(pagador.ruta_bus)
+                if _bandeja_llena(bus_fresco):
+                    return {"accion": "pedir", "ref": ref, "en": "nada",
+                            "motivo": "la bandeja se lleno mientras este tic "
+                                      "decidia: que Pedro despeje antes de "
+                                      "sumar otra"}
                 # `criterio` es obligatorio en `bus.alta` y para un pre-seed
                 # es INERTE: no abre `trabajo:<id>`, asi que no tiene gasto
                 # que medir y `evaluar_y_liquidar_muertos` lo saltea. Se
@@ -4900,6 +5094,18 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
         # alucinado que gasta plata de verdad.
         tope = (situacion["presupuesto_semanal_mm"]
                 * situacion["agresividad_pct"] // 100)
+        if situacion["presupuesto_semanal_mm"] <= 0:
+            # Sin presupuesto semanal el tope no lo da la perilla: lo da la
+            # BILLETERA. Es el estado de un departamento recien pre-seedeado
+            # -- capital en la cuenta y `presupuesto_semanal_mm` todavia en
+            # cero, porque el pre-seed no la toca y nada la mueve sola -- y
+            # con el tope en cero toda propuesta que publicaba valia
+            # `max(1, 0 - 0)` = 1 milimon. El capital llegaba y quedaba
+            # inerte: se lo dejaba proponer y lo que proponia no servia. La
+            # agresividad sigue midiendo lo mismo (que fraccion se
+            # compromete), solo cambia contra que.
+            tope = (situacion.get("disponible_mm", 0)
+                    * situacion["agresividad_pct"] // 100)
         presupuesto = max(1, tope - situacion["salidas_semana_mm"])
         propuesta = f"{situacion['nombre']}-{uuid.uuid4().hex[:8]}"
         # El titulo del bus es lo que Pedro lee para decidir si financia: que
@@ -4910,6 +5116,11 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
         # escrituras de economia, con un Bus fresco construido adentro.
         with _eco_candado(pagador.ruta_libro):
             bus_fresco = _eco_bus.Bus(pagador.ruta_bus)
+            if _bandeja_llena(bus_fresco):   # segunda linea: ver arriba
+                return {"accion": accion, "ref": ref, "en": "nada",
+                        "motivo": "la bandeja se lleno mientras este tic "
+                                  "decidia: que Pedro despeje antes de "
+                                  "sumar otra"}
             bus_fresco.alta(ts, semana, propuesta, cuenta, titulo,
                             presupuesto, presupuesto,
                             {"gasto_max_mm": presupuesto, "semanas_max": 4})
