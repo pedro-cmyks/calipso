@@ -145,6 +145,24 @@ def test_sembrar_suscripcion_invalida(crudo):
     assert r.status_code == 400
 
 
+def test_sembrar_rechaza_un_nombre_de_suscripcion_ambiguo(crudo):
+    """El nombre de la suscripcion termina nombrando cuentas del libro
+    (`cristal:<nombre>:<zona>`). La clave del pedido no tenia restriccion
+    ninguna, asi que "Claude_Max" se sembraba con 200 y quedaba en
+    suscripciones.json; el error llegaba mucho despues, contra el libro y
+    como `AsientoInvalido` -- una excepcion que el pagador no cuenta entre
+    las economicas, o sea que rompia el dispatch en vez de aparcar el
+    cargo. Ahora rebota aca, que es donde el humano puede corregirlo."""
+    c, base = crudo
+    for malo in ["Claude_Max", "claude max", "claude:max", "ChatGPT_Plus"]:
+        r = c.post("/api/economia/sembrar", json={
+            "departamentos": DEPARTAMENTOS,
+            "suscripciones": {malo: {"costo_mensual_mm": 200_000}}})
+        assert r.status_code == 400, (malo, r.text)
+        assert "nombre de suscripcion" in r.json()["detail"]
+    assert not (base / "economia" / "suscripciones.json").exists()
+
+
 def test_sembrar_usa_los_defaults_comentados_si_no_vienen(crudo):
     c, base = crudo
     r = c.post("/api/economia/sembrar", json={

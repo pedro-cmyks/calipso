@@ -160,7 +160,8 @@ def test_re_llamada_con_otro_split_es_error(k):
 
 def test_no_se_emite_sobre_un_pool_sin_barrer(k):
     """La capacidad no se acumula: la suscripcion resetea, no ahorra.
-    Que el pool este en cero es la prueba de que el ciclo anterior cerro."""
+    Un RESTO sin barrer (saldo > 0) bloquea la emision; un descubierto no,
+    ver test_un_cargo_tardio_no_traba_la_apertura_del_ciclo."""
     cristal.emitir_ciclo(k, TS, "2026-W35", 0, SUS)
     cristal.consumir_fabrica(k, TS, "2026-W35", SUS, 100, titular="dep:a")
     with pytest.raises(cristal.ErrorCristal):
@@ -315,10 +316,10 @@ def test_cerrar_ciclo_barre_todas_las_suscripciones(k):
 
 # -- conservacion ----------------------------------------------------------
 def _conservacion(k):
-    emitido, consumido, expirado = cristal.totales(k.libro.asientos())
+    cuota, consumido, expirado, condonado = cristal.totales(k.libro.asientos())
     suma = sum(v for (_c, div), v in saldos(k.libro.asientos()).items()
                if div is t.Divisa.CRISTAL)
-    return emitido - consumido - expirado, suma
+    return cuota + condonado - consumido - expirado, suma
 
 
 def test_conservacion_emitido_menos_consumido_menos_expirado(k):
@@ -425,3 +426,405 @@ def test_consumir_cristales_no_declara_en_quiebra_a_nadie(tmp_path):
 def test_api_publica_del_paquete():
     import calipso.economia as eco
     assert eco.cristal is cristal
+
+
+# -- el descubierto en pie no traba la apertura (el guard `!= 0`) -----------
+def test_un_cargo_tardio_no_traba_la_apertura_del_ciclo(k):
+    """`consumir` promete no rechazar nunca; `emitir_ciclo` exigia el pool
+    en cero exacto. Las dos cosas juntas dejaban el ciclo IMPOSIBLE de
+    abrir: un cargo llegado despues del cierre pone el pool en negativo y
+    la fabrica corria el ciclo entero con cero cristales, cayendo al API
+    caro — el desastre que la condonacion existe para evitar. Y no se
+    autorecuperaba: cada reintento volvia a fallar."""
+    cristal.emitir_ciclo(k, TS, "2026-W35", 0, SUS)
+    cristal.consumir_fabrica(k, TS, "2026-W35", SUS, 700, titular="dep:a")
+    cristal.cerrar_ciclo(k, TS, "2026-W38", 0, {"claude_max": SUS})
+    assert _saldo(k, FAB) == 0
+
+    # el cargo tardio: mismo ts/semana viejos, como los replaya
+    # `pagador.reintentar_pendientes`
+    cristal.consumir_fabrica(k, TS, "2026-W38", SUS, 50, titular="dep:a")
+    assert _saldo(k, FAB) == -50
+
+    out = cristal.emitir_ciclo(k, TS, "2026-W39", 1, SUS)   # no levanta
+    assert [a.destino for a in out] == [FAB, PER]
+    assert _saldo(k, FAB) == 750   # el pool nuevo absorbe el descubierto
+    assert _saldo(k, PER) == 200
+
+
+def test_el_bootstrap_no_queda_muerto(k):
+    """El caso que el propio modulo declara legal: el cargo llega antes de
+    que el ciclo 0 se abra. Si eso trabara la primera emision, el modulo
+    quedaria muerto por construccion apenas se cablee el pagador."""
+    cristal.consumir_fabrica(k, TS, "2026-W35", SUS, 5, titular="dep:a")
+    assert _saldo(k, FAB) == -5
+
+    cristal.emitir_ciclo(k, TS, "2026-W35", 0, SUS)   # no levanta
+    assert _saldo(k, FAB) == 795
+    # y el consumo previo se atribuyo al ciclo que lo paga
+    assert cristal.consumo_del_ciclo(k.libro.asientos(), "claude_max",
+                                     "fabrica", 0) == 5
+
+
+def test_un_resto_sin_barrer_bloquea_sin_escribir_nada(k):
+    """El libro no tiene rollback: se validan los dos pools ANTES del
+    primer append. Con el chequeo adentro del bucle, la emision de fabrica
+    quedaba escrita para siempre y el llamador recibia la excepcion y
+    descartaba el resultado: ciclo medio abierto, y ningun reintento lo
+    arregla."""
+    cristal.emitir_ciclo(k, TS, "2026-W35", 0, SUS)
+    # un cierre cortado a la mitad: expira fabrica y no personal
+    k.libro.append(ts=TS, semana="2026-W38",
+                   tipo=t.TipoAsiento.EXPIRACION_CRISTAL,
+                   divisa=t.Divisa.CRISTAL, monto=800, origen=FAB,
+                   detalle={"suscripcion": "claude_max", "zona": "fabrica",
+                            "ciclo": 0})
+    antes = len(k.libro.asientos())
+    with pytest.raises(cristal.ErrorCristal, match="sin cerrar"):
+        cristal.emitir_ciclo(k, TS, "2026-W39", 1, SUS)
+    assert len(k.libro.asientos()) == antes   # ni un asiento
+    assert _saldo(k, FAB) == 0 and _saldo(k, PER) == 200
+
+
+def test_un_ciclo_cerrado_no_se_reabre(k):
+    """Que el pool este en cero no prueba que el ciclo no haya cerrado:
+    cero es, sobre todo, como lo deja el cierre. La re-llamada de
+    recuperacion inyectaba cuota fresca en un ciclo muerto — capacidad
+    inventada, para siempre, en un libro append-only."""
+    k.libro.append(ts=TS, semana="2026-W35",
+                   tipo=t.TipoAsiento.EMISION_CRISTAL,
+                   divisa=t.Divisa.CRISTAL, monto=800, destino=FAB,
+                   detalle={"suscripcion": "claude_max", "zona": "fabrica",
+                            "ciclo": 0, "motivo": cristal.MOTIVO_CUOTA,
+                            "capacidad": 800, "reserva": 200})
+    cristal.consumir_personal(k, TS, "2026-W36", SUS, 120,
+                              titular="personal:finanzas")
+    cristal.expirar_ciclo(k, TS, "2026-W38", 0, SUS)   # cierra: expira y condona
+    assert _saldo(k, FAB) == 0 and _saldo(k, PER) == 0
+
+    with pytest.raises(cristal.ErrorCristal, match="ya cerrado"):
+        cristal.emitir_ciclo(k, TS, "2026-W39", 0, SUS)
+    assert _saldo(k, PER) == 0
+    # y el ciclo siguiente si abre: no quedo trabado por el anterior
+    cristal.emitir_ciclo(k, TS, "2026-W39", 1, SUS)
+    assert _saldo(k, FAB) == 800
+
+
+def test_un_ciclo_viejo_no_se_reabre_ni_sin_asiento_de_cierre(k):
+    """La segunda marca de cierre: la cuota de un ciclo POSTERIOR ya
+    emitida. Cubre el cierre que no escribio nada porque los dos pools
+    quedaron exactos en cero."""
+    cristal.emitir_ciclo(k, TS, "2026-W35", 0, SUS)
+    cristal.consumir_fabrica(k, TS, "2026-W35", SUS, 800, titular="dep:a")
+    cristal.consumir_personal(k, TS, "2026-W35", SUS, 200,
+                              titular="personal:finanzas")
+    assert cristal.cerrar_ciclo(k, TS, "2026-W38", 0,
+                                {"claude_max": SUS}).expirado == {}
+    cristal.emitir_ciclo(k, TS, "2026-W39", 1, SUS)
+    with pytest.raises(cristal.ErrorCristal, match="ya cerrado"):
+        cristal.emitir_ciclo(k, TS, "2026-W43", 0, SUS)
+
+
+def test_la_idempotencia_es_por_ciclo_y_motivo(k):
+    """Con los dos pools barridos a cero por el CONSUMO (no por el cierre),
+    la re-llamada tiene que rebotar por 'ya emitido' y no por otra guarda:
+    si la llave (ciclo, motivo) del detalle se pierde, el ciclo se emite
+    dos veces y la capacidad inventada queda para siempre."""
+    cristal.emitir_ciclo(k, TS, "2026-W35", 0, SUS)
+    cristal.consumir_fabrica(k, TS, "2026-W35", SUS, 800, titular="dep:a")
+    cristal.consumir_personal(k, TS, "2026-W35", SUS, 200,
+                              titular="personal:finanzas")
+    assert _saldo(k, FAB) == 0 and _saldo(k, PER) == 0
+
+    with pytest.raises(cristal.ErrorCristal, match="ya emitido"):
+        cristal.emitir_ciclo(k, TS, "2026-W35", 0, SUS)
+    assert _saldo(k, FAB) == 0 and _saldo(k, PER) == 0
+    cuota, consumido, _exp, _cond = cristal.totales(k.libro.asientos())
+    assert (cuota, consumido) == (1000, 1000)
+
+
+def test_el_split_se_compara_entero_capacidad_y_reserva(k):
+    """`capacidad_fabrica` es derivada, asi que un test que mueve
+    `capacidad_ciclo` mueve las dos claves a la vez y no distingue si el
+    guardia mira las dos. Aca la fabrica coincide y solo cambia la
+    reserva."""
+    k.libro.append(ts=TS, semana="2026-W35",
+                   tipo=t.TipoAsiento.EMISION_CRISTAL,
+                   divisa=t.Divisa.CRISTAL, monto=800, destino=FAB,
+                   detalle={"suscripcion": "claude_max", "zona": "fabrica",
+                            "ciclo": 0, "motivo": cristal.MOTIVO_CUOTA,
+                            "capacidad": 800, "reserva": 200})
+    otra = cap.Suscripcion("claude_max", 100_000, 2_000, 1_200, 500)
+    assert otra.capacidad_fabrica == 800        # la mitad que coincide
+    with pytest.raises(cristal.ErrorCristal, match="otro split"):
+        cristal.emitir_ciclo(k, TS, "2026-W35", 0, otra)
+    assert _saldo(k, PER) == 0
+
+
+# -- la suscripcion tiene que ser una suscripcion ---------------------------
+def test_los_verbos_exigen_una_suscripcion_configurada(k):
+    """La ultima dimension de la trampa 1: que el nombre sea una
+    suscripcion REAL. Estaba solo en la documentacion — cualquier objeto
+    con `.nombre` abria un par de cuentas de cristal que despues nadie
+    emite ni barre."""
+    class Falsa:
+        nombre = "inventada"
+
+    d = deps.Departamento("a", deps.ZONA_FABRICA, presupuesto_semanal_mm=0,
+                          techo_api_ciclo_mm=1)
+    for impostor in [Falsa(), d, "claude_max", None]:
+        with pytest.raises(cristal.ErrorCristal, match="Suscripcion"):
+            cristal.consumir_fabrica(k, TS, "2026-W35", impostor, 7,
+                                     titular="dep:a")
+        with pytest.raises(cristal.ErrorCristal, match="Suscripcion"):
+            cristal.emitir_ciclo(k, TS, "2026-W35", 0, impostor)
+        with pytest.raises(cristal.ErrorCristal, match="Suscripcion"):
+            cristal.expirar_ciclo(k, TS, "2026-W35", 0, impostor)
+    assert k.libro.asientos() == []
+
+
+def test_un_nombre_ambiguo_no_llega_a_construirse(k):
+    """El fallo tardio que quedaba: la suscripcion se construia con
+    cualquier nombre y recien explotaba contra el libro, con
+    `AsientoInvalido` — una excepcion que el pagador no cuenta entre las
+    economicas y que por lo tanto rompe el dispatch en vez de aparcar el
+    cargo. Ahora rebota en el constructor, con el error de su capa."""
+    for malo in ["Claude_Max", "claude max", "claude:max", "", "_x", 7]:
+        with pytest.raises(cap.ErrorCapacidad, match="nombre de suscripcion"):
+            cap.Suscripcion(malo, 100_000, 1_000, 200, 500)
+
+
+def test_saldo_y_descubierto_validan_su_zona(k):
+    """Dos funciones de LECTURA que filtraban `AsientoInvalido` desde la
+    capa de tipos, distinto de lo que levantan `cupo` y `consumir` para el
+    mismo error del llamador."""
+    for zona in ["direccion", "Fabrica", ""]:
+        with pytest.raises(cristal.ErrorCristal, match="zona invalida"):
+            cristal.saldo(k, SUS, zona)
+        with pytest.raises(cristal.ErrorCristal, match="zona invalida"):
+            cristal.descubierto(k, SUS, zona)
+        with pytest.raises(cristal.ErrorCristal, match="zona invalida"):
+            cristal.cupo(SUS, zona)
+
+
+# -- el ciclo del consumo: el pool y el pliegue cuentan lo mismo -----------
+def test_el_consumo_se_atribuye_al_ciclo_del_que_sale(k):
+    """El pool descuenta por orden de llegada; el pliegue atribuia por
+    `semana`. Un cargo reintentado conserva su semana vieja, asi que salia
+    del pool del ciclo NUEVO y se contaba en el VIEJO: un ciclo cerrado en
+    cero declarando mas consumo del que su cuota podia respaldar."""
+    cristal.emitir_ciclo(k, TS, "2026-W35", 0, SUS)
+    cristal.consumir_fabrica(k, TS, "2026-W36", SUS, 300, titular="dep:a")
+    cristal.cerrar_ciclo(k, TS, "2026-W38", 0, {"claude_max": SUS})
+    cristal.emitir_ciclo(k, TS, "2026-W39", 1, SUS)
+    # el reintento: semana del hecho (ciclo 0), pool del ciclo 1
+    a = cristal.consumir_fabrica(k, TS, "2026-W36", SUS, 200, titular="dep:a")
+    assert a.semana == "2026-W36" and a.detalle["ciclo"] == 1
+
+    A = k.libro.asientos()
+    assert cristal.consumo_del_ciclo(A, "claude_max", "fabrica", 0) == 300
+    assert cristal.consumo_del_ciclo(A, "claude_max", "fabrica", 1) == 200
+    # y el pliegue cuadra con el pool, que es lo que se rompia
+    assert 800 - cristal.consumo_del_ciclo(A, "claude_max", "fabrica", 1) \
+        == _saldo(k, FAB) == 600
+
+
+def test_un_consumo_en_semana_sin_emision_de_pt_igual_se_cuenta(k):
+    """`semanas_del_ciclo` sale de las semanas con EMISION_PT; la
+    suscripcion sirve requests igual en una semana que Pedro no abrio. Por
+    semana, esos cristales eran invisibles para la auditoria del ciclo
+    mientras el pool si los descontaba."""
+    cristal.emitir_ciclo(k, TS, "2026-W35", 0, SUS)
+    cristal.consumir_fabrica(k, TS, "2026-W36", SUS, 100, titular="dep:a")
+    cristal.consumir_fabrica(k, TS, "2026-W40", SUS, 300, titular="dep:a")
+    A = k.libro.asientos()
+    assert cristal.consumo_del_ciclo(A, "claude_max", "fabrica", 0) == 400
+    assert 800 - 400 == _saldo(k, FAB)
+
+
+def test_la_deuda_de_una_zona_sin_cuota_queda_atada_a_su_ciclo(k):
+    """Con `reserva_personal = 0` el pool personal no se emite nunca, pero
+    `consumir_personal` escribe igual: el descubierto cruza al ciclo
+    siguiente. Que cruce el saldo es una cosa; que se pierda de vista de
+    que ciclo viene, otra."""
+    sus = cap.Suscripcion("chatgpt_plus", 100_000, 1_000, 0, 500)
+    per = t.cuenta_cristal("chatgpt_plus", "personal")
+    cristal.emitir_ciclo(k, TS, "2026-W35", 0, sus)
+    cristal.consumir_personal(k, TS, "2026-W35", sus, 40,
+                              titular="personal:finanzas")
+    cristal.cerrar_ciclo(k, TS, "2026-W38", 0, {"chatgpt_plus": sus})
+    assert _saldo(k, per) == 0                     # el cierre lo condono
+    A = k.libro.asientos()
+    assert cristal.consumo_del_ciclo(A, "chatgpt_plus", "personal", 0) == 40
+
+
+# -- pliegues de lectura ---------------------------------------------------
+def test_totales_no_confunde_cuota_con_condonacion(k):
+    """La condonacion es una `emision_cristal`, pero no es capacidad
+    concedida: sumada al mismo total, el descubierto se autocancelaba y un
+    medidor de uso no podia pasar de 100% nunca."""
+    cristal.emitir_ciclo(k, TS, "2026-W35", 0, SUS)
+    cristal.consumir_fabrica(k, TS, "2026-W35", SUS, 950, titular="dep:a")
+    cristal.consumir_personal(k, TS, "2026-W35", SUS, 200,
+                              titular="personal:finanzas")
+    assert cristal.totales(k.libro.asientos()) == (1000, 1150, 0, 0)
+
+    cristal.cerrar_ciclo(k, TS, "2026-W38", 0, {"claude_max": SUS})
+    cuota, consumido, expirado, condonado = cristal.totales(k.libro.asientos())
+    assert (cuota, consumido, expirado, condonado) == (1000, 1150, 0, 150)
+    assert consumido * 100 // cuota == 115   # y no 100
+
+
+def test_cupo_es_el_split_de_la_suscripcion():
+    assert cristal.cupo(SUS, "fabrica") == 800
+    assert cristal.cupo(SUS, "personal") == 200
+
+
+def test_descubierto_es_cero_con_el_pool_sano(k):
+    """El unico assert que habia lo media con el pool ya en negativo, o
+    sea justo donde el `max(0, ...)` no hace nada."""
+    cristal.emitir_ciclo(k, TS, "2026-W35", 0, SUS)
+    cristal.consumir_fabrica(k, TS, "2026-W35", SUS, 300, titular="dep:a")
+    assert _saldo(k, FAB) == 500
+    assert cristal.descubierto(k, SUS, "fabrica") == 0
+    assert cristal.descubierto(k, SUS, "personal") == 0
+
+
+# -- forma de los asientos -------------------------------------------------
+def test_el_consumo_conserva_la_ref_de_quien_lo_causo(k):
+    """La ref es lo que ata el cargo de capacidad al turno o job que lo
+    causo: sin ella el asiento no es auditable."""
+    cristal.emitir_ciclo(k, TS, "2026-W35", 0, SUS)
+    a = cristal.consumir_fabrica(k, TS, "2026-W35", SUS, 10, titular="dep:a",
+                                 ref="turno-77")
+    assert a.ref == "turno-77"
+    b = cristal.consumir_personal(k, TS, "2026-W35", SUS, 3,
+                                  titular="personal:finanzas", ref="job-9")
+    assert b.ref == "job-9"
+
+
+def test_titular_y_unidades_exigen_su_tipo(k):
+    cristal.emitir_ciclo(k, TS, "2026-W35", 0, SUS)
+    for titular in [None, 7, ["dep:a"]]:
+        with pytest.raises(cristal.ErrorCristal, match="titular"):
+            cristal.consumir(k, TS, "2026-W35", SUS, "fabrica", 3, titular)
+    for unidades in [True, False, 3.0, "3"]:
+        with pytest.raises(cristal.ErrorCristal, match="unidades"):
+            cristal.consumir(k, TS, "2026-W35", SUS, "fabrica", unidades,
+                             "dep:a")
+
+
+def test_el_cierre_declara_el_ciclo_que_cierra(k):
+    """Un asiento de cierre sin su ciclo (o con otro) atribuye el cierre al
+    ciclo equivocado para siempre."""
+    cristal.emitir_ciclo(k, TS, "2026-W35", 0, SUS)
+    cristal.consumir_fabrica(k, TS, "2026-W35", SUS, 900, titular="dep:a")
+    out = cristal.expirar_ciclo(k, TS, "2026-W38", 0, SUS)
+    porcuenta = {a.destino or a.origen: a for a in out}
+    assert porcuenta[FAB].detalle == {"suscripcion": "claude_max",
+                                      "zona": "fabrica", "ciclo": 0,
+                                      "motivo": cristal.MOTIVO_CONDONACION}
+    assert porcuenta[PER].detalle == {"suscripcion": "claude_max",
+                                      "zona": "personal", "ciclo": 0}
+
+
+def test_cerrar_ciclo_barre_en_orden_de_nombre(k):
+    """El orden que promete el docstring: reproducible, no el del dict."""
+    a = cap.Suscripcion("aaa_plus", 50_000, 400, 100, 300)
+    z = cap.Suscripcion("zzz_max", 50_000, 400, 100, 300)
+    for sus in (z, a):
+        cristal.emitir_ciclo(k, TS, "2026-W35", 0, sus)
+    c = cristal.cerrar_ciclo(k, TS, "2026-W38", 0,
+                             {"zzz_max": z, "aaa_plus": a})
+    assert list(c.expirado) == ["cristal:aaa_plus:fabrica",
+                                "cristal:aaa_plus:personal",
+                                "cristal:zzz_max:fabrica",
+                                "cristal:zzz_max:personal"]
+
+
+def test_cerrar_ciclo_exige_que_la_clave_sea_el_nombre(k):
+    """`mercado` y `capacidad` indexan por la CLAVE del dict y estampan esa
+    en los asientos; `cristal` deriva sus cuentas de `sus.nombre`. Un
+    `suscripciones.json` con las dos cosas distintas partia la misma
+    suscripcion en dos, una por divisa, sin un solo error."""
+    sus = cap.Suscripcion("claude_max", 100_000, 1_000, 200, 500)
+    with pytest.raises(cristal.ErrorCristal, match="no es el nombre"):
+        cristal.cerrar_ciclo(k, TS, "2026-W38", 0, {"claude_maxx": sus})
+    assert k.libro.asientos() == []
+
+
+# -- las puertas del validador (trampa 1, las tres ramas) ------------------
+def test_las_tres_ramas_de_cristal_exigen_la_cuenta_derivada(k):
+    """La emision, el consumo Y la expiracion. La de expiracion es por
+    donde pasan `expirar_ciclo` y la condonacion."""
+    mala = "cristal:claude_maxx:fabrica"
+    detalle = {"suscripcion": "claude_max", "zona": "fabrica", "ciclo": 0}
+    with pytest.raises(t.AsientoInvalido, match="exactamente"):
+        k.libro.append(ts=TS, semana="2026-W38",
+                       tipo=t.TipoAsiento.EXPIRACION_CRISTAL,
+                       divisa=t.Divisa.CRISTAL, monto=500, origen=mala,
+                       detalle=detalle)
+    with pytest.raises(t.AsientoInvalido, match="exactamente"):
+        k.libro.append(ts=TS, semana="2026-W38",
+                       tipo=t.TipoAsiento.CONSUMO_CRISTAL,
+                       divisa=t.Divisa.CRISTAL, monto=5, origen=mala,
+                       detalle=detalle)
+    with pytest.raises(t.AsientoInvalido, match="exactamente"):
+        k.libro.append(ts=TS, semana="2026-W38",
+                       tipo=t.TipoAsiento.EMISION_CRISTAL,
+                       divisa=t.Divisa.CRISTAL, monto=5, destino=mala,
+                       detalle=detalle)
+    assert k.libro.asientos() == []
+
+
+def test_el_apunte_y_la_acreencia_son_solo_de_plata(k):
+    """Las dos ramas que `validar` no tenia. Los dos tipos no mueven
+    saldos, pero se LEEN como monedas: `capacidad.consumo_personal` suma
+    apuntes, y `kernel.liquidar` paga toda acreencia pendiente con
+    transferencias en monedas sin mirar su divisa."""
+    for divisa in [t.Divisa.CRISTAL, t.Divisa.PT]:
+        with pytest.raises(t.AsientoInvalido, match="solo en monedas"):
+            t.Asiento(seq=1, ts=TS, semana="2026-W35",
+                      tipo=t.TipoAsiento.APUNTE, divisa=divisa, monto=10,
+                      detalle={"nota": "x"}).validar()
+        with pytest.raises(t.AsientoInvalido, match="solo en monedas"):
+            t.Asiento(seq=1, ts=TS, semana="2026-W35",
+                      tipo=t.TipoAsiento.ACREENCIA, divisa=divisa, monto=10,
+                      ref="r-1", detalle={"acreedor": "dep:b",
+                                          "deudor": "dep:a"}).validar()
+
+
+def test_una_acreencia_en_cristal_no_puede_cobrar_monedas(k):
+    """La forma en que la puerta entornada se explotaba: `liquidar` no
+    filtra por divisa."""
+    k.acunar(TS, "2026-W35", "dep:a", 50_000, t.SubtipoAcunacion.CAPITAL,
+             {"tipo": "firma_pedro"})
+    with pytest.raises(t.AsientoInvalido):
+        k.libro.append(ts=TS, semana="2026-W35",
+                       tipo=t.TipoAsiento.ACREENCIA, divisa=t.Divisa.CRISTAL,
+                       monto=7_000, ref="r-x",
+                       detalle={"acreedor": "dep:b", "deudor": "dep:a"})
+    assert k.acreencias_pendientes("dep:a") == []
+    k.liquidar(TS, "2026-W35", "dep:a")
+    assert k.saldo("dep:b", t.Divisa.MONEDA) == 0
+
+
+def test_una_cuenta_fantasma_no_entra_ni_releyendo_el_libro(k):
+    """El cierre por derivacion valia solo para la ESCRITURA: `de_json` no
+    llama `validar`, asi que una linea escrita por fuera de `append` —otro
+    proceso, una edicion, una restauracion— cargaba sin chistar y abria un
+    pool de cristal con saldo vivo que `expirar_ciclo` no barre nunca
+    (solo recorre las cuentas derivadas de la configuracion)."""
+    from calipso.economia.libro import LibroCorrupto
+
+    cristal.emitir_ciclo(k, TS, "2026-W35", 0, SUS)
+    linea = t.Asiento(seq=2, ts=TS, semana="2026-W35",
+                      tipo=t.TipoAsiento.CONSUMO_CRISTAL,
+                      divisa=t.Divisa.CRISTAL, monto=9_999,
+                      origen="cristal:claude_maxx:fabrica",
+                      detalle={"suscripcion": "claude_max",
+                               "zona": "fabrica"}).a_json()
+    with k.libro.ruta.open("a", encoding="utf-8") as f:
+        f.write(linea + "\n")
+    with pytest.raises(LibroCorrupto, match="invalida"):
+        Libro(k.libro.ruta)

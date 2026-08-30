@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .tipos import Asiento, TipoAsiento, DIRECCION
+from .tipos import Asiento, TipoAsiento, DIRECCION, es_nombre_suscripcion
 
 SEMANAS_POR_CICLO = 4
 
@@ -34,6 +34,17 @@ class Suscripcion:
     costo_api_mm_por_unidad: int
 
     def __post_init__(self):
+        # El nombre es el que va a nombrar las cuentas de cristal
+        # (`cristal:<nombre>:<zona>`), asi que se valida ACA, contra la
+        # misma gramatica del libro. Antes se construia cualquier cosa
+        # —"Claude_Max", "claude max"— y el fallo llegaba tarde, en el
+        # append, como `AsientoInvalido`: una excepcion de otra capa, que
+        # el pagador no cuenta entre las economicas y que por lo tanto
+        # rompia el dispatch en vez de aparcar el cargo.
+        if not es_nombre_suscripcion(self.nombre):
+            raise ErrorCapacidad(
+                f"nombre de suscripcion invalido: {self.nombre!r} "
+                "(minusculas, digitos, guion y guion bajo)")
         _entero_positivo(self.costo_mensual_mm, "costo_mensual_mm")
         _entero_positivo(self.capacidad_ciclo, "capacidad_ciclo")
         _entero_positivo(self.costo_api_mm_por_unidad, "costo_api_mm_por_unidad")

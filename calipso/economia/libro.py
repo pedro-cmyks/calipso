@@ -2,18 +2,22 @@
 calipso/economia/libro.py — Persistencia append-only del libro contable.
 
 Una linea JSON por asiento. Nunca se edita ni borra una linea; todo estado
-se deriva plegando los asientos. La carga tolera exactamente un defecto:
-la ultima linea truncada (corte a mitad de un append); en ese caso el
-archivo se repara truncando el fragmento nunca valido, para que el
-proximo append no se le pegue encima. Cualquier otra corrupcion levanta
-LibroCorrupto: eso se mira, no se ignora.
+se deriva plegando los asientos. Cada linea se valida al escribirse Y al
+releerse, asi que las reglas de `Asiento.validar` cierran el libro de
+verdad y no solo su puerta de escritura.
+
+La carga tolera exactamente un defecto: la ultima linea truncada (corte a
+mitad de un append); en ese caso el archivo se repara truncando el
+fragmento nunca valido, para que el proximo append no se le pegue encima.
+Cualquier otra corrupcion levanta LibroCorrupto: eso se mira, no se
+ignora.
 """
 from __future__ import annotations
 
 import logging
 import pathlib
 
-from .tipos import Asiento
+from .tipos import Asiento, AsientoInvalido
 
 log = logging.getLogger("calipso.economia.libro")
 
@@ -57,6 +61,21 @@ class Libro:
                         f.truncate(offset)
                     return
                 raise LibroCorrupto(f"linea {i + 1} ilegible: {exc}") from exc
+            # Revalidar al cargar. `de_json` construye el dataclass y nada
+            # mas: sin esto, una linea que NUNCA habria pasado por
+            # `append` (otro escritor, una edicion a mano, una restauracion
+            # de backup) entra al pliegue como si fuera un asiento sano —
+            # p.ej. una cuenta de cristal mal tipeada, que abre un pool
+            # fantasma con saldo vivo que nadie barre nunca. Es corrupcion,
+            # y este modulo la mira en vez de ignorarla. Va DESPUES del
+            # rescate de la ultima linea truncada, a proposito: un asiento
+            # invalido es corrupcion siempre, aunque sea el ultimo, y
+            # truncarlo seria borrar una linea de un libro append-only.
+            try:
+                a.validar()
+            except AsientoInvalido as exc:
+                raise LibroCorrupto(
+                    f"linea {i + 1} invalida: {exc}") from exc
             esperado = len(self._asientos) + 1
             if a.seq != esperado:
                 raise LibroCorrupto(f"seq {a.seq} en linea {i + 1}, esperaba {esperado}")

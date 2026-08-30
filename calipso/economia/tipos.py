@@ -80,6 +80,18 @@ class AsientoInvalido(Exception):
 _POOLS_PT = {POOL_PT_FABRICA, POOL_PT_PERSONAL}
 
 
+def es_nombre_suscripcion(nombre) -> bool:
+    """Si el nombre puede nombrar una suscripcion (y por lo tanto una cuenta).
+
+    Vive aca, con la gramatica de las cuentas, para que la capa de
+    configuracion (`capacidad.Suscripcion`) rechace en el CONSTRUCTOR el
+    mismo nombre que el validador rechazaria al escribir el asiento. Sin
+    eso el fallo es tardio: el objeto se construye, viaja, y recien explota
+    contra el libro con una excepcion de otra capa.
+    """
+    return isinstance(nombre, str) and bool(_RE_SUSCRIPCION.match(nombre))
+
+
 def cuenta_cristal(suscripcion: str, zona: str) -> str:
     """El UNICO constructor de cuentas de cristal: (suscripcion, zona) -> cuenta.
 
@@ -99,18 +111,21 @@ def cuenta_cristal(suscripcion: str, zona: str) -> str:
 
     Queda una dimension fuera: que el nombre declarado sea una suscripcion
     REAL. Cerrar eso aca exigiria que este modulo leyera
-    `suscripciones.json`, y eso seria peor: un asiento valido cuando se
-    escribio pasaria a ser invalido el dia que Pedro da de baja una
-    suscripcion, y el libro entero (que se revalida al releerse) dejaria
-    de cargar. Esa dimension se cierra una capa arriba, donde hay
-    configuracion: los verbos de `cristal.py` exigen un objeto
-    `capacidad.Suscripcion`, que solo existe si esta configurado, y
-    `cuentas_cristal()` entrega el conjunto literal para cotejar.
+    `suscripciones.json`, y eso seria peor: `validar()` corre tambien al
+    CARGAR el libro (ver `libro._cargar`), asi que un asiento valido
+    cuando se escribio pasaria a ser invalido el dia que Pedro da de baja
+    una suscripcion y el libro entero dejaria de cargar. Regla general de
+    `validar()`, por eso mismo: nunca puede depender de configuracion,
+    solo del asiento. Esa dimension se cierra una capa arriba, donde hay
+    configuracion: los verbos de `cristal.py` exigen (con isinstance, ver
+    `cristal._exigir_suscripcion`) un objeto `capacidad.Suscripcion`, que
+    solo existe si esta configurado, y `cuentas_cristal()` entrega el
+    conjunto literal para cotejar.
     """
     if zona not in ZONAS_CRISTAL:
         raise AsientoInvalido(
             f"zona de cristal invalida: {zona!r} (solo {ZONAS_CRISTAL})")
-    if not isinstance(suscripcion, str) or not _RE_SUSCRIPCION.match(suscripcion):
+    if not es_nombre_suscripcion(suscripcion):
         raise AsientoInvalido(
             f"nombre de suscripcion invalido para una cuenta: {suscripcion!r}")
     return f"{PREFIJO_CRISTAL}:{suscripcion}:{zona}"
@@ -219,7 +234,24 @@ class Asiento:
                 raise AsientoInvalido("expiracion_cristal: origen si, destino no")
             _exigir_cuenta_cristal(self.origen, self.detalle,
                                    "expiracion_cristal")
+        elif t is TipoAsiento.APUNTE:
+            # Un apunte no mueve saldos (balances._SIN_EFECTO), pero SI se
+            # lee como plata: `capacidad.consumo_personal` y
+            # `personal.py` suman su monto. Sin esta rama la divisa
+            # quedaba libre y un apunte en PT o en cristal se plegaba como
+            # si fueran monedas.
+            if self.divisa is not Divisa.MONEDA:
+                raise AsientoInvalido(
+                    "apunte es solo en monedas: la capacidad y el tiempo "
+                    "tienen sus propios tipos de asiento")
         elif t is TipoAsiento.ACREENCIA:
+            # Idem, y peor: `kernel.liquidar` paga toda acreencia pendiente
+            # con TRANSFERENCIAS en monedas, sin mirar su divisa. Una
+            # acreencia denominada en PT o en cristal cobraba plata.
+            if self.divisa is not Divisa.MONEDA:
+                raise AsientoInvalido(
+                    "acreencia es solo en monedas: se liquida con "
+                    "transferencias de plata")
             d = self.detalle
             if not d.get("acreedor") or not d.get("deudor"):
                 raise AsientoInvalido("acreencia exige detalle acreedor y deudor")
