@@ -1,9 +1,16 @@
 """
 calipso/economia/tipos.py — Tipos base del libro contable.
 
-Dos divisas: la moneda (1 moneda = 1.000 milimonedas = 1 USD) y el
-pedro-token (1 PT = 1.000 mili-PT = 1 hora firmable de Pedro). Todos los
+Tres divisas: la moneda (1 moneda = 1.000 milimonedas = 1 USD), el
+pedro-token (1 PT = 1.000 mili-PT = 1 hora firmable de Pedro) y el
+cristal (1 cristal = 1 unidad de capacidad de una suscripcion). Todos los
 montos son enteros; el estado se deriva del libro, nunca se edita.
+
+La moneda mide PLATA: lo que sale de la cuenta bancaria de Pedro. El
+cristal mide CAPACIDAD: los requests que la suscripcion ya pagada sirve
+en el ciclo. Son cosas distintas y por eso son divisas distintas: gastar
+un cristal no gasta una moneda, y un libro que las confunde cobra dos
+veces lo que se pago una.
 """
 from __future__ import annotations
 
@@ -20,12 +27,28 @@ DIRECCION = "direccion"
 POOL_PT_FABRICA = "pt:fabrica"
 POOL_PT_PERSONAL = "pt:personal"
 
+# Cristal: el prefijo y las DOS zonas. Dos cuentas por suscripcion y nada
+# mas — la de la fabrica entera y la personal de Pedro. Sin bolsillos por
+# departamento: hoy ningun departamento gasta capacidad por su cuenta
+# (`trabajar` es un no-op declarado en server.py), asi que un bolsillo por
+# departamento seria una cuenta que nadie mueve y un pliegue que mentir.
+PREFIJO_CRISTAL = "cristal"
+ZONA_CRISTAL_FABRICA = "fabrica"
+ZONA_CRISTAL_PERSONAL = "personal"
+ZONAS_CRISTAL = (ZONA_CRISTAL_FABRICA, ZONA_CRISTAL_PERSONAL)
+
 _RE_SEMANA = re.compile(r"^\d{4}-W\d{2}$")
+# El nombre de suscripcion admitido en una cuenta de cristal. Prohibe ":"
+# (que haria ambigua la gramatica de la cuenta), espacios y mayusculas
+# (dos nombres que solo difieren en la caja son la mejor forma de escribir
+# dos cuentas creyendo que es una).
+_RE_SUSCRIPCION = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 class Divisa(str, Enum):
     MONEDA = "moneda"
     PT = "pt"
+    CRISTAL = "cristal"
 
 
 class TipoAsiento(str, Enum):
@@ -38,6 +61,9 @@ class TipoAsiento(str, Enum):
     EMISION_PT = "emision_pt"
     CONSUMO_PT = "consumo_pt"
     EXPIRACION_PT = "expiracion_pt"
+    EMISION_CRISTAL = "emision_cristal"
+    CONSUMO_CRISTAL = "consumo_cristal"
+    EXPIRACION_CRISTAL = "expiracion_cristal"
     APUNTE = "apunte"
     ACREENCIA = "acreencia"
 
@@ -52,6 +78,67 @@ class AsientoInvalido(Exception):
 
 
 _POOLS_PT = {POOL_PT_FABRICA, POOL_PT_PERSONAL}
+
+
+def cuenta_cristal(suscripcion: str, zona: str) -> str:
+    """El UNICO constructor de cuentas de cristal: (suscripcion, zona) -> cuenta.
+
+    El conjunto de cuentas validas depende del nombre de la suscripcion,
+    que es CONFIGURACION, asi que no se puede enumerar aca como se enumera
+    `_POOLS_PT`. Pero tampoco se cierra con un `startswith`: con un prefijo,
+    "cristal:claude_maxx:fabrica" valida perfecto y se come cristales que
+    nadie vuelve a mirar.
+
+    La salida es cerrar el conjunto POR DERIVACION. Esta funcion es
+    inyectiva y total sobre (nombre valido, zona), asi que "la cuenta
+    pertenece a la imagen de f" equivale a "la cuenta es exactamente
+    f(lo que el asiento declara)" — y eso el validador SI lo puede
+    comprobar, porque el asiento declara suscripcion y zona en su detalle.
+    Una cuenta mal tipeada deja de coincidir con su propia derivacion y
+    rebota. La zona, ademas, es un conjunto cerrado de dos.
+
+    Queda una dimension fuera: que el nombre declarado sea una suscripcion
+    REAL. Cerrar eso aca exigiria que este modulo leyera
+    `suscripciones.json`, y eso seria peor: un asiento valido cuando se
+    escribio pasaria a ser invalido el dia que Pedro da de baja una
+    suscripcion, y el libro entero (que se revalida al releerse) dejaria
+    de cargar. Esa dimension se cierra una capa arriba, donde hay
+    configuracion: los verbos de `cristal.py` exigen un objeto
+    `capacidad.Suscripcion`, que solo existe si esta configurado, y
+    `cuentas_cristal()` entrega el conjunto literal para cotejar.
+    """
+    if zona not in ZONAS_CRISTAL:
+        raise AsientoInvalido(
+            f"zona de cristal invalida: {zona!r} (solo {ZONAS_CRISTAL})")
+    if not isinstance(suscripcion, str) or not _RE_SUSCRIPCION.match(suscripcion):
+        raise AsientoInvalido(
+            f"nombre de suscripcion invalido para una cuenta: {suscripcion!r}")
+    return f"{PREFIJO_CRISTAL}:{suscripcion}:{zona}"
+
+
+def cuentas_cristal(suscripciones) -> set[str]:
+    """El conjunto CERRADO de cuentas de cristal de una configuracion dada.
+
+    `suscripciones` es cualquier iterable de nombres (un dict de
+    suscripciones sirve: itera sus claves). Para uso de las capas que si
+    conocen la configuracion.
+    """
+    return {cuenta_cristal(n, z) for n in suscripciones for z in ZONAS_CRISTAL}
+
+
+def _exigir_cuenta_cristal(cuenta: str | None, detalle: dict,
+                           etiqueta: str) -> None:
+    """La cuenta debe ser EXACTAMENTE la derivada de lo que el asiento declara."""
+    sus = detalle.get("suscripcion")
+    zona = detalle.get("zona")
+    if not sus or not zona:
+        raise AsientoInvalido(
+            f"{etiqueta} exige detalle['suscripcion'] y detalle['zona']")
+    esperada = cuenta_cristal(sus, zona)
+    if cuenta != esperada:
+        raise AsientoInvalido(
+            f"{etiqueta}: la cuenta debe ser exactamente {esperada!r}, "
+            f"no {cuenta!r}")
 
 
 @dataclass(frozen=True)
@@ -113,6 +200,25 @@ class Asiento:
         elif t in (TipoAsiento.CONSUMO_PT, TipoAsiento.EXPIRACION_PT):
             if self.divisa is not Divisa.PT or self.origen not in _POOLS_PT:
                 raise AsientoInvalido(f"{t.value}: divisa pt y origen un pool pt:*")
+        elif t is TipoAsiento.EMISION_CRISTAL:
+            if self.divisa is not Divisa.CRISTAL:
+                raise AsientoInvalido("emision_cristal: divisa cristal")
+            if self.origen or not self.destino:
+                raise AsientoInvalido("emision_cristal: destino si, origen no")
+            _exigir_cuenta_cristal(self.destino, self.detalle, "emision_cristal")
+        elif t is TipoAsiento.CONSUMO_CRISTAL:
+            if self.divisa is not Divisa.CRISTAL:
+                raise AsientoInvalido("consumo_cristal: divisa cristal")
+            if not self.origen or self.destino:
+                raise AsientoInvalido("consumo_cristal: origen si, destino no")
+            _exigir_cuenta_cristal(self.origen, self.detalle, "consumo_cristal")
+        elif t is TipoAsiento.EXPIRACION_CRISTAL:
+            if self.divisa is not Divisa.CRISTAL:
+                raise AsientoInvalido("expiracion_cristal: divisa cristal")
+            if not self.origen or self.destino:
+                raise AsientoInvalido("expiracion_cristal: origen si, destino no")
+            _exigir_cuenta_cristal(self.origen, self.detalle,
+                                   "expiracion_cristal")
         elif t is TipoAsiento.ACREENCIA:
             d = self.detalle
             if not d.get("acreedor") or not d.get("deudor"):

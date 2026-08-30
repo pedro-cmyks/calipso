@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import pathlib
 
-from . import balances, cuenta_pedro, pt, tipos          # noqa: F401
+from . import balances, cristal, cuenta_pedro, pt, tipos  # noqa: F401
 from . import bus, capacidad, cierre, departamentos, direccion, eficiencia, mercado  # noqa: F401
 from . import candado, cola, operacion, pagador, personal, reloj  # noqa: F401
 from .kernel import Kernel, OperacionInvalida, SinSaldo  # noqa: F401
