@@ -13,7 +13,8 @@ con su gasto y su criterio de muerte. Una de `tipo="preseed"` es la ronda
 pre-seed: se financia contra el TESORO, no contra ningun departamento, y
 la plata cae en la cuenta DEL DEPARTAMENTO dueno, no en trabajo:<id> —
 produce capital, no un trabajo, asi que no tiene gasto que medir ni
-liquidacion que hacer (`evaluar_y_liquidar_muertos` la ignora).
+liquidacion que hacer: al pagarse pasa a `cerrada` y sale de `activas()`,
+que es la lista de trabajos EN CURSO.
 """
 from __future__ import annotations
 
@@ -315,8 +316,14 @@ def evaluar_y_liquidar_muertos(mercado: Mercado, bus: Bus, ts: str,
         if datos.get("tipo") == "preseed":
             # un pre-seed no abre trabajo:<id>: la plata ya esta en la
             # cuenta del departamento. No hay gasto que medir contra un
-            # criterio de muerte ni liquidacion proporcional que hacer —
-            # esta "financiada" es un estado final, no un trabajo en curso.
+            # criterio de muerte ni liquidacion proporcional que hacer.
+            #
+            # Desde que `financiar` lo cierra en el acto, un pre-seed no
+            # llega aca por `activas()` -- queda en `cerrada`, no en
+            # `financiada`. Esto sigue por los buses escritos ANTES de ese
+            # cambio, que si pueden tener un pre-seed en `financiada`: sin
+            # el guard, el primer cierre que los alcance les buscaria un
+            # gasto que no existe.
             continue
         criterio = datos["criterio"]
         gasto = gastado(asientos, id)
