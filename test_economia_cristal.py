@@ -452,6 +452,43 @@ def test_un_cargo_tardio_no_traba_la_apertura_del_ciclo(k):
     assert _saldo(k, PER) == 200
 
 
+def test_un_cargo_entre_el_cierre_y_la_emision_se_estampa_en_el_ciclo_nuevo(k):
+    """El ciclo abierto DESPUES de un cierre es c+1, no el ultimo emitido.
+
+    Gemelo del de arriba, que mira los SALDOS del pool: el pool no tiene
+    ciclos —descuenta por orden de llegada— asi que ninguna de sus
+    aserciones cambia si el ciclo estampado es el equivocado. Lo que se
+    mira aca es el ESTAMPADO, que es la otra mitad de la promesa de
+    `consumir`: el pool y `consumo_del_ciclo` tienen que contar lo mismo.
+
+    Sin la rama que abre en c+1 tras un cierre, `_ciclo_abierto` se queda
+    en el ultimo ciclo con cuota emitida y el cargo tardio cae en el ciclo
+    0: el pliegue reporta 850 consumidos contra una cuota de 800 que
+    ademas expiro 50 sin usar —imposible, y ademas roba el consumo al
+    ciclo 1, que es el pool que de verdad lo paga (ver la emision de abajo,
+    que nace con el descubierto descontado)."""
+    cristal.emitir_ciclo(k, TS, "2026-W35", 0, SUS)
+    cristal.consumir_fabrica(k, TS, "2026-W35", SUS, 750, titular="dep:a")
+    # cierre con resto: 50 expiran, y esa expiracion ES la marca de cierre.
+    # Con resto CERO exacto no hay asiento y el rincon esta documentado en
+    # `_ciclo_abierto`; por eso el consumo no llega a los 800.
+    cristal.cerrar_ciclo(k, TS, "2026-W38", 0, {"claude_max": SUS})
+    assert _saldo(k, FAB) == 0
+
+    # el cargo tardio: llega despues del cierre y antes de la emision, con
+    # el ts y la semana viejos, como los replaya `reintentar_pendientes`
+    a = cristal.consumir_fabrica(k, TS, "2026-W38", SUS, 100, titular="dep:a")
+    assert a.detalle["ciclo"] == 1
+
+    asientos = k.libro.asientos()
+    # el ciclo 0 cierra cuadrado: lo consumido mas lo expirado es la cuota
+    assert cristal.consumo_del_ciclo(asientos, "claude_max", "fabrica", 0) == 750
+    assert cristal.consumo_del_ciclo(asientos, "claude_max", "fabrica", 1) == 100
+    # y el ciclo 1 lo paga de verdad: su cuota nace con el descubierto adentro
+    cristal.emitir_ciclo(k, TS, "2026-W39", 1, SUS)
+    assert _saldo(k, FAB) == 700
+
+
 def test_el_bootstrap_no_queda_muerto(k):
     """El caso que el propio modulo declara legal: el cargo llega antes de
     que el ciclo 0 se abra. Si eso trabara la primera emision, el modulo
