@@ -167,6 +167,13 @@ ALLOWLIST: dict[str, dict[str, Any]] = {
         "args": ["{python}", "test_launch.py"],
         "timeout": 120,
     },
+    "test_inbox": {
+        "title": "Probar el inbox",
+        "description": "Ejecuta test_inbox.py y test_inbox_server.py.",
+        "args": ["{python}", "-m", "pytest", "-q",
+                 "test_inbox.py", "test_inbox_server.py"],
+        "timeout": 120,
+    },
     "test_prompt_compiler": {
         "title": "Probar lenguaje interno",
         "description": "Ejecuta test_prompt_compiler.py.",

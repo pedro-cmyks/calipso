@@ -22,7 +22,8 @@ const SHELL = [
   "/static/fabrica/perillas.js",
   "/static/fabrica/freno.js",
   "/static/fabrica/svg.js",
-  "/static/fabrica/permisos.js"
+  "/static/fabrica/permisos.js",
+  "/static/fabrica/inbox.js"
 ];
 
 self.addEventListener("install", event => {

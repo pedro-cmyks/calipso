@@ -21,6 +21,7 @@ import {textoDePerillas, aMilimonedas, aMilimonedasConCero, aEntero,
         cuerpoDeSuscripciones, departamentosDeSiembra,
         resumenDeSiembra} from "./perillas.js";
 import {textoDePermisos, contadorPendientes} from "./permisos.js";
+import {textoDeInbox, contadorDeInbox} from "./inbox.js";
 
 const lienzo = document.getElementById("mapa");
 const sinFabrica = document.getElementById("sin-fabrica");
@@ -563,12 +564,43 @@ cajaPermisos?.addEventListener("submit", async evento => {
   }
 });
 
+// --- Inbox: las cuatro bandejas juntas, "Todo" -------------------------
+//
+// Primera sub-vista de "La mesa" (no una pestana global: en escritorio la
+// grilla es de cuatro columnas fijas y #pestanas esta apagado, asi que una
+// pestana nueva no tendria donde vivir). Solo muestra y cuenta -- el
+// despacho de data-inbox="responder" a cada endpoint de accion es del
+// plan 2, porque los cuatro endpoints tienen cuerpos y errores distintos
+// que hay que arreglar antes de poder enchufarlos con un solo patron.
+const cajaInbox = document.getElementById("caja-inbox");
+const badgeInbox = document.getElementById("badge-inbox");
+
+async function pintarInbox() {
+  // la guarda no es defensiva por gusto: arranque.test.js monta un DOM que
+  // no declara este id, y sin esto el import de app.js revienta ahi antes
+  // de correr un solo test
+  if (!cajaInbox) return;
+  try {
+    const r = await fetch("/api/inbox");
+    const datos = await r.json();
+    cajaInbox.innerHTML = textoDeInbox(datos);
+    const n = contadorDeInbox(datos);
+    if (badgeInbox) {
+      badgeInbox.textContent = String(n);
+      badgeInbox.classList.toggle("oculto", n === 0);
+    }
+  } catch (e) {
+    cajaInbox.innerHTML = `<div class="nota">no se pudo leer el inbox</div>`;
+  }
+}
+
 for (const boton of document.querySelectorAll("#submesa button")) {
   boton.addEventListener("click", () => {
     const vista = boton.dataset.vista;
     for (const otro of document.querySelectorAll("#submesa button")) {
       otro.classList.toggle("activa", otro === boton);
     }
+    cajaInbox?.classList.toggle("oculto", vista !== "inbox");
     cajaPlantel?.classList.toggle("oculto", vista !== "decidir");
     cajaMesa?.classList.toggle("oculto", vista !== "decidir");
     cajaPerillas?.classList.toggle("oculto", vista !== "plata");
@@ -576,6 +608,7 @@ for (const boton of document.querySelectorAll("#submesa button")) {
     // igual que la pestana global de "Mesa" (spec seccion 9): sin esto,
     // tocar una sub-pestana muestra la foto del momento en que cargo la
     // pagina.
+    if (vista === "inbox") pintarInbox();
     if (vista === "plata") pintarPerillas();
     if (vista === "permisos") pintarPermisos();
   });
@@ -969,6 +1002,9 @@ setInterval(pintarMesa, 60_000).unref?.();
 // Las perillas cambian por las mismas razones que la mesa -un cierre
 // semanal, un jefe gastando- asi que el mismo refresco de fondo aplica.
 setInterval(pintarPerillas, 60_000).unref?.();
+// Y el inbox, con el mismo intervalo: es lo unico que mantiene el badge de
+// "Todo" al dia si Pedro no vuelve a tocar esa sub-vista.
+setInterval(pintarInbox, 60_000).unref?.();
 // Y los permisos, con el mismo intervalo: es lo que mantiene el badge al
 // dia mientras Pedro esta en otra pestana.
 setInterval(pintarPermisos, 60_000).unref?.();
