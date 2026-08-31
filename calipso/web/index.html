@@ -2507,10 +2507,57 @@ connect();
   }
 
   async function startRec() {
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch(e) {
-      micBtn.title = "Permiso de micrófono denegado"; return;
+    // Verificar estado del permiso antes de intentar
+    if (navigator.permissions) {
+      try {
+        const perm = await navigator.permissions.query({ name: "microphone" });
+        if (perm.state === "denied") {
+          const msg = "Micrófono bloqueado en el browser — abre Configuracion del sitio y cambia Microfono a Permitir";
+          micBtn.title = msg;
+          addMsg("meta", "mic: " + msg + " (candado > Configuracion del sitio > Microfono)");
+          return;
+        }
+      } catch(_) {}
+    }
+    // Enumerar dispositivos de audio disponibles
+    let devices = [];
+    try { devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audioinput"); }
+    catch(_) {}
+    if (devices.length === 0) {
+      const msg = "Firefox no ve ningún dispositivo de micrófono — puede ser un problema del portal Flatpak";
+      micBtn.title = msg;
+      addMsg("meta", "mic: " + msg + ". Ejecuta en terminal: flatpak override --user --device=all org.mozilla.firefox");
+      return;
+    }
+    // Intentar con cada dispositivo disponible
+    let lastErr = null;
+    for (const dev of devices) {
+      const constraints = [
+        { audio: { deviceId: { exact: dev.deviceId }, echoCancellation: false, noiseSuppression: false, autoGainControl: false } },
+        { audio: { deviceId: dev.deviceId } },
+      ];
+      for (const c of constraints) {
+        try { stream = await navigator.mediaDevices.getUserMedia(c); lastErr = null; break; }
+        catch(e) { lastErr = e; }
+      }
+      if (!lastErr) break;
+    }
+    if (lastErr) {
+      const e = lastErr;
+      const devList = devices.map(d => d.label || d.deviceId.slice(0,8)).join(", ");
+      const msg = e.name === "NotFoundError"
+        ? "No se encontró micrófono"
+        : e.name === "NotReadableError"
+        ? "El micrófono está en uso por otra app"
+        : e.name === "NotAllowedError"
+        ? "Permiso denegado — candado > Configuracion del sitio > Microfono > Permitir"
+        : e.name === "OverconstrainedError"
+        ? `Dispositivos encontrados (${devList}) pero ninguno compatible — ${e.message}`
+        : `Error de micrófono: ${e.name} — ${e.message}`;
+      micBtn.title = msg;
+      addMsg("meta", "mic: " + msg);
+      console.error("getUserMedia:", e.name, e.message, "constraint:", e.constraint, "devices:", devList);
+      return;
     }
     chunks = [];
     mediaRec = new MediaRecorder(stream);
