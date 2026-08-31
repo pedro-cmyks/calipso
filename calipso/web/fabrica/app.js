@@ -582,6 +582,16 @@ async function pintarInbox() {
   if (!cajaInbox) return;
   try {
     const r = await fetch("/api/inbox");
+    // mismo molde que pintarMesa/pintarPerillas/pintarPermisos: el unico
+    // no-200 real de este endpoint es un 401 sin sesion (todo lo demas ya
+    // llega envuelto en un 200 con `fallaron`), y sin este chequeo esa
+    // sesion vencida se leia como "Nada esperando" -- tapando justo el
+    // problema.
+    if (!r.ok) {
+      cajaInbox.innerHTML = `<div class="nota">no se pudo leer el inbox</div>`;
+      if (badgeInbox) badgeInbox.classList.add("oculto");
+      return;
+    }
     const datos = await r.json();
     cajaInbox.innerHTML = textoDeInbox(datos);
     const n = contadorDeInbox(datos);
@@ -591,6 +601,7 @@ async function pintarInbox() {
     }
   } catch (e) {
     cajaInbox.innerHTML = `<div class="nota">no se pudo leer el inbox</div>`;
+    if (badgeInbox) badgeInbox.classList.add("oculto");
   }
 }
 
@@ -984,9 +995,14 @@ fetch("/api/chats")
 pintarMesa();
 pintarPlantel();
 pintarPerillas();
-// Se pinta (y con ella, el badge) desde el arranque y sin esperar a que
-// Pedro toque "Permisos": es la unica forma de que se entere de algo
-// estacionado SIN buscarlo, si arranca la pantalla en Chat o en Mapa.
+// Se pintan (y con ellas, los badges) desde el arranque y sin esperar a
+// que Pedro toque "Todo" o "Permisos": es la unica forma de que se entere
+// de algo estacionado SIN buscarlo, si arranca la pantalla en Chat o en
+// Mapa. Para el inbox pesa mas todavia -su badge suma las cuatro
+// bandejas- porque sin este llamado se queda en blanco hasta que pasen
+// los 60 segundos del intervalo, o hasta que Pedro entra a "Todo" y el
+// badge ya no le dice nada nuevo.
+pintarInbox();
 pintarPermisos();
 
 // La mesa no tiene push: sin este refresco, Pedro abre /fabrica, hace otra

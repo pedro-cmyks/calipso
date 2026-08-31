@@ -468,3 +468,29 @@ html, body {
 }
 .mesa .vencida .cabeza { flex: 1 1 auto; }
 .mesa .vencida .datos { color: var(--tenue); }
+
+/* La primera sub-pestana de la mesa: "Todo", las cuatro bandejas juntas.
+   inbox.js emite .fila/.etiqueta/.titulo/.acciones/.nota sin saber que
+   .titulo YA es global (linea 37: la usan los encabezados de panel, en
+   mayusculas y 11px) y que .nota no tiene ninguna regla sin acotar (las
+   tres que existen -linea 340, 378, 435- estan atadas a otro panel). Mismo
+   camino que .perillas-panel/.permisos-panel: acotar bajo la clase del
+   panel en vez de tocar los nombres que ya testea inbox.test.js. */
+.inbox-panel { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.inbox-panel .fila {
+  border: 1px solid var(--linea); border-radius: 6px; padding: 8px;
+  background: var(--panel); display: flex; flex-direction: column; gap: 4px;
+}
+.inbox-panel .etiqueta {
+  color: var(--tenue); font-size: 11px; text-transform: uppercase;
+}
+/* Pisa el .titulo global (border-bottom + mayusculas de encabezado de
+   panel): aca es el texto del item, no un encabezado. */
+.inbox-panel .titulo {
+  display: block; padding: 0; margin: 0; border-bottom: 0;
+  color: var(--texto); font-size: 13px; font-weight: 600;
+  text-transform: none; letter-spacing: normal;
+}
+.inbox-panel .nota { color: var(--tenue); font-size: 11px; line-height: 1.4; }
+.inbox-panel .acciones { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.inbox-panel .acciones button { flex: 1 1 90px; min-height: 40px; cursor: pointer; }
