@@ -131,6 +131,25 @@ _TOKEN_FILE = _home_calipso() / "token"
 _TOTP_SECRET_FILE = _home_calipso() / "totp_secret"
 
 
+def _host() -> str:
+    """Donde escucha el servidor. Por defecto, solo esta maquina.
+
+    Hasta el 2026-08-31 esto era un `host="0.0.0.0"` escrito a mano en el
+    `__main__`. CALIPSO_HOST existia, pero solo lo leia launch_calipso.py:24
+    para decidir que URL abrir en el navegador y cual sondear: NO ataba el
+    socket. O sea que Calipso escuchaba en toda la wifi siempre, con un token
+    que viaja en el query string y que hasta hoy vivia en 0644.
+
+    El default se cierra. Para abrirlo hay que pedirlo, y se ve al arrancar:
+
+        CALIPSO_HOST=0.0.0.0 python calipso/server.py
+
+    Para llegar desde otro aparato -el lector- el camino es Tailscale, no la
+    wifi: direccion estable por aparato, cifrado, y sin abrir un puerto a
+    cualquiera que este en la misma red."""
+    return os.environ.get("CALIPSO_HOST", "127.0.0.1")
+
+
 def _endurecer(ruta: pathlib.Path) -> None:
     """Deja el archivo en 0600 si estaba mas abierto.
 
@@ -5820,12 +5839,12 @@ if WEB.exists():
 
 
 if __name__ == "__main__":
-    # 0.0.0.0 = escucha en toda la red local: ÃƒÂ¡brelo desde el celular u otro PC
-    # en el mismo WiFi con http://<IP-de-tu-PC>:8000
-    import socket
-    ip = socket.gethostbyname(socket.gethostname())
+    host = _host()
     print(f"[calipso] sirviendo {ROOT}")
     print(f"[calipso] token de acceso: {TOKEN}")
-    print(f"[calipso] entra directo:   http://{ip}:8000/?token={TOKEN}")
-    print(f"[calipso] local:  http://localhost:8000")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    print(f"[calipso] local:  http://127.0.0.1:8000")
+    if host != "127.0.0.1":
+        import socket
+        ip = socket.gethostbyname(socket.gethostname())
+        print(f"[calipso] ABIERTO en {host} — tambien entra http://{ip}:8000")
+    uvicorn.run(app, host=host, port=8000)

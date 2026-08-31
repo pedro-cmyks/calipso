@@ -75,3 +75,32 @@ def test_sin_token_ninguna_de_las_dos(cliente):
                         json={"tool": "browser"}).status_code == 401
     assert cliente.get("/api/browser/screenshot",
                        params={"url": "https://example.com"}).status_code == 401
+
+
+# --- el socket abierto a toda la wifi -------------------------------------
+# El tercer agujero: `calipso/server.py` ataba el socket con un "0.0.0.0"
+# escrito a mano, asi que Calipso escuchaba en toda la red local siempre.
+# CALIPSO_HOST existia pero solo lo leia el lanzador para elegir que URL
+# abrir en el navegador: no llegaba al bind. Con el token viajando en el
+# query string, cualquiera en la misma wifi tenia la puerta enfrente.
+
+def test_por_defecto_solo_escucha_en_esta_maquina(monkeypatch):
+    monkeypatch.delenv("CALIPSO_HOST", raising=False)
+    assert srv._host() == "127.0.0.1"
+
+
+def test_se_puede_abrir_pero_hay_que_pedirlo(monkeypatch):
+    """No se prohibe abrirlo: se prohibe que pase sin que nadie lo escriba."""
+    monkeypatch.setenv("CALIPSO_HOST", "0.0.0.0")
+    assert srv._host() == "0.0.0.0"
+
+
+def test_el_bind_del_arranque_sale_de_host_y_no_de_una_constante():
+    """El agujero no era el default: era que el default no se podia cambiar.
+    Si alguien vuelve a escribir la direccion a mano en el __main__, esto
+    se pone en rojo."""
+    import pathlib
+    fuente = pathlib.Path(srv.__file__).read_text(encoding="utf-8")
+    arranque = fuente.split('if __name__ == "__main__":')[-1]
+    assert "uvicorn.run(app, host=host" in arranque
+    assert '"0.0.0.0"' not in arranque
