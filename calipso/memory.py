@@ -23,6 +23,7 @@ al core curado. Es la "consolidación/reflection" de la literatura de agentes.
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import os
 import pathlib
@@ -87,10 +88,31 @@ class Scope:
 
     # --- episódica ---
     def remember(self, text: str, **meta) -> str:
+        """Guarda un episodio, de forma corregible y sin perder escrituras.
+
+        Las dos decisiones de acá deciden si esta memoria se puede arreglar
+        alguna vez, y las dos estaban del lado que no:
+
+        **`upsert` y no `add`.** Comprobado sobre chromadb 1.5.9: un `add`
+        con un id que ya existe **conserva el documento viejo en silencio**
+        -- no levanta, y `count()` ni se mueve. O sea que un episodio
+        guardado mal era permanente por diseño: reindexarlo no lo corregía,
+        lo ignoraba. Con `upsert`, volver a escribir el mismo episodio lo
+        pisa, que es lo que hace falta el día que haya que reparar el
+        corpus (y ya hay 13 documentos guardados con el texto roto).
+
+        **El id sale del contenido, no de `count()`.** El id anterior era
+        `m{count}-{ts}`, y `count()` se lee ANTES de escribir: dos
+        escrituras en el mismo segundo daban el mismo id, y con `add` la
+        segunda se descartaba sin aviso. Un hash de (texto, ts, meta) no
+        choca por accidente, y choca a propósito exactamente cuando tiene
+        que hacerlo: reintentar la misma escritura es idempotente en vez de
+        duplicar."""
         clean = {k: v for k, v in meta.items() if v is not None}
         clean["ts"] = datetime.datetime.now().isoformat(timespec="seconds")
-        mem_id = f"m{self._col.count()}-{clean['ts']}"
-        self._col.add(documents=[text], metadatas=[clean], ids=[mem_id])
+        huella = repr((text, sorted(clean.items())))
+        mem_id = "m" + hashlib.sha256(huella.encode("utf-8")).hexdigest()[:24]
+        self._col.upsert(documents=[text], metadatas=[clean], ids=[mem_id])
         return mem_id
 
     def recall(self, query: str, n: int = 5) -> list[dict]:

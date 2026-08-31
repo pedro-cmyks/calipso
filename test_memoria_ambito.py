@@ -119,3 +119,88 @@ def test_recordar_no_puede_voltear_un_turno_ya_contestado(turno):
     """El intercambio ya se le mando a Pedro: que falle guardarlo no puede
     romper el turno."""
     assert "except Exception" in turno
+
+
+# --- que un episodio se pueda corregir alguna vez ------------------------
+# Las dos decisiones de `Scope.remember` deciden si esta memoria es
+# reparable, y las dos estaban del lado que no. Ya hay 13 documentos
+# guardados con el texto roto: si `add` los ignora al reescribirlos, esos 13
+# son para siempre.
+
+class _ColeccionFalsa:
+    """Una coleccion de Chroma de mentira: anota que metodo le pidieron."""
+
+    def __init__(self):
+        self.llamadas = []
+        self.docs = {}
+
+    def count(self):
+        return len(self.docs)
+
+    def add(self, documents, metadatas, ids):
+        self.llamadas.append("add")
+        self.docs.setdefault(ids[0], documents[0])   # add NO pisa
+
+    def upsert(self, documents, metadatas, ids):
+        self.llamadas.append("upsert")
+        self.docs[ids[0]] = documents[0]             # upsert SI pisa
+
+
+@pytest.fixture
+def ambito():
+    s = memory.Scope.__new__(memory.Scope)
+    s._col = _ColeccionFalsa()
+    return s
+
+
+def test_guardar_pisa_en_vez_de_ignorar(ambito):
+    """Comprobado sobre chromadb 1.5.9: `add` con un id repetido conserva el
+    documento viejo EN SILENCIO -- no levanta y el count ni se mueve. Con
+    `add`, reparar el corpus es imposible: reindexar no corrige, ignora."""
+    ambito.remember("un episodio")
+    assert ambito._col.llamadas == ["upsert"], \
+        "volvio `add`: un episodio mal guardado seria permanente otra vez"
+
+
+def test_dos_escrituras_a_la_vez_no_se_pisan(ambito, monkeypatch):
+    """El id era `m{count}-{ts}` y `count()` se lee ANTES de escribir.
+
+    Dos escritores que leen el contador antes de que ninguno haya escrito
+    -- el turno de chat y el jefe de un departamento, por ejemplo -- ven el
+    MISMO count, y en el mismo segundo arman el MISMO id. Con `add`, la
+    segunda escritura se perdia sin una sola excepcion.
+
+    Se reproduce clavando las dos lecturas que el id viejo usaba: el reloj y
+    el contador. Sin clavar el contador este test pasa con el id viejo
+    tambien, porque en un solo hilo el count crece entre una escritura y la
+    otra -- y entonces no probaria nada de lo que dice."""
+    monkeypatch.setattr(memory.datetime, "datetime", datetime_congelado())
+    monkeypatch.setattr(type(ambito._col), "count", lambda self: 13)
+    a = ambito.remember("lo que escribio el chat")
+    b = ambito.remember("lo que escribio el jefe")
+    assert a != b, "dos episodios distintos comparten id: uno se pierde"
+    assert len(ambito._col.docs) == 2
+
+
+def test_reescribir_el_mismo_episodio_es_idempotente(ambito, monkeypatch):
+    """El otro lado de la moneda: reintentar la MISMA escritura no duplica.
+    Es lo que hace reparable al corpus."""
+    congelado = datetime_congelado()
+    monkeypatch.setattr(memory.datetime, "datetime", congelado)
+    a = ambito.remember("mismo episodio", kind="chat")
+    b = ambito.remember("mismo episodio", kind="chat")
+    assert a == b
+    assert len(ambito._col.docs) == 1
+
+
+def datetime_congelado():
+    """Un `datetime` con `now()` clavado, para reproducir dos escrituras en
+    el mismo segundo sin dormir el test."""
+    import datetime as _dt
+
+    class Congelado(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _dt.datetime(2026, 8, 31, 12, 0, 0)
+
+    return Congelado
