@@ -324,3 +324,77 @@ def vista(limite_registro: int = 50) -> dict:
         "registro": almacen.registro(limite_registro),
         "error": error,
     }
+
+
+# --------------------------------------------------------------------------
+# El adaptador para el inbox
+# --------------------------------------------------------------------------
+
+ORIGEN_INBOX = "permisos"
+
+
+def descriptor() -> dict:
+    """Lo que permisos declara de si mismo para el inbox.
+
+    NO hay verbo "despues". Mientras una solicitud este abierta, esa forma
+    exacta no pasa por ningun chat, ningun departamento ni ningun techo
+    nuevo: aplazarla no es aplazar, es prolongar un bloqueo global.
+
+    `reloj: None` no es un olvido: permisos no vence. Es una de las dos
+    bandejas que tienen que declararlo explicitamente, porque el default
+    no se puede inferir.
+    """
+    return {
+        "origen": ORIGEN_INBOX,
+        "verbos": [
+            {"nombre": "si", "etiqueta": "Si",
+             "alcances": ["una_vez"], "parametros": []},
+            {"nombre": "si_siempre", "etiqueta": "Si, siempre",
+             "alcances": ["siempre"], "parametros": []},
+            {"nombre": "no", "etiqueta": "No",
+             "alcances": ["una_vez"], "parametros": []},
+        ],
+        "reloj": None,
+        "clase_por_defecto": "decision",
+        "vara": None,
+        "lugares": None,
+    }
+
+
+def como_items(vista: dict) -> list[dict]:
+    """Traduce `motor.vista()` a items del inbox.
+
+    La clave de disponibilidad es `activo` (masculino), no `activa`: la de
+    economia es la otra y confundirlas deja el contador en cero sin ruido.
+
+    Solo lo ABIERTO es item. `aprobadas` y `registro` vienen en la misma
+    vista y no son cosas que esperen a Pedro.
+
+    Y el caso que hace mentir a un badge: `vista()` devuelve `error` con
+    todas las listas vacias cuando el archivo no se puede leer. Vacio por
+    error se ve igual que vacio de verdad, asi que se emite un aviso -- que
+    no cuenta para el badge, pero se ve.
+    """
+    if not vista.get("activo"):
+        return []
+    items = []
+    if vista.get("error"):
+        items.append({
+            "id": "permisos:error", "origen": ORIGEN_INBOX, "clase": "aviso",
+            "ts": "", "titulo": f"no se pudo leer permisos: {vista['error']}",
+            "cuerpo": {"verbos_validos": []}, "estado": "error",
+            "respuesta": None})
+    for s in (vista.get("pendientes") or []) + (vista.get("estacionadas") or []):
+        # si_siempre sobre una solicitud con siempre_pregunta devuelve 400:
+        # lo cortan almacen.responder y almacen.conceder, las dos capas
+        verbos = ["si", "no"] if s.get("siempre_pregunta") \
+            else ["si", "si_siempre", "no"]
+        items.append({
+            "id": s.get("id"), "origen": ORIGEN_INBOX, "clase": "decision",
+            "ts": s.get("ts") or "", "titulo": s.get("texto") or "",
+            "cuerpo": {"accion": s.get("accion"),
+                       "contexto": s.get("contexto"),
+                       "motivo": s.get("motivo"),
+                       "verbos_validos": verbos},
+            "estado": s.get("estado") or "pendiente", "respuesta": None})
+    return items
