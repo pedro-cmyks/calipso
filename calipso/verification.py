@@ -99,8 +99,14 @@ def recommend(files: list[dict[str, Any]] | None = None,
         if "launch" in lower or "runbook" in lower or "manifest" in lower or "sw.js" in lower:
             types.add("launch")
             _add(plan, "test_launch", f"{path} toca lanzamiento personal")
-        if "inbox" in lower:
+        if ("inbox" in lower or "economia/bus.py" in lower
+                or "economia/cola.py" in lower or "permisos/motor.py" in lower
+                or "librarian.py" in lower):
             types.add("inbox")
+            # los cuatro adaptadores (descriptor()/como_items()) viven al
+            # lado de cada origen, no en calipso/inbox.py: tocar el codigo
+            # mas propenso a romper el contrato del inbox tiene que
+            # disparar sus tests igual que tocar el agregador.
             _add(plan, "test_inbox", f"{path} toca el inbox")
 
     if not plan:
