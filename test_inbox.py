@@ -138,3 +138,43 @@ def test_vacio_por_error_no_se_confunde_con_vacio_de_verdad():
 
 def test_permisos_inactivo_no_da_items():
     assert permisos_motor.como_items({"activo": False}) == []
+
+
+from calipso import librarian
+
+
+def test_la_biblioteca_deja_editar_antes_de_aceptar():
+    """La respuesta no es si/no: es 'si, pero asi'."""
+    d = librarian.descriptor()
+    assert d["origen"] == "biblioteca"
+    assert d["reloj"] is None
+    aceptar = next(v for v in d["verbos"] if v["nombre"] == "aceptar")
+    assert "texto" in aceptar["parametros"]
+
+
+def test_el_proyecto_es_obligatorio():
+    """`_slug(None)` devuelve 'global' y lee un archivo distinto y vacio:
+    pedir sin proyecto no falla, MIENTE. Aca falla."""
+    import pytest
+    with pytest.raises(ValueError):
+        librarian.como_items({"proposals": []}, proyecto="")
+
+
+def test_el_item_dice_de_que_proyecto_es():
+    """Es la unica de las cuatro que no es global. Se dice, no se aplana."""
+    datos = {"proposals": [{"id": "mem_abc123", "text": "Pedro prefiere pytest",
+                            "status": "pending", "ts": "2026-08-31T10:00:00",
+                            "scope": "global", "target": "pedro-perfil.md"}],
+             "events": [{"id": "mem_x"}]}
+    items = librarian.como_items(datos, proyecto="calipso")
+    assert len(items) == 1
+    assert items[0]["origen"] == "biblioteca"
+    assert "calipso" in items[0]["titulo"]
+    assert items[0]["cuerpo"]["texto"] == "Pedro prefiere pytest"
+
+
+def test_los_events_no_son_items():
+    """/api/memory/inbox devuelve tambien los ultimos 50 eventos del jsonl.
+    No son cosas que esperen a Pedro."""
+    datos = {"proposals": [], "events": [{"id": "a"}, {"id": "b"}]}
+    assert librarian.como_items(datos, proyecto="calipso") == []

@@ -210,3 +210,60 @@ def suggest_from_text(project_root: str | None, text: str,
             project_root, line, scope=scope, target="aprendido",
             rationale="sugerido por bibliotecario local", source=source))
     return proposals
+
+
+ORIGEN_INBOX = "biblioteca"
+
+
+def descriptor() -> dict:
+    """Lo que el bibliotecario declara de si mismo para el inbox.
+
+    `aceptar` lleva `texto` porque la respuesta no es si/no: es "si, pero
+    asi" -- `update` deja reescribir el contenido antes de aceptarlo.
+
+    `reloj: None`: nada barre `inbox.json`. Es la segunda de las dos
+    bandejas que no vencen y tienen que declararlo.
+    """
+    return {
+        "origen": ORIGEN_INBOX,
+        "verbos": [
+            {"nombre": "aceptar", "etiqueta": "Aceptar",
+             "alcances": ["una_vez"], "parametros": ["texto"]},
+            {"nombre": "descartar", "etiqueta": "Descartar",
+             "alcances": ["una_vez"], "parametros": ["motivo"]},
+        ],
+        "reloj": None,
+        "clase_por_defecto": "decision",
+        "vara": None,
+        "lugares": None,
+    }
+
+
+def como_items(datos: dict, proyecto: str) -> list[dict]:
+    """Traduce la respuesta de GET /api/memory/inbox a items del inbox.
+
+    `proyecto` es OBLIGATORIO y no tiene default. Es la unica de las cuatro
+    bandejas que no es global (`_store` cuelga de
+    `CALIPSO_HOME/projects/<slug>/librarian/`), y `_slug(None)` no levanta:
+    devuelve "global" y lee un archivo distinto y vacio. Un default aca es
+    una bandeja que se ve vacia sin que nadie se entere.
+
+    El proyecto va en el titulo porque el inbox es global y esta bandeja no:
+    la asimetria se dice, no se aplana.
+    """
+    if not proyecto:
+        raise ValueError(
+            "como_items necesita el proyecto: el bibliotecario es por "
+            "proyecto y sin el lee la bandeja 'global', que es otra")
+    items = []
+    for p in datos.get("proposals") or []:
+        texto = p.get("text") or ""
+        resumen = texto if len(texto) <= 80 else texto[:77] + "..."
+        items.append({
+            "id": p.get("id"), "origen": ORIGEN_INBOX, "clase": "decision",
+            "ts": p.get("ts") or "", "titulo": f"[{proyecto}] {resumen}",
+            "cuerpo": {"texto": texto, "scope": p.get("scope"),
+                       "target": p.get("target"), "proyecto": proyecto,
+                       "verbos_validos": ["aceptar", "descartar"]},
+            "estado": p.get("status") or "pending", "respuesta": None})
+    return items
