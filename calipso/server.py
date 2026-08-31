@@ -3521,7 +3521,8 @@ async def _routines_ticker() -> None:
 # ECONOMIA (spec 2026-08-24): tablero, cola, reloj y cierre
 # --------------------------------------------------------------------------
 try:
-    from calipso.economia import (bus as _eco_bus, capacidad as _eco_cap,
+    from calipso.economia import (balances as _eco_balances,
+                                  bus as _eco_bus, capacidad as _eco_cap,
                                   cola as _eco_cola,
                                   departamentos as _eco_deps,
                                   operacion as _eco_op,
@@ -3543,6 +3544,7 @@ except Exception:  # economia no disponible: los endpoints responden inactivo
     _eco_suscripcion = None
     _ECO_SUS_POR_CLIENTE = {}
     _eco_bus = _eco_cola = _eco_op = _eco_personal = _eco_reloj = _eco_candado = None
+    _eco_balances = None
     _eco_escribir_json = None
     _eco_deps = None
     _eco_tipos = None
@@ -3834,6 +3836,7 @@ def api_eco_bus() -> dict:
             m = eco["pagador"].mercado_fresco()
             bus = _eco_bus.Bus(p0.ruta_bus)
             asientos = m.k.libro.asientos()
+            ops_mesa = _eco_cap.semanas_operativas(asientos)
             propuestas = []
             for id_ in bus.ids():
                 estado = bus.estado(id_)
@@ -3842,6 +3845,17 @@ def api_eco_bus() -> dict:
                 if estado not in ("alta", "financiada"):
                     continue
                 d = bus.datos(id_)
+                # y un pre-seed VENCIDO tampoco: `bus.financiar` lo rechaza,
+                # asi que la fila seria un boton "financiar" que no puede
+                # funcionar -- peor que no mostrarla. Ya no reserva cupo de
+                # nadie (`situacion` lo saca de las tres listas), asi que
+                # tampoco hay nada que Pedro tenga que despejar: la bandeja
+                # se resuelve sola, que es todo el punto. Se mira aca con la
+                # MISMA funcion que el freno del jefe y que `financiar`: dos
+                # respuestas a "sigue vivo este pedido" serian dos techos.
+                if estado == "alta" and _eco_bus.preseed_vencido(
+                        d, ops_mesa, semana):
+                    continue
                 # .get() con default, como situacion.py: una linea vieja o
                 # de un esquema anterior en el bus real de Pedro no puede
                 # tumbar la mesa entera con un 500 mudo.
@@ -4442,15 +4456,30 @@ def api_eco_config() -> dict:
         # lo pedido y todavia en la mesa, por departamento. Va ACA, con el
         # candado tomado, por la misma razon que el resto de los lectores
         # de economia: el bus se lee entero de una.
+        #
+        # Y al lado, CUANTAS propuestas en pie tiene cada uno: es el otro
+        # freno que deja mudo a un departamento (`TECHO_PROPUESTAS` en
+        # `jefe._puede`, el de "que Pedro despeje antes de sumar otra") y
+        # hasta hoy no se veia en ninguna pantalla. Se cuentan las de los
+        # DOS tipos, igual que `situacion.propuestas_propias`, porque el
+        # techo que miran es el mismo.
+        ops_bus = _eco_cap.semanas_operativas(asientos)
         pendiente_por_cuenta: dict[str, int] = {}
+        propias_por_cuenta: dict[str, int] = {}
         bus_config = _eco_bus.Bus(p0.ruta_bus)
         for id_ in bus_config.ids():
             if bus_config.estado(id_) != "alta":
                 continue
             d_ = bus_config.datos(id_)
-            if d_.get("tipo") != "preseed":
+            # un pre-seed vencido no cuenta para ninguno de los dos: no se
+            # puede financiar, no reserva cupo y no ocupa bandeja. Misma
+            # funcion que `situacion` y que `bus.financiar`.
+            if _eco_bus.preseed_vencido(d_, ops_bus, semana):
                 continue
             cuenta_ = d_.get("departamento", "")
+            propias_por_cuenta[cuenta_] = propias_por_cuenta.get(cuenta_, 0) + 1
+            if d_.get("tipo") != "preseed":
+                continue
             pendiente_por_cuenta[cuenta_] = (
                 pendiente_por_cuenta.get(cuenta_, 0)
                 + d_.get("presupuesto_mm", 0))
@@ -4497,6 +4526,33 @@ def api_eco_config() -> dict:
         # sugiere que lo que lo suelta es descartarlo.
         fila["preseed_pendiente_mm"] = pendiente_por_cuenta.get(
             dep.cuenta, 0)
+        # y las dos piezas que faltaban para poder DECIR por que un
+        # departamento esta callado, en vez de dejar a Pedro deduciendolo de
+        # cuatro numeros sueltos. `disponible_mm` es el primer freno del
+        # pre-seed ("ya tiene lo que una ronda le daria") y hasta hoy no
+        # viajaba; `propuestas_propias` es el otro freno que lo deja mudo
+        # (TECHO_PROPUESTAS, "que Pedro despeje antes de sumar otra") y
+        # tampoco.
+        fila["disponible_mm"] = _eco_balances.disponible(
+            asientos, dep.cuenta, _eco_tipos.Divisa.MONEDA)
+        fila["propuestas_propias"] = propias_por_cuenta.get(dep.cuenta, 0)
+        # y el freno mismo, en palabras: el MISMO texto que recibio el jefe,
+        # producido por la misma funcion (`jefe.freno_preseed`) sobre las
+        # mismas claves. Reescribirlo en la pantalla seria una segunda
+        # fuente de verdad sobre cuatro frenos, y ese es exactamente el error
+        # que este techo ya cometio dos veces. None cuando puede pedir.
+        #
+        # Solo para la zona FABRICA: un departamento personal no pide
+        # pre-seed (`bus.financiar` lo corta por zona y `Departamento`
+        # rechaza la perilla), asi que su techo es cero por construccion y
+        # `freno_preseed` contestaria "Pedro todavia no autorizo" -- un
+        # freno de mentira sobre algo que ese departamento nunca hace.
+        # `bloquePreseed` ya filtra por zona y no lo pintaria, pero el dato
+        # tiene que ser cierto igual: la pantalla no es la unica que puede
+        # leerlo.
+        fila["freno_pedir"] = (
+            _plantel_jefe.freno_preseed(fila)
+            if _plantel_jefe and dep.zona == _eco_deps.ZONA_FABRICA else None)
     resumen = calipso_consumo.cargar_resumen() or {}
     filas = []
     for nombre, sus in sorted(suscripciones.items()):
@@ -4533,6 +4589,12 @@ def api_eco_config() -> dict:
             # era la suma de lo que el renglon decia que sumaba. Dos hechos
             # distintos, una sola fuente de verdad cada uno.
             "preseed_ventana_sumadas": len(semanas_ventana),
+            # y el techo de propuestas en pie, por la misma razon que el
+            # largo de la ventana viaja: la pantalla dice "N de M en la
+            # mesa" y M es `jefe.TECHO_PROPUESTAS`. Escribir un 3 propio
+            # alla seria una segunda fuente de verdad sobre el freno.
+            "techo_propuestas": (_plantel_jefe.TECHO_PROPUESTAS
+                                 if _plantel_jefe else None),
             "medido_generado": resumen.get("generado")}
 
 
@@ -5083,12 +5145,23 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
         """
         if _plantel_jefe is None:
             return False
+        ops_b = _eco_cap.semanas_operativas(
+            pagador.leer_kernel().libro.asientos())
         propias = 0
         for id_ in bus_fresco.ids():
             if bus_fresco.estado(id_) != "alta":
                 continue
-            if bus_fresco.datos(id_).get("departamento") == cuenta:
-                propias += 1
+            d_ = bus_fresco.datos(id_)
+            if d_.get("departamento") != cuenta:
+                continue
+            # un pre-seed vencido no ocupa lugar en la bandeja: ya no se
+            # puede financiar y `situacion` no lo cuenta, asi que contarlo
+            # aca dejaria al departamento frenado por un pedido que ningun
+            # gesto de Pedro tiene que despejar. Misma funcion que
+            # `situacion`, a proposito.
+            if _eco_bus.preseed_vencido(d_, ops_b, semana):
+                continue
+            propias += 1
         return propias >= _plantel_jefe.TECHO_PROPUESTAS
 
     def contratar(situacion: dict, accion: str, ref: str | None,
@@ -5176,15 +5249,20 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
                 # y no la del ciclo de facturacion: tienen que ser la misma
                 # que mira `bus.financiar` al pagar, o el recorte de aca
                 # publicaria un monto que alla se rechaza.
-                semanas = _eco_bus.ventana_preseed(
-                    _eco_cap.semanas_operativas(asientos_frescos), semana)
+                ops_frescas = _eco_cap.semanas_operativas(asientos_frescos)
+                semanas = _eco_bus.ventana_preseed(ops_frescas, semana)
                 usado = _eco_bus.preseed_en_ventana(asientos_frescos, cuenta,
                                                     semanas)
                 for id_ in bus_fresco.ids():
                     d = bus_fresco.datos(id_)
                     if (bus_fresco.estado(id_) == "alta"
                             and d.get("departamento") == cuenta
-                            and d.get("tipo") == "preseed"):
+                            and d.get("tipo") == "preseed"
+                            # un pedido vencido ya no se puede financiar, asi
+                            # que no reserva nada: sumarlo aca recortaria el
+                            # pedido nuevo contra plata que nadie va a pagar
+                            and not _eco_bus.preseed_vencido(
+                                d, ops_frescas, semana)):
                         usado += int(d.get("presupuesto_mm") or 0)
                 libre = techo_ciclo - usado
                 if libre <= 0:

@@ -35,6 +35,141 @@ class Contexto:
         default=lambda evento, **campos: None)
 
 
+def freno_preseed(s: dict) -> str | None:
+    """Por que este departamento no puede pedir su ronda pre-seed, o None.
+
+    Es una funcion aparte y no un tramo de `_puede` porque la respuesta la
+    necesitan DOS: el jefe, para no publicar un pedido impagable, y la
+    pantalla de Plata, para que Pedro entienda por que un departamento
+    esta callado. Escribir los mismos cuatro frenos dos veces es la forma
+    canonica de que se separen -- y este techo ya se rompio dos veces por
+    tener dos lugares contestando la misma pregunta. Con esto, el texto que
+    Pedro lee es EL MISMO que el jefe recibio, no una reconstruccion.
+
+    Trabaja sobre un dict con la forma de `situacion.situacion` (que es la
+    del jefe) y usa `.get` para todo, asi que la fila de departamento de
+    `GET /api/economia/config` -- que trae las mismas claves-- entra tal
+    cual. No mira el bus ni el libro: los numeros ya vienen plegados.
+    """
+    if int(s.get("techo_preseed_mm") or 0) <= 0:
+        # El monto del pre-seed sale de la perilla `techo_preseed_mm`, no
+        # del modelo, y en cero significa que Pedro todavia no dijo cuanto
+        # puede pedir este departamento. El freno vive ACA y no en el
+        # prompt: `pedir` sigue en el menu (es Pedro quien decide si hace
+        # falta, no el prompt -- ver decision.prompt), pero un pedido sin
+        # techo no llega al bus, no se anota en la memoria del jefe y no se
+        # reporta como que actuo. El contratista lo vuelve a chequear antes
+        # de escribir: es la segunda linea, no la primera.
+        return ("sin techo de pre-seed: Pedro todavia no autorizo cuanto "
+                "puede pedir")
+    # El techo ACUMULADO. `techo_preseed_mm` recorta cada pedido, pero el
+    # unico freno de caudal -TECHO_PROPUESTAS- no ve los pre-seed ya
+    # financiados: `situacion` los saca de las dos listas, asi que cada
+    # financiacion vaciaba el contador y habilitaba otras tres rondas. El
+    # techo real terminaba siendo `techo_preseed_mm` x 200 tics por semana
+    # mientras Pedro siguiera tocando financiar, y la mesa no le mostraba
+    # ningun acumulado: cada fila era un pedido suelto.
+    #
+    # El freno sale de lo que el pre-seed ES: capital para ARRANCAR, "que
+    # un departamento sin plata pueda pedirla". Un departamento que ya
+    # tiene en la billetera lo que una ronda le daria no esta arrancando.
+    # Se cuenta lo que tiene mas lo que ya pidio y sigue en la mesa, para
+    # que tres pedidos en pie no den tres veces el techo.
+    techo = int(s.get("techo_preseed_mm") or 0)
+    ya = (int(s.get("disponible_mm") or 0)
+          + int(s.get("preseed_pendiente_mm") or 0))
+    if ya >= techo:
+        return (f"ya tiene {ya} mm entre billetera y pedidos en pie, y el "
+                f"techo de la ronda es {techo}: el pre-seed es para "
+                "arrancar sin plata")
+    # EL SEGUNDO TECHO, el ACUMULADO, y el ultimo de los frenos porque es
+    # el mas caro de chequear: los de arriba miran un numero de la perilla
+    # o una lista corta; este pliega el libro entero de las semanas de la
+    # ventana.
+    #
+    # La ventana es DESLIZANTE -- las ultimas `bus.VENTANA_PRESEED_SEMANAS`
+    # semanas operativas, no el ciclo de facturacion. `situacion` ya la
+    # resolvio; aca solo se lee el numero.
+    #
+    # Que cuenta: lo FINANCIADO de la ventana mas lo PEDIDO que sigue en la
+    # mesa. Las dos cosas, y por motivos distintos. Lo financiado ya salio
+    # del tesoro y el libro no lo desescribe: es piso duro. Lo pedido
+    # todavia no es plata, pero es plata que Pedro puede soltar con un
+    # toque, asi que vale como reserva mientras siga en pie -- sin eso,
+    # publicar dos pedidos que juntos pasan el techo es gratis, y el freno
+    # llega recien en `bus.financiar`, con el pedido ya en la bandeja de
+    # Pedro pidiendole plata que no le puede dar. Y es solo una reserva: si
+    # Pedro descarta, el cupo vuelve entero, que es la razon por la que
+    # descartar existe.
+    #
+    # Del lado de Pedro se cuenta distinto (solo lo financiado): ver el
+    # comentario en `bus.financiar`.
+    techo_ciclo = int(s.get("techo_preseed_ciclo_mm") or 0)
+    if techo_ciclo <= 0:
+        return ("sin techo de pre-seed acumulado: Pedro todavia no autorizo "
+                "cuanto capital puede entrar por ventana")
+    financiado = int(s.get("preseed_ventana_mm") or 0)
+    pendiente = int(s.get("preseed_pendiente_mm") or 0)
+    ya_ciclo = financiado + pendiente
+    if ya_ciclo >= techo_ciclo:
+        # La salida depende de QUE parte llena el techo, y decirla mal es
+        # peor que no decirla.
+        #
+        # Lo FINANCIADO caduca por la ventana: `preseed_en_ventana` solo
+        # mira las semanas de la corrida, asi que sale solo cuando la
+        # semana en que entro queda atras, y eso se puede fechar
+        # (`libera_preseed`).
+        #
+        # Lo PEDIDO tiene TRES salidas, no dos, y hasta hace poco solo
+        # tenia dos: que Pedro lo financie, que Pedro lo descarte, o que
+        # VENZA -- su semana sale de la ventana y `bus.preseed_vencido` deja
+        # de contarlo (y `bus.financiar` deja de pagarlo). La tercera es la
+        # que arregla que la inaccion de Pedro fuera permanente: antes un
+        # pedido en pie reservaba cupo para siempre y el mensaje de aca
+        # salia igual, palabra por palabra, ventana tras ventana. Ahora se
+        # suelta solo. Lo que sigue sin ser cierto es que la RODADA de la
+        # ventana lo suelte: rodar libera lo financiado, no lo pedido --
+        # lo pedido se suelta al vencer, que es otra cosa y pasa despues.
+        sale = s.get("preseed_libera_al_salir")
+        libera = int(s.get("preseed_libera_mm") or 0)
+        cuanto = (f" (al abrir la proxima semana operativa sale "
+                  f"{sale} de la ventana y se liberan {libera} mm)"
+                  if libera else "")
+        rueda = ("la ventana rueda al abrirse cada semana operativa "
+                 "y el cupo vuelve a medida que las semanas salen "
+                 f"por atras{cuanto}")
+        vence = ("un pedido en pie reserva cupo hasta que Pedro lo "
+                 "financie o lo descarte, o hasta que su semana salga de "
+                 "la ventana y venza")
+        # Y el corte es CUANTO pendiente hay, no si hay. "La rodada no lo
+        # suelta" solo hay que decirlo cuando lo pedido en pie llena el
+        # techo el solo: ahi ninguna rodada alcanza. Con `if pendiente:` a
+        # secas, UN mm pendiente bastaba para pisar el consejo bueno -- y
+        # cuando lo que bloquea es lo FINANCIADO (que si caduca con la
+        # rodada) y lo pendiente es una miga, la frase era simplemente
+        # falsa: una semana operativa despues el jefe actuaba sin freno,
+        # sin que Pedro financiara ni descartara nada. Encima borraba el
+        # `sale ... se liberan ...` que `situacion` ya tenia calculado, que
+        # es el dato que este techo gano al pasar a ventana deslizante, y
+        # el primer remedio que ofrecia era subir la perilla: empujaba a
+        # agrandar el techo cuando alcanzaba con dejar rodar la ventana.
+        if pendiente >= techo_ciclo:
+            salida = ("que Pedro suba la perilla, o financie o descarte lo "
+                      f"que sigue en la mesa: la rodada no lo suelta, {vence}")
+        elif pendiente:
+            salida = ("que Pedro suba la perilla, que financie o "
+                      "descarte lo que sigue en la mesa, o que "
+                      f"espere: {rueda}; lo que la rodada no destraba es "
+                      f"el pedido en pie, y {vence}")
+        else:
+            salida = f"que Pedro suba la perilla, o que espere: {rueda}"
+        return (f"el techo de la ventana es {techo_ciclo} mm "
+                f"y entre lo financiado ({financiado}) y lo "
+                f"pedido en pie ({pendiente}) ya van "
+                f"{ya_ciclo}: {salida}")
+    return None
+
+
 def _puede(estado, s: dict, accion: str, ref: str | None) -> tuple[bool, str]:
     """Los frenos, del mas barato de chequear al mas caro de violar."""
     if accion == "nada":
@@ -75,132 +210,13 @@ def _puede(estado, s: dict, accion: str, ref: str | None) -> tuple[bool, str]:
         if propias >= TECHO_PROPUESTAS:
             return False, (f"ya tiene {propias} propuestas sin financiar: "
                            f"que Pedro despeje antes de sumar otra")
-        if accion == "pedir" and int(s.get("techo_preseed_mm") or 0) <= 0:
-            # El monto del pre-seed sale de la perilla `techo_preseed_mm`,
-            # no del modelo, y en cero significa que Pedro todavia no dijo
-            # cuanto puede pedir este departamento. El freno vive ACA y no
-            # en el prompt: `pedir` sigue en el menu (es Pedro quien decide
-            # si hace falta, no el prompt -- ver decision.prompt), pero un
-            # pedido sin techo no llega al bus, no se anota en la memoria
-            # del jefe y no se reporta como que actuo. El contratista lo
-            # vuelve a chequear antes de escribir: es la segunda linea, no
-            # la primera.
-            return False, ("sin techo de pre-seed: Pedro todavia no "
-                           "autorizo cuanto puede pedir")
         if accion == "pedir":
-            # El techo ACUMULADO. `techo_preseed_mm` recorta cada pedido,
-            # pero el unico freno de caudal -TECHO_PROPUESTAS- no ve los
-            # pre-seed ya financiados: `situacion` los saca de las dos
-            # listas, asi que cada financiacion vaciaba el contador y
-            # habilitaba otras tres rondas. El techo real terminaba siendo
-            # `techo_preseed_mm` x 200 tics por semana mientras Pedro
-            # siguiera tocando financiar, y la mesa no le mostraba ningun
-            # acumulado: cada fila era un pedido suelto.
-            #
-            # El freno sale de lo que el pre-seed ES: capital para
-            # ARRANCAR, "que un departamento sin plata pueda pedirla". Un
-            # departamento que ya tiene en la billetera lo que una ronda le
-            # daria no esta arrancando. Se cuenta lo que tiene mas lo que ya
-            # pidio y sigue en la mesa, para que tres pedidos en pie no den
-            # tres veces el techo.
-            techo = int(s.get("techo_preseed_mm") or 0)
-            ya = (int(s.get("disponible_mm") or 0)
-                  + int(s.get("preseed_pendiente_mm") or 0))
-            if ya >= techo:
-                return False, (f"ya tiene {ya} mm entre billetera y pedidos "
-                               f"en pie, y el techo de la ronda es {techo}: "
-                               "el pre-seed es para arrancar sin plata")
-            # EL SEGUNDO TECHO, el ACUMULADO, y el ultimo de los frenos
-            # porque es el mas caro de chequear: los de arriba miran un
-            # numero de la perilla o una lista corta; este pliega el libro
-            # entero de las semanas de la ventana.
-            #
-            # La ventana es DESLIZANTE -- las ultimas
-            # `bus.VENTANA_PRESEED_SEMANAS` semanas operativas, no el ciclo
-            # de facturacion. `situacion` ya la resolvio; aca solo se lee
-            # el numero.
-            #
-            # Que cuenta: lo FINANCIADO de la ventana mas lo PEDIDO que sigue
-            # en la mesa. Las dos cosas, y por motivos distintos. Lo
-            # financiado ya salio del tesoro y el libro no lo desescribe:
-            # es piso duro. Lo pedido todavia no es plata, pero es plata
-            # que Pedro puede soltar con un toque, asi que vale como
-            # reserva mientras siga en pie -- sin eso, publicar dos
-            # pedidos que juntos pasan el techo es gratis, y el freno
-            # llega recien en `bus.financiar`, con el pedido ya en la
-            # bandeja de Pedro pidiendole plata que no le puede dar. Y es
-            # solo una reserva: si Pedro descarta, el cupo vuelve entero,
-            # que es la razon por la que descartar existe.
-            #
-            # Del lado de Pedro se cuenta distinto (solo lo financiado):
-            # ver el comentario en `bus.financiar`.
-            techo_ciclo = int(s.get("techo_preseed_ciclo_mm") or 0)
-            if techo_ciclo <= 0:
-                return False, ("sin techo de pre-seed acumulado: Pedro "
-                               "todavia no autorizo cuanto capital puede "
-                               "entrar por ventana")
-            financiado = int(s.get("preseed_ventana_mm") or 0)
-            pendiente = int(s.get("preseed_pendiente_mm") or 0)
-            ya_ciclo = financiado + pendiente
-            if ya_ciclo >= techo_ciclo:
-                # La salida depende de QUE parte llena el techo, y decirla
-                # mal es peor que no decirla. Lo financiado si caduca:
-                # `preseed_en_ventana` solo mira las semanas de la ventana
-                # deslizante, asi que sale sola cuando la semana en que
-                # entro queda atras. Lo PEDIDO no caduca nunca -- una
-                # propuesta en `alta` no muere sola (el criterio de muerte
-                # corre desde `semana_financiada`), y sigue siendo
-                # financiable en cualquier ventana posterior, donde vuelve
-                # a descontar del techo de ESA ventana. O sea que un pedido
-                # olvidado en la mesa frena al jefe para siempre, y
-                # mandarlo a esperar era un consejo falso: tres ciclos
-                # despues salia el mismo mensaje, palabra por palabra. Lo
-                # que lo suelta es que Pedro lo financie o lo descarte.
-                #
-                # Y del lado en que esperar SI sirve, la ventana deslizante
-                # deja decir cuanto y cuando -- el reset en bloque del
-                # ciclo devolvia el cupo entero sin ninguna senal.
-                sale = s.get("preseed_libera_al_salir")
-                libera = int(s.get("preseed_libera_mm") or 0)
-                cuanto = (f" (al abrir la proxima semana operativa sale "
-                          f"{sale} de la ventana y se liberan {libera} mm)"
-                          if libera else "")
-                rueda = ("la ventana rueda al abrirse cada semana operativa "
-                         "y el cupo vuelve a medida que las semanas salen "
-                         f"por atras{cuanto}")
-                # Y el corte es CUANTO pendiente hay, no si hay. "Esperar no
-                # lo suelta" solo es cierto cuando lo pedido en pie llena el
-                # techo el solo: eso no caduca, asi que ninguna rodada
-                # alcanza. Con `if pendiente:` a secas, UN mm pendiente
-                # bastaba para pisar el consejo bueno -- y cuando lo que
-                # bloquea es lo FINANCIADO (que si caduca) y lo pendiente es
-                # una miga, la frase era simplemente falsa: una semana
-                # operativa despues el jefe actuaba sin freno, sin que Pedro
-                # financiara ni descartara nada. Encima borraba el
-                # `sale ... se liberan ...` que `situacion` ya tenia
-                # calculado, que es el dato que este techo gano al pasar a
-                # ventana deslizante, y el primer remedio que ofrecia era
-                # subir la perilla: empujaba a agrandar el techo cuando
-                # alcanzaba con dejar rodar la ventana.
-                if pendiente >= techo_ciclo:
-                    salida = ("que Pedro suba la perilla, o financie o "
-                              "descarte lo que sigue en la mesa: esperar no "
-                              "lo suelta, porque un pedido en pie sigue "
-                              "reservando cupo de la ventana en la que se "
-                              "financie")
-                elif pendiente:
-                    salida = ("que Pedro suba la perilla, que financie o "
-                              "descarte lo que sigue en la mesa, o que "
-                              f"espere: {rueda}; lo unico que esperar no "
-                              "destraba es el pedido en pie, que sigue "
-                              "reservando cupo de la ventana en la que se "
-                              "financie")
-                else:
-                    salida = f"que Pedro suba la perilla, o que espere: {rueda}"
-                return False, (f"el techo de la ventana es {techo_ciclo} mm "
-                               f"y entre lo financiado ({financiado}) y lo "
-                               f"pedido en pie ({pendiente}) ya van "
-                               f"{ya_ciclo}: {salida}")
+            # los frenos del pre-seed, en su propia funcion:
+            # el mismo texto lo lee Pedro en la pantalla de Plata
+            # (ver `freno_preseed`).
+            freno = freno_preseed(s)
+            if freno:
+                return False, freno
         if accion == "proponer" and s["presupuesto_semanal_mm"] > 0:
             # La agresividad mide contra el presupuesto SEMANAL. Un
             # departamento recien dado de alta todavia no tiene presupuesto

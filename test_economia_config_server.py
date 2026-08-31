@@ -666,3 +666,67 @@ def test_el_largo_de_la_ventana_es_el_de_verdad_y_no_la_constante(
     d2 = cliente.get("/api/economia/config").json()
     assert d2["preseed_ventana_semanas"] == 4
     assert d2["preseed_ventana_sumadas"] == 5
+
+
+def test_un_pedido_vencido_deja_de_apretar_y_la_config_lo_muestra(
+        cliente, monkeypatch):
+    """La otra mitad del arreglo, del lado de Pedro.
+
+    Un pedido de pre-seed olvidado en la mesa reservaba cupo para siempre y
+    esta pantalla mostraba el acumulado en CERO: no habia forma de entender
+    por que ese departamento estaba callado. Ahora el pedido vence con su
+    ventana -- sin que Pedro toque nada-- y la pantalla trae ademas el
+    freno EN PALABRAS, el mismo texto que recibio el jefe."""
+    from calipso.economia import bus as bus_mod
+    from calipso.plantel import jefe as jefe_mod
+
+    cliente.post("/api/economia/departamentos/atlas/perillas",
+                 json={"techo_preseed_mm": 150_000,
+                       "techo_preseed_ciclo_mm": 60_000})
+    b = bus_mod.Bus(cliente.home / "economia" / "bus.jsonl")
+    b.alta(TS, W, "ps1", "dep:atlas", "arranco", 60_000, 60_000,
+           {"gasto_max_mm": 60_000}, tipo="preseed")
+
+    cfg = cliente.get("/api/economia/config").json()
+    atlas = [x for x in cfg["departamentos"] if x["nombre"] == "atlas"][0]
+    assert atlas["preseed_pendiente_mm"] == 60_000
+    assert atlas["propuestas_propias"] == 1
+    assert cfg["techo_propuestas"] == jefe_mod.TECHO_PROPUESTAS
+    # el freno, con todas las letras y no deducido de cuatro numeros
+    assert "pedido en pie (60000)" in atlas["freno_pedir"]
+    # y es EL MISMO texto que arma el jefe, no una reconstruccion
+    assert atlas["freno_pedir"] == jefe_mod.freno_preseed(atlas)
+
+    # Pedro abre las cuatro semanas siguientes y nada mas: W35 sale de la
+    # ventana y el pedido vence solo
+    k = Kernel(Libro(cliente.home / "economia" / "libro.jsonl"))
+    for sem in ["2026-W36", "2026-W37", "2026-W38", "2026-W39"]:
+        pt.expirar_pools(k, TS, sem)
+        pt.emitir_semana(k, TS, sem, 4_000, 1_000)
+    monkeypatch.setattr(srv, "_eco_ahora", lambda: (TS, "2026-W39"))
+
+    cfg2 = cliente.get("/api/economia/config").json()
+    atlas2 = [x for x in cfg2["departamentos"] if x["nombre"] == "atlas"][0]
+    assert atlas2["preseed_pendiente_mm"] == 0
+    assert atlas2["propuestas_propias"] == 0
+    assert atlas2["freno_pedir"] is None    # puede volver a pedir
+    # el libro no desescribe nada: el pedido sigue en el bus, en alta
+    assert bus_mod.Bus(cliente.home / "economia" / "bus.jsonl"
+                       ).estado("ps1") == "alta"
+
+
+def test_un_departamento_personal_no_trae_un_freno_de_pre_seed_falso(cliente):
+    """`freno_preseed` sobre una zona personal contestaria "sin techo de
+    pre-seed: Pedro todavia no autorizo", y eso seria un freno inventado:
+    un departamento personal NUNCA pide pre-seed -- `bus.financiar` lo corta
+    por zona y `Departamento` rechaza la perilla. La pantalla ya filtra por
+    zona, pero el dato tiene que ser cierto igual."""
+    r = deps.Registro(cliente.home / "economia" / "departamentos.json")
+    r.alta(deps.Departamento("finanzas", deps.ZONA_PERSONAL))
+    filas = cliente.get("/api/economia/config").json()["departamentos"]
+    personal = [x for x in filas if x["nombre"] == "finanzas"][0]
+    assert personal["freno_pedir"] is None
+    # y el de fabrica si lo trae, que es el punto de la distincion
+    atlas = [x for x in filas if x["nombre"] == "atlas"][0]
+    assert atlas["freno_pedir"] == "sin techo de pre-seed: Pedro todavia no " \
+                                   "autorizo cuanto puede pedir"

@@ -509,3 +509,38 @@ def test_la_frontera_de_financiar_mira_el_monto_antes_de_quemar_la_ronda(cliente
     assert Kernel(Libro(base / "economia" / "libro.jsonl")).saldo(
         "dep:atlas") == antes + 100_000
     assert _json.loads(r.text)["ok"] is True
+
+
+def test_un_preseed_vencido_sale_de_la_mesa_y_no_se_puede_financiar(
+        cliente, monkeypatch):
+    """La mesa es para decidir, no un historial. Un pedido de pre-seed cuya
+    ventana ya paso no se puede financiar (`bus.financiar` lo rechaza), asi
+    que dejarlo en la lista seria un boton que no puede funcionar -- y
+    peor: seguiria pareciendo algo que Pedro tiene que despejar cuando ya
+    no aprieta a nadie."""
+    c, base = cliente
+    b = Bus(base / "economia" / "bus.jsonl")
+    b.alta(TS, W, "ps1", "dep:atlas", "arranco", 100_000, 100_000,
+           {"gasto_max_mm": 100_000}, tipo="preseed")
+    k = Kernel(Libro(base / "economia" / "libro.jsonl"))
+    k.acunar(TS, W, t.TESORO, 500_000, t.SubtipoAcunacion.CAPITAL,
+             {"tipo": "firma_pedro"})
+    tok = {"token": srv.TOKEN}
+    ids = [p["id"] for p in
+           c.get("/api/economia/bus", params=tok).json()["propuestas"]]
+    assert "ps1" in ids
+
+    # Pedro abre cuatro semanas mas y no toca el pedido
+    for sem in ["2026-W36", "2026-W37", "2026-W38", "2026-W39"]:
+        pt.expirar_pools(k, TS, sem)
+        pt.emitir_semana(k, TS, sem, 4_000, 1_000)
+    monkeypatch.setattr(srv, "_eco_ahora", lambda: (TS, "2026-W39"))
+
+    datos = c.get("/api/economia/bus", params=tok).json()
+    assert "ps1" not in [p["id"] for p in datos["propuestas"]]
+    r = c.post("/api/economia/bus/ps1/financiar", params=tok,
+               json={"cuenta": t.TESORO, "mm": 100_000})
+    assert r.status_code == 400
+    assert "vencido" in r.json()["detail"]
+    assert Kernel(Libro(base / "economia" / "libro.jsonl")
+                  ).saldo("dep:atlas") == 400_000

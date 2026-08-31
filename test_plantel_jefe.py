@@ -752,20 +752,25 @@ def test_el_techo_del_ciclo_no_revienta_con_la_semana_sin_abrir(tmp_path):
 def test_el_freno_del_ciclo_no_le_manda_a_esperar_lo_que_no_llega(tmp_path):
     """El consejo del freno tiene que ser el que desbloquea de verdad.
 
-    Lo FINANCIADO caduca solo: `preseed_en_ventana` mira las semanas de la
-    ventana deslizante, asi que sale cuando la semana en que entro queda
-    atras. Lo PEDIDO no caduca nunca -- una propuesta en `alta` no muere
-    sola (el criterio de muerte corre desde `semana_financiada`) y sigue
-    siendo financiable en cualquier ventana posterior, donde descuenta del
-    techo de ESA ventana. O sea que un pedido olvidado en la mesa frena al
-    jefe para siempre y mandarlo a esperar era falso: tres ciclos despues
-    salia el mismo mensaje, palabra por palabra, y lo unico que lo soltaba
-    -que Pedro descarte- no lo nombraba nadie.
+    Lo FINANCIADO caduca por si solo: `preseed_en_ventana` mira las semanas
+    de la ventana deslizante, asi que sale cuando la semana en que entro
+    queda atras. Lo PEDIDO no sale de ahi: mientras siga en pie descuenta
+    del techo de la ventana en la que Pedro lo pague, asi que ninguna
+    rodada lo suelta y mandarlo a esperar es un consejo falso -- la ventana
+    siguiente saca el mismo mensaje, palabra por palabra.
 
-    La reserva en si NO se toca: contarla es correcto, porque ese pedido
-    viejo se financia contra el cupo del ciclo en el que Pedro lo pague
-    (lo comprueba la ultima parte del test). Lo que estaba mal era el
-    consejo."""
+    La reserva en si NO se toca: contarla es correcto, porque ese pedido se
+    financia contra el cupo de la ventana en la que Pedro lo pague (lo
+    comprueba la ultima parte del test). Lo que estaba mal era el consejo.
+
+    Las dos semanas del bucle son los dos extremos de la ventana del propio
+    pedido (W30, donde nace, y W33, la ultima en la que sigue adentro): eso
+    es exactamente lo que dura la reserva. Antes el bucle iba hasta W38
+    para mostrar que el mensaje se repetia "tres ciclos despues", y eso ya
+    no pasa -- en W34 el pedido VENCE y deja de reservar, que es el arreglo
+    de `bus.preseed_vencido`. Lo que este test protege sigue vivo entero:
+    mientras el pedido este en pie, la rodada de la ventana no lo suelta y
+    el freno no puede decir que si."""
     from calipso.economia import bus as bus_mod
     from calipso.economia import mercado as mkt
 
@@ -784,8 +789,9 @@ def test_el_freno_del_ciclo_no_le_manda_a_esperar_lo_que_no_llega(tmp_path):
         pt.emitir_semana(ctx.kernel, TS, w, 4_000, 1_000)
     it.poner_modo(tmp_path, "vivo")
 
-    # W30 es el ciclo 0; W38 es el ciclo 2, dos ventanas mas tarde
-    for semana in ("2026-W30", "2026-W38"):
+    # los dos extremos de la ventana del pedido: donde nace y la ultima
+    # semana operativa en la que sigue adentro
+    for semana in ("2026-W30", "2026-W33"):
         s = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
                           ctx.suscripciones, semana, "dep:atlas")
         assert s["preseed_ventana_mm"] == 0, "no se financio nada"
@@ -798,21 +804,25 @@ def test_el_freno_del_ciclo_no_le_manda_a_esperar_lo_que_no_llega(tmp_path):
         assert "pedido en pie (60000)" in out["freno"], out["freno"]
         # y el consejo verdadero, no el que no desbloquea nunca
         assert "descarte" in out["freno"], out["freno"]
-        assert "esperar no lo suelta" in out["freno"], out["freno"]
+        assert "la rodada no lo suelta" in out["freno"], out["freno"]
         assert "la ventana rueda" not in out["freno"], out["freno"]
+        # y la TERCERA salida, la que arregla la condena: el pedido vence
+        # cuando su semana sale de la ventana, sin que Pedro toque nada
+        assert "salga de la ventana y venza" in out["freno"], out["freno"]
     assert contratos == []
 
     # por que la reserva se sigue contando: ese pedido de W30 se financia
-    # tal cual en el ciclo 2, y ahi si come el cupo de W38
+    # tal cual tres semanas operativas mas tarde, y ahi si come el cupo de
+    # la ventana de W33
     m = mkt.Mercado(ctx.kernel, ctx.registro, ctx.suscripciones)
-    bus_mod.financiar(m, ctx.bus, TS, "2026-W38", "p0", t.TESORO, 60_000)
+    bus_mod.financiar(m, ctx.bus, TS, "2026-W33", "p0", t.TESORO, 60_000)
     s2 = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
-                       ctx.suscripciones, "2026-W38", "dep:atlas")
+                       ctx.suscripciones, "2026-W33", "dep:atlas")
     assert s2["preseed_ventana_mm"] == 60_000
     assert s2["preseed_pendiente_mm"] == 0
-    # sin la reserva, el jefe habria publicado otra ronda en W38 creyendo
-    # que tenia el ciclo entero libre, y esta habria sido impagable
-    out2 = j.tic(ctx, "dep:atlas", "2026-W38")
+    # sin la reserva, el jefe habria publicado otra ronda en W33 creyendo
+    # que tenia la ventana entera libre, y esta habria sido impagable
+    out2 = j.tic(ctx, "dep:atlas", "2026-W33")
     assert out2["actuo"] is False
     assert "la ventana rueda" in out2["freno"], out2["freno"]
 
@@ -942,7 +952,7 @@ def test_con_una_miga_pendiente_el_freno_no_borra_el_alivio_de_la_ventana(
         out["freno"]
     # y sin mentir para el otro lado: la miga sigue siendo suya
     assert "descarte" in out["freno"], out["freno"]
-    assert "esperar no lo suelta" not in out["freno"], out["freno"]
+    assert "la rodada no lo suelta" not in out["freno"], out["freno"]
     assert contratos == []
 
     # y era verdad: una semana operativa despues, sin que Pedro financie ni
@@ -956,3 +966,49 @@ def test_con_una_miga_pendiente_el_freno_no_borra_el_alivio_de_la_ventana(
     out2 = j.tic(ctx, "dep:atlas", "2026-W34")
     assert out2["freno"] == "", out2["freno"]
     assert out2["actuo"] is True
+
+
+def test_un_pedido_viejo_deja_de_apretar_cuando_su_ventana_pasa(tmp_path):
+    """EL SINTOMA, entero y de punta a punta.
+
+    Un pedido de pre-seed que Pedro no mira reservaba cupo PARA SIEMPRE: el
+    unico camino fuera de la bandeja era que el lo financiara o lo
+    descartara, y desde la pantalla el acumulado se veia en cero, asi que
+    nada le sugeria que ese pedido era lo que tenia frenado al
+    departamento.
+
+    Lo que lo suelta ahora es el paso de la ventana, que es la misma
+    maquinaria que ya acota el techo: el pedido vive exactamente la ventana
+    en la que nacio -- lo que dura su financiabilidad-- y despues deja de
+    reservar. Pedro no toca NADA en este test: ni financiar, ni descartar,
+    ni la perilla. Solo abre las semanas, que es lo que ya hace para operar
+    la fabrica.
+
+    Cuidado con el otro lado: mientras la semana del alta siga en la
+    ventana, el pedido tiene que seguir apretando (lo cubre
+    `test_los_pedidos_en_pie_cuentan_contra_el_techo_de_la_ronda`)."""
+    ctx, contratos, _ = armar(tmp_path, "pedir 50000\notra ronda", saldo=0,
+                              presupuesto_semanal_mm=0,
+                              techo_preseed_mm=50_000)
+    ctx.bus.alta(TS, W, "p0", "dep:atlas", "primera ronda", 50_000, 50_000,
+                {"gasto_max_mm": 50_000}, tipo="preseed")
+    it.poner_modo(tmp_path, "vivo")
+    frenado = j.tic(ctx, "dep:atlas", W)
+    assert frenado["actuo"] is False
+    assert "en pie" in frenado["freno"]
+    assert contratos == []
+
+    # Pedro abre las semanas siguientes y nada mas. W35 sale de la ventana.
+    for sem in ["2026-W36", "2026-W37", "2026-W38", "2026-W39"]:
+        pt.expirar_pools(ctx.kernel, TS, sem)
+        pt.emitir_semana(ctx.kernel, TS, sem, 4_000, 1_000)
+    assert ctx.bus.estado("p0") == "alta"   # el libro no desescribe nada
+
+    s = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
+                     ctx.suscripciones, "2026-W39", "dep:atlas")
+    assert s["preseed_pendiente_mm"] == 0
+    assert s["propuestas_propias"] == []
+
+    destrabado = j.tic(ctx, "dep:atlas", "2026-W39")
+    assert destrabado["actuo"] is True
+    assert contratos == [("pedir", "50000", "otra ronda")]
