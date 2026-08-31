@@ -764,3 +764,69 @@ def evaluar_y_liquidar_muertos(mercado: Mercado, bus: Bus, ts: str,
         bus.marcar(ts, semana, id, "liquidada")
         muertos.append(id)
     return muertos
+
+
+ORIGEN_INBOX = "mesa"
+
+
+def descriptor() -> dict:
+    """Lo que la mesa declara de si misma para el inbox.
+
+    Vive aca y no en el inbox a proposito (spec seccion 3): si viviera
+    alla, agregar un origen nuevo obligaria a tocar el inbox.
+
+    `vara` y `lugares` van en None porque el PvP es otro plan, y porque
+    hoy la mesa no tendria con que comparar: `retorno_mm` es una copia
+    literal de `presupuesto_mm` para los dos tipos de propuesta.
+    """
+    return {
+        "origen": ORIGEN_INBOX,
+        "verbos": [
+            # financiar NO es un si: es un si-con-cuenta-pagadora
+            {"nombre": "financiar", "etiqueta": "Financiar",
+             "alcances": ["una_vez"], "parametros": ["cuenta"]},
+            {"nombre": "descartar", "etiqueta": "Descartar",
+             "alcances": ["una_vez"], "parametros": []},
+        ],
+        "reloj": "semanas_operativas",   # solo vencen los pre-seed
+        "clase_por_defecto": "decision",
+        "vara": None,
+        "lugares": None,
+    }
+
+
+def _item(id_, titulo, estado, cuerpo) -> dict:
+    return {"id": id_, "origen": ORIGEN_INBOX, "clase": "decision",
+            "ts": "", "titulo": titulo, "cuerpo": cuerpo,
+            "estado": estado, "respuesta": None}
+
+
+def como_items(datos_endpoint: dict) -> list[dict]:
+    """Traduce la respuesta de GET /api/economia/bus a items del inbox.
+
+    Sin economia sembrada -- el estado de hoy -- esa respuesta es
+    literalmente `{"activa": False}`: sin `propuestas` y sin `vencidas`.
+    Por eso todos los accesos van con default.
+    """
+    items = []
+    for p in datos_endpoint.get("propuestas") or []:
+        cuerpo = {"departamento": p.get("departamento"),
+                  "tipo": p.get("tipo"),
+                  "presupuesto_mm": p.get("presupuesto_mm"),
+                  "gastado_mm": p.get("gastado_mm"),
+                  "verbos_validos": ["financiar", "descartar"]}
+        if p.get("tipo") == "preseed":
+            # un pre-seed lo paga el tesoro y nada mas: bus.financiar
+            # rechaza cualquier billetera de departamento
+            cuerpo["cuenta_fija"] = "tesoro"
+        items.append(_item(p.get("id"), p.get("titulo") or "",
+                           p.get("estado") or "alta", cuerpo))
+    for v in datos_endpoint.get("vencidas") or []:
+        # cinco campos, no diez, y financiar da 400 sobre un vencido
+        items.append(_item(
+            v.get("id"), v.get("titulo") or "", "vencida",
+            {"departamento": v.get("departamento"),
+             "semana": v.get("semana"),
+             "presupuesto_mm": v.get("presupuesto_mm"),
+             "verbos_validos": ["descartar"]}))
+    return items

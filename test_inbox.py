@@ -1,0 +1,70 @@
+"""Los adaptadores que convierten cada bandeja en items del inbox.
+
+El inbox no sabe nada de ninguna bandeja: cada origen se traduce a si mismo.
+Estos tests son el contrato de esa traduccion.
+"""
+from calipso.economia import bus as eco_bus
+
+
+def test_la_mesa_se_declara_sin_vara_todavia():
+    """El PvP es el plan 2. Hoy el descriptor lo dice explicitamente en vez
+    de inventar una vara que no tiene con que comparar: `retorno_mm` es una
+    copia de `presupuesto_mm` para los dos tipos de propuesta."""
+    d = eco_bus.descriptor()
+    assert d["origen"] == "mesa"
+    assert d["vara"] is None
+    assert {v["nombre"] for v in d["verbos"]} == {"financiar", "descartar"}
+
+
+def test_financiar_declara_que_lleva_parametro():
+    """Financiar no es un si: es un si-con-cuenta-pagadora. El inbox tiene
+    que saberlo para no dibujar un boton que miente."""
+    d = eco_bus.descriptor()
+    financiar = next(v for v in d["verbos"] if v["nombre"] == "financiar")
+    assert "cuenta" in financiar["parametros"]
+
+
+def test_sin_economia_sembrada_no_hay_items_y_no_revienta():
+    """El estado de HOY: el endpoint devuelve {"activa": false} y NADA mas.
+    Ni `propuestas` ni `vencidas`."""
+    assert eco_bus.como_items({"activa": False}) == []
+
+
+def test_una_propuesta_se_vuelve_un_item():
+    datos = {"activa": True, "propuestas": [
+        {"id": "a-1a2b3c4d", "estado": "alta", "departamento": "dep:a",
+         "tipo": "trabajo", "titulo": "escribir el landing",
+         "presupuesto_mm": 50000, "retorno_mm": 50000,
+         "criterio": {"gasto_max_mm": 50000}, "gastado_mm": 0, "aportes": {}}],
+        "vencidas": []}
+    items = eco_bus.como_items(datos)
+    assert len(items) == 1
+    it = items[0]
+    assert it["id"] == "a-1a2b3c4d"
+    assert it["origen"] == "mesa"
+    assert it["clase"] == "decision"
+    assert it["titulo"] == "escribir el landing"
+    assert it["cuerpo"]["presupuesto_mm"] == 50000
+    assert it["estado"] == "alta"
+
+
+def test_una_vencida_tambien_es_item_pero_solo_admite_descartar():
+    """Cinco campos, no diez. Un render unico para las dos leeria undefined."""
+    datos = {"activa": True, "propuestas": [], "vencidas": [
+        {"id": "a-9f9f9f9f", "departamento": "dep:a", "titulo": "ronda",
+         "semana": "2026-W35", "presupuesto_mm": 100000}]}
+    items = eco_bus.como_items(datos)
+    assert len(items) == 1
+    assert items[0]["estado"] == "vencida"
+    assert items[0]["cuerpo"]["verbos_validos"] == ["descartar"]
+
+
+def test_un_preseed_paga_el_tesoro_y_no_ofrece_eleccion():
+    """`bus.financiar` rechaza cualquier billetera que no sea el tesoro para
+    un pre-seed. Un selector ahi seria un menu donde todo falla."""
+    datos = {"activa": True, "vencidas": [], "propuestas": [
+        {"id": "a-1", "estado": "alta", "departamento": "dep:a",
+         "tipo": "preseed", "titulo": "ronda", "presupuesto_mm": 100000,
+         "retorno_mm": 100000, "criterio": {}, "gastado_mm": 0,
+         "aportes": {}}]}
+    assert eco_bus.como_items(datos)[0]["cuerpo"]["cuenta_fija"] == "tesoro"
