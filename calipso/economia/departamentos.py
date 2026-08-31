@@ -77,6 +77,27 @@ class Departamento:
             raise ErrorDepartamento(f"zona invalida: {self.zona!r}")
         if not self.nombre or ":" in self.nombre:
             raise ErrorDepartamento(f"nombre invalido: {self.nombre!r}")
+        # Los dos techos de pre-seed son perillas de FABRICA, y la guardia
+        # vive aca y no en un endpoint. `POST .../perillas` ya la tenia;
+        # `POST /api/economia/sembrar` no, asi que el mismo numero que una
+        # puerta rechazaba con 400 entraba por la otra con 200 -- y peor,
+        # porque sembrar es de escritura unica: el departamento nacia con
+        # una perilla que no autoriza nada y no habia forma de sacarla
+        # salvo editando el json. Media puerta no es una puerta, y dos
+        # puertas que hay que acordarse de cerrar de a una tampoco: es un
+        # invariante del departamento, no de la frontera http.
+        #
+        # Lo que la perilla haria en una zona personal no es "nada": el
+        # jefe pasa sus tres frenos y PUBLICA pedidos pre-seed que
+        # `bus.financiar` rechaza siempre ("un pre-seed es capital de
+        # fabrica"), asi que la bandeja de Pedro se llena de propuestas
+        # impagables y se le come TECHO_PROPUESTAS -- exactamente el mal
+        # que el techo del ciclo existe para evitar.
+        if (self.zona != ZONA_FABRICA
+                and (self.techo_preseed_mm or self.techo_preseed_ciclo_mm)):
+            raise ErrorDepartamento(
+                f"{self.nombre} es un departamento personal: el techo de "
+                "pre-seed es una perilla de fabrica")
 
     @property
     def cuenta(self) -> str:

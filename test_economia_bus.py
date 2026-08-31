@@ -380,8 +380,14 @@ def test_el_tesoro_no_financia_un_preseed_de_la_zona_personal(entorno):
     departamento personal contra la reserva personal de la suscripcion, y
     `pagador.cargar_api` ignora por completo las cuentas `personal:*`."""
     k, m, b = entorno
-    m.registro.alta(deps.Departamento("finanzas", deps.ZONA_PERSONAL,
-                                      techo_preseed_mm=400_000))
+    # sin `techo_preseed_mm`: ese techo ya no se puede poner en una zona
+    # personal (`Departamento.__post_init__` lo rechaza, que es la puerta
+    # que le faltaba a `POST /api/economia/sembrar`). No hace falta para
+    # este test y nunca hizo: la puerta de zona de `financiar` corre ANTES
+    # de leer la perilla, asi que lo que el docstring protege se sigue
+    # ejercitando igual -- y la propuesta puede existir en el bus sin
+    # ninguna perilla, porque `bus.alta` no mira el registro.
+    m.registro.alta(deps.Departamento("finanzas", deps.ZONA_PERSONAL))
     _semana_op(k, "2026-W30")
     _capital(k, 400_000, t.TESORO)
     b.alta(TS, "2026-W30", "ps1", "personal:finanzas", "arranco", 400_000,
