@@ -529,3 +529,60 @@ def test_la_perilla_bajada_a_cero_mientras_el_tic_pensaba_frena(
     bus = srv._eco_bus.Bus(
         srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
     assert bus.ids() == []
+
+
+class _PagadorContado:
+    """Un pagador de verdad, con un contador sobre `leer_kernel`: cada
+    llamada es un parseo COMPLETO del libro (`Libro()` no cachea)."""
+
+    def __init__(self, real):
+        self._real = real
+        self.lecturas = 0
+
+    def leer_kernel(self):
+        self.lecturas += 1
+        return self._real.leer_kernel()
+
+    def __getattr__(self, nombre):
+        return getattr(self._real, nombre)
+
+
+def test_la_bandeja_no_pliega_el_libro_si_no_hay_preseed_que_mirar(
+        tmp_path, monkeypatch):
+    """El techo de bandeja corre ADENTRO del candado global de economia, en
+    el bucle del jefe que corre desatendido a doscientos tics por semana y
+    por departamento, y el docstring de `_jefe` dice que tener el flock
+    tomado durante segundos serializa el chat y a dispatch contra el.
+
+    Para consultar el vencimiento de un pre-seed hay que plegar el libro,
+    pero solo si hay un pre-seed en pie que mirar: `proponer` no tiene
+    ninguno y pagaba un `Kernel(Libro(...))` entero igual, donde antes de
+    este techo no leia el libro en absoluto. Y `pedir` lo pagaba DOS veces
+    en el mismo candado -- el conteo de bandeja y el recorte del monto--
+    aunque nadie mas pueda escribir mientras el flock esta tomado, que es
+    para lo que se toma."""
+    monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
+    _armar_economia(tmp_path, techo_preseed_mm=150_000,
+                    techo_preseed_ciclo_mm=10_000_000)
+    pagador = _PagadorContado(srv._EcoPagador.desde_entorno(tmp_path))
+    contratar = srv._contratar_para("dep:atlas", pagador,
+                                    "2026-08-01T09:10:00", "2026-W31")
+    s = {"nombre": "atlas", "presupuesto_semanal_mm": 1_000,
+         "agresividad_pct": 100, "salidas_semana_mm": 0,
+         "techo_preseed_mm": 150_000}
+
+    r = contratar(s, "proponer", None, "hay hueco")
+    assert r["propuesta"]
+    assert pagador.lecturas == 0, "proponer plego el libro sin un pre-seed"
+
+    pagador.lecturas = 0
+    r2 = contratar(s, "pedir", "50000", "arrancamos")
+    assert r2["monto_mm"] == 50_000
+    assert pagador.lecturas == 1, f"{pagador.lecturas} parseos en un pedir"
+
+    # y con un pre-seed en pie el vencimiento SI se consulta: la guardia
+    # ahorra el parseo, no lo saltea
+    pagador.lecturas = 0
+    r3 = contratar(s, "proponer", None, "otra")
+    assert r3["propuesta"]
+    assert pagador.lecturas == 1

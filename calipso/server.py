@@ -5130,7 +5130,7 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
     modulo candado es no cachear escritores entre adquisiciones — el Bus se
     construye DE NUEVO, adentro del candado, cada vez que se escribe.
     """
-    def _bandeja_llena(bus_fresco) -> bool:
+    def _bandeja_llena(bus_fresco, ops=None) -> bool:
         """El techo de propuestas, RELEIDO adentro del candado.
 
         `jefe._puede` ya lo chequea, pero contra la foto que trajo
@@ -5145,8 +5145,6 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
         """
         if _plantel_jefe is None:
             return False
-        ops_b = _eco_cap.semanas_operativas(
-            pagador.leer_kernel().libro.asientos())
         propias = 0
         for id_ in bus_fresco.ids():
             if bus_fresco.estado(id_) != "alta":
@@ -5159,8 +5157,24 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
             # aca dejaria al departamento frenado por un pedido que ningun
             # gesto de Pedro tiene que despejar. Misma funcion que
             # `situacion`, a proposito.
-            if _eco_bus.preseed_vencido(d_, ops_b, semana):
-                continue
+            #
+            # Y el libro se pliega SOLO si hay un pre-seed que mirar. Antes
+            # de esta guardia, este conteo -- que corre adentro del candado
+            # global de economia, en el bucle desatendido del jefe, a
+            # doscientos tics por semana y por departamento-- construia un
+            # `Kernel(Libro(...))` entero SIEMPRE, incluso para publicar una
+            # propuesta de trabajo, que no tiene ningun vencimiento que
+            # consultar: donde antes habia CERO lecturas del libro habia una
+            # de medio segundo con cien mil asientos, y el docstring de
+            # `_jefe` dice que tener el flock tomado durante segundos
+            # serializa el chat y a dispatch contra el. `ops` ademas llega
+            # hecha cuando el llamador ya lo plego (ver `pedir`).
+            if d_.get("tipo") == "preseed":
+                if ops is None:
+                    ops = _eco_cap.semanas_operativas(
+                        pagador.leer_kernel().libro.asientos())
+                if _eco_bus.preseed_vencido(d_, ops, semana):
+                    continue
             propias += 1
         return propias >= _plantel_jefe.TECHO_PROPUESTAS
 
@@ -5215,7 +5229,15 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
             titulo = (motivo or f"ronda pre-seed de {situacion['nombre']}")[:120]
             with _eco_candado(pagador.ruta_libro):
                 bus_fresco = _eco_bus.Bus(pagador.ruta_bus)
-                if _bandeja_llena(bus_fresco):
+                # el libro, UNA vez para las dos cosas que lo necesitan aca
+                # adentro: el techo de bandeja y el recorte de abajo. Eran
+                # dos parseos completos del mismo archivo en el mismo
+                # candado, y el segundo no podia ver nada que el primero no
+                # hubiera visto -- nadie mas puede escribir mientras este
+                # flock esta tomado, que es para lo que se toma.
+                asientos_frescos = pagador.leer_kernel().libro.asientos()
+                ops_frescas = _eco_cap.semanas_operativas(asientos_frescos)
+                if _bandeja_llena(bus_fresco, ops_frescas):
                     return {"accion": "pedir", "ref": ref, "en": "nada",
                             "motivo": "la bandeja se lleno mientras este tic "
                                       "decidia: que Pedro despeje antes de "
@@ -5244,12 +5266,10 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
                             "motivo": "la perilla de pre-seed quedo en cero "
                                       "mientras este tic decidia: Pedro "
                                       "cerro la canilla"}
-                asientos_frescos = pagador.leer_kernel().libro.asientos()
                 # la ventana del CAUDAL (deslizante, `bus.ventana_preseed`)
                 # y no la del ciclo de facturacion: tienen que ser la misma
                 # que mira `bus.financiar` al pagar, o el recorte de aca
                 # publicaria un monto que alla se rechaza.
-                ops_frescas = _eco_cap.semanas_operativas(asientos_frescos)
                 semanas = _eco_bus.ventana_preseed(ops_frescas, semana)
                 usado = _eco_bus.preseed_en_ventana(asientos_frescos, cuenta,
                                                     semanas)
