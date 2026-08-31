@@ -36,7 +36,8 @@ class MemoriaFalsa:
 
 
 def armar(tmp_path, respuesta="nada\nno hay nada", saldo=400_000,
-         presupuesto_semanal_mm=25_000, techo_preseed_mm=0):
+         presupuesto_semanal_mm=25_000, techo_preseed_mm=0,
+         techo_preseed_ciclo_mm=10_000_000):
     eco = tmp_path / "economia"
     eco.mkdir(parents=True, exist_ok=True)
     k = Kernel(Libro(eco / "libro.jsonl"))
@@ -44,7 +45,8 @@ def armar(tmp_path, respuesta="nada\nno hay nada", saldo=400_000,
     r.alta(deps.Departamento("atlas", deps.ZONA_FABRICA,
                              presupuesto_semanal_mm=presupuesto_semanal_mm,
                              techo_api_ciclo_mm=3_000, agresividad_pct=40,
-                             techo_preseed_mm=techo_preseed_mm))
+                             techo_preseed_mm=techo_preseed_mm,
+                             techo_preseed_ciclo_mm=techo_preseed_ciclo_mm))
     pt.emitir_semana(k, TS, W, 4_000, 1_000)
     if saldo:
         k.acunar(TS, W, "dep:atlas", saldo, t.SubtipoAcunacion.CAPITAL,
@@ -612,3 +614,136 @@ def test_una_descartada_de_otra_semana_ya_no_pesa(tmp_path):
                      ctx.suscripciones, "2026-W36", "dep:atlas")
     assert s["descartadas_semana"] == []
     assert "Pedro DESCARTO" not in dec.prompt(s, 50)
+
+
+# -- el segundo techo del pre-seed: el acumulado por CICLO -----------------
+
+def test_sin_techo_de_ciclo_el_jefe_no_pide(tmp_path):
+    """Cero es "todavia no", no "sin limite": la misma regla que la otra
+    perilla de pre-seed y que `techo_api_ciclo_mm`. Un departamento con
+    techo por pedido puesto y techo de ciclo en cero no pide -- ruidoso a
+    proposito, porque la unica forma de que un techo no se cruce en
+    silencio es que no exista un default que autorice nada."""
+    ctx, contratos, _ = armar(tmp_path, "pedir 10000\nnecesito arrancar",
+                              saldo=0, presupuesto_semanal_mm=0,
+                              techo_preseed_mm=50_000,
+                              techo_preseed_ciclo_mm=0)
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["accion"] == "pedir"       # decidio bien
+    assert out["actuo"] is False
+    assert "techo de pre-seed por ciclo" in out["freno"]
+    assert contratos == []
+    assert ctx.memoria.recordado == []
+
+
+def test_lo_ya_financiado_en_el_ciclo_frena_al_jefe(tmp_path):
+    """Lo FINANCIADO cuenta contra el techo del ciclo, y cuenta aunque la
+    propuesta ya no este en ninguna lista: `situacion` saca los pre-seed
+    pagados de las dos, asi que el unico rastro es el libro. Sin esto, el
+    jefe gasta su tic publicando un pedido que `bus.financiar` va a
+    rechazar con Pedro ya mirandolo."""
+    from calipso.economia import bus as bus_mod
+    from calipso.economia import mercado as mkt
+
+    # los numeros aislan el techo NUEVO: con 20.000 en la billetera y un
+    # techo por pedido de 50.000, el freno viejo ("arrancar sin plata") no
+    # llega a disparar. El unico que puede frenar aca es el del ciclo.
+    ctx, contratos, _ = armar(tmp_path, "pedir 50000\notra ronda", saldo=0,
+                              presupuesto_semanal_mm=0,
+                              techo_preseed_mm=50_000,
+                              techo_preseed_ciclo_mm=20_000)
+    ctx.kernel.acunar(TS, W, t.TESORO, 500_000, t.SubtipoAcunacion.CAPITAL,
+                      {"tipo": "firma_pedro"})
+    ctx.bus.alta(TS, W, "p0", "dep:atlas", "primera ronda", 20_000, 20_000,
+                {"gasto_max_mm": 20_000}, tipo="preseed")
+    m = mkt.Mercado(ctx.kernel, ctx.registro, ctx.suscripciones)
+    bus_mod.financiar(m, ctx.bus, TS, W, "p0", t.TESORO, 20_000)
+
+    # la propuesta quedo `cerrada`: no esta ni en propuestas_propias ni en
+    # trabajos, y sin embargo esos 50.000 ya entraron
+    s = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
+                     ctx.suscripciones, W, "dep:atlas")
+    assert s["propuestas_propias"] == [] and s["trabajos"] == []
+    assert s["preseed_ciclo_mm"] == 20_000
+
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["actuo"] is False
+    assert "techo del ciclo" in out["freno"]
+    assert contratos == []
+
+
+def test_lo_pedido_en_pie_tambien_cuenta_contra_el_techo_del_ciclo(tmp_path):
+    """Las DOS cosas cuentan del lado del jefe, y por motivos distintos. Lo
+    financiado ya salio del tesoro y el libro no lo desescribe: piso duro.
+    Lo pedido todavia no es plata, pero es plata que Pedro suelta con un
+    toque, asi que vale como reserva mientras siga en pie -- sin eso,
+    publicar dos pedidos que juntos pasan el techo es gratis y el freno
+    llega recien en la mesa. Aca el departamento no tiene saldo (asi que el
+    techo POR PEDIDO no lo frena) y sin embargo no pide."""
+    ctx, contratos, _ = armar(tmp_path, "pedir 30000\notra ronda", saldo=0,
+                              presupuesto_semanal_mm=0,
+                              techo_preseed_mm=100_000,
+                              techo_preseed_ciclo_mm=40_000)
+    ctx.bus.alta(TS, W, "p0", "dep:atlas", "primera ronda", 40_000, 40_000,
+                {"gasto_max_mm": 40_000}, tipo="preseed")
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["actuo"] is False
+    assert "techo del ciclo" in out["freno"]
+    assert contratos == []
+
+
+def test_descartar_le_devuelve_el_cupo_del_ciclo_al_jefe(tmp_path):
+    """Lo pedido es una RESERVA, no un cargo: el "no" de Pedro la libera
+    entera. Es la misma decision de spec que ya vale para el techo de
+    propuestas -- descartar existe justamente para que el jefe frenado
+    vuelva a tener lugar-- y el techo nuevo no la puede romper."""
+    from calipso.economia import bus as bus_mod
+
+    ctx, contratos, _ = armar(tmp_path, "pedir 30000\notra ronda", saldo=0,
+                              presupuesto_semanal_mm=0,
+                              techo_preseed_mm=100_000,
+                              techo_preseed_ciclo_mm=40_000)
+    ctx.bus.alta(TS, W, "p0", "dep:atlas", "primera ronda", 40_000, 40_000,
+                {"gasto_max_mm": 40_000}, tipo="preseed")
+    bus_mod.descartar(ctx.bus, TS, W, "p0")
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["actuo"] is True, out["freno"]
+    assert contratos == [("pedir", "30000", "otra ronda")]
+
+
+def test_el_techo_del_ciclo_no_revienta_con_la_semana_sin_abrir(tmp_path):
+    """El jefe corre desatendido y no puede reventar por una semana que
+    todavia no emitio su PT -- que es el estado de TODO lunes, porque abrir
+    la semana es un boton manual. Y no solo no revienta: el acumulado del
+    ciclo tiene que seguir contando, o el techo se reseteaba solo cada vez
+    que Pedro tardaba en abrir."""
+    from calipso.economia import bus as bus_mod
+    from calipso.economia import mercado as mkt
+
+    ctx, contratos, _ = armar(tmp_path, "pedir 50000\notra ronda", saldo=0,
+                              presupuesto_semanal_mm=0,
+                              techo_preseed_mm=50_000,
+                              techo_preseed_ciclo_mm=20_000)
+    ctx.kernel.acunar(TS, W, t.TESORO, 500_000, t.SubtipoAcunacion.CAPITAL,
+                      {"tipo": "firma_pedro"})
+    ctx.bus.alta(TS, W, "p0", "dep:atlas", "primera ronda", 20_000, 20_000,
+                {"gasto_max_mm": 20_000}, tipo="preseed")
+    m = mkt.Mercado(ctx.kernel, ctx.registro, ctx.suscripciones)
+    bus_mod.financiar(m, ctx.bus, TS, W, "p0", t.TESORO, 20_000)
+
+    # el lunes siguiente: nadie abrio 2026-W36 todavia
+    siguiente = "2026-W36"
+    s = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
+                     ctx.suscripciones, siguiente, "dep:atlas")
+    assert s["preseed_ciclo_mm"] == 20_000, "el ciclo se reseteo solo"
+
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", siguiente)
+    assert out["freno"] != "fallo antes de decidir", out["motivo"]
+    assert out["actuo"] is False
+    assert "techo del ciclo" in out["freno"]
+    assert contratos == []

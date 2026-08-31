@@ -460,3 +460,82 @@ def test_el_techo_de_preseed_no_es_una_perilla_de_la_zona_personal(cliente):
     # las otras perillas de un personal siguen entrando
     assert cliente.post("/api/economia/departamentos/pedro_personal/perillas",
                         json={"explorar_explotar_pct": 20}).status_code == 200
+
+
+# -- el segundo techo del pre-seed: el acumulado por CICLO -----------------
+
+def test_el_techo_del_ciclo_se_cambia_por_el_mismo_endpoint(cliente):
+    """La perilla nueva tiene que poder moverse sin editar el json, igual
+    que la otra: si no, el techo del ciclo seria un numero que solo existe
+    para quien abra departamentos.json en un editor."""
+    r = cliente.post("/api/economia/departamentos/atlas/perillas",
+                     json={"techo_preseed_mm": 50_000,
+                           "techo_preseed_ciclo_mm": 150_000})
+    assert r.status_code == 200, r.text
+    d = _departamentos(cliente.home)["atlas"]
+    assert d["techo_preseed_mm"] == 50_000
+    assert d["techo_preseed_ciclo_mm"] == 150_000
+    # y se puede volver a cerrar la canilla, que es para lo que el cero
+    # tiene que seguir siendo un valor legitimo
+    assert cliente.post("/api/economia/departamentos/atlas/perillas",
+                        json={"techo_preseed_ciclo_mm": 0}).status_code == 200
+    assert _departamentos(cliente.home)["atlas"]["techo_preseed_ciclo_mm"] == 0
+
+
+def test_el_techo_del_ciclo_tiene_la_misma_puerta_de_rango(cliente):
+    """Media puerta no es una puerta: los booleanos, los negativos y los
+    enteros que no sobreviven el viaje por JavaScript se rechazan igual que
+    en la perilla hermana."""
+    for cuerpo in ({"techo_preseed_ciclo_mm": True},
+                   {"techo_preseed_ciclo_mm": -1},
+                   {"techo_preseed_ciclo_mm": 10 ** 400}):
+        r = cliente.post("/api/economia/departamentos/atlas/perillas",
+                         json=cuerpo)
+        assert r.status_code == 422, (cuerpo, r.text)
+    r = cliente.post("/api/economia/sembrar", json={
+        "departamentos": [{"nombre": "raro", "zona": "fabrica",
+                           "techo_preseed_ciclo_mm": -1}]})
+    assert r.status_code == 422, r.text
+
+
+def test_el_techo_del_ciclo_tampoco_es_una_perilla_de_la_zona_personal(cliente):
+    """Misma razon que su hermana: un departamento personal no tiene ronda
+    pre-seed que financiar (`bus.financiar` la rechaza), asi que un techo
+    ahi seria un numero que no acota nada."""
+    r = deps.Registro(cliente.home / "economia" / "departamentos.json")
+    r.alta(deps.Departamento("pedro_personal", deps.ZONA_PERSONAL))
+    resp = cliente.post("/api/economia/departamentos/pedro_personal/perillas",
+                        json={"techo_preseed_ciclo_mm": 999_999})
+    assert resp.status_code == 400, resp.text
+    assert _departamentos(
+        cliente.home)["pedro_personal"]["techo_preseed_ciclo_mm"] == 0
+
+
+def test_la_config_muestra_el_acumulado_del_ciclo_al_lado_del_techo(cliente):
+    """La mitad que faltaba: la mesa muestra cada pedido suelto y ninguna
+    pantalla decia cuanto capital ya entro. Sin el acumulado a la vista,
+    el techo del ciclo es un numero que Pedro pone a ciegas y un rechazo
+    que le llega recien al tocar "financiar"."""
+    from calipso.economia import bus as bus_mod
+    from calipso.economia import mercado as mkt
+
+    d = cliente.get("/api/economia/config").json()
+    atlas = [x for x in d["departamentos"] if x["nombre"] == "atlas"][0]
+    assert atlas["techo_preseed_ciclo_mm"] == 0
+    assert atlas["preseed_ciclo_mm"] == 0
+
+    cliente.post("/api/economia/departamentos/atlas/perillas",
+                 json={"techo_preseed_mm": 80_000,
+                       "techo_preseed_ciclo_mm": 200_000})
+    eco = cliente.home / "economia"
+    k = Kernel(Libro(eco / "libro.jsonl"))
+    r = deps.Registro(eco / "departamentos.json")
+    b = bus_mod.Bus(eco / "bus.jsonl")
+    b.alta(TS, W, "ps1", "dep:atlas", "arranco", 80_000, 80_000,
+           {"gasto_max_mm": 80_000}, tipo="preseed")
+    bus_mod.financiar(mkt.Mercado(k, r, {}), b, TS, W, "ps1", t.TESORO, 80_000)
+
+    d2 = cliente.get("/api/economia/config").json()
+    atlas2 = [x for x in d2["departamentos"] if x["nombre"] == "atlas"][0]
+    assert atlas2["preseed_ciclo_mm"] == 80_000
+    assert atlas2["techo_preseed_ciclo_mm"] == 200_000

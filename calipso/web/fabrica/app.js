@@ -668,6 +668,15 @@ cajaPerillas?.addEventListener("submit", async evento => {
     const nombre = form.dataset.departamento;
     const mm = aMilimonedasConCero(form.monto.value);
     if (mm === null) { alert("el techo tiene que ser un numero (0 = no pide)"); return; }
+    // los dos techos viajan en el MISMO POST: son la misma decision, y
+    // mandarlos por separado dejaria una ventana en la que el techo por
+    // pedido ya subio y el del ciclo todavia no -- justo el estado en el
+    // que el jefe puede pedir mas de lo que se le va a poder pagar.
+    const ciclo = aMilimonedasConCero(form.ciclo.value);
+    if (ciclo === null) {
+      alert("el techo del ciclo tiene que ser un numero (0 = no pide)");
+      return;
+    }
     // sin confirmacion: una perilla se deshace escribiendola de nuevo, y
     // no mueve un milimon -- lo que se pida sigue necesitando que toques
     // "financiar" en la mesa. Es la misma razon por la que el endpoint no
@@ -677,14 +686,16 @@ cajaPerillas?.addEventListener("submit", async evento => {
       const r = await fetch(
         `/api/economia/departamentos/${encodeURIComponent(nombre)}/perillas`, {
           method: "POST", headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({techo_preseed_mm: mm})});
+          body: JSON.stringify({techo_preseed_mm: mm,
+                                techo_preseed_ciclo_mm: ciclo})});
       if (!r.ok) {
         let detalle = "no se pudo guardar la perilla";
         try { detalle = (await r.json()).detail || detalle; } catch (_) {}
         alert(detalle);
       } else {
-        avisarEnPerillas(mm > 0
-          ? `listo: ${nombre} puede pedir hasta ${monedas(mm)} monedas`
+        avisarEnPerillas(mm > 0 && ciclo > 0
+          ? `listo: ${nombre} puede pedir hasta ${monedas(mm)} monedas por ` +
+            `ronda y ${monedas(ciclo)} en todo el ciclo`
           : `listo: ${nombre} no pide pre-seed`);
       }
     } finally {

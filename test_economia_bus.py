@@ -21,11 +21,14 @@ SUS = cap.Suscripcion(nombre="claude_max", costo_mensual_mm=100_000,
 def entorno(tmp_path):
     k = Kernel(Libro(tmp_path / "libro.jsonl"))
     r = deps.Registro(tmp_path / "departamentos.json")
-    # `techo_preseed_mm` porque `financiar` lo relee al PAGAR una ronda
-    # pre-seed: la perilla de hoy es la que autoriza, no la que estaba
-    # cuando el pedido se publico.
+    # LAS DOS perillas de pre-seed porque `financiar` relee las dos al
+    # PAGAR una ronda: la de hoy es la que autoriza, no la que estaba
+    # cuando el pedido se publico. `techo_preseed_ciclo_mm` bien alto para
+    # que no sea el que corta en los tests que miran el otro techo; el que
+    # lo prueba a el lo baja a proposito.
     r.alta(deps.Departamento("a", deps.ZONA_FABRICA, techo_api_ciclo_mm=500_000,
-                             techo_preseed_mm=200_000))
+                             techo_preseed_mm=200_000,
+                             techo_preseed_ciclo_mm=10_000_000))
     r.alta(deps.Departamento("b", deps.ZONA_FABRICA, techo_api_ciclo_mm=500_000))
     m = mkt.Mercado(k, r, {"claude_max": SUS})
     b = bus_mod.Bus(tmp_path / "bus.jsonl")
@@ -453,3 +456,126 @@ def test_un_preseed_financiado_no_queda_como_trabajo_vivo(entorno):
     # el trabajo si, el pre-seed no
     assert b.activas() == ["t1"]
     assert b.estado("p1") == "cerrada"
+
+
+# -- el segundo techo del pre-seed: el acumulado por CICLO -----------------
+
+def test_el_techo_del_ciclo_frena_la_segunda_ronda(entorno):
+    """EL CASO QUE SOLO ESTE TECHO ATRAPA. Con el techo por pedido en
+    50.000 y la bandeja despejada, un jefe publica 50.000 tres veces antes
+    de chocar `TECHO_PROPUESTAS`, y las tres pasan el freno del jefe si se
+    publicaron cuando todavia habia lugar. Dos pedidos EN PIE se financian
+    uno tras otro y cruzan el techo entre los dos: lo pedido lo puede
+    frenar el jefe, lo financiado solo se puede frenar aca, que es el
+    unico lugar por donde la plata sale de verdad."""
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 1_000_000, t.TESORO)
+    m.registro.ajustar("a", techo_preseed_mm=50_000,
+                       techo_preseed_ciclo_mm=80_000)
+    for i in (1, 2):
+        b.alta(TS, "2026-W30", f"p{i}", "dep:a", f"ronda {i}", 50_000, 50_000,
+               {"gasto_max_mm": 50_000}, tipo="preseed")
+
+    # la primera entra entera: 50.000 <= 80.000
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 50_000)
+    assert k.saldo("dep:a") == 50_000
+
+    # la segunda no: 50.000 + 50.000 pasa el techo del ciclo
+    with pytest.raises(bus_mod.ErrorBus) as exc:
+        bus_mod.financiar(m, b, TS, "2026-W30", "p2", t.TESORO, 50_000)
+    assert "techo de pre-seed del ciclo" in str(exc.value)
+    assert k.saldo("dep:a") == 50_000, "cruzo el techo del ciclo"
+
+    # lo que entra en lo que queda, si: el techo acota, no prohibe
+    bus_mod.financiar(m, b, TS, "2026-W30", "p2", t.TESORO, 30_000)
+    assert k.saldo("dep:a") == 80_000
+
+
+def test_el_techo_del_ciclo_ata_a_pedro_y_la_salida_es_subir_la_perilla(entorno):
+    """Un techo que Pedro puede cruzar sin enterarse no es un techo, pero
+    Pedro es el dueno: la salida existe y es EXPLICITA -- subir la perilla,
+    que queda escrita en departamentos.json. Una sola fuente de verdad y
+    ningun override silencioso."""
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 1_000_000, t.TESORO)
+    m.registro.ajustar("a", techo_preseed_ciclo_mm=60_000)
+    b.alta(TS, "2026-W30", "p1", "dep:a", "arranco", 100_000, 100_000,
+           {"gasto_max_mm": 100_000}, tipo="preseed")
+    with pytest.raises(bus_mod.ErrorBus) as exc:
+        bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 100_000)
+    assert "subi la perilla" in str(exc.value)
+
+    m.registro.ajustar("a", techo_preseed_ciclo_mm=100_000)
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 100_000)
+    assert k.saldo("dep:a") == 100_000
+
+
+def test_sin_techo_de_ciclo_no_se_paga_ninguna_ronda(entorno):
+    """Cero es "todavia no", no "sin limite" -- la misma regla que
+    `techo_preseed_mm` y que `techo_api_ciclo_mm` (que en cero manda todo
+    gasto de API a la compuerta c). Un default que autoriza algo es
+    exactamente como un techo se cruza en silencio."""
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 400_000, t.TESORO)
+    m.registro.ajustar("a", techo_preseed_ciclo_mm=0)
+    b.alta(TS, "2026-W30", "p1", "dep:a", "arranco", 10_000, 10_000,
+           {"gasto_max_mm": 10_000}, tipo="preseed")
+    with pytest.raises(bus_mod.ErrorBus) as exc:
+        bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 10_000)
+    assert "techo de pre-seed por ciclo" in str(exc.value)
+    assert k.saldo("dep:a") == 0
+
+
+def test_el_techo_del_ciclo_se_suelta_al_ciclo_siguiente(entorno):
+    """Es un techo POR CICLO, no un tope de por vida: pasadas las cuatro
+    semanas operativas el acumulado vuelve a cero y el departamento puede
+    volver a pedir. Eso es lo que hace que la decision de Pedro sea
+    periodica y no definitiva."""
+    k, m, b = entorno
+    for w in ("2026-W30", "2026-W31", "2026-W32", "2026-W33", "2026-W34"):
+        _semana_op(k, w)
+    _capital(k, 1_000_000, t.TESORO)
+    m.registro.ajustar("a", techo_preseed_mm=50_000,
+                       techo_preseed_ciclo_mm=50_000)
+    b.alta(TS, "2026-W30", "p1", "dep:a", "ronda 1", 50_000, 50_000,
+           {"gasto_max_mm": 50_000}, tipo="preseed")
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 50_000)
+
+    # misma semana: agotado
+    b.alta(TS, "2026-W33", "p2", "dep:a", "ronda 2", 50_000, 50_000,
+           {"gasto_max_mm": 50_000}, tipo="preseed")
+    with pytest.raises(bus_mod.ErrorBus):
+        bus_mod.financiar(m, b, TS, "2026-W33", "p2", t.TESORO, 50_000)
+
+    # W34 es la quinta semana operativa: ciclo 1, acumulado en cero
+    bus_mod.financiar(m, b, TS, "2026-W34", "p2", t.TESORO, 50_000)
+    assert k.saldo("dep:a") == 100_000
+
+
+def test_el_acumulado_del_ciclo_solo_cuenta_pre_seed(entorno):
+    """`preseed_del_ciclo` mira `motivo == "preseed"` y no todo lo que
+    entra a la cuenta: un rescate o el cobro de un servicio vendido a otro
+    departamento no son capital de arranque, y contarlos frenaria rondas
+    por plata que no vino del tesoro."""
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 1_000_000, t.TESORO)
+    _capital(k, 300_000, "dep:b")
+    m.registro.ajustar("a", techo_preseed_mm=50_000,
+                       techo_preseed_ciclo_mm=50_000)
+    # b le vende un servicio a a: entra plata que NO es pre-seed
+    m.vender_servicio(TS, "2026-W30", "dep:b", "dep:a", 300_000)
+    assert k.saldo("dep:a") == 300_000
+
+    semanas = cap.semanas_del_ciclo_de_hoy(
+        cap.semanas_operativas(k.libro.asientos()), "2026-W30")
+    assert bus_mod.preseed_del_ciclo(k.libro.asientos(), "dep:a", semanas) == 0
+
+    b.alta(TS, "2026-W30", "p1", "dep:a", "arranco", 50_000, 50_000,
+           {"gasto_max_mm": 50_000}, tipo="preseed")
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 50_000)
+    assert bus_mod.preseed_del_ciclo(
+        k.libro.asientos(), "dep:a", semanas) == 50_000

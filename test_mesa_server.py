@@ -24,10 +24,14 @@ def _economia_de_prueba(base, abrir=True):
     r = deps.Registro(eco / "departamentos.json")
     r.alta(deps.Departamento("atlas", deps.ZONA_FABRICA,
                              presupuesto_semanal_mm=25_000,
-                             # la perilla que autoriza la ronda pre-seed:
-                             # `financiar` la relee al pagar, no alcanza con
-                             # que estuviera puesta cuando se publico
-                             techo_preseed_mm=150_000))
+                             # las dos perillas que autorizan la ronda
+                             # pre-seed: `financiar` las relee al pagar, no
+                             # alcanza con que estuvieran puestas cuando se
+                             # publico. La del ciclo bien alta para que no
+                             # sea la que corte aca; el test que la prueba
+                             # a ella la baja a proposito
+                             techo_preseed_mm=150_000,
+                             techo_preseed_ciclo_mm=10_000_000))
     r.alta(deps.Departamento("mercado", deps.ZONA_FABRICA,
                              presupuesto_semanal_mm=25_000))
     r.alta(deps.Departamento("finanzas", deps.ZONA_PERSONAL))
@@ -412,3 +416,51 @@ def test_un_preseed_financiado_sale_de_la_mesa(cliente):
     assert r.status_code == 200, r.text
     assert c.get("/api/economia/bus", params={"token": srv.TOKEN}
                  ).json()["propuestas"] == []
+
+
+def test_el_techo_del_ciclo_frena_a_pedro_en_la_mesa(cliente):
+    """DE PUNTA A PUNTA, por http: el techo del ciclo ata tambien a Pedro.
+    Dos pedidos en pie, cada uno dentro del techo POR PEDIDO; el primero se
+    paga, el segundo choca contra el acumulado del ciclo. Es el caso que el
+    freno del jefe no puede cerrar solo -- los dos se publicaron cuando
+    todavia habia lugar-- y por eso el freno de verdad vive donde la plata
+    sale.
+
+    Y la salida es EXPLICITA: subir la perilla, un POST a
+    .../perillas, no un override silencioso ni una pregunta del motor de
+    permisos que se pueda contestar "si, siempre"."""
+    c, base = cliente
+    deps.Registro(base / "economia" / "departamentos.json").ajustar(
+        "atlas", techo_preseed_ciclo_mm=150_000)
+    _preseed(base, id="ps1", mm=100_000)
+    _preseed(base, id="ps2", mm=100_000)
+    k = Kernel(Libro(base / "economia" / "libro.jsonl"))
+    k.acunar(TS, W, t.TESORO, 900_000, t.SubtipoAcunacion.CAPITAL,
+             {"tipo": "firma_pedro"})
+    antes = k.saldo("dep:atlas")
+
+    r1 = c.post("/api/economia/bus/ps1/financiar", params={"token": srv.TOKEN},
+                json={"cuenta": t.TESORO, "mm": 100_000})
+    assert r1.status_code == 200, r1.text
+
+    r2 = c.post("/api/economia/bus/ps2/financiar", params={"token": srv.TOKEN},
+                json={"cuenta": t.TESORO, "mm": 100_000})
+    assert r2.status_code == 400, r2.text
+    assert "techo de pre-seed del ciclo" in r2.json()["detail"]
+    assert "subi la perilla" in r2.json()["detail"]
+
+    # y la plata NO salio: 100.000, no 200.000
+    k2 = Kernel(Libro(base / "economia" / "libro.jsonl"))
+    assert k2.saldo("dep:atlas") == antes + 100_000
+    assert Bus(base / "economia" / "bus.jsonl").estado("ps2") == "alta"
+
+    # la salida de Pedro: subir la perilla desde la pantalla de Plata
+    rp = c.post("/api/economia/departamentos/atlas/perillas",
+                params={"token": srv.TOKEN},
+                json={"techo_preseed_ciclo_mm": 250_000})
+    assert rp.status_code == 200, rp.text
+    r3 = c.post("/api/economia/bus/ps2/financiar", params={"token": srv.TOKEN},
+                json={"cuenta": t.TESORO, "mm": 100_000})
+    assert r3.status_code == 200, r3.text
+    assert Kernel(Libro(base / "economia" / "libro.jsonl")).saldo(
+        "dep:atlas") == antes + 200_000

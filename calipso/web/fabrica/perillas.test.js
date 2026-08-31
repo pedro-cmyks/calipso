@@ -141,10 +141,11 @@ const CONFIG = {
   departamentos: [
     {nombre: "atlas", zona: "fabrica", presupuesto_semanal_mm: 25000,
      techo_api_ciclo_mm: 0, explorar_explotar_pct: 50, agresividad_pct: 30,
-     techo_preseed_mm: 0},
+     techo_preseed_mm: 50000, techo_preseed_ciclo_mm: 150000,
+     preseed_ciclo_mm: 50000},
     {nombre: "finanzas", zona: "personal", presupuesto_semanal_mm: 0,
      techo_api_ciclo_mm: 0, explorar_explotar_pct: 50, agresividad_pct: 30,
-     techo_preseed_mm: 0},
+     techo_preseed_mm: 0, techo_preseed_ciclo_mm: 0, preseed_ciclo_mm: 0},
   ],
   suscripciones: [
     {nombre: "claude_max", costo_mensual_mm: 200000, capacidad_ciclo: 1000,
@@ -257,4 +258,45 @@ test("todo lo de los ajustes pasa por escapar()", () => {
   for (const etiqueta of ["<img", "<iframe", "<svg", "<object"]) {
     assert.ok(!html.includes(etiqueta), `se colo ${etiqueta}`);
   }
+});
+
+// -- el segundo techo del pre-seed: el acumulado por ciclo -----------------
+
+test("el techo del ciclo tiene su propio campo: sin cara Pedro no lo mueve", () => {
+  const html = textoDeAjustes(CONFIG);
+  assert.match(html, /name="ciclo"/);
+  assert.match(html, /techo del ciclo/);
+  // y con el valor que ya tiene puesto, no vacio: la perilla se lee antes
+  // de escribirse
+  assert.match(html, /value="150"/);
+});
+
+test("los dos techos van en el mismo formulario: son una sola decision", () => {
+  // mandarlos por separado deja una ventana en la que el techo por pedido
+  // ya subio y el del ciclo todavia no -- justo el estado en el que el
+  // jefe puede pedir mas de lo que se le va a poder pagar
+  const html = textoDeAjustes(CONFIG);
+  const forms = html.match(/<form class="ajuste" data-perillas="techo-preseed"[\s\S]*?<\/form>/g);
+  assert.equal(forms.length, 1);
+  assert.match(forms[0], /name="monto"/);
+  assert.match(forms[0], /name="ciclo"/);
+});
+
+test("muestra cuanto capital ya entro en el ciclo, al lado de su techo", () => {
+  // sin el acumulado a la vista, el techo del ciclo es un numero que Pedro
+  // pone a ciegas y un rechazo que le llega recien al tocar "financiar"
+  assert.match(textoDeAjustes(CONFIG), /ya entro este ciclo: 50 de 150/);
+});
+
+test("dice que el techo del ciclo ata tambien a la mesa", () => {
+  // "lo que NO puede pasar es que se cruce en silencio": si financiar
+  // rechaza, la pantalla tiene que haberlo dicho antes
+  const html = textoDeAjustes(CONFIG);
+  assert.match(html, /financiar te lo rechaza/);
+  assert.match(html, /4 semanas del ciclo/);
+});
+
+test("la zona personal no tiene ninguno de los dos techos", () => {
+  const html = textoDeAjustes(CONFIG);
+  assert.ok(!html.includes('data-departamento="finanzas"'));
 });

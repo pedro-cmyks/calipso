@@ -3651,6 +3651,9 @@ class EcoSembrarDepartamentoBody(BaseModel):
     # cero, igual que las otras dos perillas de plata: sembrar no inventa
     # un monto: hasta que Pedro diga cuanto, el departamento no pide.
     techo_preseed_mm: int = Field(default=0, ge=0, le=_MAX_MM)
+    # el segundo techo del pre-seed, el acumulado por ciclo. Default cero
+    # por lo mismo, y aca cero FRENA: ver departamentos.py.
+    techo_preseed_ciclo_mm: int = Field(default=0, ge=0, le=_MAX_MM)
 
     sin_booleanos = field_validator("*", mode="before")(_no_booleano)
 
@@ -3702,6 +3705,7 @@ class PerillasDepartamentoBody(BaseModel):
     explorar_explotar_pct: int | None = Field(default=None, ge=0, le=100)
     agresividad_pct: int | None = Field(default=None, ge=0, le=100)
     techo_preseed_mm: int | None = Field(default=None, ge=0, le=_MAX_MM)
+    techo_preseed_ciclo_mm: int | None = Field(default=None, ge=0, le=_MAX_MM)
 
     sin_booleanos = field_validator("*", mode="before")(_no_booleano)
 
@@ -4152,7 +4156,8 @@ def api_eco_departamento_perillas(nombre: str,
         # escritores entre adquisiciones del candado)
         with _eco_candado(p0.ruta_libro):
             registro = _eco_deps.Registro(p0.ruta_registro)
-            if (perillas.get("techo_preseed_mm")
+            if ((perillas.get("techo_preseed_mm")
+                 or perillas.get("techo_preseed_ciclo_mm"))
                     and registro.obtener(nombre).zona != _eco_deps.ZONA_FABRICA):
                 # un departamento personal no tiene jefe que pida ni ronda
                 # pre-seed que financiar: `bus.financiar` rechaza un
@@ -4411,7 +4416,8 @@ def api_eco_config() -> dict:
     with _eco_candado(p0.ruta_libro):
         m = p0.mercado_fresco()
         asientos = m.k.libro.asientos()
-        departamentos = [dataclasses.asdict(d) for d in m.registro.todos()]
+        deps_objeto = m.registro.todos()
+        departamentos = [dataclasses.asdict(d) for d in deps_objeto]
         suscripciones = dict(m.suscripciones)
     ops = _eco_cap.semanas_operativas(asientos)
     ciclo = None
@@ -4423,6 +4429,14 @@ def api_eco_config() -> dict:
     # tocar "aplicar", y tiene que ser el mismo que va a mirar el guardia
     # de POST .../capacidad. Ver `_eco_semanas_del_ciclo_de_hoy`.
     semanas_ciclo = _eco_semanas_del_ciclo_de_hoy(asientos, semana)
+    # el acumulado de pre-seed del ciclo, al lado de su techo. Es la mitad
+    # que faltaba: la mesa muestra cada pedido suelto y ninguna pantalla
+    # decia cuanto capital ya entro, asi que el techo del ciclo seria un
+    # numero que Pedro pone a ciegas y un rechazo que le llega recien al
+    # tocar "financiar". Se pliega del LIBRO, igual que el freno.
+    for dep, fila in zip(deps_objeto, departamentos):
+        fila["preseed_ciclo_mm"] = _eco_bus.preseed_del_ciclo(
+            asientos, dep.cuenta, semanas_ciclo)
     resumen = calipso_consumo.cargar_resumen() or {}
     filas = []
     for nombre, sus in sorted(suscripciones.items()):
@@ -4474,31 +4488,17 @@ def _eco_semanas_del_ciclo_de_hoy(asientos: list, semana: str) -> list[str]:
     """Las semanas operativas del ciclo en el que cae HOY, este la semana
     de hoy ya emitida o no.
 
-    `posicion_ciclo` solo sabe de semanas OPERATIVAS -- las que ya emitieron
-    su PT -- y una semana se vuelve operativa recien cuando alguien aprieta
-    `POST /api/economia/semana/abrir`, que es un boton manual: el unico
-    llamador es la fabrica en el navegador y no hay kind de rutina que lo
-    haga. O sea que TODA semana empieza afuera de `ops` y sigue afuera
-    hasta que Pedro lo toca. No es una ventana rara: es el estado por
-    defecto de cada lunes.
-
-    Preguntar "en que ciclo estoy" con `if semana in ops` contestaba "en
-    ninguno" durante esa ventana, y de ahi el consumo del ciclo daba cero.
-    Aca se contesta con la lista que va a existir cuando la semana se abra:
-    la de hoy insertada en su lugar. Es la MISMA aritmetica que
-    `posicion_ciclo` va a dar despues del boton -- una semana nueva cae en
-    el ciclo de las anteriores hasta completar las cuatro, y el consumo de
-    esas semanas sigue contando.
+    La aritmetica vive en `capacidad.semanas_del_ciclo_de_hoy` y su
+    docstring explica por que hace falta (toda semana empieza afuera de
+    las operativas hasta que Pedro aprieta el boton de abrir). Se movio
+    para alla porque la MISMA pregunta la hacen ahora `bus.financiar` --
+    el techo de pre-seed del ciclo, que decide si sale plata -- y
+    `plantel.situacion`, y dos respuestas distintas a "en que ciclo estoy"
+    serian dos techos. Esto queda como el nombre que ya usan los
+    llamadores de este modulo.
     """
-    ops = _eco_cap.semanas_operativas(asientos)
-    if semana in ops:
-        ciclo, _ = _eco_cap.posicion_ciclo(semana, ops)
-        return _eco_cap.semanas_del_ciclo(ciclo, ops)
-    futuras = sorted(set(ops) | {semana})
-    ciclo, _ = _eco_cap.posicion_ciclo(semana, futuras)
-    reales = set(ops)
-    return [x for x in _eco_cap.semanas_del_ciclo(ciclo, futuras)
-            if x in reales]
+    return _eco_cap.semanas_del_ciclo_de_hoy(
+        _eco_cap.semanas_operativas(asientos), semana)
 
 
 def _eco_capacidad_preparar(nombre: str, capacidad_ciclo: int,
@@ -5056,7 +5056,6 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
             # tolerante, caia en el `except` de `tic` y se reportaba como
             # "reviento actuando".
             pedido = int(ref) if (ref or "").isdecimal() else techo
-            monto = max(1, min(pedido, techo))
             propuesta = f"{situacion['nombre']}-{uuid.uuid4().hex[:8]}"
             titulo = (motivo or f"ronda pre-seed de {situacion['nombre']}")[:120]
             with _eco_candado(pagador.ruta_libro):
@@ -5066,6 +5065,48 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
                             "motivo": "la bandeja se lleno mientras este tic "
                                       "decidia: que Pedro despeje antes de "
                                       "sumar otra"}
+                # EL TECHO DEL CICLO, releido adentro del candado, por la
+                # misma razon que `_bandeja_llena` de arriba: `jefe._puede`
+                # ya lo chequeo contra la foto que trajo `situacion`, que
+                # se tomo AFUERA -- dos tics simultaneos del mismo
+                # departamento leen el mismo acumulado y pasan los dos.
+                # Aca se rehace con el registro, el libro y el bus
+                # frescos, que es tambien lo unico que ve una perilla que
+                # Pedro bajo mientras el tic pensaba.
+                #
+                # El techo del CICLO ademas RECORTA, no solo frena: igual
+                # que `techo_preseed_mm` recorta cada pedido, lo que
+                # quede libre en el ciclo recorta este. Publicar un pedido
+                # por mas de lo que se le puede pagar es publicar una
+                # propuesta que `bus.financiar` va a rechazar con Pedro ya
+                # mirandola.
+                dep_fresco = _eco_deps.Registro(
+                    pagador.ruta_registro).obtener(situacion["nombre"])
+                techo = int(dep_fresco.techo_preseed_mm or 0)
+                techo_ciclo = int(dep_fresco.techo_preseed_ciclo_mm or 0)
+                if techo <= 0 or techo_ciclo <= 0:
+                    return {"accion": "pedir", "ref": ref, "en": "nada",
+                            "motivo": "la perilla de pre-seed quedo en cero "
+                                      "mientras este tic decidia: Pedro "
+                                      "cerro la canilla"}
+                asientos_frescos = pagador.leer_kernel().libro.asientos()
+                semanas = _eco_semanas_del_ciclo_de_hoy(asientos_frescos,
+                                                        semana)
+                usado = _eco_bus.preseed_del_ciclo(asientos_frescos, cuenta,
+                                                   semanas)
+                for id_ in bus_fresco.ids():
+                    d = bus_fresco.datos(id_)
+                    if (bus_fresco.estado(id_) == "alta"
+                            and d.get("departamento") == cuenta
+                            and d.get("tipo") == "preseed"):
+                        usado += int(d.get("presupuesto_mm") or 0)
+                libre = techo_ciclo - usado
+                if libre <= 0:
+                    return {"accion": "pedir", "ref": ref, "en": "nada",
+                            "motivo": f"el techo del ciclo es {techo_ciclo} "
+                                      f"mm y ya van {usado} entre lo "
+                                      "financiado y lo pedido en pie"}
+                monto = max(1, min(pedido, techo, libre))
                 # `criterio` es obligatorio en `bus.alta` y para un pre-seed
                 # es INERTE: no abre `trabajo:<id>`, asi que no tiene gasto
                 # que medir y `evaluar_y_liquidar_muertos` lo saltea. Se
@@ -5077,7 +5118,8 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
                                 monto, monto, {"gasto_max_mm": monto},
                                 tipo="preseed")
             return {"accion": "pedir", "ref": ref, "propuesta": propuesta,
-                    "tipo": "preseed", "monto_mm": monto, "techo_mm": techo}
+                    "tipo": "preseed", "monto_mm": monto, "techo_mm": techo,
+                    "techo_ciclo_mm": techo_ciclo, "libre_ciclo_mm": libre}
 
         # accion == "proponer". SIN planificar aca: es una llamada a un
         # modelo cuya salida no lee nadie, en un bucle que corre desatendido

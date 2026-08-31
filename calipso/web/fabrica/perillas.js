@@ -145,11 +145,23 @@ function formularioMovimiento() {
 
 function filaTechoPreseed(dep) {
   const n = escapar(dep.nombre);
+  const entrado = dep.preseed_ciclo_mm || 0;
+  const techoCiclo = dep.techo_preseed_ciclo_mm || 0;
+  // el acumulado del ciclo, al lado de su techo. Sin esto el numero de
+  // abajo se pone a ciegas: la mesa muestra cada pedido suelto y ninguna
+  // pantalla decia cuanto capital ya entro este ciclo.
+  const yaEntro = `<div class="nota">ya entro este ciclo: ` +
+    `${escapar(monedas(entrado))}` +
+    (techoCiclo ? ` de ${escapar(monedas(techoCiclo))}` : "") + `</div>`;
   return `<form class="ajuste" data-perillas="techo-preseed" ` +
     `data-departamento="${n}">` +
-    `<label>${n}: techo de pre-seed (en monedas)` +
+    `<label>${n}: techo por pedido (en monedas)` +
     `<input name="monto" inputmode="decimal" ` +
     `value="${escapar(monedas(dep.techo_preseed_mm || 0))}"></label>` +
+    `<label>${n}: techo del ciclo (en monedas)` +
+    `<input name="ciclo" inputmode="decimal" ` +
+    `value="${escapar(monedas(techoCiclo))}"></label>` +
+    yaEntro +
     `<button type="submit">guardar</button></form>`;
 }
 
@@ -162,6 +174,17 @@ function bloquePreseed(departamentos) {
     `<div class="nota">Es autorizacion a PEDIR, no plata: el jefe publica ` +
     `su ronda pre-seed en la mesa y vos decidis ahi si la financias y por ` +
     `cuanto. En cero no pide.</div>` +
+    // los DOS techos van juntos porque son la misma decision partida en
+    // dos preguntas: cuanto vale cada ronda, y cuanto capital entra en
+    // todo el ciclo antes de que tengas que volver a decidir. El del
+    // ciclo ata tambien a la mesa: pasado ese total, "financiar" te
+    // rechaza el pedido hasta que subas este numero. Los dos en cero no
+    // piden, y ninguno tiene un valor por defecto que autorice algo.
+    `<div class="nota">El techo por pedido acota cuanto vale CADA ronda; ` +
+    `el del ciclo acota cuanto capital entra en las 4 semanas del ciclo, ` +
+    `contando lo que ya financiaste mas lo que sigue en la mesa. Pasado ` +
+    `el del ciclo, financiar te lo rechaza hasta que lo subas: es a ` +
+    `proposito, para que no se cruce en silencio.</div>` +
     fabrica.map(filaTechoPreseed).join("");
 }
 

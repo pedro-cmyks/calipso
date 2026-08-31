@@ -47,6 +47,30 @@ class Departamento:
     # hasta que Pedro diga cuanto, y no hay ningun default inventado en
     # ninguna capa. Cero significa "todavia no", no "sin limite".
     techo_preseed_mm: int = 0
+    # El SEGUNDO techo del pre-seed, y el que acota el caudal: cuanto
+    # capital puede ENTRAR a este departamento por rondas pre-seed en un
+    # ciclo entero (4 semanas operativas, `capacidad.SEMANAS_POR_CICLO`).
+    #
+    # `techo_preseed_mm` acota cuanto vale CADA ronda; no acota cuantas.
+    # Con el techo por pedido en 50.000 y la bandeja despejada, un jefe
+    # pide 50.000 tres veces antes de chocar `TECHO_PROPUESTAS`, y cada
+    # financiacion vacia ese contador: el techo real terminaba siendo
+    # "50.000 x lo que Pedro tocara financiar". Este acota el TOTAL, para
+    # que pasado ese total Pedro tenga que volver a decidir a conciencia
+    # -- subir la perilla es la decision, y es explicita.
+    #
+    # Cuenta lo FINANCIADO del ciclo (plata que salio del tesoro, que el
+    # libro no desescribe) y, del lado del jefe, ademas lo que ya pidio y
+    # sigue en la mesa; ver `bus.financiar` y `jefe._puede`.
+    #
+    # Nace en CERO y cero FRENA, igual que `techo_api_ciclo_mm` (que en
+    # cero manda todo gasto de API a la compuerta c) y que su hermano de
+    # arriba: cero significa "todavia no", no "sin limite". Un
+    # departamento que ya tenia techo por pedido deja de pedir hasta que
+    # Pedro ponga tambien este -- y eso es ruidoso a proposito: la unica
+    # forma de que un techo no se cruce en silencio es que no exista un
+    # valor por defecto que autorice nada.
+    techo_preseed_ciclo_mm: int = 0
 
     def __post_init__(self):
         if self.zona not in (ZONA_FABRICA, ZONA_PERSONAL):

@@ -123,10 +123,17 @@ def test_las_rutinas_viejas_sin_cuenta_no_revientan(tmp_path, monkeypatch):
 # C1 (revision amplia de la rama): el candado del libro en _departamento
 # --------------------------------------------------------------------------
 
-def _armar_economia(base):
+def _armar_economia(base, **perillas):
     """Una economia minima en `base/economia`: un asiento (acunacion), el
     registro con dep:atlas, y suscripciones vacias. Devuelve la ruta del
-    libro."""
+    libro.
+
+    Las perillas van al REGISTRO y no solo al dict de situacion porque el
+    contratista relee las dos de pre-seed adentro del candado, contra el
+    registro fresco: la perilla de hoy es la que autoriza, no la que
+    estaba cuando el tic empezo a pensar (mismo criterio que
+    `bus.financiar`).
+    """
     eco = base / "economia"
     eco.mkdir(parents=True, exist_ok=True)
     ruta_libro = eco / "libro.jsonl"
@@ -134,7 +141,7 @@ def _armar_economia(base):
     k.acunar("2026-08-01T09:00:00", "2026-W31", eco_tipos.TESORO, 1_000_000,
              eco_tipos.SubtipoAcunacion.CAPITAL, {"tipo": "firma_pedro"})
     r = eco_deps.Registro(eco / "departamentos.json")
-    r.alta(eco_deps.Departamento("atlas", eco_deps.ZONA_FABRICA))
+    r.alta(eco_deps.Departamento("atlas", eco_deps.ZONA_FABRICA, **perillas))
     (eco / "suscripciones.json").write_text("{}", encoding="utf-8")
     return ruta_libro
 
@@ -307,10 +314,10 @@ def test_contratar_escribe_el_alta_bajo_candado(tmp_path, monkeypatch):
     assert resultado["accion"] == "proponer"
 
 
-def _contratar_real(tmp_path, monkeypatch):
+def _contratar_real(tmp_path, monkeypatch, **perillas):
     """El contratista de PRODUCCION contra un bus de verdad en disco."""
     monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
-    _armar_economia(tmp_path)
+    _armar_economia(tmp_path, **perillas)
     pagador = srv._EcoPagador.desde_entorno(tmp_path)
     contratar = srv._contratar_para("dep:atlas", pagador,
                                     "2026-08-01T09:10:00", "2026-W31")
@@ -323,7 +330,9 @@ def test_pedir_publica_un_preseed_en_el_bus(tmp_path, monkeypatch):
     de OTRO departamento -- justo lo que un departamento sin plata no puede
     conseguir. Tiene que salir como `tipo="preseed"`, que se financia
     contra el tesoro."""
-    contratar, _ = _contratar_real(tmp_path, monkeypatch)
+    contratar, _ = _contratar_real(tmp_path, monkeypatch,
+                                   techo_preseed_mm=150_000,
+                                   techo_preseed_ciclo_mm=10_000_000)
     s = {"nombre": "atlas", "presupuesto_semanal_mm": 0,
          "agresividad_pct": 30, "salidas_semana_mm": 0,
          "techo_preseed_mm": 150_000}
@@ -346,7 +355,9 @@ def test_el_monto_del_preseed_lo_recorta_la_perilla(tmp_path, monkeypatch):
     positivo alucinado sigue siendo alucinado -- el de 3b nombra ids que no
     existen. El peor caso tiene que ser exactamente el techo que puso
     Pedro."""
-    contratar, _ = _contratar_real(tmp_path, monkeypatch)
+    contratar, _ = _contratar_real(tmp_path, monkeypatch,
+                                   techo_preseed_mm=50_000,
+                                   techo_preseed_ciclo_mm=10_000_000)
     s = {"nombre": "atlas", "presupuesto_semanal_mm": 0,
          "agresividad_pct": 30, "salidas_semana_mm": 0,
          "techo_preseed_mm": 50_000}
@@ -382,7 +393,9 @@ def test_un_superindice_no_revienta_el_contratista(tmp_path, monkeypatch):
     de caer en el recorte al techo, caia en el `except` de `tic` y se
     anotaba como "reviento actuando". Con `.isdecimal()`, lo que no es un
     monto se trata como si no hubiera venido: se pide el techo."""
-    contratar, _ = _contratar_real(tmp_path, monkeypatch)
+    contratar, _ = _contratar_real(tmp_path, monkeypatch,
+                                   techo_preseed_mm=50_000,
+                                   techo_preseed_ciclo_mm=10_000_000)
     s = {"nombre": "atlas", "presupuesto_semanal_mm": 0,
          "agresividad_pct": 30, "salidas_semana_mm": 0,
          "techo_preseed_mm": 50_000}
@@ -437,3 +450,78 @@ def test_sin_presupuesto_semanal_el_tope_lo_da_la_billetera(
     r = contratar(s, "proponer", None, "ahora si a trabajar")
     bus = srv._eco_bus.Bus(srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
     assert bus.datos(r["propuesta"])["presupuesto_mm"] == 90_000
+
+
+# -- el techo del ciclo, segunda linea: adentro del candado ----------------
+
+def test_el_techo_del_ciclo_recorta_el_pedido_a_lo_que_queda(
+        tmp_path, monkeypatch):
+    """El techo del ciclo RECORTA, no solo frena, igual que el techo por
+    pedido. Publicar un pedido por mas de lo que se le puede pagar es
+    publicar una propuesta que `bus.financiar` va a rechazar con Pedro ya
+    mirandola: la bandeja se llena de pedidos impagables y el techo de
+    propuestas se consume con ellos."""
+    contratar, _ = _contratar_real(tmp_path, monkeypatch,
+                                   techo_preseed_mm=150_000,
+                                   techo_preseed_ciclo_mm=60_000)
+    bus = srv._eco_bus.Bus(
+        srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
+    bus.alta("2026-08-01T09:00:00", "2026-W31", "viejo", "dep:atlas",
+             "primera ronda", 40_000, 40_000, {"gasto_max_mm": 40_000},
+             tipo="preseed")
+    s = {"nombre": "atlas", "presupuesto_semanal_mm": 0,
+         "agresividad_pct": 30, "salidas_semana_mm": 0,
+         "techo_preseed_mm": 150_000}
+
+    r = contratar(s, "pedir", "150000", "quiero todo")
+    assert r["monto_mm"] == 20_000, "no recorto a lo que queda del ciclo"
+    assert r["libre_ciclo_mm"] == 20_000
+    bus2 = srv._eco_bus.Bus(
+        srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
+    assert bus2.datos(r["propuesta"])["presupuesto_mm"] == 20_000
+
+
+def test_sin_lugar_en_el_ciclo_el_contratista_no_escribe_en_el_bus(
+        tmp_path, monkeypatch):
+    """TOCTOU: `jefe._puede` mira el acumulado contra la foto que trajo
+    `situacion`, tomada AFUERA del candado, y el bus se escribe adentro.
+    Dos tics simultaneos del mismo departamento leen el mismo acumulado y
+    pasan los dos. Segunda linea, con el registro, el libro y el bus
+    frescos -- el mismo criterio que `_bandeja_llena`."""
+    contratar, _ = _contratar_real(tmp_path, monkeypatch,
+                                   techo_preseed_mm=150_000,
+                                   techo_preseed_ciclo_mm=40_000)
+    bus = srv._eco_bus.Bus(
+        srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
+    bus.alta("2026-08-01T09:00:00", "2026-W31", "viejo", "dep:atlas",
+             "primera ronda", 40_000, 40_000, {"gasto_max_mm": 40_000},
+             tipo="preseed")
+    s = {"nombre": "atlas", "presupuesto_semanal_mm": 0,
+         "agresividad_pct": 30, "salidas_semana_mm": 0,
+         "techo_preseed_mm": 150_000}
+
+    r = contratar(s, "pedir", "50000", "otra ronda")
+    assert r["en"] == "nada" and "techo del ciclo" in r["motivo"]
+    bus2 = srv._eco_bus.Bus(
+        srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
+    assert bus2.ids() == ["viejo"], "escribio igual"
+
+
+def test_la_perilla_bajada_a_cero_mientras_el_tic_pensaba_frena(
+        tmp_path, monkeypatch):
+    """Las perillas se releen del registro FRESCO adentro del candado y no
+    de la foto de `situacion`: "me arrepenti, cerra la canilla" tiene que
+    cerrar tambien el pedido que ya estaba pensandose. Mismo criterio que
+    `bus.financiar`, que relee el techo al PAGAR."""
+    contratar, _ = _contratar_real(tmp_path, monkeypatch,
+                                   techo_preseed_mm=150_000,
+                                   techo_preseed_ciclo_mm=0)
+    # la foto vieja todavia dice que habia techo
+    s = {"nombre": "atlas", "presupuesto_semanal_mm": 0,
+         "agresividad_pct": 30, "salidas_semana_mm": 0,
+         "techo_preseed_mm": 150_000}
+    r = contratar(s, "pedir", "50000", "arrancamos")
+    assert r["en"] == "nada" and "quedo en cero" in r["motivo"]
+    bus = srv._eco_bus.Bus(
+        srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
+    assert bus.ids() == []

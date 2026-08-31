@@ -110,6 +110,37 @@ def _puede(estado, s: dict, accion: str, ref: str | None) -> tuple[bool, str]:
                 return False, (f"ya tiene {ya} mm entre billetera y pedidos "
                                f"en pie, y el techo de la ronda es {techo}: "
                                "el pre-seed es para arrancar sin plata")
+            # EL SEGUNDO TECHO, el del CICLO, y el ultimo de los frenos
+            # porque es el mas caro de chequear: los de arriba miran un
+            # numero de la perilla o una lista corta; este pliega el libro
+            # entero de las semanas del ciclo.
+            #
+            # Que cuenta: lo FINANCIADO del ciclo mas lo PEDIDO que sigue
+            # en la mesa. Las dos cosas, y por motivos distintos. Lo
+            # financiado ya salio del tesoro y el libro no lo desescribe:
+            # es piso duro. Lo pedido todavia no es plata, pero es plata
+            # que Pedro puede soltar con un toque, asi que vale como
+            # reserva mientras siga en pie -- sin eso, publicar dos
+            # pedidos que juntos pasan el techo es gratis, y el freno
+            # llega recien en `bus.financiar`, con el pedido ya en la
+            # bandeja de Pedro pidiendole plata que no le puede dar. Y es
+            # solo una reserva: si Pedro descarta, el cupo vuelve entero,
+            # que es la razon por la que descartar existe.
+            #
+            # Del lado de Pedro se cuenta distinto (solo lo financiado):
+            # ver el comentario en `bus.financiar`.
+            techo_ciclo = int(s.get("techo_preseed_ciclo_mm") or 0)
+            if techo_ciclo <= 0:
+                return False, ("sin techo de pre-seed por ciclo: Pedro "
+                               "todavia no autorizo cuanto capital puede "
+                               "entrar por ciclo")
+            ya_ciclo = (int(s.get("preseed_ciclo_mm") or 0)
+                        + int(s.get("preseed_pendiente_mm") or 0))
+            if ya_ciclo >= techo_ciclo:
+                return False, (f"el techo del ciclo es {techo_ciclo} mm y "
+                               f"entre lo financiado y lo pedido en pie ya "
+                               f"van {ya_ciclo}: que Pedro suba la perilla "
+                               "o espere al ciclo que viene")
         if accion == "proponer" and s["presupuesto_semanal_mm"] > 0:
             # La agresividad mide contra el presupuesto SEMANAL. Un
             # departamento recien dado de alta todavia no tiene presupuesto

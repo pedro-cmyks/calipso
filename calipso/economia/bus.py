@@ -200,6 +200,46 @@ def financiar(mercado: Mercado, bus: Bus, ts: str, semana: str, id: str,
                 f"el pre-seed {id} pide {datos.get('presupuesto_mm', 0)} mm "
                 f"con un techo de {techo} mm: {mm} mm es mas de lo "
                 f"autorizado ({autorizado} mm)")
+        # EL SEGUNDO TECHO: el del CICLO, y este ata tambien a Pedro.
+        #
+        # El de arriba acota cuanto vale cada ronda; sin este, tres rondas
+        # de 50.000 entran 150.000 y ninguna puerta se entera. El freno del
+        # jefe (`jefe._puede`) es la primera linea y ya cuenta lo pedido en
+        # pie, pero no alcanza para cerrar el caso: dos pedidos publicados
+        # cuando todavia habia lugar se financian los dos, uno tras otro, y
+        # cruzan el techo entre los dos. Lo pedido lo frena alla; lo
+        # financiado solo se puede frenar ACA, que es el unico lugar por
+        # donde la plata sale de verdad.
+        #
+        # Aca se cuenta SOLO lo financiado, no lo pendiente: sumar los
+        # otros pedidos en pie trabaria a Pedro para pagar cualquiera de
+        # ellos -- dos pedidos que juntos pasan el techo se bloquearian
+        # mutuamente y ninguno se podria pagar. El primero pasa, el segundo
+        # choca. Descartar, como siempre, no cuenta contra nada: devolver
+        # el cupo es para lo que existe.
+        #
+        # Y frena a PEDRO igual que al jefe, sin override: la salida es
+        # subir la perilla desde la pantalla de Plata, que es una decision
+        # explicita y queda escrita en departamentos.json. No pasa por el
+        # motor de permisos a proposito -- un "si, siempre" ahi seria una
+        # segunda fuente de verdad sobre cuanto capital entra por ciclo, y
+        # la perilla dejaria de ser el techo. Lo que no puede pasar es que
+        # se cruce en silencio.
+        techo_ciclo = int(dep.techo_preseed_ciclo_mm or 0)
+        if techo_ciclo <= 0:
+            raise ErrorBus(
+                f"{dueno} no tiene techo de pre-seed por ciclo: la perilla "
+                "`techo_preseed_ciclo_mm` esta en cero y cero es 'todavia "
+                "no', no 'sin limite'")
+        semanas = cap.semanas_del_ciclo_de_hoy(
+            cap.semanas_operativas(asientos), semana)
+        ya = preseed_del_ciclo(asientos, dueno, semanas)
+        if ya + mm > techo_ciclo:
+            raise ErrorBus(
+                f"techo de pre-seed del ciclo superado: {dueno} ya recibio "
+                f"{ya} mm de pre-seed en este ciclo y {mm} mm mas pasan de "
+                f"{techo_ciclo} mm. Para darle mas, subi la perilla "
+                "`techo_preseed_ciclo_mm`")
         destino = dueno
         motivo = "preseed"
         # `ref` = el id de la propuesta. Un trabajo se identifica por su
@@ -288,6 +328,32 @@ def aporte_preseed(asientos: list[Asiento], id: str) -> int:
     return sum(a.monto for a in asientos
                if a.tipo is TipoAsiento.TRANSFERENCIA
                and a.detalle.get("motivo") == "preseed" and a.ref == id)
+
+
+def preseed_del_ciclo(asientos: list[Asiento], cuenta: str,
+                      semanas: list[str]) -> int:
+    """Todo el pre-seed que YA entro a esa cuenta en esas semanas.
+
+    Hermano de `aporte_preseed`, que mira UN pedido; este mira UN
+    departamento y un tramo de semanas, que es lo que pide el techo del
+    ciclo: el pedido es la unidad del techo por pedido, el departamento es
+    la unidad del techo acumulado.
+
+    Se pliega del LIBRO y no del bus a proposito. El bus dice lo que se
+    pidio y lo que se marco; el libro dice lo que se pago, y es lo unico
+    que no se puede desescribir. Si una marca del bus se pierde entre dos
+    appends -- el hueco que `api_eco_bus_financiar` ya cubre mirando el
+    libro -- el techo del ciclo tiene que seguir contando esa plata.
+
+    `motivo == "preseed"` y destino, los dos: la cuenta del departamento
+    tambien recibe transferencias que no son pre-seed (un rescate, una
+    venta de servicio), y un techo que las contara frenaria rondas por
+    plata que no vino del tesoro.
+    """
+    return sum(a.monto for a in asientos
+               if a.tipo is TipoAsiento.TRANSFERENCIA
+               and a.detalle.get("motivo") == "preseed"
+               and a.destino == cuenta and a.semana in semanas)
 
 
 def gastado(asientos: list[Asiento], id: str) -> int:

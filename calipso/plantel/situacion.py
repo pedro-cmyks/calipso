@@ -58,10 +58,16 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
     asientos = kernel.libro.asientos()
     dep = registro.obtener(cuenta.split(":", 1)[1])
     ops = cap.semanas_operativas(asientos)
-    semanas_ciclo = []
-    if ops and semana in ops:
-        ciclo, _ = cap.posicion_ciclo(semana, ops)
-        semanas_ciclo = cap.semanas_del_ciclo(ciclo, ops)
+    # `semanas_del_ciclo_de_hoy` y no `if semana in ops`: una semana se
+    # vuelve operativa recien cuando alguien aprieta el boton de abrir, asi
+    # que todo lunes empieza afuera de `ops`. Preguntando con `in ops`, el
+    # jefe veia el ciclo vacio esa ventana entera -- el gasto de API del
+    # ciclo daba cero y el pre-seed ya entrado tambien, o sea que el techo
+    # del ciclo se reseteaba solo cada vez que Pedro tardaba en abrir la
+    # semana. Un techo que se reinicia por no tocar un boton no es un
+    # techo. Es la misma funcion que mira `bus.financiar` al pagar: dos
+    # respuestas distintas a "en que ciclo estoy" serian dos techos.
+    semanas_ciclo = cap.semanas_del_ciclo_de_hoy(ops, semana)
 
     # OJO con los estados del bus: `alta` es una propuesta sin financiar y
     # `financiada` es un trabajo vivo. `bus.activas()` devuelve SOLO las
@@ -123,8 +129,17 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
         # tiene. Cero es "Pedro todavia no autorizo", y `_puede` lo frena
         # ahi -- ver el freno de `pedir` en jefe.py.
         "techo_preseed_mm": dep.techo_preseed_mm,
+        # el segundo techo: cuanto capital puede ENTRAR por pre-seed en
+        # todo el ciclo. Cero tambien frena aca (ver departamentos.py).
+        "techo_preseed_ciclo_mm": dep.techo_preseed_ciclo_mm,
         # lo que ya pidio y sigue en la mesa, sin financiar
         "preseed_pendiente_mm": preseed_pendiente,
+        # lo que YA le entro por pre-seed en este ciclo, del libro. Con lo
+        # pendiente de arriba es lo que `jefe._puede` compara contra el
+        # techo del ciclo: financiado (irreversible) + pedido en pie
+        # (reservado mientras siga en la mesa).
+        "preseed_ciclo_mm": bus_mod.preseed_del_ciclo(
+            asientos, cuenta, semanas_ciclo),
         # lo que Pedro descarto esta semana: cuenta contra el mismo techo
         # que las propuestas en pie (ver `jefe._puede`)
         "descartadas_semana": descartadas,
