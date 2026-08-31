@@ -251,20 +251,52 @@ def financiar(mercado: Mercado, bus: Bus, ts: str, semana: str, id: str,
                 "`techo_preseed_ciclo_mm` esta en cero y cero es 'todavia "
                 "no', no 'sin limite'")
         ops = cap.semanas_operativas(asientos)
-        semanas = ventana_preseed(ops, semana)
-        ya = preseed_en_ventana(asientos, dueno, semanas)
-        if ya + mm > techo_ciclo:
+        # TODAS las ventanas que contienen `semana`, no solo la que CIERRA
+        # en ella. `semana` es cualquier operativa y no la ultima abierta
+        # (esta puerta nunca lo exigio, a diferencia de la gemela de
+        # `operacion.cerrar_semana_operativa`), y las ventanas deslizantes
+        # se SOLAPAN: un asiento en una semana ya pasada entra en hasta
+        # `VENTANA_PRESEED_SEMANAS` ventanas, y todas menos la ultima ya
+        # fueron validadas y nadie las vuelve a mirar. Mirando solo la que
+        # cierra en `semana`, el invariante -- en ninguna corrida de cuatro
+        # semanas operativas entra mas que el techo -- se rompia de forma
+        # permanentemente invisible: el proximo `financiar` sigue viendo su
+        # propia ventana limpia y sigue informando el numero de antes.
+        #
+        # Con la ventana FIJA esto era inocuo (los ciclos eran bloques
+        # disjuntos: cargar un ciclo viejo cargaba el unico bloque que el
+        # chequeo miraba), asi que el agujero lo abrio el deslizamiento.
+        #
+        # Se valida aca y no exigiendo `semana == ops[-1]` porque lo que
+        # hay que defender es el INVARIANTE, no la fecha: cerrar la puerta
+        # de entrada lo delegaria en que ningun otro camino escriba un
+        # pre-seed con fecha propia.
+        desde = ops.index(semana)
+        for cierre in ops[desde:desde + VENTANA_PRESEED_SEMANAS]:
+            semanas = ventana_preseed(ops, cierre)
+            ya = preseed_en_ventana(asientos, dueno, semanas)
+            if ya + mm <= techo_ciclo:
+                continue
             # y el alivio con nombre y numero, que la ventana fija no podia
             # dar: ahi el cupo volvia entero y en silencio, aca se sabe cual
-            # semana sale y cuanto se lleva con ella.
-            sale, libera = libera_preseed(asientos, dueno, ops, semana)
-            alivio = (f" Al abrir la proxima semana operativa sale {sale} de "
-                      f"la ventana y con ella se liberan {libera} mm."
-                      if libera else "")
+            # semana sale y cuanto se lleva con ella. Solo para la ventana
+            # de HOY: "al abrir la proxima" no dice nada util sobre una
+            # corrida que ya quedo atras.
+            alivio = ""
+            if cierre == semana:
+                sale, libera = libera_preseed(asientos, dueno, ops, semana)
+                alivio = (f" Al abrir la proxima semana operativa sale "
+                          f"{sale} de la ventana y con ella se liberan "
+                          f"{libera} mm." if libera else "")
+            corrida = (f"las ultimas {VENTANA_PRESEED_SEMANAS} semanas "
+                       f"operativas ({semanas[0]}..{semanas[-1]})"
+                       if cierre == semana
+                       else (f"la corrida de {len(semanas)} semanas "
+                             f"operativas ({semanas[0]}..{semanas[-1]}), "
+                             f"que {semana} tambien integra"))
             raise ErrorBus(
                 f"techo de pre-seed superado: {dueno} ya recibio {ya} mm de "
-                f"pre-seed en las ultimas {VENTANA_PRESEED_SEMANAS} semanas "
-                f"operativas ({semanas[0]}..{semanas[-1]}) y {mm} mm mas "
+                f"pre-seed en {corrida} y {mm} mm mas "
                 f"pasan de {techo_ciclo} mm.{alivio} Para darle mas ahora, "
                 "subi la perilla `techo_preseed_ciclo_mm`")
         destino = dueno

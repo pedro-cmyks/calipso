@@ -702,3 +702,61 @@ def test_la_ventana_se_cuenta_en_semanas_operativas_y_la_demora_aprieta():
     # y no promete una liberacion que no llega: con menos de cuatro
     # operativas, abrir una mas alarga la ventana sin tirar nada
     assert bus_mod.libera_preseed([], "dep:a", ops[:3], "2026-W32") == (None, 0)
+
+
+def test_financiar_una_semana_atras_no_rompe_una_ventana_ya_validada(entorno):
+    """EL AGUJERO QUE ABRIO LA VENTANA DESLIZANTE. `financiar` acepta
+    CUALQUIER semana operativa, no solo la ultima abierta, y solo miraba
+    la ventana que CIERRA en esa semana.
+
+    Con la ventana fija eso era inocuo: los ciclos eran bloques disjuntos,
+    asi que meter plata en una semana vieja cargaba el unico bloque que el
+    chequeo miraba. Con la deslizante las ventanas se SOLAPAN: un asiento
+    en una semana ya pasada entra en hasta `VENTANA_PRESEED_SEMANAS`
+    ventanas, y todas menos una ya fueron validadas y nadie las vuelve a
+    mirar nunca. El invariante que la ventana deslizante existe para
+    defender -- en ninguna corrida de cuatro semanas operativas entra mas
+    que el techo -- se rompia de forma permanentemente invisible: el
+    siguiente `financiar` sigue viendo su propia ventana limpia y sigue
+    informando el numero de antes.
+
+    Por eso el chequeo recorre TODAS las ventanas que contienen `semana`,
+    no solo la que termina en ella. La alternativa -- copiar el guardia de
+    `operacion.cerrar_semana_operativa` y exigir la ultima abierta -- cierra
+    la puerta pero no defiende el invariante: lo delega en que nadie mas
+    escriba un pre-seed con fecha propia."""
+    k, m, b = entorno
+    for w in ("2026-W30", "2026-W31", "2026-W32", "2026-W33", "2026-W34"):
+        _semana_op(k, w)
+    _capital(k, 1_000_000, t.TESORO)
+    m.registro.ajustar("a", techo_preseed_mm=50_000,
+                       techo_preseed_ciclo_mm=50_000)
+    b.alta(TS, "2026-W34", "p1", "dep:a", "ronda 1", 50_000, 50_000,
+           {"gasto_max_mm": 50_000}, tipo="preseed")
+    bus_mod.financiar(m, b, TS, "2026-W34", "p1", t.TESORO, 50_000)
+
+    # W31 es operativa y su PROPIA ventana (W30..W31) esta en cero, pero
+    # W31 tambien integra la de W34 -- W31..W34 -- que ya tiene el techo
+    # entero adentro y que nadie vuelve a validar
+    b.alta(TS, "2026-W31", "p2", "dep:a", "ronda 2", 50_000, 50_000,
+           {"gasto_max_mm": 50_000}, tipo="preseed")
+    with pytest.raises(bus_mod.ErrorBus) as exc:
+        bus_mod.financiar(m, b, TS, "2026-W31", "p2", t.TESORO, 50_000)
+    assert "techo de pre-seed superado" in str(exc.value)
+    # y dice CUAL corrida, que no es la que termina en la semana pedida
+    assert "2026-W31..2026-W34" in str(exc.value), str(exc.value)
+    assert k.saldo("dep:a") == 50_000, "entro 2x el techo por la puerta de atras"
+
+    # el invariante, comprobado sobre TODA corrida de la ventana y no solo
+    # sobre la que el ultimo `financiar` miro
+    ops = cap.semanas_operativas(k.libro.asientos())
+    for w in ops:
+        adentro = bus_mod.preseed_en_ventana(
+            k.libro.asientos(), "dep:a", bus_mod.ventana_preseed(ops, w))
+        assert adentro <= 50_000, f"ventana de {w}: {adentro}"
+
+    # y no es un bloqueo de mas: lo que entra sin romper ninguna corrida
+    # sigue entrando. W30 solo integra W30..W31, W30..W32 y W30..W33, y
+    # ninguna toca el asiento de W34
+    bus_mod.financiar(m, b, TS, "2026-W30", "p2", t.TESORO, 50_000)
+    assert k.saldo("dep:a") == 100_000
