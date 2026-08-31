@@ -882,3 +882,77 @@ def test_el_freno_del_ciclo_dice_cuanto_cupo_devuelve_la_proxima_semana(tmp_path
     assert "sale 2026-W30 de la ventana y se liberan 20000 mm" in out["freno"], \
         out["freno"]
     assert contratos == []
+
+
+def test_con_una_miga_pendiente_el_freno_no_borra_el_alivio_de_la_ventana(
+        tmp_path):
+    """EL CONSEJO FALSO. `_puede` arma el consejo bueno -- cuanto cupo
+    vuelve y cuando -- y despues lo pisaba entero con "esperar no lo
+    suelta" en cuanto habia UN mm pendiente, sin mirar QUE parte llena el
+    techo.
+
+    Cuando lo que bloquea es lo FINANCIADO (que si caduca con la ventana) y
+    lo pendiente es una miga, esperar SI destraba: basta con que lo pedido
+    en pie sea menor que el techo para que la frase sea falsa. Y el primer
+    remedio que ofrecia era "que Pedro suba la perilla", o sea que empujaba
+    a agrandar el techo cuando alcanzaba con dejar rodar la ventana. Encima
+    borraba el `sale ... se liberan ...` que `situacion` ya tenia
+    calculado, que es justamente el dato que la ventana deslizante permite
+    dar y la fija no.
+
+    El caso en que la frase SI es cierta -- lo pedido solo ya llena el
+    techo -- lo fija `test_el_freno_del_ciclo_no_le_manda_a_esperar_lo_que_no_llega`
+    y no se toca: ahi esperar no alcanza nunca."""
+    from calipso.economia import bus as bus_mod
+    from calipso.economia import mercado as mkt
+
+    ctx, contratos, _ = armar(tmp_path, "pedir 30000\notra ronda", saldo=0,
+                              presupuesto_semanal_mm=0,
+                              techo_preseed_mm=150_000,
+                              techo_preseed_ciclo_mm=20_000)
+    ctx.kernel.acunar(TS, W, t.TESORO, 500_000, t.SubtipoAcunacion.CAPITAL,
+                      {"tipo": "firma_pedro"})
+    for w in ("2026-W30", "2026-W31", "2026-W32", "2026-W33"):
+        pt.expirar_pools(ctx.kernel, TS, w)
+        pt.emitir_semana(ctx.kernel, TS, w, 4_000, 1_000)
+    # 15.000 FINANCIADOS en W30, la mas vieja de la ventana de W33
+    ctx.bus.alta(TS, "2026-W30", "p0", "dep:atlas", "primera ronda", 15_000,
+                 15_000, {"gasto_max_mm": 15_000}, tipo="preseed")
+    m = mkt.Mercado(ctx.kernel, ctx.registro, ctx.suscripciones)
+    bus_mod.financiar(m, ctx.bus, TS, "2026-W30", "p0", t.TESORO, 15_000)
+    # y 5.000 pedidos y sin financiar: la miga
+    ctx.bus.alta(TS, "2026-W33", "p1", "dep:atlas", "segunda ronda", 5_000,
+                 5_000, {"gasto_max_mm": 5_000}, tipo="preseed")
+
+    s = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
+                      ctx.suscripciones, "2026-W33", "dep:atlas")
+    assert s["preseed_ventana_mm"] == 15_000
+    assert s["preseed_pendiente_mm"] == 5_000
+    assert s["preseed_libera_al_salir"] == "2026-W30"
+    assert s["preseed_libera_mm"] == 15_000
+
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", "2026-W33")
+    assert out["actuo"] is False
+    assert "lo financiado (15000)" in out["freno"], out["freno"]
+    assert "pedido en pie (5000)" in out["freno"], out["freno"]
+    # el alivio que el freno tenia calculado y tiraba a la basura
+    assert "la ventana rueda" in out["freno"], out["freno"]
+    assert "sale 2026-W30 de la ventana y se liberan 15000 mm" in out["freno"], \
+        out["freno"]
+    # y sin mentir para el otro lado: la miga sigue siendo suya
+    assert "descarte" in out["freno"], out["freno"]
+    assert "esperar no lo suelta" not in out["freno"], out["freno"]
+    assert contratos == []
+
+    # y era verdad: una semana operativa despues, sin que Pedro financie ni
+    # descarte nada, W30 sale de la ventana y el jefe actua sin freno
+    pt.expirar_pools(ctx.kernel, TS, "2026-W34")
+    pt.emitir_semana(ctx.kernel, TS, "2026-W34", 4_000, 1_000)
+    s2 = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
+                       ctx.suscripciones, "2026-W34", "dep:atlas")
+    assert s2["preseed_ventana_mm"] == 0
+    assert s2["preseed_pendiente_mm"] == 5_000
+    out2 = j.tic(ctx, "dep:atlas", "2026-W34")
+    assert out2["freno"] == "", out2["freno"]
+    assert out2["actuo"] is True

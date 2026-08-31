@@ -165,16 +165,38 @@ def _puede(estado, s: dict, accion: str, ref: str | None) -> tuple[bool, str]:
                 cuanto = (f" (al abrir la proxima semana operativa sale "
                           f"{sale} de la ventana y se liberan {libera} mm)"
                           if libera else "")
-                salida = ("que Pedro suba la perilla, o que espere: la "
-                          "ventana rueda al abrirse cada semana operativa y "
-                          "el cupo vuelve a medida que las semanas salen "
-                          f"por atras{cuanto}")
-                if pendiente:
+                rueda = ("la ventana rueda al abrirse cada semana operativa "
+                         "y el cupo vuelve a medida que las semanas salen "
+                         f"por atras{cuanto}")
+                # Y el corte es CUANTO pendiente hay, no si hay. "Esperar no
+                # lo suelta" solo es cierto cuando lo pedido en pie llena el
+                # techo el solo: eso no caduca, asi que ninguna rodada
+                # alcanza. Con `if pendiente:` a secas, UN mm pendiente
+                # bastaba para pisar el consejo bueno -- y cuando lo que
+                # bloquea es lo FINANCIADO (que si caduca) y lo pendiente es
+                # una miga, la frase era simplemente falsa: una semana
+                # operativa despues el jefe actuaba sin freno, sin que Pedro
+                # financiara ni descartara nada. Encima borraba el
+                # `sale ... se liberan ...` que `situacion` ya tenia
+                # calculado, que es el dato que este techo gano al pasar a
+                # ventana deslizante, y el primer remedio que ofrecia era
+                # subir la perilla: empujaba a agrandar el techo cuando
+                # alcanzaba con dejar rodar la ventana.
+                if pendiente >= techo_ciclo:
                     salida = ("que Pedro suba la perilla, o financie o "
                               "descarte lo que sigue en la mesa: esperar no "
                               "lo suelta, porque un pedido en pie sigue "
                               "reservando cupo de la ventana en la que se "
                               "financie")
+                elif pendiente:
+                    salida = ("que Pedro suba la perilla, que financie o "
+                              "descarte lo que sigue en la mesa, o que "
+                              f"espere: {rueda}; lo unico que esperar no "
+                              "destraba es el pedido en pie, que sigue "
+                              "reservando cupo de la ventana en la que se "
+                              "financie")
+                else:
+                    salida = f"que Pedro suba la perilla, o que espere: {rueda}"
                 return False, (f"el techo de la ventana es {techo_ciclo} mm "
                                f"y entre lo financiado ({financiado}) y lo "
                                f"pedido en pie ({pendiente}) ya van "
