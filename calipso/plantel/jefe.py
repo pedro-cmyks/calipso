@@ -50,6 +50,49 @@ def freno_preseed(s: dict) -> str | None:
     del jefe) y usa `.get` para todo, asi que la fila de departamento de
     `GET /api/economia/config` -- que trae las mismas claves-- entra tal
     cual. No mira el bus ni el libro: los numeros ya vienen plegados.
+
+    TODOS los montos salen con su unidad pegada ("50000 mm") y no pelados.
+    El jefe lee milimonedas -- su prompt entero esta en milimonedas-- y
+    Pedro lee monedas, y este texto viaja hecho a las dos puntas: sin la
+    unidad, la pantalla de Plata no puede traducirlo y quedaba el unico
+    renglon en mm de una tarjeta donde todo lo demas habla en monedas, a
+    tres lineas del campo "techo por pedido (en monedas)" con un 50 adentro
+    y el freno abajo diciendo 50000. Con la unidad pegada,
+    `permisos.motivoEnMonedas` -- que ya existe y es generico-- lo pasa a
+    monedas sin reescribir la frase.
+    """
+    return _freno_preseed(s)[0]
+
+
+def preseed_sin_autorizar(s: dict) -> bool:
+    """Si lo unico que frena la ronda es que Pedro todavia no puso las
+    perillas -- el estado por defecto de todo departamento de fabrica
+    recien dado de alta.
+
+    Sale de la MISMA escalera que el texto y no de releer las perillas por
+    afuera, que seria la segunda fuente de verdad de siempre: con
+    `techo_preseed_mm` puesto y `techo_preseed_ciclo_mm` en cero el freno
+    que gana puede ser el de la billetera, que si es un freno de verdad.
+
+    Para que existe: la pantalla pinta el freno en --acento, con barra al
+    costado, porque dice que algo esta TRABADO. `techo_preseed_mm` nace en
+    cero, asi que sin esto cada departamento nuevo estrenaba una barra roja
+    permanente sobre su estado por defecto -- el mismo modo de falla que
+    este renglon vino a evitar, dado vuelta: un aviso que esta siempre se
+    vuelve invisible en dos dias, y cuando aparezca el que si importa va a
+    estar al lado de uno que Pedro ya aprendio a ignorar. Y no hay nada que
+    destrabar: las dos perillas estan tres renglones mas arriba, editables
+    y con su cero a la vista.
+    """
+    freno, es_default = _freno_preseed(s)
+    return bool(freno) and es_default
+
+
+def _freno_preseed(s: dict) -> tuple[str | None, bool]:
+    """(el motivo o None, si ese motivo es "Pedro todavia no autorizo").
+
+    Una sola escalera para las dos preguntas: el orden de los frenos ES la
+    respuesta, y contestarlas por separado seria escribirlo dos veces.
     """
     if int(s.get("techo_preseed_mm") or 0) <= 0:
         # El monto del pre-seed sale de la perilla `techo_preseed_mm`, no
@@ -61,7 +104,7 @@ def freno_preseed(s: dict) -> str | None:
         # reporta como que actuo. El contratista lo vuelve a chequear antes
         # de escribir: es la segunda linea, no la primera.
         return ("sin techo de pre-seed: Pedro todavia no autorizo cuanto "
-                "puede pedir")
+                "puede pedir"), True
     # El techo ACUMULADO. `techo_preseed_mm` recorta cada pedido, pero el
     # unico freno de caudal -TECHO_PROPUESTAS- no ve los pre-seed ya
     # financiados: `situacion` los saca de las dos listas, asi que cada
@@ -80,8 +123,8 @@ def freno_preseed(s: dict) -> str | None:
           + int(s.get("preseed_pendiente_mm") or 0))
     if ya >= techo:
         return (f"ya tiene {ya} mm entre billetera y pedidos en pie, y el "
-                f"techo de la ronda es {techo}: el pre-seed es para "
-                "arrancar sin plata")
+                f"techo de la ronda es {techo} mm: el pre-seed es para "
+                "arrancar sin plata"), False
     # EL SEGUNDO TECHO, el ACUMULADO, y el ultimo de los frenos porque es
     # el mas caro de chequear: los de arriba miran un numero de la perilla
     # o una lista corta; este pliega el libro entero de las semanas de la
@@ -107,7 +150,7 @@ def freno_preseed(s: dict) -> str | None:
     techo_ciclo = int(s.get("techo_preseed_ciclo_mm") or 0)
     if techo_ciclo <= 0:
         return ("sin techo de pre-seed acumulado: Pedro todavia no autorizo "
-                "cuanto capital puede entrar por ventana")
+                "cuanto capital puede entrar por ventana"), True
     financiado = int(s.get("preseed_ventana_mm") or 0)
     pendiente = int(s.get("preseed_pendiente_mm") or 0)
     ya_ciclo = financiado + pendiente
@@ -138,9 +181,21 @@ def freno_preseed(s: dict) -> str | None:
         rueda = ("la ventana rueda al abrirse cada semana operativa "
                  "y el cupo vuelve a medida que las semanas salen "
                  f"por atras{cuanto}")
+        # Y "salir de la ventana" NO es la rodada, aunque las dos frases
+        # convivan en el mismo renglon. La rodada es abrir una semana
+        # operativa, y eso mueve la ventana del TECHO -- por eso libera lo
+        # financiado. El vencimiento de un pedido en pie se mide con
+        # `bus.ventana_pagable`, que cuenta la semana de hoy como si ya
+        # estuviera abierta: la respuesta no cambia cuando Pedro abre. Sin
+        # esa distincion escrita, este renglon se contradecia adentro de la
+        # misma oracion (decia "la rodada no lo suelta" y a continuacion
+        # ofrecia "hasta que su semana salga de la ventana", que Pedro lee
+        # como la rodada) y le escondia el unico remedio que le quedaba.
         vence = ("un pedido en pie reserva cupo hasta que Pedro lo "
-                 "financie o lo descarte, o hasta que su semana salga de "
-                 "la ventana y venza")
+                 "financie o lo descarte, o hasta que venza solo, cuando "
+                 "su semana queda fuera de la ventana con la que se lo "
+                 "podria pagar -- eso no lo hace la rodada, que libera lo "
+                 "financiado")
         # Y el corte es CUANTO pendiente hay, no si hay. "La rodada no lo
         # suelta" solo hay que decirlo cuando lo pedido en pie llena el
         # techo el solo: ahi ninguna rodada alcanza. Con `if pendiente:` a
@@ -155,7 +210,9 @@ def freno_preseed(s: dict) -> str | None:
         # agrandar el techo cuando alcanzaba con dejar rodar la ventana.
         if pendiente >= techo_ciclo:
             salida = ("que Pedro suba la perilla, o financie o descarte lo "
-                      f"que sigue en la mesa: la rodada no lo suelta, {vence}")
+                      "que sigue en la mesa: la rodada no lo suelta, porque "
+                      "lo que llena el techo no es lo financiado. "
+                      f"{vence}")
         elif pendiente:
             salida = ("que Pedro suba la perilla, que financie o "
                       "descarte lo que sigue en la mesa, o que "
@@ -164,10 +221,10 @@ def freno_preseed(s: dict) -> str | None:
         else:
             salida = f"que Pedro suba la perilla, o que espere: {rueda}"
         return (f"el techo de la ventana es {techo_ciclo} mm "
-                f"y entre lo financiado ({financiado}) y lo "
-                f"pedido en pie ({pendiente}) ya van "
-                f"{ya_ciclo}: {salida}")
-    return None
+                f"y entre lo financiado ({financiado} mm) y lo "
+                f"pedido en pie ({pendiente} mm) ya van "
+                f"{ya_ciclo} mm: {salida}"), False
+    return None, False
 
 
 def _puede(estado, s: dict, accion: str, ref: str | None) -> tuple[bool, str]:

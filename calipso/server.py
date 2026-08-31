@@ -4553,6 +4553,22 @@ def api_eco_config() -> dict:
         fila["freno_pedir"] = (
             _plantel_jefe.freno_preseed(fila)
             if _plantel_jefe and dep.zona == _eco_deps.ZONA_FABRICA else None)
+        # y de que CLASE es ese freno, que decide como se pinta. Un
+        # departamento recien dado de alta tiene las dos perillas de
+        # pre-seed en cero -- `techo_preseed_mm` nace en cero-- y el freno
+        # contesta "Pedro todavia no autorizo": eso no es algo trabado, es
+        # el estado por defecto, y pintarlo en --acento con la barra al
+        # costado le estrenaba a cada departamento nuevo un aviso rojo
+        # permanente. Un renglon rojo que esta siempre se vuelve invisible
+        # igual de rapido que uno verde, y despues el que si importa
+        # aparece al lado de uno que Pedro ya aprendio a ignorar. Sale de
+        # la misma escalera que el texto (`jefe.preseed_sin_autorizar`) y
+        # no de releer las perillas por afuera: con el techo por pedido
+        # puesto y el de la ventana en cero, el freno que gana puede ser el
+        # de la billetera, que si es de verdad.
+        fila["freno_pedir_sin_autorizar"] = bool(
+            _plantel_jefe and dep.zona == _eco_deps.ZONA_FABRICA
+            and _plantel_jefe.preseed_sin_autorizar(fila))
     resumen = calipso_consumo.cargar_resumen() or {}
     filas = []
     for nombre, sus in sorted(suscripciones.items()):

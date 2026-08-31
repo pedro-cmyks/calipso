@@ -804,15 +804,15 @@ def test_el_freno_del_ciclo_no_le_manda_a_esperar_lo_que_no_llega(tmp_path):
         assert out["actuo"] is False
         assert "techo de la ventana" in out["freno"]
         # las dos mitades por separado, no un total que las confunde
-        assert "lo financiado (0)" in out["freno"], out["freno"]
-        assert "pedido en pie (60000)" in out["freno"], out["freno"]
+        assert "lo financiado (0 mm)" in out["freno"], out["freno"]
+        assert "pedido en pie (60000 mm)" in out["freno"], out["freno"]
         # y el consejo verdadero, no el que no desbloquea nunca
         assert "descarte" in out["freno"], out["freno"]
         assert "la rodada no lo suelta" in out["freno"], out["freno"]
         assert "la ventana rueda" not in out["freno"], out["freno"]
         # y la TERCERA salida, la que arregla la condena: el pedido vence
         # cuando su semana sale de la ventana, sin que Pedro toque nada
-        assert "salga de la ventana y venza" in out["freno"], out["freno"]
+        assert "queda fuera de la ventana con la que se lo podria pagar" in out["freno"], out["freno"]
     assert contratos == []
 
     # por que la reserva se sigue contando: ese pedido de W30 se financia
@@ -852,8 +852,8 @@ def test_sin_nada_en_la_mesa_el_freno_del_ciclo_si_manda_a_esperar(tmp_path):
     it.poner_modo(tmp_path, "vivo")
     out = j.tic(ctx, "dep:atlas", W)
     assert out["actuo"] is False
-    assert "lo financiado (20000)" in out["freno"], out["freno"]
-    assert "pedido en pie (0)" in out["freno"], out["freno"]
+    assert "lo financiado (20000 mm)" in out["freno"], out["freno"]
+    assert "pedido en pie (0 mm)" in out["freno"], out["freno"]
     assert "la ventana rueda" in out["freno"], out["freno"]
     assert contratos == []
 
@@ -953,8 +953,8 @@ def test_con_una_miga_pendiente_el_freno_no_borra_el_alivio_de_la_ventana(
     it.poner_modo(tmp_path, "vivo")
     out = j.tic(ctx, "dep:atlas", "2026-W38")
     assert out["actuo"] is False
-    assert "lo financiado (15000)" in out["freno"], out["freno"]
-    assert "pedido en pie (5000)" in out["freno"], out["freno"]
+    assert "lo financiado (15000 mm)" in out["freno"], out["freno"]
+    assert "pedido en pie (5000 mm)" in out["freno"], out["freno"]
     # el alivio que el freno tenia calculado y tiraba a la basura
     assert "la ventana rueda" in out["freno"], out["freno"]
     assert "sale 2026-W35 de la ventana y se liberan 15000 mm" in out["freno"], \
@@ -1021,3 +1021,79 @@ def test_un_pedido_viejo_deja_de_apretar_cuando_su_ventana_pasa(tmp_path):
     destrabado = j.tic(ctx, "dep:atlas", "2026-W39")
     assert destrabado["actuo"] is True
     assert contratos == [("pedir", "50000", "otra ronda")]
+
+
+def test_el_freno_no_dice_que_la_rodada_no_lo_suelta_cuando_la_rodada_lo_suelta(
+        tmp_path):
+    """LA MENTIRA EN EL FRENO, invertida. El freno decia "la rodada no lo
+    suelta" y a continuacion ofrecia, como tercera salida, "hasta que su
+    semana salga de la ventana y venza" -- y salir de la ventana era
+    exactamente lo que hacia la rodada. Las dos mitades de la misma oracion
+    se contradecian, y el efecto practico era peor que la contradiccion: de
+    los remedios que Pedro podia leer, los unicos que le ofrecian eran
+    subir la perilla o financiar/descartar, cuando abrir la semana lo
+    soltaba entero.
+
+    Ya no. El vencimiento se mide con `bus.ventana_pagable`, que cuenta la
+    semana de hoy como si ya estuviera abierta: cuando el pedido va a
+    vencer al rodar, ya vencio ANTES -- el freno no aparece ni una vez. Y
+    donde el freno si aparece, "la rodada no lo suelta" es cierto: abrir la
+    semana no cambia nada.
+
+    Es la misma clase de mentira que arreglaron c3e3ed6 y 9995676, que el
+    freno no puede volver a cometer."""
+    ctx, contratos, _ = armar(tmp_path, "pedir 30000\notra ronda", saldo=0,
+                              presupuesto_semanal_mm=0,
+                              techo_preseed_mm=60_000,
+                              techo_preseed_ciclo_mm=50_000)
+    # W35 la abre `armar`; tres mas y hoy pasa a ser W39, sin abrir
+    for w in ("2026-W36", "2026-W37", "2026-W38"):
+        pt.expirar_pools(ctx.kernel, TS, w)
+        pt.emitir_semana(ctx.kernel, TS, w, 4_000, 1_000)
+    ctx.bus.alta(TS, W, "p0", "dep:atlas", "primera ronda", 50_000, 50_000,
+                 {"gasto_max_mm": 50_000}, tipo="preseed")
+    it.poner_modo(tmp_path, "vivo")
+
+    s = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
+                      ctx.suscripciones, "2026-W39", "dep:atlas")
+    assert s["preseed_pendiente_mm"] == 0, "reservaba cupo un pedido que la " \
+        "proxima rodada suelta entero"
+    assert j.freno_preseed(s) is None
+
+    # y la rodada, que es lo que el freno le pedia a Pedro que no hiciera,
+    # no cambia ninguna de las dos respuestas
+    pt.expirar_pools(ctx.kernel, TS, "2026-W39")
+    pt.emitir_semana(ctx.kernel, TS, "2026-W39", 4_000, 1_000)
+    s2 = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
+                       ctx.suscripciones, "2026-W39", "dep:atlas")
+    assert s2["preseed_pendiente_mm"] == 0
+    assert j.freno_preseed(s2) is None
+
+
+def test_donde_el_freno_dice_que_la_rodada_no_lo_suelta_es_verdad(tmp_path):
+    """El otro lado: cuando el freno SI sale, lo que dice tiene que ser
+    cierto. El pedido en pie llena el techo el solo y abrir la semana no lo
+    afloja -- ni un milimon, ni antes ni despues."""
+    ctx, contratos, _ = armar(tmp_path, "pedir 30000\notra ronda", saldo=0,
+                              presupuesto_semanal_mm=0,
+                              techo_preseed_mm=60_000,
+                              techo_preseed_ciclo_mm=50_000)
+    ctx.bus.alta(TS, W, "p0", "dep:atlas", "primera ronda", 50_000, 50_000,
+                 {"gasto_max_mm": 50_000}, tipo="preseed")
+    it.poner_modo(tmp_path, "vivo")
+
+    antes = j.freno_preseed(sit.situacion(
+        ctx.kernel, ctx.registro, ctx.bus, ctx.cola, ctx.suscripciones,
+        "2026-W36", "dep:atlas"))
+    assert "la rodada no lo suelta" in antes, antes
+    # y la frase ya no se contradice a si misma: lo que suelta al pedido no
+    # es la rodada, es que su semana quede fuera de la ventana con la que se
+    # lo podria pagar
+    assert "eso no lo hace la rodada" in antes, antes
+
+    pt.expirar_pools(ctx.kernel, TS, "2026-W36")
+    pt.emitir_semana(ctx.kernel, TS, "2026-W36", 4_000, 1_000)
+    despues = j.freno_preseed(sit.situacion(
+        ctx.kernel, ctx.registro, ctx.bus, ctx.cola, ctx.suscripciones,
+        "2026-W36", "dep:atlas"))
+    assert "la rodada no lo suelta" in despues, despues

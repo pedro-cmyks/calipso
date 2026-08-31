@@ -693,7 +693,7 @@ def test_un_pedido_vencido_deja_de_apretar_y_la_config_lo_muestra(
     assert atlas["propuestas_propias"] == 1
     assert cfg["techo_propuestas"] == jefe_mod.TECHO_PROPUESTAS
     # el freno, con todas las letras y no deducido de cuatro numeros
-    assert "pedido en pie (60000)" in atlas["freno_pedir"]
+    assert "pedido en pie (60000 mm)" in atlas["freno_pedir"]
     # y es EL MISMO texto que arma el jefe, no una reconstruccion
     assert atlas["freno_pedir"] == jefe_mod.freno_preseed(atlas)
 
@@ -730,3 +730,88 @@ def test_un_departamento_personal_no_trae_un_freno_de_pre_seed_falso(cliente):
     atlas = [x for x in filas if x["nombre"] == "atlas"][0]
     assert atlas["freno_pedir"] == "sin techo de pre-seed: Pedro todavia no " \
                                    "autorizo cuanto puede pedir"
+
+
+def test_el_default_de_las_perillas_no_viaja_como_algo_trabado(cliente):
+    """`techo_preseed_mm` nace en cero, asi que el freno de todo
+    departamento de fabrica recien dado de alta es "Pedro todavia no
+    autorizo". Eso no esta trabado: es el estado inicial, y las dos
+    perillas estan en la misma tarjeta con su cero a la vista y editables.
+
+    La pantalla pinta el freno en --acento con barra al costado porque dice
+    que algo esta TRABADO, asi que sin distinguirlos cada departamento
+    nuevo estrenaba un aviso rojo permanente -- el mismo modo de falla que
+    ese renglon vino a evitar, dado vuelta: un aviso que esta siempre se
+    vuelve invisible en dos dias, y despues el que si importa aparece al
+    lado de uno que Pedro ya aprendio a ignorar.
+
+    El texto NO cambia (Pedro tiene que poder leer por que ese
+    departamento esta callado) y sale de la misma escalera que la clase:
+    releer las perillas por afuera seria la segunda fuente de verdad de
+    siempre."""
+    from calipso.plantel import jefe as jefe_mod
+
+    filas = cliente.get("/api/economia/config").json()["departamentos"]
+    atlas = [x for x in filas if x["nombre"] == "atlas"][0]
+    assert atlas["freno_pedir"] == ("sin techo de pre-seed: Pedro todavia no "
+                                    "autorizo cuanto puede pedir")
+    assert atlas["freno_pedir_sin_autorizar"] is True
+
+    # con el techo por pedido puesto y el de la ventana todavia en cero
+    # sigue siendo el default: las dos perillas autorizan
+    cliente.post("/api/economia/departamentos/atlas/perillas",
+                 json={"techo_preseed_mm": 150_000})
+    atlas2 = [x for x in cliente.get("/api/economia/config").json()
+              ["departamentos"] if x["nombre"] == "atlas"][0]
+    assert "sin techo de pre-seed acumulado" in atlas2["freno_pedir"]
+    assert atlas2["freno_pedir_sin_autorizar"] is True
+
+    # pero un freno de VERDAD no se disfraza de default, aunque la perilla
+    # de la ventana siga en cero: con la billetera ya llena el que gana es
+    # el de "el pre-seed es para arrancar sin plata", y ese pide un gesto
+    fila = dict(atlas2, disponible_mm=200_000)
+    assert "el pre-seed es para arrancar sin plata" in \
+        jefe_mod.freno_preseed(fila)
+    assert jefe_mod.preseed_sin_autorizar(fila) is False
+
+    # y un departamento que puede pedir no trae ni freno ni marca
+    cliente.post("/api/economia/departamentos/atlas/perillas",
+                 json={"techo_preseed_mm": 150_000,
+                       "techo_preseed_ciclo_mm": 600_000})
+    atlas3 = [x for x in cliente.get("/api/economia/config").json()
+              ["departamentos"] if x["nombre"] == "atlas"][0]
+    assert atlas3["freno_pedir"] is None
+    assert atlas3["freno_pedir_sin_autorizar"] is False
+
+
+def test_el_freno_trae_la_unidad_pegada_a_cada_monto(cliente):
+    """El texto viaja hecho desde el servidor a las DOS puntas: el jefe lee
+    milimonedas (su prompt entero esta en milimonedas) y Pedro lee monedas.
+    Sin la unidad pegada a cada numero, la pantalla no lo puede traducir y
+    quedaba el unico renglon en mm de una tarjeta donde todo lo demas pasa
+    por `monedas()`: el campo "techo por pedido (en monedas)" con un 50
+    adentro y, tres renglones abajo, "el techo de la ronda es 50000".
+
+    `permisos.motivoEnMonedas` sustituye "N mm" por monedas y es generico,
+    asi que lo unico que hace falta de este lado es no soltar ningun monto
+    pelado."""
+    import re
+    from calipso.plantel import jefe as jefe_mod
+
+    base = {"techo_preseed_mm": 50_000, "techo_preseed_ciclo_mm": 100_000}
+    frenos = [
+        jefe_mod.freno_preseed({**base, "disponible_mm": 10_000,
+                                "preseed_pendiente_mm": 45_000}),
+        jefe_mod.freno_preseed({**base, "preseed_ventana_mm": 100_000}),
+        jefe_mod.freno_preseed({**base, "preseed_ventana_mm": 40_000,
+                                "preseed_pendiente_mm": 60_000,
+                                "preseed_libera_al_salir": "2026-W35",
+                                "preseed_libera_mm": 40_000}),
+        jefe_mod.freno_preseed({**base, "preseed_pendiente_mm": 100_000}),
+    ]
+    for freno in frenos:
+        assert freno
+        # ningun numero suelto: todos con "mm" pegado detras. Lo unico que
+        # puede quedar pelado es una etiqueta de semana (2026-W35).
+        pelados = re.findall(r"(?<![\w-])\d+(?! mm)(?![\w-])", freno)
+        assert not pelados, f"{pelados} sin unidad en: {freno}"
