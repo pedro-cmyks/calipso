@@ -62,6 +62,31 @@ export function aMilimonedasConCero(texto) {
   return Math.round(parseFloat(limpio) * 1000);
 }
 
+/** La INVERSA de `aMilimonedasConCero`, para pintar un valor que despues
+ *  se vuelve a leer del mismo input.
+ *
+ *  `monedas()` es para MOSTRAR: agrupa de a miles con la locale "es", asi
+ *  que 20.000.000 mm sale "20.000". Pero el parser de arriba trata el
+ *  punto como separador DECIMAL (acepta coma y punto por igual, que es lo
+ *  que un campo `inputmode="decimal"` necesita), asi que ese "20.000"
+ *  vuelve a entrar como 20.000 mm: el ida y vuelta dividia por mil todo
+ *  techo de 10.000 monedas para arriba, y con siete digitos ("1.234.567")
+ *  daba null y abortaba el guardado entero. Como los dos techos viajan en
+ *  el MISMO POST, tocar uno reescribia el otro sin que Pedro lo tocara.
+ *
+ *  Aca no se agrupa nada y el decimal es la coma: lo que sale es
+ *  exactamente lo que el parser vuelve a leer. Los milimonedas que no
+ *  llegan a moneda entera van despues de la coma, sin ceros de relleno
+ *  (1.500 mm -> "1,5"), porque el techo es un numero que Pedro edita a
+ *  mano y no una etiqueta. */
+export function monedasEditable(mm) {
+  const n = Math.round(Number(mm) || 0);
+  const signo = n < 0 ? "-" : "";
+  const abs = Math.abs(n);
+  const dec = String(abs % 1000).padStart(3, "0").replace(/0+$/, "");
+  return signo + String(Math.trunc(abs / 1000)) + (dec ? "," + dec : "");
+}
+
 /** Un entero positivo de un campo de texto, o null. Las unidades de
  *  capacidad no son monedas: no se dividen por mil ni admiten decimales. */
 export function aEntero(texto) {
@@ -147,21 +172,34 @@ function filaTechoPreseed(dep) {
   const n = escapar(dep.nombre);
   const entrado = dep.preseed_ciclo_mm || 0;
   const techoCiclo = dep.techo_preseed_ciclo_mm || 0;
+  const pendiente = dep.preseed_pendiente_mm || 0;
   // el acumulado del ciclo, al lado de su techo. Sin esto el numero de
   // abajo se pone a ciegas: la mesa muestra cada pedido suelto y ninguna
   // pantalla decia cuanto capital ya entro este ciclo.
   const yaEntro = `<div class="nota">ya entro este ciclo: ` +
     `${escapar(monedas(entrado))}` +
     (techoCiclo ? ` de ${escapar(monedas(techoCiclo))}` : "") + `</div>`;
+  // y lo PEDIDO que sigue en la mesa, que no es lo mismo y hasta hoy no
+  // se veia en ningun lado. El numero de arriba es el de Pedro (lo
+  // financiado, el unico que mira `financiar`); este es la reserva que el
+  // jefe se descuenta para no publicar lo que no se le va a poder pagar.
+  // Un pedido olvidado en la mesa deja al jefe frenado para siempre con
+  // el acumulado en cero, y descartarlo es lo unico que lo suelta: sin
+  // este renglon, nada se lo sugiere.
+  const enLaMesa = pendiente
+    ? `<div class="nota">y ${escapar(monedas(pendiente))} pedidas y sin ` +
+      `financiar en la mesa: al jefe le reservan cupo del ciclo hasta que ` +
+      `las financies o las descartes.</div>`
+    : "";
   return `<form class="ajuste" data-perillas="techo-preseed" ` +
     `data-departamento="${n}">` +
     `<label>${n}: techo por pedido (en monedas)` +
     `<input name="monto" inputmode="decimal" ` +
-    `value="${escapar(monedas(dep.techo_preseed_mm || 0))}"></label>` +
+    `value="${escapar(monedasEditable(dep.techo_preseed_mm || 0))}"></label>` +
     `<label>${n}: techo del ciclo (en monedas)` +
     `<input name="ciclo" inputmode="decimal" ` +
-    `value="${escapar(monedas(techoCiclo))}"></label>` +
-    yaEntro +
+    `value="${escapar(monedasEditable(techoCiclo))}"></label>` +
+    yaEntro + enLaMesa +
     `<button type="submit">guardar</button></form>`;
 }
 
@@ -180,11 +218,20 @@ function bloquePreseed(departamentos) {
     // ciclo ata tambien a la mesa: pasado ese total, "financiar" te
     // rechaza el pedido hasta que subas este numero. Los dos en cero no
     // piden, y ninguno tiene un valor por defecto que autorice algo.
+    //
+    // Y la nota dice la regla de PEDRO, que es la del numero que esta dos
+    // renglones mas abajo. Antes decia que el techo del ciclo cuenta "lo
+    // que ya financiaste mas lo que sigue en la mesa" -- esa es la regla
+    // del JEFE (`jefe._puede`, que reserva lo pedido en pie), no la del
+    // freno que Pedro choca: `bus.financiar` cuenta SOLO lo financiado, y
+    // era lo mismo que informaba el "ya entro este ciclo" pegado abajo.
+    // Tres textos sobre el mismo techo, dos de ellos contando distinto.
     `<div class="nota">El techo por pedido acota cuanto vale CADA ronda; ` +
-    `el del ciclo acota cuanto capital entra en las 4 semanas del ciclo, ` +
-    `contando lo que ya financiaste mas lo que sigue en la mesa. Pasado ` +
-    `el del ciclo, financiar te lo rechaza hasta que lo subas: es a ` +
-    `proposito, para que no se cruce en silencio.</div>` +
+    `el del ciclo acota cuanto capital ENTRA en las 4 semanas del ciclo: ` +
+    `lo que ya financiaste, que es el numero de abajo. Pasado ese total, ` +
+    `financiar te lo rechaza hasta que lo subas: es a proposito, para que ` +
+    `no se cruce en silencio. El jefe se frena antes que vos, porque el ` +
+    `ademas se descuenta lo que ya pidio y sigue en la mesa.</div>` +
     fabrica.map(filaTechoPreseed).join("");
 }
 

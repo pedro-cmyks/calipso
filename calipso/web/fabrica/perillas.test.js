@@ -1,7 +1,8 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
 import {textoDePerillas, textoDeAjustes, aMilimonedas, aMilimonedasConCero,
-        aEntero, cuerpoDeSuscripciones, SUSCRIPCIONES} from "./perillas.js";
+        aEntero, cuerpoDeSuscripciones, monedasEditable,
+        SUSCRIPCIONES} from "./perillas.js";
 
 test("las dos suscripciones estan siempre a la vista, este sembrada o no",
      () => {
@@ -299,4 +300,71 @@ test("dice que el techo del ciclo ata tambien a la mesa", () => {
 test("la zona personal no tiene ninguno de los dos techos", () => {
   const html = textoDeAjustes(CONFIG);
   assert.ok(!html.includes('data-departamento="finanzas"'));
+});
+
+
+// -- el ida y vuelta del formulario de los dos techos ----------------------
+
+test("el techo que se pinta es el mismo que se vuelve a leer: sin separador " +
+     "de miles", () => {
+  // `monedas()` agrupa con la locale "es" (20.000.000 mm -> "20.000") y
+  // `aMilimonedasConCero` lee el punto como DECIMAL, asi que el ida y
+  // vuelta dividia por mil todo techo de 10.000 monedas para arriba. Y
+  // como los DOS techos viajan en el mismo POST, guardar el techo por
+  // pedido reescribia el del ciclo aunque Pedro no lo hubiera tocado.
+  for (const mm of [0, 150_000, 9_999_000, 10_000_000, 20_000_000,
+                    60_000_000, 1_234_567_000, 1_500]) {
+    assert.equal(aMilimonedasConCero(monedasEditable(mm)), mm,
+                 `el ida y vuelta perdio ${mm}`);
+  }
+  assert.equal(monedasEditable(1_500), "1,5");
+  assert.equal(monedasEditable(20_000_000), "20000");
+});
+
+test("los dos inputs del techo se pintan con el valor exacto, no formateado",
+     () => {
+  // el fixture del repo usa 10.000 monedas de techo del ciclo: justo el
+  // primer valor que el formato agrupado rompia
+  const config = {...CONFIG, departamentos: [
+    {...CONFIG.departamentos[0], techo_preseed_mm: 1_234_567_000,
+     techo_preseed_ciclo_mm: 20_000_000},
+    CONFIG.departamentos[1]]};
+  const html = textoDeAjustes(config);
+  const form = html.match(
+    /<form class="ajuste" data-perillas="techo-preseed"[\s\S]*?<\/form>/)[0];
+  const monto = form.match(/name="monto"[^>]*value="([^"]*)"/)[1];
+  const ciclo = form.match(/name="ciclo"[^>]*value="([^"]*)"/)[1];
+  assert.equal(aMilimonedasConCero(monto), 1_234_567_000);
+  assert.equal(aMilimonedasConCero(ciclo), 20_000_000);
+});
+
+test("lo pedido y sin financiar se ve, y dice que descartarlo suelta el cupo",
+     () => {
+  // el acumulado del ciclo puede estar en CERO con el jefe frenado: lo que
+  // lo frena es el pedido en pie, y hasta hoy ese numero no se veia en
+  // ninguna pantalla -- ni nada sugeria que descartarlo es lo que lo suelta
+  const config = {...CONFIG, departamentos: [
+    {...CONFIG.departamentos[0], preseed_ciclo_mm: 0,
+     techo_preseed_ciclo_mm: 60_000_000, preseed_pendiente_mm: 60_000_000},
+    CONFIG.departamentos[1]]};
+  const html = textoDeAjustes(config);
+  assert.match(html, /ya entro este ciclo: 0 de 60\.000/);
+  assert.match(html, /60\.000 pedidas y sin financiar en la mesa/);
+  assert.match(html, /descartes/);
+});
+
+test("la nota del techo del ciclo cuenta lo mismo que el numero de abajo",
+     () => {
+  // tres textos sobre el mismo techo: la nota, el "ya entro este ciclo" y
+  // el freno de `bus.financiar`. Los tres cuentan SOLO lo financiado; la
+  // nota decia "mas lo que sigue en la mesa", que es la regla del JEFE
+  const html = textoDeAjustes(CONFIG);
+  assert.ok(!/contando lo que ya financiaste mas lo que sigue en la mesa/
+            .test(html), "la nota sigue prometiendo el numero del jefe");
+  assert.match(html, /lo que ya financiaste, que es el numero de abajo/);
+  assert.match(html, /El jefe se frena antes que vos/);
+});
+
+test("sin nada pedido en la mesa, el renglon de la reserva no se dibuja", () => {
+  assert.ok(!textoDeAjustes(CONFIG).includes("pedidas y sin financiar"));
 });
