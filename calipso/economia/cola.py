@@ -254,3 +254,70 @@ class Cola:
                       "mpt_cobrado": mpt_cobrado, "cobro_mm": cobro_efectivo})
         return {"mpt_cobrado": mpt_cobrado, "cobro_mm": cobro_efectivo,
                 "adelantado_mm": faltante}
+
+
+ORIGEN_INBOX = "cartas"
+
+# El titulo se deriva del tipo porque una carta NO trae `titulo`: la clave
+# no existe en su evento. Los cuatro tipos son los que emite el cierre.
+_TITULO_DE_CARTA = {
+    "mandato": "mandato de la direccion para {quien}",
+    "tesoro_insuficiente": "el tesoro no alcanza para {quien}",
+    "cierre_departamento": "{quien} lleva ocho semanas sin vender",
+    "renovacion": "renovar la suscripcion {quien}",
+}
+
+
+def descriptor() -> dict:
+    """Lo que la bandeja de cartas declara de si misma.
+
+    `reloj: None` y es a mano: `expirar_semana` filtra `not
+    e.get("es_carta")`, asi que una carta encolada queda encolada para
+    siempre hasta que alguien la atienda o la rechace.
+
+    Los dos verbos NO son simetricos y conviene saberlo: `rechazar`
+    funciona sobre una carta y la saca de la lista, pero solo
+    `atender_carta` alimenta `cartas_atendidas()`, que es lo que desarma el
+    breaker de renovacion en el cierre.
+    """
+    return {
+        "origen": ORIGEN_INBOX,
+        "verbos": [
+            {"nombre": "atender", "etiqueta": "Atender",
+             "alcances": ["una_vez"], "parametros": ["firma"]},
+            {"nombre": "rechazar", "etiqueta": "Rechazar",
+             "alcances": ["una_vez"], "parametros": []},
+        ],
+        "reloj": None,
+        "clase_por_defecto": "decision",
+        "vara": None,
+        "lugares": None,
+    }
+
+
+def como_items(datos_endpoint: dict) -> list[dict]:
+    """Traduce GET /api/economia/cola a items del inbox, solo las cartas.
+
+    `pendientes` mezcla DOS formas incompatibles en el mismo array: una
+    compuerta (con departamento, titulo, tipo, obligatoria, mpt_estimado) y
+    una carta (con `carta` adentro y `es_carta: True`). Sin filtrar, el
+    inbox ofreceria "atender" sobre una compuerta, y el endpoint contesta
+    500 con eso.
+    """
+    items = []
+    for e in datos_endpoint.get("pendientes") or []:
+        if not e.get("es_carta"):
+            continue
+        carta = e.get("carta") or {}
+        quien = (carta.get("departamento") or carta.get("suscripcion")
+                 or carta.get("quien") or "")
+        plantilla = _TITULO_DE_CARTA.get(carta.get("tipo"),
+                                         "carta {quien}")
+        items.append({
+            "id": e.get("id"), "origen": ORIGEN_INBOX, "clase": "decision",
+            "ts": e.get("ts") or "",
+            "titulo": plantilla.format(quien=quien).strip(),
+            "cuerpo": {"carta": carta,
+                       "verbos_validos": ["atender", "rechazar"]},
+            "estado": "encolada", "respuesta": None})
+    return items

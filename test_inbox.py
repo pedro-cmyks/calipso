@@ -190,3 +190,54 @@ def test_una_propuesta_ya_resuelta_no_ofrece_verbos():
                             "target": "pedro-perfil.md"}], "events": []}
     it = librarian.como_items(datos, proyecto="calipso")[0]
     assert it["cuerpo"]["verbos_validos"] == []
+
+
+from calipso.economia import cola as eco_cola
+
+
+def test_las_cartas_no_vencen_y_sus_dos_verbos_no_son_simetricos():
+    """Estan exceptuadas a mano de expirar_semana. Y `rechazar` funciona
+    sobre una carta pero NO alimenta cartas_atendidas(), asi que no desarma
+    el breaker: los dos verbos no hacen lo mismo al reves."""
+    d = eco_cola.descriptor()
+    assert d["origen"] == "cartas"
+    assert d["reloj"] is None
+    assert {v["nombre"] for v in d["verbos"]} == {"atender", "rechazar"}
+
+
+def test_una_compuerta_no_es_una_carta():
+    """`pendientes` mezcla las dos. Sin filtrar, el inbox ofrece 'atender'
+    sobre una compuerta y eso da 500."""
+    datos = {"activa": True, "pendientes": [
+        {"id": "c1", "departamento": "dep:a", "titulo": "llamar",
+         "tipo": "contacto", "obligatoria": True, "mpt_estimado": 500},
+        {"id": "renovacion:claude_max:0", "es_carta": True,
+         "carta": {"tipo": "renovacion", "suscripcion": "claude_max"},
+         "carril": "normal", "monedas_en_juego": 0}]}
+    items = eco_cola.como_items(datos)
+    assert [i["id"] for i in items] == ["renovacion:claude_max:0"]
+
+
+def test_el_titulo_de_una_carta_se_deriva_de_su_tipo():
+    """Una carta no trae `titulo`: no tiene esa clave. Hay que armarlo."""
+    datos = {"activa": True, "pendientes": [
+        {"id": "cierre_departamento:dep:a:2026-W35", "es_carta": True,
+         "carta": {"tipo": "cierre_departamento", "departamento": "dep:a"}}]}
+    it = eco_cola.como_items(datos)[0]
+    assert it["titulo"]
+    assert "dep:a" in it["titulo"]
+
+
+def test_el_id_de_una_carta_lleva_dos_puntos():
+    """Por eso el item lleva `origen` y no se rutea por el prefijo del id,
+    como decia el spec."""
+    datos = {"activa": True, "pendientes": [
+        {"id": "mandato:dep:a:2026-W35", "es_carta": True,
+         "carta": {"tipo": "mandato", "departamento": "dep:a"}}]}
+    it = eco_cola.como_items(datos)[0]
+    assert ":" in it["id"]
+    assert it["origen"] == "cartas"
+
+
+def test_sin_economia_sembrada_no_hay_cartas():
+    assert eco_cola.como_items({"activa": False}) == []
