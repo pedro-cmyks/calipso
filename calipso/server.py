@@ -131,14 +131,38 @@ _TOKEN_FILE = _home_calipso() / "token"
 _TOTP_SECRET_FILE = _home_calipso() / "totp_secret"
 
 
+def _endurecer(ruta: pathlib.Path) -> None:
+    """Deja el archivo en 0600 si estaba mas abierto.
+
+    El token no es solo un segundo factor: el shell de escritorio entra con
+    el (`/?token=...`) en vez de pedir TOTP, asi que es LA credencial de esta
+    instalacion. Un 0644 lo deja legible para cualquier otro usuario de la
+    maquina, y el que lo lee entra a un servidor con acceso a todos los
+    archivos de Pedro y a los endpoints que mueven plata."""
+    try:
+        modo = ruta.stat().st_mode & 0o777
+        if modo & 0o077:
+            ruta.chmod(0o600)
+    except OSError:
+        pass          # sin permiso para cambiarlo: mejor seguir que no arrancar
+
+
+def _escribir_secreto(ruta: pathlib.Path, contenido: str) -> None:
+    """Crea el archivo ya en 0600, sin una ventana en la que este abierto."""
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.touch(mode=0o600, exist_ok=True)
+    _endurecer(ruta)
+    ruta.write_text(contenido, encoding="utf-8")
+
+
 def _load_token() -> str:
     if (env := os.environ.get("CALIPSO_TOKEN")):
         return env
     if _TOKEN_FILE.exists():
+        _endurecer(_TOKEN_FILE)
         return _TOKEN_FILE.read_text(encoding="utf-8").strip()
     tok = secrets.token_urlsafe(12)
-    _TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _TOKEN_FILE.write_text(tok, encoding="utf-8")
+    _escribir_secreto(_TOKEN_FILE, tok)
     return tok
 
 
@@ -151,11 +175,11 @@ def _valid(provided: str | None) -> bool:
 
 def _get_totp_secret() -> str:
     if _TOTP_SECRET_FILE.exists():
+        _endurecer(_TOTP_SECRET_FILE)
         return _TOTP_SECRET_FILE.read_text(encoding="utf-8").strip()
     raw = secrets.token_bytes(20)
     secret = base64.b32encode(raw).decode("ascii").rstrip("=")
-    _TOTP_SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _TOTP_SECRET_FILE.write_text(secret, encoding="utf-8")
+    _escribir_secreto(_TOTP_SECRET_FILE, secret)
     return secret
 
 
