@@ -134,13 +134,34 @@ def _puede(estado, s: dict, accion: str, ref: str | None) -> tuple[bool, str]:
                 return False, ("sin techo de pre-seed por ciclo: Pedro "
                                "todavia no autorizo cuanto capital puede "
                                "entrar por ciclo")
-            ya_ciclo = (int(s.get("preseed_ciclo_mm") or 0)
-                        + int(s.get("preseed_pendiente_mm") or 0))
+            financiado = int(s.get("preseed_ciclo_mm") or 0)
+            pendiente = int(s.get("preseed_pendiente_mm") or 0)
+            ya_ciclo = financiado + pendiente
             if ya_ciclo >= techo_ciclo:
+                # La salida depende de QUE parte llena el techo, y decirla
+                # mal es peor que no decirla. Lo financiado si caduca con
+                # el ciclo: `preseed_del_ciclo` solo mira las semanas de
+                # esta ventana. Lo PEDIDO no caduca nunca -- una propuesta
+                # en `alta` no muere sola (el criterio de muerte corre
+                # desde `semana_financiada`), y sigue siendo financiable
+                # en cualquier ciclo posterior, donde vuelve a descontar
+                # del techo de ESE ciclo. O sea que un pedido olvidado en
+                # la mesa frena al jefe para siempre, y "espere al ciclo
+                # que viene" era un consejo falso: tres ciclos despues el
+                # mensaje salia identico, palabra por palabra. Lo que lo
+                # suelta es que Pedro lo financie o lo descarte.
+                salida = ("que Pedro suba la perilla o espere al ciclo que "
+                          "viene")
+                if pendiente:
+                    salida = ("que Pedro suba la perilla, o financie o "
+                              "descarte lo que sigue en la mesa: esperar al "
+                              "ciclo que viene no lo suelta, porque un "
+                              "pedido en pie sigue reservando cupo del "
+                              "ciclo en el que se financie")
                 return False, (f"el techo del ciclo es {techo_ciclo} mm y "
-                               f"entre lo financiado y lo pedido en pie ya "
-                               f"van {ya_ciclo}: que Pedro suba la perilla "
-                               "o espere al ciclo que viene")
+                               f"entre lo financiado ({financiado}) y lo "
+                               f"pedido en pie ({pendiente}) ya van "
+                               f"{ya_ciclo}: {salida}")
         if accion == "proponer" and s["presupuesto_semanal_mm"] > 0:
             # La agresividad mide contra el presupuesto SEMANAL. Un
             # departamento recien dado de alta todavia no tiene presupuesto
