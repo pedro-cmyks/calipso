@@ -764,11 +764,11 @@ def test_el_freno_del_ciclo_no_le_manda_a_esperar_lo_que_no_llega(tmp_path):
     comprueba la ultima parte del test). Lo que estaba mal era el consejo.
 
     Las dos semanas del bucle son los dos extremos de la ventana del propio
-    pedido (W30, donde nace, y W33, la ultima en la que sigue adentro): eso
-    es exactamente lo que dura la reserva. Antes el bucle iba hasta W38
+    pedido (W35, donde nace, y W38, la ultima en la que sigue adentro): eso
+    es exactamente lo que dura la reserva. Antes el bucle iba mas lejos
     para mostrar que el mensaje se repetia "tres ciclos despues", y eso ya
-    no pasa -- en W34 el pedido VENCE y deja de reservar, que es el arreglo
-    de `bus.preseed_vencido`. Lo que este test protege sigue vivo entero:
+    no pasa -- una semana operativa mas y el pedido VENCE y deja de
+    reservar, que es el arreglo de `bus.preseed_vencido`. Lo que este test protege sigue vivo entero:
     mientras el pedido este en pie, la rodada de la ventana no lo suelta y
     el freno no puede decir que si."""
     from calipso.economia import bus as bus_mod
@@ -780,18 +780,22 @@ def test_el_freno_del_ciclo_no_le_manda_a_esperar_lo_que_no_llega(tmp_path):
                               techo_preseed_ciclo_mm=60_000)
     ctx.kernel.acunar(TS, W, t.TESORO, 500_000, t.SubtipoAcunacion.CAPITAL,
                       {"tipo": "firma_pedro"})
-    # el pedido se publica en W30, dos ciclos antes de la ultima semana
-    ctx.bus.alta(TS, "2026-W30", "p0", "dep:atlas", "primera ronda",
+    # el pedido se publica en W35, la primera operativa (la abre `armar`)
+    ctx.bus.alta(TS, W, "p0", "dep:atlas", "primera ronda",
                  60_000, 60_000, {"gasto_max_mm": 60_000}, tipo="preseed")
-    for w in ["2026-W30", "2026-W31", "2026-W32", "2026-W33", "2026-W34",
-              "2026-W36", "2026-W37", "2026-W38"]:
+    # las semanas se abren EN ORDEN y ninguna queda por delante de la que
+    # el test simula: `financiar` lee el vencimiento con el reloj de hoy
+    # -- la ultima operativa -- y no con la fecha que le pasa el llamador,
+    # asi que un libro con semanas abiertas "en el futuro" ya no es un
+    # estado que la maquina de Pedro pueda tener
+    for w in ["2026-W36", "2026-W37", "2026-W38"]:
         pt.expirar_pools(ctx.kernel, TS, w)
         pt.emitir_semana(ctx.kernel, TS, w, 4_000, 1_000)
     it.poner_modo(tmp_path, "vivo")
 
     # los dos extremos de la ventana del pedido: donde nace y la ultima
     # semana operativa en la que sigue adentro
-    for semana in ("2026-W30", "2026-W33"):
+    for semana in (W, "2026-W38"):
         s = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
                           ctx.suscripciones, semana, "dep:atlas")
         assert s["preseed_ventana_mm"] == 0, "no se financio nada"
@@ -815,14 +819,14 @@ def test_el_freno_del_ciclo_no_le_manda_a_esperar_lo_que_no_llega(tmp_path):
     # tal cual tres semanas operativas mas tarde, y ahi si come el cupo de
     # la ventana de W33
     m = mkt.Mercado(ctx.kernel, ctx.registro, ctx.suscripciones)
-    bus_mod.financiar(m, ctx.bus, TS, "2026-W33", "p0", t.TESORO, 60_000)
+    bus_mod.financiar(m, ctx.bus, TS, "2026-W38", "p0", t.TESORO, 60_000)
     s2 = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
-                       ctx.suscripciones, "2026-W33", "dep:atlas")
+                       ctx.suscripciones, "2026-W38", "dep:atlas")
     assert s2["preseed_ventana_mm"] == 60_000
     assert s2["preseed_pendiente_mm"] == 0
-    # sin la reserva, el jefe habria publicado otra ronda en W33 creyendo
+    # sin la reserva, el jefe habria publicado otra ronda en W38 creyendo
     # que tenia la ventana entera libre, y esta habria sido impagable
-    out2 = j.tic(ctx, "dep:atlas", "2026-W33")
+    out2 = j.tic(ctx, "dep:atlas", "2026-W38")
     assert out2["actuo"] is False
     assert "la ventana rueda" in out2["freno"], out2["freno"]
 
@@ -870,26 +874,29 @@ def test_el_freno_del_ciclo_dice_cuanto_cupo_devuelve_la_proxima_semana(tmp_path
                               techo_preseed_ciclo_mm=20_000)
     ctx.kernel.acunar(TS, W, t.TESORO, 500_000, t.SubtipoAcunacion.CAPITAL,
                       {"tipo": "firma_pedro"})
-    for w in ("2026-W30", "2026-W31", "2026-W32", "2026-W33"):
-        pt.expirar_pools(ctx.kernel, TS, w)
-        pt.emitir_semana(ctx.kernel, TS, w, 4_000, 1_000)
-    # el techo entero entra en W30, la mas vieja de las cuatro de la ventana
-    ctx.bus.alta(TS, "2026-W30", "p0", "dep:atlas", "primera ronda", 20_000,
+    # el techo entero entra en W35, la mas vieja de las cuatro de la ventana
+    # (`armar` ya la abrio). Las siguientes se abren DESPUES de financiar:
+    # el libro no puede tener semanas operativas por delante de la que el
+    # test simula -- `financiar` lee el vencimiento con la ultima operativa.
+    ctx.bus.alta(TS, W, "p0", "dep:atlas", "primera ronda", 20_000,
                  20_000, {"gasto_max_mm": 20_000}, tipo="preseed")
     m = mkt.Mercado(ctx.kernel, ctx.registro, ctx.suscripciones)
-    bus_mod.financiar(m, ctx.bus, TS, "2026-W30", "p0", t.TESORO, 20_000)
+    bus_mod.financiar(m, ctx.bus, TS, W, "p0", t.TESORO, 20_000)
+    for w in ("2026-W36", "2026-W37", "2026-W38"):
+        pt.expirar_pools(ctx.kernel, TS, w)
+        pt.emitir_semana(ctx.kernel, TS, w, 4_000, 1_000)
 
     s = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
-                      ctx.suscripciones, "2026-W33", "dep:atlas")
+                      ctx.suscripciones, "2026-W38", "dep:atlas")
     assert s["preseed_ventana_mm"] == 20_000
-    assert s["preseed_libera_al_salir"] == "2026-W30"
+    assert s["preseed_libera_al_salir"] == W
     assert s["preseed_libera_mm"] == 20_000
 
     it.poner_modo(tmp_path, "vivo")
-    out = j.tic(ctx, "dep:atlas", "2026-W33")
+    out = j.tic(ctx, "dep:atlas", "2026-W38")
     assert out["actuo"] is False
     assert "la ventana rueda" in out["freno"], out["freno"]
-    assert "sale 2026-W30 de la ventana y se liberan 20000 mm" in out["freno"], \
+    assert "sale 2026-W35 de la ventana y se liberan 20000 mm" in out["freno"], \
         out["freno"]
     assert contratos == []
 
@@ -922,33 +929,35 @@ def test_con_una_miga_pendiente_el_freno_no_borra_el_alivio_de_la_ventana(
                               techo_preseed_ciclo_mm=20_000)
     ctx.kernel.acunar(TS, W, t.TESORO, 500_000, t.SubtipoAcunacion.CAPITAL,
                       {"tipo": "firma_pedro"})
-    for w in ("2026-W30", "2026-W31", "2026-W32", "2026-W33"):
-        pt.expirar_pools(ctx.kernel, TS, w)
-        pt.emitir_semana(ctx.kernel, TS, w, 4_000, 1_000)
-    # 15.000 FINANCIADOS en W30, la mas vieja de la ventana de W33
-    ctx.bus.alta(TS, "2026-W30", "p0", "dep:atlas", "primera ronda", 15_000,
+    # 15.000 FINANCIADOS en W35, la mas vieja de la ventana de W38 (la abre
+    # `armar`). Las que siguen se abren DESPUES de financiar: ver el
+    # comentario gemelo en el test de arriba.
+    ctx.bus.alta(TS, W, "p0", "dep:atlas", "primera ronda", 15_000,
                  15_000, {"gasto_max_mm": 15_000}, tipo="preseed")
     m = mkt.Mercado(ctx.kernel, ctx.registro, ctx.suscripciones)
-    bus_mod.financiar(m, ctx.bus, TS, "2026-W30", "p0", t.TESORO, 15_000)
+    bus_mod.financiar(m, ctx.bus, TS, W, "p0", t.TESORO, 15_000)
+    for w in ("2026-W36", "2026-W37", "2026-W38"):
+        pt.expirar_pools(ctx.kernel, TS, w)
+        pt.emitir_semana(ctx.kernel, TS, w, 4_000, 1_000)
     # y 5.000 pedidos y sin financiar: la miga
-    ctx.bus.alta(TS, "2026-W33", "p1", "dep:atlas", "segunda ronda", 5_000,
+    ctx.bus.alta(TS, "2026-W38", "p1", "dep:atlas", "segunda ronda", 5_000,
                  5_000, {"gasto_max_mm": 5_000}, tipo="preseed")
 
     s = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
-                      ctx.suscripciones, "2026-W33", "dep:atlas")
+                      ctx.suscripciones, "2026-W38", "dep:atlas")
     assert s["preseed_ventana_mm"] == 15_000
     assert s["preseed_pendiente_mm"] == 5_000
-    assert s["preseed_libera_al_salir"] == "2026-W30"
+    assert s["preseed_libera_al_salir"] == W
     assert s["preseed_libera_mm"] == 15_000
 
     it.poner_modo(tmp_path, "vivo")
-    out = j.tic(ctx, "dep:atlas", "2026-W33")
+    out = j.tic(ctx, "dep:atlas", "2026-W38")
     assert out["actuo"] is False
     assert "lo financiado (15000)" in out["freno"], out["freno"]
     assert "pedido en pie (5000)" in out["freno"], out["freno"]
     # el alivio que el freno tenia calculado y tiraba a la basura
     assert "la ventana rueda" in out["freno"], out["freno"]
-    assert "sale 2026-W30 de la ventana y se liberan 15000 mm" in out["freno"], \
+    assert "sale 2026-W35 de la ventana y se liberan 15000 mm" in out["freno"], \
         out["freno"]
     # y sin mentir para el otro lado: la miga sigue siendo suya
     assert "descarte" in out["freno"], out["freno"]
@@ -956,14 +965,14 @@ def test_con_una_miga_pendiente_el_freno_no_borra_el_alivio_de_la_ventana(
     assert contratos == []
 
     # y era verdad: una semana operativa despues, sin que Pedro financie ni
-    # descarte nada, W30 sale de la ventana y el jefe actua sin freno
-    pt.expirar_pools(ctx.kernel, TS, "2026-W34")
-    pt.emitir_semana(ctx.kernel, TS, "2026-W34", 4_000, 1_000)
+    # descarte nada, W35 sale de la ventana y el jefe actua sin freno
+    pt.expirar_pools(ctx.kernel, TS, "2026-W39")
+    pt.emitir_semana(ctx.kernel, TS, "2026-W39", 4_000, 1_000)
     s2 = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
-                       ctx.suscripciones, "2026-W34", "dep:atlas")
+                       ctx.suscripciones, "2026-W39", "dep:atlas")
     assert s2["preseed_ventana_mm"] == 0
     assert s2["preseed_pendiente_mm"] == 5_000
-    out2 = j.tic(ctx, "dep:atlas", "2026-W34")
+    out2 = j.tic(ctx, "dep:atlas", "2026-W39")
     assert out2["freno"] == "", out2["freno"]
     assert out2["actuo"] is True
 

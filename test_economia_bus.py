@@ -546,18 +546,28 @@ def test_el_techo_del_ciclo_se_suelta_al_ciclo_siguiente(entorno):
     sola asercion, y eso es el punto: lo que cambio no es CUANTO dura el
     cupo (cuatro semanas operativas, antes y ahora) sino DESDE CUANDO se
     cuenta. Con la fija se contaba desde el borde del ciclo, y por eso el
-    borde dejaba pasar el doble."""
+    borde dejaba pasar el doble.
+
+    Las semanas se abren EN ORDEN y no las cinco de una: la ronda 1 se paga
+    en W30 cuando W30 es la ultima operativa, que es lo que pasa en la
+    maquina de Pedro (`api_eco_bus_financiar` fecha con `_eco_ahora`).
+    Abrirlas todas antes y recien despues pagar en W30 era una comodidad
+    del armado, y desde que el vencimiento se mide con `ventana_pagable`
+    es ademas el gesto que este arreglo prohibe: pagar en una semana vieja
+    un pedido que la ventana de hoy ya dejo atras. Lo que el test mide -- que
+    el cupo vuelve cuatro semanas operativas despues-- es lo mismo."""
     k, m, b = entorno
-    for w in ("2026-W30", "2026-W31", "2026-W32", "2026-W33", "2026-W34"):
-        _semana_op(k, w)
+    _semana_op(k, "2026-W30")
     _capital(k, 1_000_000, t.TESORO)
     m.registro.ajustar("a", techo_preseed_mm=50_000,
                        techo_preseed_ciclo_mm=50_000)
     b.alta(TS, "2026-W30", "p1", "dep:a", "ronda 1", 50_000, 50_000,
            {"gasto_max_mm": 50_000}, tipo="preseed")
     bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 50_000)
+    for w in ("2026-W31", "2026-W32", "2026-W33", "2026-W34"):
+        _semana_op(k, w)
 
-    # misma semana: agotado
+    # misma ventana: agotado
     b.alta(TS, "2026-W33", "p2", "dep:a", "ronda 2", 50_000, 50_000,
            {"gasto_max_mm": 50_000}, tipo="preseed")
     with pytest.raises(bus_mod.ErrorBus):
@@ -835,3 +845,132 @@ def test_sin_semanas_operativas_no_vence_nada(entorno):
     b.alta(TS, "2026-W30", "p1", "dep:a", "arranco", 150_000, 150_000,
            {"gasto_max_mm": 150_000}, tipo="preseed")
     assert bus_mod.preseed_vencido(b.datos("p1"), [], "2026-W40") is False
+
+
+def test_no_se_paga_un_vencido_fechando_el_pago_en_una_semana_vieja(entorno):
+    """LA LLAVE DE REPUESTO DEL VENCIMIENTO. `financiar` acepta CUALQUIER
+    semana operativa y nunca exigio la ultima abierta, y el vencimiento se
+    media con la ventana que el LLAMADOR pedia. Entonces la puerta que hace
+    real al vencimiento -- la unica por donde la plata sale-- se abria con
+    una fecha vieja: el mismo pedido que en la ultima semana se rechaza por
+    vencido se pagaba sin una queja fechandolo cuatro semanas atras.
+
+    El vencimiento se mide desde la FRONTERA (`ventana_pagable`): lo que
+    vence a un pedido es que la fabrica haya seguido operando sin el, y eso
+    no lo desanda elegir una fecha de pago mas comoda.
+
+    Lo que NO cambia, y esta verificado abajo: `financiar` sigue aceptando
+    una semana operativa que no es la ultima. Es la decision de
+    `test_financiar_una_semana_atras_no_rompe_una_ventana_ya_validada` --
+    defender el invariante y no la fecha-- y lo unico que se le agrega es
+    que la fecha no puede resucitar un pedido ya vencido."""
+    k, m, b = entorno
+    for w in ("2026-W30", "2026-W31", "2026-W32", "2026-W33", "2026-W34",
+              "2026-W35", "2026-W36", "2026-W37", "2026-W38"):
+        _semana_op(k, w)
+    _capital(k, 1_000_000, t.TESORO)
+    m.registro.ajustar("a", techo_preseed_mm=100_000,
+                       techo_preseed_ciclo_mm=100_000)
+    b.alta(TS, "2026-W30", "viejo", "dep:a", "ronda vieja", 100_000, 100_000,
+           {"gasto_max_mm": 100_000}, tipo="preseed")
+    ops = cap.semanas_operativas(k.libro.asientos())
+    assert bus_mod.preseed_vencido(b.datos("viejo"), ops, "2026-W38") is True
+    # el predicado sigue contestando "en la semana que le das", que es lo
+    # que los cinco lectores necesitan: en W33 ese pedido estaba vivo
+    assert bus_mod.preseed_vencido(b.datos("viejo"), ops, "2026-W33") is False
+    # pero la PUERTA lee el reloj de hoy, no la fecha que elige el llamador
+    with pytest.raises(bus_mod.ErrorBus) as exc:
+        bus_mod.financiar(m, b, TS, "2026-W33", "viejo", t.TESORO, 100_000)
+    assert "vencido" in str(exc.value)
+    assert k.saldo("dep:a") == 0, "se pago un vencido por la puerta de atras"
+
+    # y una ronda nueva -- la que el vencimiento habilita-- si se paga, y se
+    # paga fechada una semana atras, que es lo que la otra decision protege
+    b.alta(TS, "2026-W38", "nuevo", "dep:a", "ronda de hoy", 100_000, 100_000,
+           {"gasto_max_mm": 100_000}, tipo="preseed")
+    bus_mod.financiar(m, b, TS, "2026-W37", "nuevo", t.TESORO, 100_000)
+    assert k.saldo("dep:a") == 100_000
+
+
+def test_la_ultima_ranura_de_la_ventana_no_se_pinta_como_pagable(entorno):
+    """LA RANURA IMPAGABLE. Mientras la semana de hoy no esta abierta,
+    `ventana_preseed` devuelve CINCO etiquetas -- las cuatro operativas de
+    atras mas hoy-- porque para el TECHO tardar en abrir el lunes tiene que
+    apretar, nunca aflojar. Medido con esa ventana, un pedido nacido en la
+    mas vieja de esas cuatro seguia sin vencer: la mesa le pintaba la fila
+    con su boton `financiar`.
+
+    Pero `financiar` exige una semana operativa, asi que ese boton no podia
+    funcionar; y abrir la semana -- lo unico que lo habilitaria, y lo que el
+    aviso de la mesa le pide a Pedro con un boton al lado-- corre la ventana
+    a cuatro etiquetas y vence el pedido en el mismo acto. No habia ninguna
+    secuencia en la que esa fila se pudiera pagar.
+
+    `ventana_pagable` cuenta la semana de hoy como si ya estuviera abierta,
+    que es la unica forma en que se la podria pagar: el pedido vence ANTES
+    de que la mesa lo ofrezca, y la respuesta no cambia al abrir."""
+    k, m, b = entorno
+    for w in ("2026-W31", "2026-W32", "2026-W33", "2026-W34"):
+        _semana_op(k, w)
+    _capital(k, 1_000_000, t.TESORO)
+    b.alta(TS, "2026-W31", "ultima-chance", "dep:a", "ronda", 50_000, 50_000,
+           {"gasto_max_mm": 50_000}, tipo="preseed")
+    ops = cap.semanas_operativas(k.libro.asientos())
+    # hoy es W35 y todavia no esta abierta
+    assert bus_mod.ventana_preseed(ops, "2026-W35") == [
+        "2026-W31", "2026-W32", "2026-W33", "2026-W34", "2026-W35"]
+    assert bus_mod.preseed_vencido(b.datos("ultima-chance"), ops,
+                                   "2026-W35") is True
+    # y la respuesta no se da vuelta cuando Pedro abre la semana: antes,
+    # abrirla era lo que lo vencia
+    _semana_op(k, "2026-W35")
+    ops2 = cap.semanas_operativas(k.libro.asientos())
+    assert bus_mod.preseed_vencido(b.datos("ultima-chance"), ops2,
+                                   "2026-W35") is True
+    with pytest.raises(bus_mod.ErrorBus):
+        bus_mod.financiar(m, b, TS, "2026-W35", "ultima-chance", t.TESORO,
+                          50_000)
+    assert k.saldo("dep:a") == 0
+    # y el de la ranura de al lado -- el que SI se puede pagar abriendo--
+    # sigue vivo antes y despues de abrir: el corte no se corrio de mas
+    b.alta(TS, "2026-W32", "todavia", "dep:a", "ronda", 50_000, 50_000,
+           {"gasto_max_mm": 50_000}, tipo="preseed")
+    assert bus_mod.preseed_vencido(b.datos("todavia"), ops,
+                                   "2026-W35") is False
+    bus_mod.financiar(m, b, TS, "2026-W35", "todavia", t.TESORO, 50_000)
+    assert k.saldo("dep:a") == 50_000
+
+
+def test_sin_semanas_operativas_la_ventana_nunca_rodo(entorno):
+    """El borde tolerante de siempre, que `ventana_pagable` no puede
+    aflojar: sin ninguna semana operativa la ventana nunca rodo, y hacer
+    vencer ahi seria expirar por el paso del tiempo -- justo lo que este
+    techo se niega a hacer."""
+    k, m, b = entorno
+    b.alta(TS, "2026-W30", "p1", "dep:a", "arranco", 50_000, 50_000,
+           {"gasto_max_mm": 50_000}, tipo="preseed")
+    assert bus_mod.preseed_vencido(b.datos("p1"), [], "2026-W99") is False
+
+
+def test_financiar_pliega_las_semanas_operativas_una_sola_vez(entorno,
+                                                              monkeypatch):
+    """`semanas_operativas` es un set-comprehension sobre el libro entero
+    mas un `sorted`, y `financiar` lo pedia TRES veces por llamada sobre el
+    mismo snapshot inmutable de asientos: la guardia de semana operativa,
+    el vencimiento y el chequeo multi-ventana. Las tres respuestas eran
+    identicas por construccion."""
+    k, m, b = entorno
+    for w in ("2026-W30", "2026-W31"):
+        _semana_op(k, w)
+    _capital(k, 1_000_000, t.TESORO)
+    m.registro.ajustar("a", techo_preseed_mm=50_000,
+                       techo_preseed_ciclo_mm=50_000)
+    b.alta(TS, "2026-W31", "p1", "dep:a", "ronda", 50_000, 50_000,
+           {"gasto_max_mm": 50_000}, tipo="preseed")
+    veces = []
+    real = cap.semanas_operativas
+    monkeypatch.setattr(cap, "semanas_operativas",
+                        lambda a: veces.append(1) or real(a))
+    bus_mod.financiar(m, b, TS, "2026-W31", "p1", t.TESORO, 50_000)
+    assert k.saldo("dep:a") == 50_000
+    assert len(veces) == 1, f"{len(veces)} pliegues del libro en un financiar"

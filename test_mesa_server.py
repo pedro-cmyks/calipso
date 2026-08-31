@@ -544,3 +544,58 @@ def test_un_preseed_vencido_sale_de_la_mesa_y_no_se_puede_financiar(
     assert "vencido" in r.json()["detail"]
     assert Kernel(Libro(base / "economia" / "libro.jsonl")
                   ).saldo("dep:atlas") == 400_000
+
+
+def test_la_mesa_no_pinta_la_fila_que_abrir_la_semana_mataria(
+        cliente, monkeypatch):
+    """LA RANURA IMPAGABLE, del lado de la pantalla.
+
+    Mientras la semana de hoy no esta abierta, la ventana del techo tiene
+    CINCO etiquetas (las cuatro operativas de atras mas hoy) porque tardar
+    en abrir el lunes tiene que apretar el techo, nunca aflojarlo. Medido
+    con esa ventana, un pedido nacido en la mas vieja de las cuatro seguia
+    sin vencer y la mesa le pintaba su fila con el boton `financiar`.
+
+    Pero esa fila no se podia pagar de ninguna manera: `financiar` exige una
+    semana operativa, y abrir la semana -- lo unico que habilitaria el
+    boton, y lo que el aviso de arriba de la mesa le pide a Pedro con otro
+    boton al lado-- corre la ventana y vence el pedido en el mismo acto. La
+    pantalla empujaba a Pedro justo al gesto que mataba lo que le estaba
+    ofreciendo.
+
+    Ahora la ventana del vencimiento cuenta hoy como si ya estuviera
+    abierta (`bus.ventana_pagable`), asi que la respuesta es la misma antes
+    y despues de abrir: la fila nunca se ofrece."""
+    c, base = cliente
+    k = Kernel(Libro(base / "economia" / "libro.jsonl"))
+    # W35 la abrio el fixture; tres mas, y hoy pasa a ser W39 sin abrir
+    for sem in ["2026-W36", "2026-W37", "2026-W38"]:
+        pt.expirar_pools(k, TS, sem)
+        pt.emitir_semana(k, TS, sem, 4_000, 1_000)
+    k.acunar(TS, W, t.TESORO, 500_000, t.SubtipoAcunacion.CAPITAL,
+             {"tipo": "firma_pedro"})
+    monkeypatch.setattr(srv, "_eco_ahora", lambda: (TS, "2026-W39"))
+    b = Bus(base / "economia" / "bus.jsonl")
+    b.alta(TS, W, "ultima-chance", "dep:atlas", "ronda", 50_000, 50_000,
+           {"gasto_max_mm": 50_000}, tipo="preseed")
+    b.alta(TS, "2026-W36", "todavia", "dep:atlas", "ronda", 50_000, 50_000,
+           {"gasto_max_mm": 50_000}, tipo="preseed")
+    tok = {"token": srv.TOKEN}
+
+    datos = c.get("/api/economia/bus", params=tok).json()
+    assert datos["semana_abierta"] is False
+    ids = [p["id"] for p in datos["propuestas"]]
+    assert "ultima-chance" not in ids, "una fila que ningun gesto puede pagar"
+    assert "todavia" in ids
+
+    # y el aviso de la mesa deja de ser una trampa: abrir la semana, que es
+    # lo que pide, no cambia ninguna de las dos respuestas
+    pt.expirar_pools(k, TS, "2026-W39")
+    pt.emitir_semana(k, TS, "2026-W39", 4_000, 1_000)
+    ids2 = [p["id"] for p in
+            c.get("/api/economia/bus", params=tok).json()["propuestas"]]
+    assert "ultima-chance" not in ids2
+    assert "todavia" in ids2
+    r = c.post("/api/economia/bus/todavia/financiar", params=tok,
+               json={"cuenta": t.TESORO, "mm": 50_000})
+    assert r.status_code == 200, r.text

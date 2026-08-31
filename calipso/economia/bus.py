@@ -156,7 +156,13 @@ def financiar(mercado: Mercado, bus: Bus, ts: str, semana: str, id: str,
     dueno = datos["departamento"]
     tipo = datos.get("tipo", "trabajo")
     asientos = mercado.k.libro.asientos()
-    if semana not in cap.semanas_operativas(asientos):
+    # UNA sola vez, y no tres. `semanas_operativas` es un set-comprehension
+    # sobre el libro entero mas un `sorted`, y `asientos` es un snapshot
+    # inmutable que no cambia adentro de esta llamada: las tres respuestas
+    # eran identicas por construccion. La rama de pre-seed la pedia en el
+    # vencimiento y otra vez en el chequeo multi-ventana.
+    ops = cap.semanas_operativas(asientos)
+    if semana not in ops:
         raise ErrorBus(f"semana no operativa: {semana}")
     if deps.es_congelado(asientos, dueno):
         raise ErrorBus(
@@ -197,7 +203,19 @@ def financiar(mercado: Mercado, bus: Bus, ts: str, semana: str, id: str,
         # pagar las dos. Dos veces el techo, que es lo que este techo
         # existe para impedir. Aca es donde la plata sale de verdad, asi que
         # aca es donde el vencimiento tiene que ser cierto.
-        if preseed_vencido(datos, cap.semanas_operativas(asientos), semana):
+        # Contra la ULTIMA operativa y no contra `semana`. Esta puerta
+        # acepta cualquier semana operativa a proposito (ver el chequeo
+        # multi-ventana de abajo: defiende el invariante, no la fecha), y
+        # eso le daba al vencimiento una llave de repuesto -- el mismo
+        # pedido que hoy se rechaza por vencido se pagaba sin una queja
+        # fechandolo cuatro semanas atras, porque la ventana se armaba con
+        # el `semana` del llamador. `semana` dice DONDE cae el asiento;
+        # cuando la fabrica ya siguio operando sin ese pedido no lo desanda
+        # elegir una fecha de pago mas comoda. Los lectores siguen
+        # preguntando "sigue vivo en la semana que te doy", que es lo que
+        # necesitan: el que tiene que leer el reloj de hoy es el unico
+        # lugar por donde la plata sale.
+        if preseed_vencido(datos, ops, ops[-1]):
             raise ErrorBus(
                 f"el pre-seed {id} esta vencido: se publico en "
                 f"{datos.get('semana')} y esa semana ya salio de la ventana "
@@ -265,7 +283,6 @@ def financiar(mercado: Mercado, bus: Bus, ts: str, semana: str, id: str,
                 f"{dueno} no tiene techo de pre-seed acumulado: la perilla "
                 "`techo_preseed_ciclo_mm` esta en cero y cero es 'todavia "
                 "no', no 'sin limite'")
-        ops = cap.semanas_operativas(asientos)
         # TODAS las ventanas que contienen `semana`, no solo la que CIERRA
         # en ella. `semana` es cualquier operativa y no la ultima abierta
         # (esta puerta nunca lo exigio, a diferencia de la gemela de
@@ -489,6 +506,41 @@ def ventana_preseed(semanas_ops: list[str], semana: str) -> list[str]:
     return ventana if semana in ventana else ventana + [semana]
 
 
+def ventana_pagable(semanas_ops: list[str], semana: str) -> list[str]:
+    """La ventana contra la que un pre-seed se mediria si se lo pagara en
+    `semana`. Gemela de `ventana_preseed`, y contesta otra pregunta.
+
+    Aquella contesta "cuanto capital entro en la corrida que termina en
+    `semana`", que es la del TECHO y se mide donde el asiento CAE. Esta
+    contesta "si se pagara en `semana`, contra que corrida se mediria", que
+    es la del VENCIMIENTO. Con `semana` operativa las dos dan lo mismo; se
+    separan justo en el borde que abrio la ranura impagable:
+
+    Mientras la semana de hoy no esta abierta, `ventana_preseed` la agrega
+    como QUINTA etiqueta y deja adentro las cuatro operativas de atras. Para
+    el techo eso es lo correcto y esta escrito ahi: tardar en abrir el lunes
+    lo APRIETA, nunca lo afloja. Para el vencimiento era una fila que no se
+    podia pagar de ninguna manera: un pedido nacido en la mas vieja de esas
+    cuatro seguia sin vencer, la mesa le pintaba su boton `financiar` -- y
+    `financiar` exige una semana OPERATIVA, asi que el boton no podia
+    funcionar; y abrirla, que es lo unico que lo habilitaria y lo que el
+    aviso de la mesa le pide a Pedro con un boton al lado, corre la ventana
+    a cuatro etiquetas y vence el pedido en el mismo acto. No habia ninguna
+    secuencia en la que esa fila se pudiera pagar, y mostrarla es
+    exactamente lo que la mesa dice de si misma que no hace.
+
+    Aca `semana` entra como si ya estuviera ABIERTA, porque abrirla es la
+    unica forma en que se la podria pagar. Asi la respuesta no se da vuelta
+    con el gesto de Pedro: el pedido vence antes de que la mesa lo ofrezca,
+    en vez de vencer por haber aceptado el consejo de la propia pantalla.
+
+    El TECHO no se toca: `preseed_en_ventana` y el chequeo multi-ventana de
+    `financiar` siguen midiendose con `ventana_preseed` sobre las
+    operativas de verdad.
+    """
+    return ventana_preseed(sorted({*semanas_ops, semana}), semana)
+
+
 def libera_preseed(asientos: list[Asiento], cuenta: str,
                    semanas_ops: list[str],
                    semana: str) -> tuple[str | None, int]:
@@ -556,12 +608,16 @@ def preseed_vencido(datos: dict, semanas_ops: list[str], semana: str) -> bool:
     decorativo: el bug seguiria vivo con un arreglo escrito al lado. Sin
     disparador no hay nada que encender.
 
-    Y el reloj es el que ya rige este techo: las semanas OPERATIVAS. La
-    ventana rueda cuando Pedro ABRE una semana, que es un acto deliberado
-    suyo, no cuando cambia el almanaque -- un pedido no caduca porque paso
-    el tiempo, caduca porque la fabrica siguio operando sin el. Tardar en
-    abrir el lunes retrasa el vencimiento, igual que aprieta el techo: la
-    demora cae siempre del lado conservador.
+    Y el reloj es el que ya rige este techo: las semanas OPERATIVAS -- un
+    pedido no caduca porque paso el tiempo, caduca porque la fabrica siguio
+    operando sin el. La ventana que se lee aca es `ventana_pagable` y no
+    `ventana_preseed`: la del techo se mide donde el asiento cae, esta se
+    mide desde la frontera y contando la semana de hoy como si ya estuviera
+    abierta, porque abrirla es lo unico que la volveria pagable. Con la del
+    techo el vencimiento tenia una llave de repuesto por atras (financiar
+    fechando el pago en una semana vieja) y una ranura impagable por
+    adelante (la fila que la mesa pinta el lunes y que abrir la semana mata
+    en el mismo acto); las dos estan escritas en `ventana_pagable`.
 
     Y no borra nada. El bus es append-only y el evento `alta` sigue ahi con
     su semana; lo que cambia es que los lectores dejan de contarlo como
@@ -581,7 +637,7 @@ def preseed_vencido(datos: dict, semanas_ops: list[str], semana: str) -> bool:
         # bus real de Pedro) no se inventa un vencimiento: el default
         # tolerante de siempre.
         return False
-    return nacio < ventana_preseed(semanas_ops, semana)[0]
+    return nacio < ventana_pagable(semanas_ops, semana)[0]
 
 
 def gastado(asientos: list[Asiento], id: str) -> int:
