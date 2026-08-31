@@ -68,3 +68,16 @@ def test_un_preseed_paga_el_tesoro_y_no_ofrece_eleccion():
          "retorno_mm": 100000, "criterio": {}, "gastado_mm": 0,
          "aportes": {}}]}
     assert eco_bus.como_items(datos)[0]["cuerpo"]["cuenta_fija"] == "tesoro"
+
+
+def test_una_propuesta_financiada_no_ofrece_descartar():
+    """`_TRANSICIONES["financiada"]` es {"muerta","cerrada"}: descartar una
+    financiada es transicion invalida y el endpoint da 400. Financiar SI
+    sigue valido -- es como se acumulan los aportes."""
+    datos = {"activa": True, "vencidas": [], "propuestas": [
+        {"id": "a-2", "estado": "financiada", "departamento": "dep:a",
+         "tipo": "trabajo", "titulo": "ya financiada", "presupuesto_mm": 50000,
+         "retorno_mm": 50000, "criterio": {}, "gastado_mm": 10000,
+         "aportes": {"dep:b": 50000}}]}
+    it = eco_bus.como_items(datos)[0]
+    assert it["cuerpo"]["verbos_validos"] == ["financiar"]

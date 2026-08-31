@@ -810,17 +810,25 @@ def como_items(datos_endpoint: dict) -> list[dict]:
     """
     items = []
     for p in datos_endpoint.get("propuestas") or []:
+        estado = p.get("estado") or "alta"
+        # verbos_validos depende del estado porque _TRANSICIONES especifica
+        # qué transiciones son validas. financiada solo puede ir a muerta o
+        # cerrada (_TRANSICIONES["financiada"]), no a descartada: eso da 400
+        if estado == "financiada":
+            verbos_validos = ["financiar"]
+        else:
+            verbos_validos = ["financiar", "descartar"]
         cuerpo = {"departamento": p.get("departamento"),
                   "tipo": p.get("tipo"),
                   "presupuesto_mm": p.get("presupuesto_mm"),
                   "gastado_mm": p.get("gastado_mm"),
-                  "verbos_validos": ["financiar", "descartar"]}
+                  "verbos_validos": verbos_validos}
         if p.get("tipo") == "preseed":
             # un pre-seed lo paga el tesoro y nada mas: bus.financiar
             # rechaza cualquier billetera de departamento
             cuerpo["cuenta_fija"] = "tesoro"
         items.append(_item(p.get("id"), p.get("titulo") or "",
-                           p.get("estado") or "alta", cuerpo))
+                           estado, cuerpo))
     for v in datos_endpoint.get("vencidas") or []:
         # cinco campos, no diez, y financiar da 400 sobre un vencido
         items.append(_item(
