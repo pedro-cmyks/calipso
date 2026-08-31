@@ -23,6 +23,7 @@ import pathlib
 
 from . import capacidad as cap
 from . import departamentos as deps
+from . import eficiencia as efi
 from .mercado import ErrorMercado, Mercado
 from .tipos import Asiento, TESORO, TipoAsiento
 
@@ -182,7 +183,7 @@ def financiar(mercado: Mercado, bus: Bus, ts: str, semana: str, id: str,
         # `personal:`, por encima de `cuenta_pedro.financiar_personal`, que
         # existe justamente para lo contrario (la zona personal se financia
         # SOLO desde la cuenta de Pedro). Y el efecto no es cosmetico:
-        # `mercado.comprar_capacidad` le cobra a un departamento personal
+        # `mercado.consumir_capacidad` le cobra a un departamento personal
         # contra la `reserva_personal` de la suscripcion y
         # `pagador.cargar_api` ignora las cuentas `personal:*`, asi que esa
         # plata compra capacidad reservada de Pedro y despues gasta fuera
@@ -640,12 +641,46 @@ def preseed_vencido(datos: dict, semanas_ops: list[str], semana: str) -> bool:
     return nacio < ventana_pagable(semanas_ops, semana)[0]
 
 
-def gastado(asientos: list[Asiento], id: str) -> int:
+def gastado(asientos: list[Asiento], id: str,
+            suscripciones: dict[str, cap.Suscripcion] | None = None) -> int:
+    """Lo que el trabajo lleva gastado, en milimonedas.
+
+    Es el numerador del criterio de muerte `gasto_max_mm`, asi que lo que
+    no entra aca vuelve al trabajo INMORTAL.
+
+    Dos formas, como en todo lo que toca la capacidad de suscripcion. La
+    plata sale de `trabajo:<id>` y se cuenta por su monto. La capacidad de
+    suscripcion ya NO sale de esa cuenta: bajo costo hundido se descuenta
+    del pool de cristal (`cristal:<sus>:fabrica`) y el trabajo viaja en el
+    `ref` que `mercado.consumir_capacidad` fuerza — o sea que un trabajo
+    cuyo unico costo es la suscripcion tenia gasto cero, no moria nunca y
+    ademas se informaba con "gastado 0 mm" en el brief que Calipso lee
+    cada turno mientras quemaba la cuota.
+
+    La conversion es la misma que usa la eficiencia
+    (`consumo_de_suscripcion`, un solo lector de la divisa para todo el
+    libro): las unidades valen lo que HABRIAN costado por API. No es el
+    precio por escasez que cobraba la compra vieja —ese precio ya no lo
+    paga nadie— pero es la unica medida en milimonedas de una unidad de
+    suscripcion, y `gasto_max_mm` esta en milimonedas.
+
+    Sin `suscripciones` no hay conversion posible y se cuenta solo la
+    plata: es el default tolerante para los llamadores de lectura que no
+    las tienen a mano. Quien DECIDE con este numero —
+    `evaluar_y_liquidar_muertos`— las pasa siempre.
+    """
     cuenta = cuenta_trabajo(id)
     salidas = (TipoAsiento.TRANSFERENCIA, TipoAsiento.DESTRUCCION,
                TipoAsiento.EJECUCION_RESERVA)
-    return sum(a.monto for a in asientos
-               if a.tipo in salidas and a.origen == cuenta)
+    total = 0
+    for a in asientos:
+        if a.tipo in salidas and a.origen == cuenta:
+            total += a.monto
+        elif suscripciones and a.ref == cuenta:
+            consumo = efi.consumo_de_suscripcion(a, suscripciones)
+            if consumo:
+                total += consumo[1]
+    return total
 
 
 def semanas_transcurridas(semanas_ops: list[str], desde: str,
@@ -681,7 +716,10 @@ def evaluar_y_liquidar_muertos(mercado: Mercado, bus: Bus, ts: str,
             # calcula del libro sin que nadie lo dispare.
             continue
         criterio = datos["criterio"]
-        gasto = gastado(asientos, id)
+        # con las suscripciones: el gasto de capacidad de un trabajo no
+        # sale de su cuenta desde que es costo hundido, y sin esto el
+        # criterio de muerte por gasto no se dispara nunca
+        gasto = gastado(asientos, id, mercado.suscripciones)
         muere = ("gasto_max_mm" in criterio
                  and gasto > criterio["gasto_max_mm"])
         if not muere and "semanas_max" in criterio:

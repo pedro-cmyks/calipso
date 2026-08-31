@@ -4,6 +4,7 @@ import pytest
 from calipso.economia import bus as bus_mod
 from calipso.economia import capacidad as cap
 from calipso.economia import cierre
+from calipso.economia import cristal
 from calipso.economia import departamentos as deps
 from calipso.economia import mercado as mkt
 from calipso.economia import pt
@@ -119,6 +120,19 @@ def _ciclo_completo(k, m, b, semanas, unidades_por_semana=0):
                                 unidades_por_semana)
 
 
+def _huella(m, semana="2026-W30", unidades=1):
+    """Una unidad consumida, para que la suscripcion EXISTA en el libro.
+
+    El color de un ciclo mide aprovechamiento de la cuota, y a una
+    suscripcion que todavia no aparecia en el libro cuando el ciclo cerro
+    no se la pinta de rojo: es el arranque en frio, no un ciclo malo (ver
+    `cierre._rojo_de_ciclo`). Una unidad de 800 sigue estando muy por
+    debajo del piso, asi que el ciclo es rojo igual — lo que cambia es que
+    ahora hay algo que juzgar.
+    """
+    m.consumir_capacidad(TS, semana, "dep:a", "claude_max", unidades)
+
+
 def test_cierre_de_ciclo_renueva_automatico_si_no_es_rojo(entorno):
     k, m, b = entorno
     m.registro.ajustar("a", presupuesto_semanal_mm=100_000)
@@ -142,10 +156,83 @@ def test_cierre_de_ciclo_renueva_automatico_si_no_es_rojo(entorno):
     assert k.saldo(t.TESORO) == tesoro_antes - 20_000
 
 
+def test_el_color_mide_aprovechamiento_y_no_recaudacion(entorno):
+    """Bajo costo hundido direccion no recauda NADA por la capacidad, asi
+    que el criterio viejo (`recaudacion < costo_fabrica_mm`) pintaba de rojo
+    todo ciclo posible y a los dos rojos el breaker le exigia firma a Pedro
+    para renovar. Lo que decide una renovacion cuando la plata ya se gasto
+    es otra pregunta: la uso la fabrica?"""
+    k, m, b = entorno
+    semanas = ["2026-W30", "2026-W31", "2026-W32", "2026-W33"]
+    _ciclo_completo(k, m, b, semanas)
+    # 400 de 800: la mitad de la cuota, por encima del piso del 40%
+    m.consumir_capacidad(TS, "2026-W30", "dep:a", "claude_max", 400)
+    assert cap.recaudacion(k.libro.asientos(), "claude_max", semanas) == 0
+    inf = cierre.cerrar_ciclo(m, TS, "2026-W33")[0]
+    assert inf["consumido_ciclo"] == 400
+    assert inf["recaudacion_mm"] == 0  # y aun asi verde
+    assert inf["rojo"] is False and inf["renovada"] is True
+
+
+def test_un_ciclo_que_desaprovecha_la_cuota_es_rojo(entorno):
+    """El otro lado del mismo criterio: un ciclo donde la fabrica consumio
+    el 12,5% de lo que Pedro pago es plata tirada, y eso es lo que la carta
+    de renovacion tiene que decir."""
+    k, m, b = entorno
+    semanas = ["2026-W30", "2026-W31", "2026-W32", "2026-W33"]
+    _ciclo_completo(k, m, b, semanas)
+    m.consumir_capacidad(TS, "2026-W30", "dep:a", "claude_max", 100)
+    inf = cierre.cerrar_ciclo(m, TS, "2026-W33")[0]
+    assert inf["consumido_ciclo"] == 100
+    assert inf["rojo"] is True
+
+
+def test_el_arranque_en_frio_no_arma_el_breaker(entorno):
+    """Recien sembrada, la fabrica no consume nada porque todavia no existe:
+    con el color midiendo aprovechamiento, los dos primeros ciclos darian
+    rojo y el breaker le pediria firma a Pedro antes del primer request. A
+    una suscripcion que todavia no aparecia en el libro no se la juzga —el
+    mismo patron con el que las quiebras no matan a un departamento recien
+    nacido— y la exencion se termina en cuanto hay una huella."""
+    k, m, b = entorno
+    _ciclo_completo(k, m, b, [f"2026-W{n}" for n in range(30, 38)])
+    inf_0 = cierre.cerrar_ciclo(m, TS, "2026-W33")[0]
+    assert inf_0["rojo"] is False  # no habia nada que juzgar
+    inf_1 = cierre.cerrar_ciclo(m, TS, "2026-W37")[0]
+    # el ciclo 1 ya se juzga (la estampa del ciclo 0 alcanza como huella),
+    # pero un solo rojo no arma nada
+    assert inf_1["rojo"] is True and inf_1["rojos_consecutivos"] == 1
+    assert inf_1["requiere_firma"] is False and inf_1["renovada"] is True
+
+
+def test_la_huella_del_arranque_en_frio_es_uso_o_juicio(entorno):
+    """Que cuenta como "ya habia algo que juzgar", asiento por asiento.
+
+    La lista es blanca porque la maquinaria de la cuota escribe con la
+    misma clave `detalle["suscripcion"]` que un consumo: la emision del
+    ciclo (que `operacion.abrir_semana` hace en la PRIMERA semana del ciclo
+    0) y el barrido del cierre. Con "cualquier asiento con el nombre", esa
+    emision anulaba la exencion justo en el ciclo que existe para proteger.
+    Emitir una cuota no es usarla; barrer el pool tampoco."""
+    k, m, b = entorno
+    _semana(k, "2026-W30")
+    sus = SUS["claude_max"]
+    cristal.emitir_ciclo(k, TS, "2026-W30", 0, sus)
+    cristal.expirar_ciclo(k, TS, "2026-W30", 0, sus)
+    asientos = k.libro.asientos()
+    assert [a.tipo for a in asientos if a.detalle.get("suscripcion")]
+    assert cierre._primera_semana_suscripcion(asientos, "claude_max") is None
+    # un consumo si es huella
+    m.consumir_capacidad(TS, "2026-W31", "dep:a", "claude_max", 1)
+    assert cierre._primera_semana_suscripcion(
+        k.libro.asientos(), "claude_max") == "2026-W31"
+
+
 def test_circuit_breaker_tras_dos_ciclos_rojos_sin_atender(entorno):
     k, m, b = entorno
     semanas = [f"2026-W{n}" for n in range(30, 38)]  # 2 ciclos, sin compras
     _ciclo_completo(k, m, b, semanas)
+    _huella(m)
     informes_1 = cierre.cerrar_ciclo(m, TS, "2026-W33")
     assert informes_1[0]["rojo"] is True and informes_1[0]["renovada"] is True
     informes_2 = cierre.cerrar_ciclo(m, TS, "2026-W37")
@@ -162,11 +249,15 @@ def test_carta_atendida_desarma_el_breaker(entorno):
     k, m, b = entorno
     semanas = [f"2026-W{n}" for n in range(30, 38)]  # 2 ciclos, sin compras
     _ciclo_completo(k, m, b, semanas)
+    _huella(m)
     cierre.cerrar_ciclo(m, TS, "2026-W33")
     informes = cierre.cerrar_ciclo(
         m, TS, "2026-W37",
         cartas_atendidas=frozenset({"renovacion:claude_max"}))
     inf = informes[0]
+    # el breaker estaba ARMADO (dos rojos) y lo desarma la carta atendida:
+    # sin los dos rojos este test pasaria sin probar nada
+    assert inf["rojos_consecutivos"] == 2
     assert inf["requiere_firma"] is False and inf["renovada"] is True
 
 
@@ -201,14 +292,18 @@ def test_ciclo_incompleto_no_renueva(entorno):
 
 def test_repreciar_la_capacidad_no_repinta_un_ciclo_ya_cerrado(entorno):
     """El circuit breaker de renovacion cuenta ciclos rojos consecutivos, y
-    "rojo" era `recaudacion(ciclo) < sus.costo_fabrica_mm DE HOY`. Ese
-    numero se mueve con la perilla que reprecia la capacidad
+    "rojo" se calcula contra la capacidad configurada DE HOY. Ese numero se
+    mueve con la perilla que reprecia la capacidad
     (`POST /api/economia/suscripciones/{n}/capacidad`), asi que repreciar
     cambiaba retroactivamente el color de ciclos ya cerrados y con eso
     armaba o DESARMABA el breaker: dos ciclos rojos que exigian la firma de
     Pedro pasaban a uno, la suscripcion se renovaba sola y el breaker no
     aparecia nunca. Un ciclo cerrado tiene su color decidido, como sus
-    asientos: se estampa al cerrar."""
+    asientos: se estampa al cerrar.
+
+    La perilla es la MISMA con el criterio de aprovechamiento —de hecho
+    entra mas derecho: `capacidad_fabrica` es el denominador del color, no
+    ya un termino del costo prorrateado."""
     k, m, b = entorno
     m.registro.ajustar("a", presupuesto_semanal_mm=100_000)
     semanas = [f"2026-W{n}" for n in range(30, 38)]  # dos ciclos
@@ -219,11 +314,13 @@ def test_repreciar_la_capacidad_no_repinta_un_ciclo_ya_cerrado(entorno):
             m.comprar_capacidad(TS, sem, "dep:a", "claude_max", 100)
 
     ciclo_0 = ["2026-W30", "2026-W31", "2026-W32", "2026-W33"]
-    recaudado = cap.recaudacion(k.libro.asientos(), "claude_max", ciclo_0)
-    # rojo con la configuracion de hoy (costo_fabrica 80.000) y verde con
-    # la que Pedro esta por aplicar (capacidad 220 -> costo_fabrica 9.090):
-    # justo la ventana donde el color cambia de signo
-    assert 9_090 < recaudado < 80_000
+    consumido = cap.consumo_fabrica(k.libro.asientos(), "claude_max", ciclo_0)
+    # rojo con la capacidad de hoy (800 para la fabrica: el piso son 320
+    # unidades) y verde con la que Pedro esta por aplicar (capacidad 220 ->
+    # 20 para la fabrica, piso 8): justo la ventana donde el color cambia
+    # de signo
+    assert consumido == 100
+    assert 8 < consumido < 320
 
     informes_0 = cierre.cerrar_ciclo(m, TS, "2026-W33")
     assert informes_0[0]["rojo"] is True
@@ -232,7 +329,7 @@ def test_repreciar_la_capacidad_no_repinta_un_ciclo_ya_cerrado(entorno):
     m_repreciado = mkt.Mercado(
         k, m.registro,
         {"claude_max": cap.Suscripcion("claude_max", 100_000, 220, 200, 500)})
-    assert m_repreciado.suscripciones["claude_max"].costo_fabrica_mm < recaudado
+    assert m_repreciado.suscripciones["claude_max"].capacidad_fabrica < consumido
 
     informes_1 = cierre.cerrar_ciclo(m_repreciado, TS, "2026-W37")
     inf = informes_1[0]

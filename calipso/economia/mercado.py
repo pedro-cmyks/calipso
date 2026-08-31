@@ -5,10 +5,16 @@ El Kernel garantiza que la plata no se invente; el Mercado garantiza que
 las POLITICAS se cumplan: congelados no compran ni reciben, la zona
 personal no toca capacidad ni API de la fabrica (invariante 12), el techo
 de API exige firma (compuerta c) y la cuota de suscripcion es finita.
+
+Esas politicas valen igual cuando el gasto no es de plata: la capacidad de
+suscripcion se consume en CRISTALES (`consumir_capacidad`) y sigue
+entrando por esta misma puerta, porque las reglas de zona, de congelado y
+de dueno de un trabajo no son del Kernel ni de la divisa.
 """
 from __future__ import annotations
 
 from . import capacidad as cap
+from . import cristal
 from . import departamentos as deps
 from .kernel import Kernel
 from .tipos import Asiento, DIRECCION
@@ -88,10 +94,89 @@ class Mercado:
         return dep
 
     # -- operaciones -------------------------------------------------------
+    def consumir_capacidad(self, ts: str, semana: str, pagador: str,
+                           sus_nombre: str, unidades: int,
+                           ref: str | None = None,
+                           dueno: str | None = None) -> Asiento:
+        """Descuenta del pool de cristal la capacidad que la fabrica ya uso.
+
+        El gemelo de `comprar_capacidad` bajo la decision de Pedro del
+        2026-08-31: la suscripcion es COSTO HUNDIDO de la fabrica, no un
+        servicio que direccion revende. Consumir una unidad ya no mueve una
+        moneda contra `direccion`; descuenta de una cuota que Pedro ya pago.
+        El cristal REEMPLAZA a la transferencia, nunca la acompaña: dos
+        asientos por el mismo hecho cobrarian dos veces lo que se pago una
+        vez, que es justo lo que la divisa existe para evitar.
+
+        Pasa por `_politica` y no llama derecho a `cristal.consumir` porque
+        ahi viven las tres reglas que no son del cristal: un congelado no
+        gasta, la zona personal no toca capacidad de fabrica (invariante
+        12) y un trabajo gasta con dueno explicito. Saltearlas seria mover
+        la puerta de gasto, no cambiar la divisa.
+
+        La cuota SIGUE siendo finita, y este es el unico lugar donde puede
+        serlo: `cristal.consumir` no rechaza nunca —por diseño, porque mide
+        un hecho consumado— asi que sin este guardia la fabrica consumiria
+        sin tope y la unica señal seria el descubierto del pool, que hoy no
+        lee nadie.
+
+        EL GUARDIA MIDE POR CICLO ESTAMPADO, no por semana, y ahi esta la
+        diferencia con `comprar_capacidad`. Una compra exigia semana
+        operativa: nunca se escribia una unidad afuera de la ventana que el
+        guardia miraba. Un consumo no puede exigirla —el modelo ya contesto
+        y el hecho no espera al boton de abrir—, y toda semana empieza
+        afuera de las operativas: plegando por semana, el guardia leia cero
+        justo en la ventana que este cambio vino a habilitar y la fabrica
+        consumia sin tope todo lunes sin abrir (y toda semana que Pedro se
+        saltee entera). Se mide con `cap.consumo_fabrica_ciclo` sobre el
+        ciclo que `cristal.consumir` le va a estampar a ESTA unidad
+        (`cristal.ciclo_abierto`): el guardia cuenta exactamente lo que
+        comparte pool con lo que esta por escribir, que es la unica ventana
+        que no puede quedar ciega.
+        """
+        dep = self._politica(pagador, dueno)
+        _entero_positivo(unidades, "unidades")
+        sus = self._sus(sus_nombre)
+        asientos = self.k.libro.asientos()
+        # `semanas` es solo para las compras VIEJAS, que no llevan ciclo
+        # estampado; el consumo de cristal lo cuenta el ciclo. Y sale de
+        # `semanas_del_ciclo_de_hoy` y no de `_ciclo` porque `_ciclo`
+        # levanta si la semana no es operativa, que es el estado por
+        # defecto de cada lunes.
+        semanas = cap.semanas_del_ciclo_de_hoy(
+            cap.semanas_operativas(asientos), semana)
+        ciclo = cristal.ciclo_abierto(asientos, sus_nombre)
+        consumido = cap.consumo_fabrica_ciclo(asientos, sus_nombre, ciclo,
+                                              semanas)
+        if consumido + unidades > sus.capacidad_fabrica:
+            raise ErrorMercado(
+                f"cuota agotada: {consumido}+{unidades} > {sus.capacidad_fabrica}")
+        if pagador.startswith("trabajo:"):
+            # FIX I4 (ver comprar_capacidad): el ref de un trabajo se fuerza
+            # a su propia cuenta. `eficiencia.costos_de_trabajo` filtra por
+            # ese ref, asi que sin esto el consumo se escribe pero no se
+            # atribuye a nada.
+            ref = pagador
+        # el departamento va como `titular`, NUNCA como `departamento`: ver
+        # el docstring de `cristal.consumir` (con esa clave, consumir
+        # cristales congelaria departamentos en el cierre semanal).
+        # `_entero_positivo` ya descarto el unico caso en que `consumir`
+        # devuelve None (unidades <= 0), asi que aca siempre hay asiento.
+        return cristal.consumir_fabrica(self.k, ts, semana, sus, unidades,
+                                        titular=dep.cuenta, ref=ref)
+
     def comprar_capacidad(self, ts: str, semana: str, pagador: str,
                           sus_nombre: str, unidades: int,
                           ref: str | None = None,
                           dueno: str | None = None) -> Asiento:
+        """Compra capacidad EN MONEDAS, contra direccion.
+
+        Sin llamadores de produccion desde que la suscripcion es costo
+        hundido: el pagador entra por `consumir_capacidad`. Se conserva
+        porque el libro es append-only y este es el asiento que explica las
+        compras ya escritas (y el precio por escasez que las fecho); no es
+        el camino para cobrar capacidad nueva.
+        """
         dep = self._politica(pagador, dueno)
         _entero_positivo(unidades, "unidades")
         sus = self._sus(sus_nombre)

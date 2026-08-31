@@ -3944,7 +3944,8 @@ def api_eco_bus() -> dict:
                     "presupuesto_mm": d.get("presupuesto_mm", 0),
                     "retorno_mm": d.get("retorno_mm", 0),
                     "criterio": d.get("criterio", {}),
-                    "gastado_mm": _eco_bus.gastado(asientos, id_),
+                    "gastado_mm": _eco_bus.gastado(asientos, id_,
+                                                   m.suscripciones),
                     "aportes": _eco_bus.aportes(asientos, id_),
                 })
             deps_fabrica = [
@@ -4120,9 +4121,15 @@ def api_eco_abrir(body: EcoAbrirBody) -> dict:
     ts, semana = _eco_ahora()
     with _eco_candado(p0.ruta_libro):
         eco = _economia()  # fresco BAJO el candado
-        _eco_op.abrir_semana(eco["pagador"].mercado_fresco().k, ts, semana,
+        m = eco["pagador"].mercado_fresco()
+        # las suscripciones viajan porque abrir la PRIMERA semana de un
+        # ciclo tambien emite su cuota de cristal (la capacidad que la
+        # fabrica va a consumir en el ciclo); sin ellas el pool arranca en
+        # cero y todo consumo queda estampado como descubierto
+        _eco_op.abrir_semana(m.k, ts, semana,
                              body.cuota_firmable_mpt,
-                             body.reserva_personal_mpt)
+                             body.reserva_personal_mpt,
+                             suscripciones=m.suscripciones)
     return {"ok": True, "semana": semana}
 
 
@@ -4558,11 +4565,10 @@ def api_eco_config() -> dict:
     if ops and semana in ops:
         ciclo, _fraccion = _eco_cap.posicion_ciclo(semana, ops)
     # el ciclo se informa solo cuando la semana ya emitio su PT (`ciclo`
-    # nombra una posicion real), pero el CONSUMIDO no espera al boton: es
-    # el numero que la pantalla le muestra a Pedro como piso antes de
-    # tocar "aplicar", y tiene que ser el mismo que va a mirar el guardia
-    # de POST .../capacidad. Ver `_eco_semanas_del_ciclo_de_hoy`.
-    semanas_ciclo = _eco_semanas_del_ciclo_de_hoy(asientos, semana)
+    # nombra una posicion real); el CONSUMIDO de mas abajo no espera al
+    # boton y por eso lo pliega `_eco_consumido_ciclo`, que es la misma
+    # cuenta que hace el guardia de POST .../capacidad.
+    #
     # la OTRA ventana, la del caudal de capital: el techo acumulado de
     # pre-seed se mide sobre las ultimas `VENTANA_PRESEED_SEMANAS` semanas
     # operativas, deslizante, y NO sobre el ciclo de facturacion de arriba
@@ -4646,11 +4652,10 @@ def api_eco_config() -> dict:
             **dataclasses.asdict(sus),
             "capacidad_fabrica": sus.capacidad_fabrica,
             "precio_base_mm": sus.precio_base_mm,
-            # lo ya comprado en el ciclo en curso: es el piso por debajo
+            # lo ya consumido en el ciclo en curso: es el piso por debajo
             # del cual bajar la capacidad deja la cuota agotada hasta que
             # el ciclo termine (ver el guardia de POST .../capacidad)
-            "consumido_ciclo": _eco_cap.consumo_fabrica(
-                asientos, nombre, semanas_ciclo),
+            "consumido_ciclo": _eco_consumido_ciclo(asientos, nombre, semana),
             "medido": _eco_capacidad_medida(resumen, nombre),
         })
     return {"activa": True, "semana": semana, "ciclo": ciclo,
@@ -4731,6 +4736,26 @@ def _eco_semanas_del_ciclo_de_hoy(asientos: list, semana: str) -> list[str]:
         _eco_cap.semanas_operativas(asientos), semana)
 
 
+def _eco_consumido_ciclo(asientos: list, nombre: str, semana: str) -> int:
+    """Lo que la fabrica ya consumio de la cuota del ciclo en curso.
+
+    Un solo lugar para los dos lectores de este modulo —el numero que la
+    pantalla le muestra a Pedro como piso, y el guardia de
+    POST .../capacidad que lo hace cumplir— porque son el MISMO numero: si
+    difirieran, la pantalla invitaria a aplicar una capacidad que el
+    guardia despues rechaza.
+
+    Pliega por el ciclo ESTAMPADO en el consumo y no por la semana (ver
+    `capacidad.consumo_fabrica_ciclo`): consumir dejo de esperar al boton
+    de abrir, asi que el consumo de la semana en curso —que es el estado
+    por defecto de cada lunes— no cae en las semanas de ningun ciclo.
+    """
+    ops = _eco_cap.semanas_operativas(asientos)
+    return _eco_cap.consumo_fabrica_ciclo(
+        asientos, nombre, _eco_cap.ciclo_de_hoy(ops, semana),
+        _eco_cap.semanas_del_ciclo_de_hoy(ops, semana))
+
+
 def _eco_capacidad_preparar(nombre: str, capacidad_ciclo: int,
                             reserva_personal: int | None) -> dict:
     """Valida el cambio contra las invariantes y contra el ciclo en curso.
@@ -4747,12 +4772,14 @@ def _eco_capacidad_preparar(nombre: str, capacidad_ciclo: int,
        estaba puesta invalida la suscripcion, asi que el error lo dice con
        las dos y no con una.
 
-    2. El ciclo EN CURSO. `mercado.comprar_capacidad` corta con "cuota
+    2. El ciclo EN CURSO. `mercado.consumir_capacidad` corta con "cuota
        agotada" cuando `consumido + unidades > capacidad_fabrica`, y
        `consumido` se pliega del libro (asientos ya escritos, que no se
-       reescriben). Bajar `capacidad_fabrica` por debajo de lo que este
-       ciclo YA compro deja a la fabrica sin poder comprar una sola unidad
-       mas hasta que el ciclo termine -- y de paso manda
+       reescriben) por el CICLO ESTAMPADO, no por semana: ver
+       `capacidad.consumo_fabrica_ciclo`. Bajar `capacidad_fabrica` por
+       debajo de lo que este ciclo YA consumio deja a la fabrica sin poder
+       consumir una sola unidad mas hasta que el ciclo termine -- y de paso
+       manda
        `precio_unidad_mm` al tope, porque divide por `capacidad_fabrica`.
        Eso no es un numero corregido, es la fabrica apagada por cuatro
        semanas. Se corta aca y se dice cuando se puede.
@@ -4815,8 +4842,7 @@ def _eco_capacidad_preparar(nombre: str, capacidad_ciclo: int,
                     "cada unidad saldria menos de un milimon y el precio "
                     "dejaria de medir escasez. El techo es una unidad por "
                     "milimon de costo"))
-    consumido = _eco_cap.consumo_fabrica(
-        asientos, nombre, _eco_semanas_del_ciclo_de_hoy(asientos, semana))
+    consumido = _eco_consumido_ciclo(asientos, nombre, semana)
     if consumido > nueva.capacidad_fabrica:
         raise HTTPException(
             status_code=409,

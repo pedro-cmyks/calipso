@@ -145,10 +145,14 @@ def test_activa_reporta_saldos_generales_y_suscripciones(tmp_path):
 def test_activa_reporta_pendientes_cuando_hay(tmp_path):
     _sembrar_economia_activa(tmp_path)
     eco = tmp_path / "economia"
-    # semana no operativa -> el cargo de suscripcion no se puede aplicar
+    # un congelado no gasta -> el cargo de suscripcion no se puede aplicar.
+    # (Antes se usaba una semana no operativa; desde que la capacidad se
+    # descuenta en cristales, un consumo no necesita la semana abierta.)
     from calipso.economia.pagador import Pagador
+    k = Kernel(Libro(eco / "libro.jsonl"))
+    deps.declarar_quiebra(k, TS, W, "dep:mercadeo")
     p = Pagador.desde_entorno(tmp_path)
-    p.cargar_suscripcion(TS, "2026-W99", "dep:mercadeo", "claude_max")
+    p.cargar_suscripcion(TS, W, "dep:mercadeo", "claude_max")
     texto = prompt_compiler.economia_brief(tmp_path)
     assert "Cargos pendientes de aplicar: 1" in texto
 

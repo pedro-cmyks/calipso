@@ -28,6 +28,29 @@ _ANCHOS = ((10_000, 1), (100_000, 2), (1_000_000, 3))
 # la ejecucion de una reserva tambien es plata que se fue.
 _SALIDAS = (TipoAsiento.DESTRUCCION, TipoAsiento.TRANSFERENCIA,
             TipoAsiento.EJECUCION_RESERVA)
+PREFIJO_TRABAJO = "trabajo:"
+
+
+def es_consumo_propio(a: Asiento, cuenta: str) -> bool:
+    """Un consumo de capacidad de suscripcion hecho POR ese departamento.
+
+    El otro gasto del edificio, y el que el mapa no veia. Bajo costo
+    hundido la capacidad no sale de la cuenta del departamento —sale del
+    pool de cristal, y el departamento viaja en `detalle["titular"]`— asi
+    que los dos pliegues que filtran por `a.origen == cuenta` daban cero: un
+    departamento que solo consume suscripcion (la ruta por defecto de
+    `_cobrar_turno` para los modelos de plan) se dibujaba muerto mientras
+    trabajaba.
+
+    "Propio" con el mismo corte que usa `eficiencia.costo_api_directo`: lo
+    que el departamento consumio para si, NO lo que consumio en nombre de
+    un trabajo suyo (eso lleva el ref del trabajo y lo cuenta
+    `bus.gastado`). Es el mismo criterio que el lado de la plata, donde el
+    gasto de un trabajo sale de `trabajo:<id>` y tampoco entra.
+    """
+    return (a.tipo is TipoAsiento.CONSUMO_CRISTAL
+            and a.detalle.get("titular") == cuenta
+            and not (a.ref or "").startswith(PREFIJO_TRABAJO))
 
 
 def _digitos(n: int) -> int:
@@ -58,7 +81,8 @@ def actividad_de(asientos: list[Asiento], cuenta: str,
     ventana = {(fin - datetime.timedelta(days=i)).isoformat()
                for i in range(dias)}
     con_gasto = {a.ts[:10] for a in asientos
-                 if a.origen == cuenta and a.tipo in _SALIDAS
+                 if ((a.origen == cuenta and a.tipo in _SALIDAS)
+                     or es_consumo_propio(a, cuenta))
                  and a.ts[:10] in ventana}
     return min(ACTIVIDAD_MAX, len(con_gasto))
 
@@ -114,14 +138,36 @@ def semanas_del_ciclo(semana: str, ops: list[str]) -> list[str]:
     return cap.semanas_del_ciclo(ciclo, ops)
 
 
-def gasto_ciclo(asientos: list[Asiento], cuenta: str,
-                semanas: list[str]) -> int:
-    """Lo que SALIO de la cuenta en el ciclo. No solo API: una transferencia
-    a otro departamento tambien es gasto. Mismo criterio de salida que
-    bus.gastado, para que dos lecturas del mismo libro no discrepen."""
-    return sum(a.monto for a in asientos
-               if a.origen == cuenta and a.tipo in _SALIDAS
-               and a.semana in semanas)
+def gasto_ciclo(asientos: list[Asiento], cuenta: str, semanas: list[str],
+                suscripciones: dict | None = None) -> int:
+    """Lo que el departamento gasto en el ciclo, en milimonedas.
+
+    No solo API: una transferencia a otro departamento tambien es gasto.
+    Mismo criterio de salida que bus.gastado, para que dos lecturas del
+    mismo libro no discrepen — incluido el consumo de capacidad de
+    suscripcion, que no sale de la cuenta (ver `es_consumo_propio`) y se
+    valua en el API equivalente, la misma conversion que la eficiencia y
+    que `bus.gastado`. Sin `suscripciones` no hay conversion y queda solo
+    la plata.
+
+    LA VENTANA SIGUE SIENDO POR SEMANA, a diferencia del pliegue de la
+    cuota (`capacidad.consumo_fabrica_ciclo`): aca conviven con la plata,
+    que se estampa por semana y no lleva ciclo. La consecuencia, declarada:
+    lo consumido en una semana que todavia no se abrio no entra en este
+    numero hasta que se abra — igual que no entra el gasto en monedas de
+    esa semana. La `actividad` de arriba no tiene ese limite (mide por ts,
+    no por semana), asi que el edificio se enciende igual."""
+    total = sum(a.monto for a in asientos
+                if a.origen == cuenta and a.tipo in _SALIDAS
+                and a.semana in semanas)
+    if not suscripciones:
+        return total
+    for a in asientos:
+        if a.semana in semanas and es_consumo_propio(a, cuenta):
+            consumo = efi.consumo_de_suscripcion(a, suscripciones)
+            if consumo:
+                total += consumo[1]
+    return total
 
 
 def ventas_ventana(asientos: list[Asiento], cuenta: str,
@@ -169,7 +215,8 @@ def _edificios(asientos: list[Asiento], registro, activas: list[str],
             "estado": ("congelado" if deps.es_congelado(asientos, cuenta)
                        else "activo"),
             "saldo_mm": saldo,
-            "gasto_ciclo_mm": gasto_ciclo(asientos, cuenta, ciclo),
+            "gasto_ciclo_mm": gasto_ciclo(asientos, cuenta, ciclo,
+                                          suscripciones),
             "ventas_ventana_mm": ventas_ventana(asientos, cuenta, lapso),
             # sin el estado de suscripciones no hay costo API equivalente y
             # entonces no hay eficiencia: el campo va nulo y declarado, no
@@ -224,7 +271,8 @@ def calles(asientos: list[Asiento], edificios_: list[dict],
 
 
 def unidades(asientos: list[Asiento], activas: list[str],
-             duenos: dict[str, str], calles_: list[dict]) -> list[dict]:
+             duenos: dict[str, str], calles_: list[dict],
+             suscripciones: dict | None = None) -> list[dict]:
     """La unidad camina por una calle, asi que `hacia` solo puede nombrar a
     un cofinanciador que TENGA calle en el modelo. Los aportes se leen del
     libro entero pero las calles son de la ventana: un trabajo de larga
@@ -240,7 +288,8 @@ def unidades(asientos: list[Asiento], activas: list[str],
                          and tuple(sorted((dueno, quien))) in con_calle),
                         reverse=True)
         out.append({"id": id, "dueno": dueno,
-                    "gastado_mm": bus_mod.gastado(asientos, id),
+                    "gastado_mm": bus_mod.gastado(asientos, id,
+                                                  suscripciones),
                     "hacia": ajenos[0][1] if ajenos else None})
     return out
 
@@ -284,6 +333,7 @@ def ciudad(asientos: list[Asiento], registro, bus, cola, semana: str,
             per_mod.SUELDO_MENSUAL_MM, minutos_empleo),
         "edificios": edis,
         "calles": cas,
-        "unidades": unidades(asientos, activas, duenos, cas),
+        "unidades": unidades(asientos, activas, duenos, cas,
+                             suscripciones),
         "avisos": avisos(pendientes),
     }

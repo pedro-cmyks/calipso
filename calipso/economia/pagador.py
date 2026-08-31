@@ -7,8 +7,9 @@ Nunca rompe el flujo del dispatch: un cargo que no puede aplicarse queda
 en cargos_pendientes.jsonl y se reintenta desde la operacion.
 El uso personal de API queda fuera del libro de la fabrica (lo lleva
 calipso/costs.py); la cuenta personal de suscripcion va contra la
-reserva personal. Este modulo es FRONTERA: sus llamadores estampan
-ts/semana reales.
+reserva personal. La suscripcion de la FABRICA se descuenta en cristales
+(capacidad ya pagada), no en monedas: ver `_aplicar`. Este modulo es
+FRONTERA: sus llamadores estampan ts/semana reales.
 """
 from __future__ import annotations
 
@@ -134,9 +135,17 @@ class Pagador:
                                     cargo["suscripcion"], cargo["unidades"],
                                     "personal:finanzas")
         else:
-            m.comprar_capacidad(cargo["ts"], cargo["semana"], cuenta,
-                                cargo["suscripcion"], cargo["unidades"],
-                                dueno=dueno)
+            # SWAP, no agregado: la capacidad de fabrica se descuenta del
+            # pool de cristal y NO transfiere monedas a direccion (decision
+            # de Pedro del 2026-08-31: la suscripcion es costo hundido de la
+            # fabrica, el cristal reemplaza). Escribir las dos cosas seria
+            # cobrar dos veces lo que se pago una, y ademas este metodo no
+            # es atomico ni el libro tiene rollback: si la segunda escritura
+            # fallara, `_cobrar` apila el cargo y CADA reintento volveria a
+            # escribir el consumo de cristal.
+            m.consumir_capacidad(cargo["ts"], cargo["semana"], cuenta,
+                                 cargo["suscripcion"], cargo["unidades"],
+                                 dueno=dueno)
 
     def _cobrar(self, cargo: dict) -> None:
         with candado(self.ruta_libro):

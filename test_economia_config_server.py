@@ -279,6 +279,28 @@ def test_no_se_puede_dejar_la_cuota_agotada_a_mitad_de_ciclo(cliente):
     assert r.status_code == 200, r.text
 
 
+def test_el_guardia_ve_el_consumo_de_una_semana_sin_abrir(cliente):
+    """El mismo guardia, con la forma nueva del gasto. Un consumo de cristal
+    no espera al boton de abrir la semana, asi que se escribe con una semana
+    que puede no ser operativa nunca; plegando por semana, el guardia lo
+    perdia y dejaba a Pedro bajar la capacidad por debajo de lo ya
+    consumido, que es apagar la fabrica hasta que el ciclo cierre. Y la
+    pantalla tiene que mostrar el MISMO piso que el guardia hace cumplir."""
+    from calipso.economia.pagador import Pagador
+
+    p = Pagador(cliente.home / "economia")
+    m = p.mercado_fresco()
+    m.consumir_capacidad(TS, "2026-W99", "dep:atlas", "chatgpt_plus", 300)
+
+    fila = next(s for s in cliente.get("/api/economia/config").json()
+                ["suscripciones"] if s["nombre"] == "chatgpt_plus")
+    assert fila["consumido_ciclo"] == 300
+    r = cliente.post("/api/economia/suscripciones/chatgpt_plus/capacidad",
+                     json={"capacidad_ciclo": 250, "reserva_personal": 20})
+    assert r.status_code == 409, r.text
+    assert "300 unidades" in r.json()["detail"]
+
+
 def test_una_suscripcion_que_no_existe_da_404(cliente):
     r = cliente.post("/api/economia/suscripciones/gemini_pro/capacidad",
                      json={"capacidad_ciclo": 500})

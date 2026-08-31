@@ -40,7 +40,11 @@ def _capacidad(asientos, suscripciones, semana, ops):
     semanas = cap.semanas_del_ciclo(ciclo, ops)
     mejor = None
     for nombre, sus in sorted(suscripciones.items()):
-        consumido = cap.consumo_fabrica(asientos, nombre, semanas)
+        # por CICLO estampado y no por semana: el consumo no espera al boton
+        # de abrir, asi que el de una semana sin abrir no cae en las semanas
+        # de ningun ciclo y el jefe veia "consumido 0" con la cuota casi
+        # agotada. Es el mismo pliegue que mira el guardia de cuota.
+        consumido = cap.consumo_fabrica_ciclo(asientos, nombre, ciclo, semanas)
         fila = {"nombre": nombre,
                 "precio_mm": cap.precio_unidad_mm(sus, consumido, fraccion),
                 "precio_base_mm": sus.precio_base_mm,
@@ -128,7 +132,8 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
             # seguir mirando.
             if mio and datos.get("tipo") != "preseed":
                 trabajos.append({**base,
-                                 "gastado_mm": bus_mod.gastado(asientos, id_)})
+                                 "gastado_mm": bus_mod.gastado(
+                                     asientos, id_, suscripciones)})
             continue
         if mio:
             propias.append(base)           # ya la propuso: no la repita

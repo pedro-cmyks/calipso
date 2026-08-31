@@ -5,6 +5,7 @@ from calipso.economia import bus as bus_mod
 from calipso.economia import capacidad as cap
 from calipso.economia import cola as cola_mod
 from calipso.economia import departamentos as deps
+from calipso.economia import mercado as mkt
 from calipso.economia import pt
 from calipso.economia import tipos as t
 from calipso.economia.kernel import Kernel
@@ -303,6 +304,60 @@ def test_gasto_del_ciclo_suma_lo_que_salio_de_la_cuenta(mundo):
         k.libro.asientos(), r, b, c, "2026-W30")}
     assert edis["dep:mercado"]["gasto_ciclo_mm"] == 10_000
     assert edis["dep:curiosos"]["gasto_ciclo_mm"] == 0
+
+
+def test_el_que_solo_consume_suscripcion_no_se_ve_muerto(mundo):
+    """Bajo costo hundido, la capacidad no sale de la cuenta del
+    departamento: sale del pool de cristal y el departamento viaja en
+    `detalle["titular"]`. Los dos pliegues del edificio filtraban por
+    `a.origen == cuenta`, asi que un departamento que solo consume
+    suscripcion —la ruta por defecto de `_cobrar_turno` para los modelos de
+    plan— se dibujaba con actividad 0 y gasto 0 mientras trabajaba."""
+    k, r, b, c = mundo
+    m = mkt.Mercado(k, r, SUS)
+    _semana_op(k, W)
+    for _ in range(5):
+        m.consumir_capacidad("2026-08-25T10:00:00", W, "dep:mercado",
+                             "claude_max", 100)
+    asientos = k.libro.asientos()
+    edis = {e["id"]: e for e in ciu.edificios(asientos, r, b, c, W, SUS)}
+    # 500 unidades a 500 mm de API equivalente
+    assert edis["dep:mercado"]["gasto_ciclo_mm"] == 250_000
+    assert edis["dep:mercado"]["actividad"] == 1
+    assert edis["dep:curiosos"]["gasto_ciclo_mm"] == 0
+    assert edis["dep:curiosos"]["actividad"] == 0
+    # la actividad no necesita la tabla de suscripciones (es una senal de
+    # vida, no un monto); el gasto si, y sin ella queda solo la plata
+    assert ciu.actividad_de(asientos, "dep:mercado") == 1
+    sin = {e["id"]: e for e in ciu.edificios(asientos, r, b, c, W)}
+    assert sin["dep:mercado"]["gasto_ciclo_mm"] == 0
+
+
+def test_el_gasto_de_capacidad_de_un_trabajo_no_es_del_edificio(mundo):
+    """Mismo corte que el lado de la plata: lo que gasta un trabajo sale de
+    `trabajo:<id>` y no entra en el gasto del edificio. Un consumo de
+    cristal en nombre de un trabajo lleva el ref forzado del trabajo (FIX
+    I4) y lo cuenta `bus.gastado`; contarlo tambien aca seria contarlo dos
+    veces."""
+    k, r, b, c = mundo
+    m = mkt.Mercado(k, r, SUS)
+    _semana_op(k, W)
+    _capital(k, 200_000, "dep:mercado")
+    b.alta(TS, W, "radar", "dep:mercado", "radar", 10_000, 30_000,
+           {"gasto_max_mm": 50_000})
+    b.marcar(TS, W, "radar", "financiada")
+    k.transferir(TS, W, "dep:mercado", "trabajo:radar", 50_000,
+                 motivo="financiacion")
+    m.consumir_capacidad(TS, W, "trabajo:radar", "claude_max", 10,
+                         dueno="dep:mercado")
+    edis = {e["id"]: e for e in ciu.edificios(
+        k.libro.asientos(), r, b, c, W, SUS)}
+    # solo la financiacion: la capacidad del trabajo la cuenta su unidad
+    assert edis["dep:mercado"]["gasto_ciclo_mm"] == 50_000
+    unidad = next(u for u in ciu.unidades(
+        k.libro.asientos(), b.activas(), ciu.duenos_de(b), [], SUS)
+        if u["id"] == "radar")
+    assert unidad["gastado_mm"] == 5_000   # 10 unidades a 500 mm
 
 
 def test_ventas_de_la_ventana_solo_cuentan_senal_exterior(mundo):

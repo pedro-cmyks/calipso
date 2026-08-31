@@ -72,24 +72,118 @@ def test_cuenta_personal_no_carga_api(base):
     assert p.leer_kernel().saldo("dep:mercadeo") == 100_000
 
 
-def test_cargar_suscripcion_por_unidad(base):
+def test_cargar_suscripcion_no_mueve_monedas_y_descuenta_cristal(base):
+    """Costo hundido: la unidad de suscripcion sale de una cuota que Pedro
+    ya pago, no de la billetera del departamento contra direccion. Antes
+    este cargo transferia 100 mm (el precio por escasez) a direccion; el
+    cristal REEMPLAZA a esa transferencia, no la acompaña."""
     p = pag.Pagador.desde_entorno(base)
     p.cargar_suscripcion(TS, W, "dep:mercadeo", "claude_max")
-    # 1 unidad a precio base 100
-    assert p.leer_kernel().saldo(t.DIRECCION) == 100
+    k = p.leer_kernel()
+    assert p.pendientes() == []
+    assert k.saldo(t.DIRECCION) == 0
+    assert k.saldo("dep:mercadeo") == 100_000
+    asientos = k.libro.asientos()
+    # y sin embargo la unidad quedo contada: el guardia de cuota, el brief
+    # y la eficiencia leen esto
+    assert cap.consumo_fabrica(asientos, "claude_max", [W]) == 1
+    # el pool arranca en cero (nadie emitio el ciclo en este fixture), asi
+    # que la unidad queda en descubierto — declarado legal, y visible
+    assert k.saldo(t.cuenta_cristal("claude_max", "fabrica"),
+                   t.Divisa.CRISTAL) == -1
+    consumo = [a for a in asientos
+               if a.tipo is t.TipoAsiento.CONSUMO_CRISTAL][0]
+    # el departamento va como `titular`: con la clave `departamento`, el
+    # cierre semanal lo daria por nacido y lo declararia en quiebra por
+    # tener cero MONEDAS (ver cristal.consumir)
+    assert consumo.detalle["titular"] == "dep:mercadeo"
+    assert "departamento" not in consumo.detalle
     p.cargar_suscripcion(TS, W, "personal", "claude_max")
     asientos = p.leer_kernel().libro.asientos()
     assert cap.consumo_personal(asientos, "claude_max", [W]) == 1
 
 
-def test_fallo_economico_degrada_a_pendiente(base):
+def test_una_semana_sin_abrir_ya_no_aparca_el_consumo(base):
+    """El consumo de capacidad no espera al boton de abrir la semana.
+
+    Una semana se vuelve operativa recien cuando Pedro la abre a mano, o
+    sea que todo lunes empieza fuera de las operativas. La COMPRA podia
+    esperar ahi; un consumo no: el modelo ya contesto y la suscripcion ya
+    se gasto, y aparcarlo dejaba el libro anotando cero sobre capacidad
+    realmente servida."""
     p = pag.Pagador.desde_entorno(base)
-    # semana no operativa: el cargo no puede aplicarse -> pendiente
+    p.cargar_suscripcion(TS, "2026-W99", "dep:mercadeo", "claude_max")
+    assert p.pendientes() == []
+    asientos = p.leer_kernel().libro.asientos()
+    assert cap.consumo_fabrica(asientos, "claude_max", ["2026-W99"]) == 1
+
+
+def test_la_cuota_del_ciclo_sigue_frenando_a_la_fabrica(base):
+    """`cristal.consumir` NUNCA rechaza —mide un hecho consumado— asi que
+    el unico freno de cuota que existe es el del mercado. Sin el, la
+    fabrica consumiria sin tope y la unica senal seria el descubierto del
+    pool, que hoy no lee nadie."""
+    p = pag.Pagador.desde_entorno(base)
+    p.cargar_suscripcion(TS, W, "dep:mercadeo", "claude_max", unidades=800)
+    assert p.pendientes() == []  # 800 = capacidad_fabrica (1.000 - 200)
+    p.cargar_suscripcion(TS, W, "dep:mercadeo", "claude_max")
+    assert len(p.pendientes()) == 1
+    asientos = p.leer_kernel().libro.asientos()
+    assert cap.consumo_fabrica(asientos, "claude_max", [W]) == 800
+
+
+def test_la_cuota_frena_tambien_en_una_semana_sin_abrir(base):
+    """El guardia mide por CICLO ESTAMPADO, no por semana.
+
+    Una semana se vuelve operativa recien cuando Pedro aprieta el boton de
+    abrir, o sea que todo lunes empieza afuera de las operativas — y desde
+    que consumir dejo de esperar ese boton, el consumo se escribe igual.
+    Plegando el consumido por SEMANA, el guardia leia cero justo en la
+    ventana que el cristal vino a habilitar: la fabrica consumia sin tope y
+    el descubierto del pool era la unica senal, que no lee nadie."""
+    p = pag.Pagador.desde_entorno(base)
+    p.cargar_suscripcion(TS, "2026-W99", "dep:mercadeo", "claude_max",
+                         unidades=800)
+    assert p.pendientes() == []      # 800 = capacidad_fabrica (1.000 - 200)
+    # la unidad 801 del MISMO ciclo rebota, con su semana todavia cerrada
     p.cargar_suscripcion(TS, "2026-W99", "dep:mercadeo", "claude_max")
     assert len(p.pendientes()) == 1
-    assert p.leer_kernel().saldo(t.DIRECCION) == 0
-    # el reintento re-aplica con la semana ORIGINAL del cargo, que sigue
-    # sin ser operativa: queda pendiente
+    asientos = p.leer_kernel().libro.asientos()
+    # el pliegue por semana no lo ve, y es exactamente lo que el guardia no
+    # podia mirar: por eso la cuota tiene su propio pliegue
+    assert cap.consumo_fabrica(asientos, "claude_max", [W]) == 0
+    assert cap.consumo_fabrica_ciclo(asientos, "claude_max", 0, [W]) == 800
+
+
+def test_la_cuota_cuenta_las_semanas_salteadas_del_ciclo(base):
+    """Y no se resetea porque Pedro no abrio una semana. Con el pliegue por
+    semana, lo consumido en una semana que nunca se abre no cae en ningun
+    ciclo: la cuota volvia a estar entera cada vez que el calendario pasaba
+    por una semana sin abrir."""
+    p = pag.Pagador.desde_entorno(base)
+    p.cargar_suscripcion(TS, "2026-W98", "dep:mercadeo", "claude_max",
+                         unidades=500)
+    p.cargar_suscripcion(TS, "2026-W99", "dep:mercadeo", "claude_max",
+                         unidades=300)
+    assert p.pendientes() == []
+    p.cargar_suscripcion(TS, W, "dep:mercadeo", "claude_max")  # semana abierta
+    assert len(p.pendientes()) == 1   # 800 + 1 > 800, aunque sean 3 semanas
+
+
+def test_fallo_economico_degrada_a_pendiente(base):
+    p = pag.Pagador.desde_entorno(base)
+    # un congelado no gasta (politica del mercado, no del cristal): el
+    # cargo no puede aplicarse -> pendiente. Antes este test usaba una
+    # semana no operativa, que ya no falla: el consumo de capacidad no
+    # necesita que la semana este abierta.
+    k = Kernel(Libro(base / "economia" / "libro.jsonl"))
+    deps.declarar_quiebra(k, TS, W, "dep:mercadeo")
+    p.cargar_suscripcion(TS, W, "dep:mercadeo", "claude_max")
+    assert len(p.pendientes()) == 1
+    asientos = p.leer_kernel().libro.asientos()
+    assert cap.consumo_fabrica(asientos, "claude_max", [W]) == 0
+    # el reintento re-aplica el cargo original, y el departamento sigue
+    # congelado: queda pendiente
     assert p.reintentar_pendientes() == 0
     assert len(p.pendientes()) == 1
 

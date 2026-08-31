@@ -5,6 +5,7 @@ from calipso.economia import bus as bus_mod
 from calipso.economia import candado as cnd
 from calipso.economia import capacidad as cap
 from calipso.economia import cola as cola_mod
+from calipso.economia import cristal
 from calipso.economia import departamentos as deps
 from calipso.economia import direccion as dir_
 from calipso.economia import mercado as mkt
@@ -432,10 +433,125 @@ def test_ciclo_completo_encola_carta_de_renovacion(entorno, cola):
     semanas = ["2026-W30", "2026-W31", "2026-W32", "2026-W33"]
     for sem in semanas:
         op_mod.abrir_semana(k, TS, sem, 4_000, 0)
+        if sem == "2026-W30":
+            # una unidad consumida: sin una sola huella en el libro, el
+            # ciclo 0 es el arranque en frio y no se pinta de rojo (ver
+            # `cierre._rojo_de_ciclo`), asi que no habria carta que encolar
+            m.consumir_capacidad(TS, sem, "dep:a", "claude_max", 1)
         res = op_mod.cerrar_semana_operativa(m, b, cola, TS, sem)
-    # W33 cierra el ciclo 0: sin recaudacion -> rojo 1, renueva automatico
+    # W33 cierra el ciclo 0: 1 unidad de 800 esta muy por debajo del piso
+    # de aprovechamiento -> rojo 1, carta encolada, renueva automatico
     assert len(res["informes_ciclo"]) == 1
+    assert res["informes_ciclo"][0]["rojo"] is True
     assert res["informes_ciclo"][0]["renovada"] is True
+    assert cola.estado("renovacion:claude_max:0") == "encolada"
+
+
+def test_abrir_el_ciclo_emite_la_cuota_y_cerrarlo_barre_los_pools(entorno,
+                                                                  cola):
+    """El cristal vive un CICLO: la cuota se emite al abrirlo y los pools se
+    barren al cerrarlo. Sin la emision, cada consumo queda estampado como
+    descubierto y `cristal.totales()` reporta cuota cero contra consumo N —
+    no rompe, miente."""
+    k, m, b, _ = entorno
+    _capital(k, 1_200_000, t.TESORO)
+    fab = t.cuenta_cristal("claude_max", "fabrica")
+    semanas = ["2026-W30", "2026-W31", "2026-W32", "2026-W33"]
+    for sem in semanas:
+        op_mod.abrir_semana(k, TS, sem, 4_000, 0, suscripciones=m.suscripciones)
+        if sem == "2026-W30":
+            # la cuota se emite SOLO en la primera semana del ciclo
+            assert k.saldo(fab, t.Divisa.CRISTAL) == 800
+            m.consumir_capacidad(TS, sem, "dep:a", "claude_max", 300)
+            assert k.saldo(fab, t.Divisa.CRISTAL) == 500
+        res = op_mod.cerrar_semana_operativa(m, b, cola, TS, sem)
+    # el ciclo cierra en cero exacto: lo que sobro expira, la capacidad no
+    # se ahorra de un ciclo para el otro
+    assert k.saldo(fab, t.Divisa.CRISTAL) == 0
+    # los DOS pools se barren: el de la fabrica con 500 sin usar y el de la
+    # reserva personal de Pedro con sus 200 enteros
+    assert res["cierre_cristal"].expirado == {
+        fab: 500, t.cuenta_cristal("claude_max", "personal"): 200}
+    cuota, consumido, expirado, condonado = cristal.totales(k.libro.asientos())
+    assert (cuota, consumido, expirado, condonado) == (1_000, 300, 700, 0)
+    # y el ciclo siguiente abre con la cuota entera de nuevo
+    op_mod.abrir_semana(k, TS, "2026-W34", 4_000, 0,
+                        suscripciones=m.suscripciones)
+    assert k.saldo(fab, t.Divisa.CRISTAL) == 800
+
+
+def test_la_emision_de_cuota_no_saca_a_la_suscripcion_del_arranque_en_frio(
+        entorno, cola):
+    """El camino de PRODUCCION completo, que es donde la exencion se rompia.
+
+    `server.api_eco_abrir` pasa `suscripciones=m.suscripciones`, asi que
+    abrir la primera semana del ciclo 0 EMITE la cuota de cristal — y esa
+    emision lleva `detalle["suscripcion"]`. Con "cualquier asiento con el
+    nombre" como huella, la propia maquinaria de la cuota sacaba a la
+    suscripcion del arranque en frio: el ciclo 0 se juzgaba, salia rojo con
+    la fabrica todavia en cero, y al cerrar el ciclo 1 el breaker le pedia
+    la firma a Pedro a las ocho semanas de sembrar, con la fabrica sin
+    arrancar. Emitir una cuota no es usarla.
+
+    Corre por `abrir_semana` + `cerrar_semana_operativa` a proposito: el
+    test unitario del cierre monta las semanas con `pt.emitir_semana` y
+    nunca emite cristal, o sea que certifica un mecanismo que produccion no
+    recorre."""
+    k, m, b, _ = entorno
+    _capital(k, 1_200_000, t.TESORO)
+    fab = t.cuenta_cristal("claude_max", "fabrica")
+    res = {}
+    for n in range(30, 38):     # dos ciclos enteros, sin una sola unidad
+        sem = f"2026-W{n}"
+        op_mod.abrir_semana(k, TS, sem, 4_000, 0, suscripciones=m.suscripciones)
+        res[sem] = op_mod.cerrar_semana_operativa(m, b, cola, TS, sem)
+    # la cuota SI se emitio (y se barrio): la huella existe en el libro
+    assert k.saldo(fab, t.Divisa.CRISTAL) == 0
+    assert cristal.totales(k.libro.asientos())[0] == 2_000   # dos ciclos
+    # y aun asi el ciclo 0 no se juzga: la fabrica todavia no existia
+    assert res["2026-W33"]["informes_ciclo"][0]["rojo"] is False
+    # el ciclo 1 ya se juzga (la estampa del ciclo 0 alcanza como huella),
+    # pero es UN solo rojo: el breaker no se arma
+    inf_1 = res["2026-W37"]["informes_ciclo"][0]
+    assert inf_1["rojo"] is True and inf_1["rojos_consecutivos"] == 1
+    assert inf_1["requiere_firma"] is False and inf_1["renovada"] is True
+
+
+def test_el_consumo_de_una_semana_sin_abrir_cuenta_en_su_ciclo(entorno, cola):
+    """Pedro se saltea una semana —de viaje, o simplemente no aprieta el
+    boton— y el chat sigue cobrando. Ese consumo se escribe con la semana
+    real, que nunca entra en las operativas: plegando por semana no cae en
+    NINGUN ciclo y desaparece para siempre. El ciclo se informaba con
+    consumido 0 sobre una cuota casi agotada, se pintaba rojo, y dos asi le
+    exigen la firma a Pedro."""
+    k, m, b, _ = entorno
+    _capital(k, 1_200_000, t.TESORO)
+    abiertas = ["2026-W30", "2026-W32", "2026-W33", "2026-W34"]
+    for sem in abiertas:
+        op_mod.abrir_semana(k, TS, sem, 4_000, 0, suscripciones=m.suscripciones)
+        if sem == "2026-W30":
+            _capital(k, 100_000, "dep:a")
+            b.alta(TS, sem, "p1", "dep:a", "radar", 10_000, 30_000,
+                   {"gasto_max_mm": 10_000_000})
+            bus_mod.financiar(m, b, TS, sem, "p1", "dep:a", 10_000)
+            # todo el consumo del ciclo cae en la semana salteada
+            m.consumir_capacidad(TS, "2026-W31", "trabajo:p1", "claude_max",
+                                 700, dueno="dep:a")
+            k.acunar(TS, sem, "dep:a", 20_000, t.SubtipoAcunacion.VENTA,
+                     {"tipo": "factura", "id": "inv-1"}, {"trabajo": "p1"})
+        res = op_mod.cerrar_semana_operativa(m, b, cola, TS, sem)
+    inf = res["informes_ciclo"][0]
+    assert cap.consumo_fabrica(k.libro.asientos(), "claude_max", abiertas) == 0
+    assert inf["consumido_ciclo"] == 700          # 700 de 800: 87,5%
+    assert inf["rojo"] is False
+    # y la eficiencia del mismo informe mide contra ESE denominador: 20.000
+    # de venta atribuida sobre 700 unidades a 500 mm son 57 por mil. Con la
+    # ventana por semana el denominador daba cero y el informe se
+    # contradecia solo — "uso 700 de 800" al lado de "0 por mil"
+    assert inf["eficiencia_pormil"] == 57
+    # y el pool cuenta lo mismo que el informe: expira solo lo que sobro
+    assert res["cierre_cristal"].expirado[
+        t.cuenta_cristal("claude_max", "fabrica")] == 100
 
 
 def test_carta_atendida_del_ciclo_previo_desarma_el_breaker(entorno, cola):
@@ -450,6 +566,10 @@ def test_carta_atendida_del_ciclo_previo_desarma_el_breaker(entorno, cola):
     res = None
     for sem in semanas:
         op_mod.abrir_semana(k, TS, sem, 4_000, 0)
+        if sem == "2026-W30":
+            # la huella que saca al ciclo 0 del arranque en frio: sin ella
+            # no seria rojo y no habria dos rojos que desarmar
+            m.consumir_capacidad(TS, sem, "dep:a", "claude_max", 1)
         res = op_mod.cerrar_semana_operativa(m, b, cola, TS, sem)
         if sem == "2026-W33":
             assert cola.estado("renovacion:claude_max:0") == "encolada"

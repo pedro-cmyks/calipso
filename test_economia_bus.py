@@ -974,3 +974,47 @@ def test_financiar_pliega_las_semanas_operativas_una_sola_vez(entorno,
     bus_mod.financiar(m, b, TS, "2026-W31", "p1", t.TESORO, 50_000)
     assert k.saldo("dep:a") == 50_000
     assert len(veces) == 1, f"{len(veces)} pliegues del libro en un financiar"
+
+
+def test_un_trabajo_que_solo_consume_suscripcion_muere_igual(entorno):
+    """El criterio de muerte `gasto_max_mm` se mide sobre `gastado`, y bajo
+    costo hundido la capacidad de suscripcion dejo de salir de la cuenta del
+    trabajo: sale del pool de cristal y el trabajo viaja en el `ref`. Sin
+    contarla, un trabajo cuyo unico costo es la suscripcion tiene gasto cero,
+    no muere nunca, y el brief que Calipso lee cada turno informa "gastado 0
+    mm" de un proyecto que esta quemando la cuota."""
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 100_000, "dep:a")
+    b.alta(TS, "2026-W30", "p1", "dep:a", "radar", 100_000, 300_000,
+           {"gasto_max_mm": 10_000})
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", "dep:a", 60_000)
+    # 21 unidades a 500 mm de API equivalente = 10.500 > 10.000
+    for _ in range(21):
+        m.consumir_capacidad(TS, "2026-W30", "trabajo:p1", "claude_max", 1,
+                             dueno="dep:a")
+    asientos = k.libro.asientos()
+    assert bus_mod.gastado(asientos, "p1", m.suscripciones) == 10_500
+    # la plata del trabajo no se movio: por eso el saldo no puede ser el
+    # criterio de muerte de un trabajo que gasta capacidad
+    assert k.saldo("trabajo:p1") == 60_000
+    assert bus_mod.evaluar_y_liquidar_muertos(m, b, TS, "2026-W30") == ["p1"]
+    assert b.estado("p1") == "liquidada"
+
+
+def test_gastado_sin_suscripciones_cuenta_solo_la_plata(entorno):
+    """El default tolerante para los lectores que no las tienen a mano: sin
+    la tabla no hay costo API equivalente que calcular, y se declara en vez
+    de inventarse un numero."""
+    k, m, b = entorno
+    _semana_op(k, "2026-W30")
+    _capital(k, 100_000, "dep:a")
+    b.alta(TS, "2026-W30", "p1", "dep:a", "radar", 100_000, 300_000, CRITERIO)
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", "dep:a", 60_000)
+    m.gastar_api(TS, "2026-W30", "trabajo:p1", 7_000, ref="trabajo:p1",
+                 dueno="dep:a")
+    m.consumir_capacidad(TS, "2026-W30", "trabajo:p1", "claude_max", 4,
+                         dueno="dep:a")
+    asientos = k.libro.asientos()
+    assert bus_mod.gastado(asientos, "p1") == 7_000
+    assert bus_mod.gastado(asientos, "p1", m.suscripciones) == 9_000

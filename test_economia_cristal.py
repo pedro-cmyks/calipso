@@ -298,6 +298,26 @@ def test_expirar_un_pool_ya_en_cero_no_escribe(k):
     assert cristal.expirar_ciclo(k, TS, "2026-W38", 0, SUS) == []
 
 
+def test_un_ciclo_cerrado_no_se_barre_dos_veces(k):
+    """El pulso repite el cierre —la misma semana se puede volver a cerrar—
+    y entre el cierre y la apertura del ciclo siguiente la fabrica sigue
+    consumiendo: cada turno de chat escribe. Ese consumo ya sale del pool
+    del ciclo NUEVO, asi que un segundo barrido lo condonaria a nombre del
+    viejo y el ciclo nuevo estrenaria la cuota entera sin pagarlo."""
+    cristal.emitir_ciclo(k, TS, "2026-W35", 0, SUS)
+    cristal.consumir_fabrica(k, TS, "2026-W35", SUS, 300, titular="dep:a")
+    cristal.expirar_ciclo(k, TS, "2026-W38", 0, SUS)
+    tardio = cristal.consumir_fabrica(k, TS, "2026-W38", SUS, 40,
+                                      titular="dep:a")
+    assert tardio.detalle["ciclo"] == 1   # sale del ciclo que todavia abre
+    assert _saldo(k, FAB) == -40
+
+    assert cristal.expirar_ciclo(k, TS, "2026-W38", 0, SUS) == []
+    assert _saldo(k, FAB) == -40   # el descubierto sigue en pie
+    cristal.emitir_ciclo(k, TS, "2026-W39", 1, SUS)
+    assert _saldo(k, FAB) == 760   # y lo absorbe el ciclo que lo paga
+
+
 def test_cerrar_ciclo_barre_todas_las_suscripciones(k):
     otra = cap.Suscripcion("chatgpt_plus", 50_000, 400, 100, 300)
     subs = {"claude_max": SUS, "chatgpt_plus": otra}

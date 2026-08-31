@@ -118,14 +118,18 @@ def test_la_ruta_local_consume_suscripcion_igual(economia):
     # no hay Ollama: `_chunks_for` resuelve la ruta local con `_local_via_sub`,
     # que corre `claude -p` — una unidad de suscripcion, no un modelo gratis.
     antes = saldo(economia, "dep:atlas")
-    # devuelve cero milimonedas igual: la suscripcion se cobra en unidades de
-    # capacidad, y lo que sale del saldo lo pone el precio de esa unidad
+    # devuelve cero milimonedas, y ahora no sale NADA del saldo: la
+    # suscripcion es costo hundido (decision de Pedro del 2026-08-31), asi
+    # que la unidad se descuenta del pool de cristal en vez de comprarsela
+    # a direccion. Lo que se cobra se cuenta igual, en unidades.
     assert srv._cobrar_turno("dep:atlas", "local", None, "qwen2.5:7b",
                              {"prompt_tokens": 9_000_000}) == 0
     p = pag.Pagador(economia)
     asientos = p.leer_kernel().libro.asientos()
     assert cap.consumo_fabrica(asientos, "claude_max", [W]) == 1
-    assert saldo(economia, "dep:atlas") < antes
+    assert saldo(economia, "dep:atlas") == antes
+    assert p.leer_kernel().saldo(t.cuenta_cristal("claude_max", "fabrica"),
+                                 t.Divisa.CRISTAL) == -1
     assert p.pendientes() == []
 
 
@@ -176,7 +180,9 @@ def test_el_borrador_del_chat_cobra_su_unidad_de_suscripcion(economia,
     p = pag.Pagador(economia)
     asientos = p.leer_kernel().libro.asientos()
     assert cap.consumo_fabrica(asientos, "claude_max", [W]) == 1
-    assert saldo(economia, "dep:atlas") < antes
+    # la unidad se descuenta de la cuota, no de la billetera: la suscripcion
+    # ya esta paga (costo hundido)
+    assert saldo(economia, "dep:atlas") == antes
     assert p.pendientes() == []
 
 

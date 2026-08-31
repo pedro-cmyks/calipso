@@ -341,7 +341,8 @@ def _economia_activa(pagador: Pagador) -> str:
             proyectos.append((id_, datos.get("titulo", ""),
                               datos.get("departamento", ""),
                               datos.get("presupuesto_mm", 0),
-                              eco_bus.gastado(asientos, id_)))
+                              eco_bus.gastado(asientos, id_,
+                                              m.suscripciones)))
         pendientes = len(pagador.pendientes())
         saldos = {"tesoro": m.k.saldo(TESORO), "direccion": m.k.saldo(DIRECCION),
                  "cuenta_pedro": m.k.saldo(CUENTA_PEDRO)}

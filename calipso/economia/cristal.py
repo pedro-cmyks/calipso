@@ -21,7 +21,7 @@ suscripcion factura y resetea. Cuando EMPIEZA un ciclo lo decide el
 llamador (con `capacidad.posicion_ciclo`) y entra como dato en
 `emitir_ciclo` y `expirar_ciclo`, igual que entra el `ts`. A que ciclo
 pertenece un CONSUMO, en cambio, no lo decide nadie de afuera: se deriva
-del libro al escribirlo (`_ciclo_abierto`), porque es el ciclo del que
+del libro al escribirlo (`ciclo_abierto`), porque es el ciclo del que
 salen las unidades y tiene que coincidir con el pool que las descuenta.
 
 Dos cuentas por suscripcion y nada mas: `cristal:<sus>:fabrica` y
@@ -31,9 +31,13 @@ declarado en `server.py`), asi que un bolsillo por departamento seria una
 cuenta que nadie mueve. El departamento que consumio queda anotado en
 `detalle["titular"]` — NUNCA en `detalle["departamento"]`, ver `consumir`.
 
-NADIE LLAMA A ESTE MODULO TODAVIA. Hasta que el pagador lo llame, no
-escribe un solo asiento en el libro de nadie: es un paso reversible del
-todo, a proposito.
+Quien lo llama en produccion: `mercado.consumir_capacidad` (por donde
+entra todo consumo de capacidad de la fabrica, desde `pagador._aplicar`) y
+`operacion`, que emite la cuota al abrir el ciclo y barre los pools al
+cerrarlo. La emision y el barrido son los que mantienen honesto el
+medidor: consumir sin emitir es legal —el pool queda en descubierto y el
+libro no pierde el hecho— pero deja `totales()` reportando cuota cero
+contra consumo N.
 """
 from __future__ import annotations
 
@@ -165,7 +169,7 @@ def _cerrado(asientos: list[Asiento], nombre: str, ciclo: int) -> bool:
     return False
 
 
-def _ciclo_abierto(asientos: list[Asiento], nombre: str) -> int:
+def ciclo_abierto(asientos: list[Asiento], nombre: str) -> int:
     """El ciclo al que hay que cargar un consumo que se escribe AHORA.
 
     El pool no tiene ciclos: descuenta por orden de llegada del asiento.
@@ -187,6 +191,11 @@ def _ciclo_abierto(asientos: list[Asiento], nombre: str) -> int:
     atribuye al ciclo que cerro y lo paga el pool del que abre. Pide
     igualdad exacta entre consumo y cuota: con resto hay expiracion y con
     descubierto hay condonacion, y las dos son marca de cierre.
+
+    Es publica porque el guardia de cuota (`mercado.consumir_capacidad`)
+    tiene que preguntar la misma cosa ANTES de escribir: contar el consumo
+    de otro ciclo —o de otra ventana— seria acotar una cuota distinta de la
+    que la unidad va a descontar.
     """
     abierto = 0
     for a in asientos:
@@ -237,7 +246,7 @@ def emitir_ciclo(k: Kernel, ts: str, semana: str, ciclo: int,
     servidas que ya no puede condonar el cierre de un ciclo que ya paso,
     y descontarlas de la cuota nueva es lo unico que mantiene honesto al
     medidor. Se atribuyen al ciclo que las paga: `consumir` estampa el
-    ciclo abierto en el asiento, ver `_ciclo_abierto`.
+    ciclo abierto en el asiento, ver `ciclo_abierto`.
 
     Valida los DOS pools antes del primer append. El libro es append-only
     y no tiene rollback (la regla que enuncia `direccion._pagar_pt`):
@@ -316,7 +325,7 @@ def consumir(k: Kernel, ts: str, semana: str, sus: Suscripcion, zona: str,
     El ciclo se cierra en cero de todas formas, ver `expirar_ciclo`.
 
     Y agrega `detalle["ciclo"]`: el ciclo del que SALEN las unidades,
-    resuelto contra el libro al escribir (`_ciclo_abierto`), no despues a
+    resuelto contra el libro al escribir (`ciclo_abierto`), no despues a
     partir de `semana`. La semana del asiento es la del hecho, y un cargo
     reintentado desde `cargos_pendientes.jsonl` conserva la vieja: sale
     del pool del ciclo nuevo y un pliegue por semana lo cargaba al ciclo
@@ -351,7 +360,7 @@ def consumir(k: Kernel, ts: str, semana: str, sus: Suscripcion, zona: str,
     asientos = k.libro.asientos()
     disponible = max(0, k.saldo(cuenta, Divisa.CRISTAL))
     detalle = {"suscripcion": sus.nombre, "zona": zona, "titular": titular,
-               "ciclo": _ciclo_abierto(asientos, sus.nombre)}
+               "ciclo": ciclo_abierto(asientos, sus.nombre)}
     sin_respaldo = unidades - disponible
     if sin_respaldo > 0:
         detalle["descubierto"] = sin_respaldo
@@ -403,9 +412,26 @@ def expirar_ciclo(k: Kernel, ts: str, semana: str, ciclo: int,
     Las tres direcciones quedan puras —emision suma al destino, consumo y
     expiracion restan del origen— y por eso vale exacto, sin excepciones:
     cuota + condonado - consumido - expirado == suma de saldos en CRISTAL.
+
+    Y no barre dos veces el mismo ciclo, que es la simetrica de "un ciclo
+    cerrado no se reabre" (`emitir_ciclo`). No es prolijidad: el pulso
+    REPITE el cierre —`operacion.cerrar_semana_operativa` solo exige que la
+    semana sea la ultima abierta, y la rutina de cierre vuelve a correr— y
+    entre ese cierre y la apertura del ciclo siguiente la fabrica sigue
+    consumiendo, porque cada turno de chat escribe. Esos consumos ya salen
+    del pool del ciclo NUEVO (`ciclo_abierto` los estampa asi apenas hay
+    marca de cierre), asi que un segundo barrido los CONDONARIA a nombre
+    del ciclo viejo: la fabrica estrenaria el ciclo nuevo con la cuota
+    entera y el consumo del hueco no lo pagaria ningun ciclo.
+
+    Rincon conocido, el mismo que documenta `ciclo_abierto`: un ciclo
+    cuyos dos pools cerraron en cero EXACTO no deja asiento de cierre, y
+    hasta que se emita el ciclo siguiente no hay marca que mirar.
     """
     _exigir_ciclo(ciclo)
     _exigir_suscripcion(sus)
+    if _cerrado(k.libro.asientos(), sus.nombre, ciclo):
+        return []
     out = []
     for zona in ZONAS_CRISTAL:
         cuenta = cuenta_cristal(sus.nombre, zona)

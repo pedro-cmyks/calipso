@@ -132,6 +132,23 @@ def test_la_capacidad_trae_el_precio_de_ahora(fabrica):
     assert cap_["fraccion_ciclo_pct"] == 25
 
 
+def test_el_consumido_del_jefe_ve_la_semana_que_no_se_abrio(fabrica):
+    """El jefe decide explorar mirando `consumido` y `precio_mm`. Consumir
+    dejo de esperar al boton de abrir la semana, y el pliegue por semana no
+    veia nada de lo escrito afuera de las operativas: el jefe leia "sobra
+    capacidad barata" con la cuota casi agotada, y el precio por escasez se
+    quedaba clavado en el base. Es el mismo numero que mira el guardia de
+    cuota: dos respuestas distintas serian dos techos."""
+    from calipso.economia import mercado as mkt
+    k, r, bus, cola, sus = fabrica
+    m = mkt.Mercado(k, r, sus)
+    # 900 de 1.800, con la semana del hecho todavia sin abrir
+    m.consumir_capacidad(TS, "2026-W99", "dep:atlas", "claude_max", 900)
+    cap_ = sit.situacion(k, r, bus, cola, sus, W, "dep:atlas")["capacidad"]
+    assert cap_["consumido"] == 900
+    assert cap_["precio_mm"] > cap_["precio_base_mm"]   # la escasez se ve
+
+
 def test_sin_suscripciones_la_capacidad_es_none(fabrica):
     k, r, bus, cola, _ = fabrica
     s = sit.situacion(k, r, bus, cola, {}, W, "dep:atlas")
