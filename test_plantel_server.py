@@ -501,7 +501,7 @@ def test_sin_lugar_en_el_ciclo_el_contratista_no_escribe_en_el_bus(
          "techo_preseed_mm": 150_000}
 
     r = contratar(s, "pedir", "50000", "otra ronda")
-    assert r["en"] == "nada" and "techo del ciclo" in r["motivo"]
+    assert r["en"] == "nada" and "techo de la ventana" in r["motivo"]
     bus2 = srv._eco_bus.Bus(
         srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
     assert bus2.ids() == ["viejo"], "escribio igual"

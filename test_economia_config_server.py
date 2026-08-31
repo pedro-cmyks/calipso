@@ -522,7 +522,7 @@ def test_la_config_muestra_el_acumulado_del_ciclo_al_lado_del_techo(cliente):
     d = cliente.get("/api/economia/config").json()
     atlas = [x for x in d["departamentos"] if x["nombre"] == "atlas"][0]
     assert atlas["techo_preseed_ciclo_mm"] == 0
-    assert atlas["preseed_ciclo_mm"] == 0
+    assert atlas["preseed_ventana_mm"] == 0
 
     cliente.post("/api/economia/departamentos/atlas/perillas",
                  json={"techo_preseed_mm": 80_000,
@@ -537,7 +537,7 @@ def test_la_config_muestra_el_acumulado_del_ciclo_al_lado_del_techo(cliente):
 
     d2 = cliente.get("/api/economia/config").json()
     atlas2 = [x for x in d2["departamentos"] if x["nombre"] == "atlas"][0]
-    assert atlas2["preseed_ciclo_mm"] == 80_000
+    assert atlas2["preseed_ventana_mm"] == 80_000
     assert atlas2["techo_preseed_ciclo_mm"] == 200_000
 
 
@@ -596,11 +596,11 @@ def test_la_config_muestra_lo_pedido_y_sin_financiar_al_lado_del_acumulado(
     la pantalla los decia como si lo fueran: la nota prometia que el techo
     del ciclo contaba "lo que ya financiaste mas lo que sigue en la mesa"
     -- esa es la regla del JEFE (`jefe._puede`) -- pegada a un
-    "ya entro este ciclo" que sale de `preseed_ciclo_mm` y cuenta solo lo
+    acumulado que sale de `preseed_ventana_mm` y cuenta solo lo
     financiado, igual que el freno de `bus.financiar`.
 
     Con un pedido olvidado en la mesa el bloque se leia
-    "ya entro este ciclo: 0 de 60.000" con 60.000 reservados, el jefe mudo
+    "entro ...: 0 de 60.000" con 60.000 reservados, el jefe mudo
     y nada que sugiriera que descartar es lo unico que lo suelta."""
     from calipso.economia import bus as bus_mod
 
@@ -612,7 +612,7 @@ def test_la_config_muestra_lo_pedido_y_sin_financiar_al_lado_del_acumulado(
            {"gasto_max_mm": 60_000}, tipo="preseed")
     atlas = [x for x in cliente.get("/api/economia/config").json()
              ["departamentos"] if x["nombre"] == "atlas"][0]
-    assert atlas["preseed_ciclo_mm"] == 0, "no se financio nada todavia"
+    assert atlas["preseed_ventana_mm"] == 0, "no se financio nada todavia"
     assert atlas["preseed_pendiente_mm"] == 60_000
 
     # descartar lo suelta, y la pantalla lo tiene que reflejar

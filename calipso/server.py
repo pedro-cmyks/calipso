@@ -4464,21 +4464,36 @@ def api_eco_config() -> dict:
     # tocar "aplicar", y tiene que ser el mismo que va a mirar el guardia
     # de POST .../capacidad. Ver `_eco_semanas_del_ciclo_de_hoy`.
     semanas_ciclo = _eco_semanas_del_ciclo_de_hoy(asientos, semana)
-    # el acumulado de pre-seed del ciclo, al lado de su techo. Es la mitad
-    # que faltaba: la mesa muestra cada pedido suelto y ninguna pantalla
-    # decia cuanto capital ya entro, asi que el techo del ciclo seria un
+    # la OTRA ventana, la del caudal de capital: el techo acumulado de
+    # pre-seed se mide sobre las ultimas `VENTANA_PRESEED_SEMANAS` semanas
+    # operativas, deslizante, y NO sobre el ciclo de facturacion de arriba
+    # (que es el que sigue rigiendo el consumido de las suscripciones). Con
+    # el ciclo, el acumulado se reseteaba de golpe en la quinta semana y el
+    # techo entero entraba dos veces en dos semanas de calendario seguidas.
+    # Ver `bus.ventana_preseed`.
+    semanas_ventana = _eco_bus.ventana_preseed(ops, semana)
+    # el acumulado de pre-seed de la ventana, al lado de su techo. Es la
+    # mitad que faltaba: la mesa muestra cada pedido suelto y ninguna
+    # pantalla decia cuanto capital ya entro, asi que el techo seria un
     # numero que Pedro pone a ciegas y un rechazo que le llega recien al
     # tocar "financiar". Se pliega del LIBRO, igual que el freno.
     for dep, fila in zip(deps_objeto, departamentos):
-        fila["preseed_ciclo_mm"] = _eco_bus.preseed_del_ciclo(
-            asientos, dep.cuenta, semanas_ciclo)
+        fila["preseed_ventana_mm"] = _eco_bus.preseed_en_ventana(
+            asientos, dep.cuenta, semanas_ventana)
+        # y cuanto cupo devuelve la proxima rodada, con el nombre de la
+        # semana que sale. Es lo que la ventana deslizante permite decir y
+        # la fija no podia: ahi el cupo volvia entero, de golpe y sin
+        # ninguna senal de que la ventana acababa de rodar.
+        (fila["preseed_libera_al_salir"],
+         fila["preseed_libera_mm"]) = _eco_bus.libera_preseed(
+            asientos, dep.cuenta, ops, semana)
         # y al lado, lo PEDIDO que sigue en la mesa. Los dos numeros no
         # son el mismo y la pantalla los decia como si lo fueran: el
         # acumulado de arriba es lo que Pedro ya financio (el unico que
         # mira `bus.financiar`), y este es la reserva que `jefe._puede` le
         # suma para no publicar lo que no se le va a poder pagar. Sin
         # este, un pedido olvidado en la mesa deja al jefe mudo con el
-        # acumulado del ciclo a la vista en CERO -- y nada en la pantalla
+        # acumulado de la ventana a la vista en CERO -- y nada en la pantalla
         # sugiere que lo que lo suelta es descartarlo.
         fila["preseed_pendiente_mm"] = pendiente_por_cuenta.get(
             dep.cuenta, 0)
@@ -4498,6 +4513,11 @@ def api_eco_config() -> dict:
         })
     return {"activa": True, "semana": semana, "ciclo": ciclo,
             "departamentos": departamentos, "suscripciones": filas,
+            # el largo de la ventana del pre-seed viaja al cliente para que
+            # la pantalla no escriba un "4" propio: seria una segunda fuente
+            # de verdad sobre el mismo techo, y el dia que se mueva la
+            # constante la pantalla mentiria sin que nada falle.
+            "preseed_ventana_semanas": _eco_bus.VENTANA_PRESEED_SEMANAS,
             "medido_generado": resumen.get("generado")}
 
 
@@ -5110,7 +5130,7 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
                             "motivo": "la bandeja se lleno mientras este tic "
                                       "decidia: que Pedro despeje antes de "
                                       "sumar otra"}
-                # EL TECHO DEL CICLO, releido adentro del candado, por la
+                # EL TECHO ACUMULADO, releido adentro del candado, por la
                 # misma razon que `_bandeja_llena` de arriba: `jefe._puede`
                 # ya lo chequeo contra la foto que trajo `situacion`, que
                 # se tomo AFUERA -- dos tics simultaneos del mismo
@@ -5119,9 +5139,9 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
                 # frescos, que es tambien lo unico que ve una perilla que
                 # Pedro bajo mientras el tic pensaba.
                 #
-                # El techo del CICLO ademas RECORTA, no solo frena: igual
+                # El techo ACUMULADO ademas RECORTA, no solo frena: igual
                 # que `techo_preseed_mm` recorta cada pedido, lo que
-                # quede libre en el ciclo recorta este. Publicar un pedido
+                # quede libre en la ventana recorta este. Publicar un pedido
                 # por mas de lo que se le puede pagar es publicar una
                 # propuesta que `bus.financiar` va a rechazar con Pedro ya
                 # mirandola.
@@ -5135,10 +5155,14 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
                                       "mientras este tic decidia: Pedro "
                                       "cerro la canilla"}
                 asientos_frescos = pagador.leer_kernel().libro.asientos()
-                semanas = _eco_semanas_del_ciclo_de_hoy(asientos_frescos,
-                                                        semana)
-                usado = _eco_bus.preseed_del_ciclo(asientos_frescos, cuenta,
-                                                   semanas)
+                # la ventana del CAUDAL (deslizante, `bus.ventana_preseed`)
+                # y no la del ciclo de facturacion: tienen que ser la misma
+                # que mira `bus.financiar` al pagar, o el recorte de aca
+                # publicaria un monto que alla se rechaza.
+                semanas = _eco_bus.ventana_preseed(
+                    _eco_cap.semanas_operativas(asientos_frescos), semana)
+                usado = _eco_bus.preseed_en_ventana(asientos_frescos, cuenta,
+                                                    semanas)
                 for id_ in bus_fresco.ids():
                     d = bus_fresco.datos(id_)
                     if (bus_fresco.estado(id_) == "alta"
@@ -5148,9 +5172,10 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
                 libre = techo_ciclo - usado
                 if libre <= 0:
                     return {"accion": "pedir", "ref": ref, "en": "nada",
-                            "motivo": f"el techo del ciclo es {techo_ciclo} "
-                                      f"mm y ya van {usado} entre lo "
-                                      "financiado y lo pedido en pie"}
+                            "motivo": f"el techo de la ventana es "
+                                      f"{techo_ciclo} mm y ya van {usado} "
+                                      "entre lo financiado y lo pedido en "
+                                      "pie"}
                 monto = max(1, min(pedido, techo, libre))
                 # `criterio` es obligatorio en `bus.alta` y para un pre-seed
                 # es INERTE: no abre `trabajo:<id>`, asi que no tiene gasto

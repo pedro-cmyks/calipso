@@ -110,12 +110,17 @@ def _puede(estado, s: dict, accion: str, ref: str | None) -> tuple[bool, str]:
                 return False, (f"ya tiene {ya} mm entre billetera y pedidos "
                                f"en pie, y el techo de la ronda es {techo}: "
                                "el pre-seed es para arrancar sin plata")
-            # EL SEGUNDO TECHO, el del CICLO, y el ultimo de los frenos
+            # EL SEGUNDO TECHO, el ACUMULADO, y el ultimo de los frenos
             # porque es el mas caro de chequear: los de arriba miran un
             # numero de la perilla o una lista corta; este pliega el libro
-            # entero de las semanas del ciclo.
+            # entero de las semanas de la ventana.
             #
-            # Que cuenta: lo FINANCIADO del ciclo mas lo PEDIDO que sigue
+            # La ventana es DESLIZANTE -- las ultimas
+            # `bus.VENTANA_PRESEED_SEMANAS` semanas operativas, no el ciclo
+            # de facturacion. `situacion` ya la resolvio; aca solo se lee
+            # el numero.
+            #
+            # Que cuenta: lo FINANCIADO de la ventana mas lo PEDIDO que sigue
             # en la mesa. Las dos cosas, y por motivos distintos. Lo
             # financiado ya salio del tesoro y el libro no lo desescribe:
             # es piso duro. Lo pedido todavia no es plata, pero es plata
@@ -131,35 +136,47 @@ def _puede(estado, s: dict, accion: str, ref: str | None) -> tuple[bool, str]:
             # ver el comentario en `bus.financiar`.
             techo_ciclo = int(s.get("techo_preseed_ciclo_mm") or 0)
             if techo_ciclo <= 0:
-                return False, ("sin techo de pre-seed por ciclo: Pedro "
+                return False, ("sin techo de pre-seed acumulado: Pedro "
                                "todavia no autorizo cuanto capital puede "
-                               "entrar por ciclo")
-            financiado = int(s.get("preseed_ciclo_mm") or 0)
+                               "entrar por ventana")
+            financiado = int(s.get("preseed_ventana_mm") or 0)
             pendiente = int(s.get("preseed_pendiente_mm") or 0)
             ya_ciclo = financiado + pendiente
             if ya_ciclo >= techo_ciclo:
                 # La salida depende de QUE parte llena el techo, y decirla
-                # mal es peor que no decirla. Lo financiado si caduca con
-                # el ciclo: `preseed_del_ciclo` solo mira las semanas de
-                # esta ventana. Lo PEDIDO no caduca nunca -- una propuesta
-                # en `alta` no muere sola (el criterio de muerte corre
-                # desde `semana_financiada`), y sigue siendo financiable
-                # en cualquier ciclo posterior, donde vuelve a descontar
-                # del techo de ESE ciclo. O sea que un pedido olvidado en
-                # la mesa frena al jefe para siempre, y "espere al ciclo
-                # que viene" era un consejo falso: tres ciclos despues el
-                # mensaje salia identico, palabra por palabra. Lo que lo
-                # suelta es que Pedro lo financie o lo descarte.
-                salida = ("que Pedro suba la perilla o espere al ciclo que "
-                          "viene")
+                # mal es peor que no decirla. Lo financiado si caduca:
+                # `preseed_en_ventana` solo mira las semanas de la ventana
+                # deslizante, asi que sale sola cuando la semana en que
+                # entro queda atras. Lo PEDIDO no caduca nunca -- una
+                # propuesta en `alta` no muere sola (el criterio de muerte
+                # corre desde `semana_financiada`), y sigue siendo
+                # financiable en cualquier ventana posterior, donde vuelve
+                # a descontar del techo de ESA ventana. O sea que un pedido
+                # olvidado en la mesa frena al jefe para siempre, y
+                # mandarlo a esperar era un consejo falso: tres ciclos
+                # despues salia el mismo mensaje, palabra por palabra. Lo
+                # que lo suelta es que Pedro lo financie o lo descarte.
+                #
+                # Y del lado en que esperar SI sirve, la ventana deslizante
+                # deja decir cuanto y cuando -- el reset en bloque del
+                # ciclo devolvia el cupo entero sin ninguna senal.
+                sale = s.get("preseed_libera_al_salir")
+                libera = int(s.get("preseed_libera_mm") or 0)
+                cuanto = (f" (al abrir la proxima semana operativa sale "
+                          f"{sale} de la ventana y se liberan {libera} mm)"
+                          if libera else "")
+                salida = ("que Pedro suba la perilla, o que espere: la "
+                          "ventana rueda al abrirse cada semana operativa y "
+                          "el cupo vuelve a medida que las semanas salen "
+                          f"por atras{cuanto}")
                 if pendiente:
                     salida = ("que Pedro suba la perilla, o financie o "
-                              "descarte lo que sigue en la mesa: esperar al "
-                              "ciclo que viene no lo suelta, porque un "
-                              "pedido en pie sigue reservando cupo del "
-                              "ciclo en el que se financie")
-                return False, (f"el techo del ciclo es {techo_ciclo} mm y "
-                               f"entre lo financiado ({financiado}) y lo "
+                              "descarte lo que sigue en la mesa: esperar no "
+                              "lo suelta, porque un pedido en pie sigue "
+                              "reservando cupo de la ventana en la que se "
+                              "financie")
+                return False, (f"el techo de la ventana es {techo_ciclo} mm "
+                               f"y entre lo financiado ({financiado}) y lo "
                                f"pedido en pie ({pendiente}) ya van "
                                f"{ya_ciclo}: {salida}")
         if accion == "proponer" and s["presupuesto_semanal_mm"] > 0:

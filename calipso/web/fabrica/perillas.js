@@ -168,17 +168,29 @@ function formularioMovimiento() {
 // paso hoy con cuatro endpoints de permisos sin pantalla.
 // --------------------------------------------------------------------------
 
-function filaTechoPreseed(dep) {
+function filaTechoPreseed(dep, semanas) {
   const n = escapar(dep.nombre);
-  const entrado = dep.preseed_ciclo_mm || 0;
+  const entrado = dep.preseed_ventana_mm || 0;
   const techoCiclo = dep.techo_preseed_ciclo_mm || 0;
   const pendiente = dep.preseed_pendiente_mm || 0;
-  // el acumulado del ciclo, al lado de su techo. Sin esto el numero de
-  // abajo se pone a ciegas: la mesa muestra cada pedido suelto y ninguna
-  // pantalla decia cuanto capital ya entro este ciclo.
-  const yaEntro = `<div class="nota">ya entro este ciclo: ` +
-    `${escapar(monedas(entrado))}` +
+  const libera = dep.preseed_libera_mm || 0;
+  const sale = dep.preseed_libera_al_salir || "";
+  // el acumulado de la VENTANA, al lado de su techo. Decia "ya entro este
+  // ciclo" y eso dejo de ser cierto: el techo ya no se mide sobre el ciclo
+  // de facturacion (una ventana fija que se reseteaba entera en la quinta
+  // semana) sino sobre las ultimas N semanas operativas, deslizante.
+  const yaEntro = `<div class="nota">entro en las ultimas ` +
+    `${escapar(semanas)} semanas operativas: ${escapar(monedas(entrado))}` +
     (techoCiclo ? ` de ${escapar(monedas(techoCiclo))}` : "") + `</div>`;
+  // y CUANDO vuelve cupo, que es lo unico bueno de perder el reset en
+  // bloque: con la ventana fija el cupo volvia entero, de golpe y sin
+  // ninguna senal de que la ventana acababa de rodar. Solo se dibuja si
+  // hay algo que liberar -- prometer "se liberan 0" es ruido.
+  const seLibera = libera
+    ? `<div class="nota">cuando abras la proxima semana operativa sale ` +
+      `${escapar(sale)} de la ventana y se liberan ` +
+      `${escapar(monedas(libera))}.</div>`
+    : "";
   // y lo PEDIDO que sigue en la mesa, que no es lo mismo y hasta hoy no
   // se veia en ningun lado. El numero de arriba es el de Pedro (lo
   // financiado, el unico que mira `financiar`); este es la reserva que el
@@ -188,22 +200,24 @@ function filaTechoPreseed(dep) {
   // este renglon, nada se lo sugiere.
   const enLaMesa = pendiente
     ? `<div class="nota">y ${escapar(monedas(pendiente))} pedidas y sin ` +
-      `financiar en la mesa: al jefe le reservan cupo del ciclo hasta que ` +
-      `las financies o las descartes.</div>`
+      `financiar en la mesa: al jefe le reservan cupo de la ventana hasta ` +
+      `que las financies o las descartes. Esas no se sueltan solas: la ` +
+      `ventana rueda pero un pedido en pie sigue reservando cupo de la ` +
+      `ventana en la que lo pagues.</div>`
     : "";
   return `<form class="ajuste" data-perillas="techo-preseed" ` +
     `data-departamento="${n}">` +
     `<label>${n}: techo por pedido (en monedas)` +
     `<input name="monto" inputmode="decimal" ` +
     `value="${escapar(monedasEditable(dep.techo_preseed_mm || 0))}"></label>` +
-    `<label>${n}: techo del ciclo (en monedas)` +
+    `<label>${n}: techo de la ventana (en monedas)` +
     `<input name="ciclo" inputmode="decimal" ` +
     `value="${escapar(monedasEditable(techoCiclo))}"></label>` +
-    yaEntro + enLaMesa +
+    yaEntro + seLibera + enLaMesa +
     `<button type="submit">guardar</button></form>`;
 }
 
-function bloquePreseed(departamentos) {
+function bloquePreseed(departamentos, semanas) {
   const fabrica = departamentos.filter(d => d.zona === "fabrica");
   if (!fabrica.length) {
     return `<div class="vacio">Sin departamentos de fabrica.</div>`;
@@ -220,19 +234,28 @@ function bloquePreseed(departamentos) {
     // piden, y ninguno tiene un valor por defecto que autorice algo.
     //
     // Y la nota dice la regla de PEDRO, que es la del numero que esta dos
-    // renglones mas abajo. Antes decia que el techo del ciclo cuenta "lo
+    // renglones mas abajo. Antes decia que el techo acumulado cuenta "lo
     // que ya financiaste mas lo que sigue en la mesa" -- esa es la regla
     // del JEFE (`jefe._puede`, que reserva lo pedido en pie), no la del
     // freno que Pedro choca: `bus.financiar` cuenta SOLO lo financiado, y
-    // era lo mismo que informaba el "ya entro este ciclo" pegado abajo.
-    // Tres textos sobre el mismo techo, dos de ellos contando distinto.
+    // era lo mismo que informaba el acumulado pegado abajo. Tres textos
+    // sobre el mismo techo, dos de ellos contando distinto.
+    //
+    // Y la ventana: DESLIZANTE, no el ciclo de facturacion. Decirlo aca
+    // importa porque cambia lo que Pedro siente -- el cupo ya no vuelve
+    // entero en una fecha, vuelve de a pedazos-- y porque el reset del
+    // ciclo era el agujero: el techo entero entraba en la ultima semana
+    // del ciclo y otra vez en la primera del siguiente.
     `<div class="nota">El techo por pedido acota cuanto vale CADA ronda; ` +
-    `el del ciclo acota cuanto capital ENTRA en las 4 semanas del ciclo: ` +
-    `lo que ya financiaste, que es el numero de abajo. Pasado ese total, ` +
-    `financiar te lo rechaza hasta que lo subas: es a proposito, para que ` +
-    `no se cruce en silencio. El jefe se frena antes que vos, porque el ` +
-    `ademas se descuenta lo que ya pidio y sigue en la mesa.</div>` +
-    fabrica.map(filaTechoPreseed).join("");
+    `el acumulado acota cuanto capital ENTRA en cualquier corrida de ` +
+    `${escapar(semanas)} semanas operativas: lo que ya financiaste, que es ` +
+    `el numero de abajo. La ventana se desliza, no se resetea: el cupo ` +
+    `vuelve de a poco, a medida que cada semana sale por atras. Pasado ese ` +
+    `total, financiar te lo rechaza hasta que lo subas: es a proposito, ` +
+    `para que no se cruce en silencio. El jefe se frena antes que vos, ` +
+    `porque el ademas se descuenta lo que ya pidio y sigue en la ` +
+    `mesa.</div>` +
+    fabrica.map(d => filaTechoPreseed(d, semanas)).join("");
 }
 
 /** Lo que el probe pasivo propone para esta suscripcion, en palabras.
@@ -298,7 +321,11 @@ export function textoDeAjustes(config) {
       `${escapar(config.medido_generado)}.</div>`
     : `<div class="nota">El probe de consumo todavia no dejo ninguna foto ` +
       `(la deja la rutina "consumo").</div>`;
-  return `<div class="ajustes">` + bloquePreseed(deps) +
+  // el largo de la ventana lo manda el servidor (`VENTANA_PRESEED_SEMANAS`)
+  // en vez de escribirse aca: un 4 propio en la pantalla seria una segunda
+  // fuente de verdad sobre el mismo techo.
+  const semanasVentana = config.preseed_ventana_semanas || 4;
+  return `<div class="ajustes">` + bloquePreseed(deps, semanasVentana) +
     `<div class="subtitulo">capacidad de las suscripciones</div>` +
     `<div class="nota">Cambiar esto reprecia la capacidad: el precio de la ` +
     `unidad se estampa en cada compra que la fabrica escribe despues, y el ` +

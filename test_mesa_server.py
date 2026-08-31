@@ -446,7 +446,7 @@ def test_el_techo_del_ciclo_frena_a_pedro_en_la_mesa(cliente):
     r2 = c.post("/api/economia/bus/ps2/financiar", params={"token": srv.TOKEN},
                 json={"cuenta": t.TESORO, "mm": 100_000})
     assert r2.status_code == 400, r2.text
-    assert "techo de pre-seed del ciclo" in r2.json()["detail"]
+    assert "techo de pre-seed superado" in r2.json()["detail"]
     assert "subi la perilla" in r2.json()["detail"]
 
     # y la plata NO salio: 100.000, no 200.000

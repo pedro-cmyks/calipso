@@ -48,8 +48,21 @@ class Departamento:
     # ninguna capa. Cero significa "todavia no", no "sin limite".
     techo_preseed_mm: int = 0
     # El SEGUNDO techo del pre-seed, y el que acota el caudal: cuanto
-    # capital puede ENTRAR a este departamento por rondas pre-seed en un
-    # ciclo entero (4 semanas operativas, `capacidad.SEMANAS_POR_CICLO`).
+    # capital puede ENTRAR a este departamento por rondas pre-seed en
+    # cualquier corrida de 4 semanas operativas (`bus.VENTANA_PRESEED_SEMANAS`).
+    #
+    # La ventana es DESLIZANTE y no el ciclo de facturacion, aunque el
+    # nombre del campo diga "ciclo": el nombre se queda como esta porque es
+    # una clave persistida en departamentos.json y `Registro` construye
+    # `Departamento(**campos)` -- renombrarla revienta con TypeError al
+    # cargar un json escrito antes, y con el la economia entera. Lo que se
+    # arreglo fue la ventana, no la perilla: sigue siendo "cuanto capital
+    # entra en 4 semanas operativas", solo que ahora vale para TODAS las
+    # corridas de 4 y no solo para las que caen alineadas al ciclo. Con la
+    # ventana fija (`ops[c*4:(c+1)*4]`) el acumulado se reseteaba de golpe
+    # en la quinta semana, asi que el techo entero entraba en la ultima
+    # semana del ciclo N y otra vez en la primera del N+1: 2x en dos
+    # semanas de calendario seguidas. Ver `bus.ventana_preseed`.
     #
     # `techo_preseed_mm` acota cuanto vale CADA ronda; no acota cuantas.
     # Con el techo por pedido en 50.000 y la bandeja despejada, un jefe
@@ -59,9 +72,9 @@ class Departamento:
     # que pasado ese total Pedro tenga que volver a decidir a conciencia
     # -- subir la perilla es la decision, y es explicita.
     #
-    # Cuenta lo FINANCIADO del ciclo (plata que salio del tesoro, que el
-    # libro no desescribe) y, del lado del jefe, ademas lo que ya pidio y
-    # sigue en la mesa; ver `bus.financiar` y `jefe._puede`.
+    # Cuenta lo FINANCIADO de la ventana (plata que salio del tesoro, que
+    # el libro no desescribe) y, del lado del jefe, ademas lo que ya pidio
+    # y sigue en la mesa; ver `bus.financiar` y `jefe._puede`.
     #
     # Nace en CERO y cero FRENA, igual que `techo_api_ciclo_mm` (que en
     # cero manda todo gasto de API a la compuerta c) y que su hermano de

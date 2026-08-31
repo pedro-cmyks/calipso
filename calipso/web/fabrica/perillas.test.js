@@ -137,16 +137,16 @@ test("las dos suscripciones sumadas dan lo que Pedro dijo que paga: 220 al mes",
 
 // -- los ajustes: los numeros que hasta hoy solo se cambiaban en el json ---
 const CONFIG = {
-  activa: true, semana: "2026-W35", ciclo: 0,
+  activa: true, semana: "2026-W35", ciclo: 0, preseed_ventana_semanas: 4,
   medido_generado: "2026-08-27T09:00:00+00:00",
   departamentos: [
     {nombre: "atlas", zona: "fabrica", presupuesto_semanal_mm: 25000,
      techo_api_ciclo_mm: 0, explorar_explotar_pct: 50, agresividad_pct: 30,
      techo_preseed_mm: 50000, techo_preseed_ciclo_mm: 150000,
-     preseed_ciclo_mm: 50000},
+     preseed_ventana_mm: 50000},
     {nombre: "finanzas", zona: "personal", presupuesto_semanal_mm: 0,
      techo_api_ciclo_mm: 0, explorar_explotar_pct: 50, agresividad_pct: 30,
-     techo_preseed_mm: 0, techo_preseed_ciclo_mm: 0, preseed_ciclo_mm: 0},
+     techo_preseed_mm: 0, techo_preseed_ciclo_mm: 0, preseed_ventana_mm: 0},
   ],
   suscripciones: [
     {nombre: "claude_max", costo_mensual_mm: 200000, capacidad_ciclo: 1000,
@@ -263,10 +263,14 @@ test("todo lo de los ajustes pasa por escapar()", () => {
 
 // -- el segundo techo del pre-seed: el acumulado por ciclo -----------------
 
-test("el techo del ciclo tiene su propio campo: sin cara Pedro no lo mueve", () => {
+test("el techo acumulado tiene su propio campo: sin cara Pedro no lo mueve",
+     () => {
   const html = textoDeAjustes(CONFIG);
+  // `name="ciclo"` se queda: es la clave que app.js manda a la perilla
+  // `techo_preseed_ciclo_mm`, que sigue llamandose asi porque esta
+  // persistida en departamentos.json. La ETIQUETA si dice la verdad nueva
   assert.match(html, /name="ciclo"/);
-  assert.match(html, /techo del ciclo/);
+  assert.match(html, /techo de la ventana/);
   // y con el valor que ya tiene puesto, no vacio: la perilla se lee antes
   // de escribirse
   assert.match(html, /value="150"/);
@@ -274,7 +278,7 @@ test("el techo del ciclo tiene su propio campo: sin cara Pedro no lo mueve", () 
 
 test("los dos techos van en el mismo formulario: son una sola decision", () => {
   // mandarlos por separado deja una ventana en la que el techo por pedido
-  // ya subio y el del ciclo todavia no -- justo el estado en el que el
+  // ya subio y el acumulado todavia no -- justo el estado en el que el
   // jefe puede pedir mas de lo que se le va a poder pagar
   const html = textoDeAjustes(CONFIG);
   const forms = html.match(/<form class="ajuste" data-perillas="techo-preseed"[\s\S]*?<\/form>/g);
@@ -283,18 +287,56 @@ test("los dos techos van en el mismo formulario: son una sola decision", () => {
   assert.match(forms[0], /name="ciclo"/);
 });
 
-test("muestra cuanto capital ya entro en el ciclo, al lado de su techo", () => {
-  // sin el acumulado a la vista, el techo del ciclo es un numero que Pedro
-  // pone a ciegas y un rechazo que le llega recien al tocar "financiar"
-  assert.match(textoDeAjustes(CONFIG), /ya entro este ciclo: 50 de 150/);
+test("muestra cuanto capital ya entro en la ventana, al lado de su techo",
+     () => {
+  // sin el acumulado a la vista, el techo acumulado es un numero que Pedro
+  // pone a ciegas y un rechazo que le llega recien al tocar "financiar".
+  // Y dice CUAL ventana: "este ciclo" dejo de ser cierto cuando el techo
+  // paso a medirse sobre las ultimas N semanas operativas, deslizante
+  assert.match(textoDeAjustes(CONFIG),
+               /entro en las ultimas 4 semanas operativas: 50 de 150/);
 });
 
-test("dice que el techo del ciclo ata tambien a la mesa", () => {
+test("el largo de la ventana lo manda el servidor, no lo inventa la pantalla",
+     () => {
+  // un 4 escrito en el cliente seria una segunda fuente de verdad sobre el
+  // mismo techo: el dia que se mueva `VENTANA_PRESEED_SEMANAS`, la pantalla
+  // mentiria y nada fallaria
+  const html = textoDeAjustes({...CONFIG, preseed_ventana_semanas: 6});
+  assert.match(html, /entro en las ultimas 6 semanas operativas/);
+  assert.match(html, /corrida de 6 semanas operativas/);
+});
+
+test("dice que el techo acumulado ata tambien a la mesa, y que la ventana " +
+     "se desliza", () => {
   // "lo que NO puede pasar es que se cruce en silencio": si financiar
-  // rechaza, la pantalla tiene que haberlo dicho antes
+  // rechaza, la pantalla tiene que haberlo dicho antes. Y el cambio que
+  // Pedro va a SENTIR: el cupo ya no vuelve entero en una fecha
+  // predecible, vuelve de a poco a medida que una semana sale por atras
   const html = textoDeAjustes(CONFIG);
   assert.match(html, /financiar te lo rechaza/);
-  assert.match(html, /4 semanas del ciclo/);
+  assert.match(html, /corrida de 4 semanas operativas/);
+  assert.match(html, /La ventana se desliza, no se resetea/);
+});
+
+test("cuando hay cupo por liberar, dice cuando vuelve y cuanto", () => {
+  // lo unico bueno de perder el reset en bloque, y lo que la ventana fija
+  // no podia decir: ahi el cupo volvia entero, de golpe y sin ninguna
+  // senal de que la ventana acababa de rodar
+  const html = textoDeAjustes({...CONFIG, departamentos: [
+    {...CONFIG.departamentos[0], preseed_libera_mm: 30_000_000,
+     preseed_libera_al_salir: "2026-W31"},
+    CONFIG.departamentos[1]]});
+  assert.match(
+    html,
+    /cuando abras la proxima semana operativa sale 2026-W31 de la ventana y se liberan 30\.000\./);
+});
+
+test("sin nada que liberar, no promete un alivio de cero", () => {
+  // "se liberan 0" es ruido: la ventana todavia no junto sus N semanas, o
+  // la que sale no recibio pre-seed
+  const html = textoDeAjustes(CONFIG);
+  assert.ok(!/se liberan/.test(html), "prometio un alivio que no existe");
 });
 
 test("la zona personal no tiene ninguno de los dos techos", () => {
@@ -340,17 +382,20 @@ test("los dos inputs del techo se pintan con el valor exacto, no formateado",
 
 test("lo pedido y sin financiar se ve, y dice que descartarlo suelta el cupo",
      () => {
-  // el acumulado del ciclo puede estar en CERO con el jefe frenado: lo que
+  // el acumulado de la ventana puede estar en CERO con el jefe frenado: lo que
   // lo frena es el pedido en pie, y hasta hoy ese numero no se veia en
   // ninguna pantalla -- ni nada sugeria que descartarlo es lo que lo suelta
   const config = {...CONFIG, departamentos: [
-    {...CONFIG.departamentos[0], preseed_ciclo_mm: 0,
+    {...CONFIG.departamentos[0], preseed_ventana_mm: 0,
      techo_preseed_ciclo_mm: 60_000_000, preseed_pendiente_mm: 60_000_000},
     CONFIG.departamentos[1]]};
   const html = textoDeAjustes(config);
-  assert.match(html, /ya entro este ciclo: 0 de 60\.000/);
+  assert.match(html, /entro en las ultimas 4 semanas operativas: 0 de 60\.000/);
   assert.match(html, /60\.000 pedidas y sin financiar en la mesa/);
   assert.match(html, /descartes/);
+  // y que la ventana deslizante NO las suelta: es la unica parte del techo
+  // que esperar no destraba, y decirlo mal es peor que no decirlo
+  assert.match(html, /un pedido en pie sigue reservando cupo/);
 });
 
 test("la nota del techo del ciclo cuenta lo mismo que el numero de abajo",

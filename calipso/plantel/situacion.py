@@ -68,6 +68,17 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
     # techo. Es la misma funcion que mira `bus.financiar` al pagar: dos
     # respuestas distintas a "en que ciclo estoy" serian dos techos.
     semanas_ciclo = cap.semanas_del_ciclo_de_hoy(ops, semana)
+    # y la OTRA ventana, la del caudal de capital. El techo acumulado de
+    # pre-seed no se mide sobre el ciclo de facturacion: se mide sobre las
+    # ultimas `bus.VENTANA_PRESEED_SEMANAS` semanas operativas, deslizante.
+    # Con el ciclo, el acumulado se reseteaba de golpe en la quinta semana
+    # y el techo entero entraba dos veces en dos semanas de calendario
+    # seguidas. Son dos preguntas distintas y por eso dos listas distintas:
+    # `semanas_ciclo` sigue siendo la del gasto de API, que factura por
+    # ciclo de verdad. Ver `bus.ventana_preseed`.
+    semanas_ventana = bus_mod.ventana_preseed(ops, semana)
+    sale_de_ventana, libera_mm = bus_mod.libera_preseed(
+        asientos, cuenta, ops, semana)
 
     # OJO con los estados del bus: `alta` es una propuesta sin financiar y
     # `financiada` es un trabajo vivo. `bus.activas()` devuelve SOLO las
@@ -129,17 +140,26 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
         # tiene. Cero es "Pedro todavia no autorizo", y `_puede` lo frena
         # ahi -- ver el freno de `pedir` en jefe.py.
         "techo_preseed_mm": dep.techo_preseed_mm,
-        # el segundo techo: cuanto capital puede ENTRAR por pre-seed en
-        # todo el ciclo. Cero tambien frena aca (ver departamentos.py).
+        # el segundo techo: cuanto capital puede ENTRAR por pre-seed en la
+        # ventana deslizante. Cero tambien frena aca (ver departamentos.py).
         "techo_preseed_ciclo_mm": dep.techo_preseed_ciclo_mm,
         # lo que ya pidio y sigue en la mesa, sin financiar
         "preseed_pendiente_mm": preseed_pendiente,
-        # lo que YA le entro por pre-seed en este ciclo, del libro. Con lo
+        # lo que YA le entro por pre-seed en la ventana, del libro. Con lo
         # pendiente de arriba es lo que `jefe._puede` compara contra el
-        # techo del ciclo: financiado (irreversible) + pedido en pie
-        # (reservado mientras siga en la mesa).
-        "preseed_ciclo_mm": bus_mod.preseed_del_ciclo(
-            asientos, cuenta, semanas_ciclo),
+        # techo acumulado: financiado (irreversible) + pedido en pie
+        # (reservado mientras siga en la mesa). Se llamaba
+        # `preseed_ciclo_mm` cuando la ventana era el ciclo; el nombre
+        # viejo mentia sobre lo unico que hay que entender del techo.
+        "preseed_ventana_mm": bus_mod.preseed_en_ventana(
+            asientos, cuenta, semanas_ventana),
+        # y cuanto cupo devuelve la proxima rodada de la ventana, con el
+        # nombre de la semana que sale. Es lo que la deslizante permite
+        # decir y la fija no: el jefe lo pone en su freno para que el
+        # consejo sea "esperar sirve, y sirve esto" y no un reset
+        # invisible. `None`/0 mientras todavia no salga ninguna.
+        "preseed_libera_mm": libera_mm,
+        "preseed_libera_al_salir": sale_de_ventana,
         # lo que Pedro descarto esta semana: cuenta contra el mismo techo
         # que las propuestas en pie (ver `jefe._puede`)
         "descartadas_semana": descartadas,

@@ -29,6 +29,17 @@ from .tipos import Asiento, TESORO, TipoAsiento
 _CLAVES_CRITERIO = {"gasto_max_mm", "semanas_max"}
 _TIPOS_PROPUESTA = {"trabajo", "preseed"}
 
+# Cuantas semanas operativas mira hacia atras el techo acumulado de
+# pre-seed (`Departamento.techo_preseed_ciclo_mm`). Vive ACA y no en
+# `capacidad` a proposito: coincide en valor con `SEMANAS_POR_CICLO` pero
+# no es el mismo numero. Aquel es el periodo de FACTURACION de las
+# suscripciones -- lo usan el precio por escasez, la cuota del cristal y
+# el cierre mensual, y ahi el reset en bloque es correcto porque una
+# suscripcion factura en bloque. Este acota el CAUDAL de capital hacia un
+# departamento, que es otra cosa; atarlos con una sola constante haria que
+# tocar el caudal moviera la facturacion. Ver `ventana_preseed`.
+VENTANA_PRESEED_SEMANAS = 4
+
 
 class ErrorBus(Exception):
     pass
@@ -222,24 +233,40 @@ def financiar(mercado: Mercado, bus: Bus, ts: str, semana: str, id: str,
         # subir la perilla desde la pantalla de Plata, que es una decision
         # explicita y queda escrita en departamentos.json. No pasa por el
         # motor de permisos a proposito -- un "si, siempre" ahi seria una
-        # segunda fuente de verdad sobre cuanto capital entra por ciclo, y
+        # segunda fuente de verdad sobre cuanto capital entra por ventana, y
         # la perilla dejaria de ser el techo. Lo que no puede pasar es que
         # se cruce en silencio.
+        #
+        # La ventana es DESLIZANTE (`ventana_preseed`) y no el ciclo de
+        # facturacion. Con el ciclo, el acumulado no decaia sino que se
+        # reseteaba de golpe en la quinta semana operativa, y este mismo
+        # freno dejaba pasar el techo entero en la ultima semana del ciclo N
+        # y otra vez en la primera del N+1: 2x el techo en dos semanas de
+        # calendario seguidas, que es exactamente la rafaga que el techo
+        # existe para impedir.
         techo_ciclo = int(dep.techo_preseed_ciclo_mm or 0)
         if techo_ciclo <= 0:
             raise ErrorBus(
-                f"{dueno} no tiene techo de pre-seed por ciclo: la perilla "
+                f"{dueno} no tiene techo de pre-seed acumulado: la perilla "
                 "`techo_preseed_ciclo_mm` esta en cero y cero es 'todavia "
                 "no', no 'sin limite'")
-        semanas = cap.semanas_del_ciclo_de_hoy(
-            cap.semanas_operativas(asientos), semana)
-        ya = preseed_del_ciclo(asientos, dueno, semanas)
+        ops = cap.semanas_operativas(asientos)
+        semanas = ventana_preseed(ops, semana)
+        ya = preseed_en_ventana(asientos, dueno, semanas)
         if ya + mm > techo_ciclo:
+            # y el alivio con nombre y numero, que la ventana fija no podia
+            # dar: ahi el cupo volvia entero y en silencio, aca se sabe cual
+            # semana sale y cuanto se lleva con ella.
+            sale, libera = libera_preseed(asientos, dueno, ops, semana)
+            alivio = (f" Al abrir la proxima semana operativa sale {sale} de "
+                      f"la ventana y con ella se liberan {libera} mm."
+                      if libera else "")
             raise ErrorBus(
-                f"techo de pre-seed del ciclo superado: {dueno} ya recibio "
-                f"{ya} mm de pre-seed en este ciclo y {mm} mm mas pasan de "
-                f"{techo_ciclo} mm. Para darle mas, subi la perilla "
-                "`techo_preseed_ciclo_mm`")
+                f"techo de pre-seed superado: {dueno} ya recibio {ya} mm de "
+                f"pre-seed en las ultimas {VENTANA_PRESEED_SEMANAS} semanas "
+                f"operativas ({semanas[0]}..{semanas[-1]}) y {mm} mm mas "
+                f"pasan de {techo_ciclo} mm.{alivio} Para darle mas ahora, "
+                "subi la perilla `techo_preseed_ciclo_mm`")
         destino = dueno
         motivo = "preseed"
         # `ref` = el id de la propuesta. Un trabajo se identifica por su
@@ -330,20 +357,25 @@ def aporte_preseed(asientos: list[Asiento], id: str) -> int:
                and a.detalle.get("motivo") == "preseed" and a.ref == id)
 
 
-def preseed_del_ciclo(asientos: list[Asiento], cuenta: str,
-                      semanas: list[str]) -> int:
+def preseed_en_ventana(asientos: list[Asiento], cuenta: str,
+                       semanas: list[str]) -> int:
     """Todo el pre-seed que YA entro a esa cuenta en esas semanas.
 
     Hermano de `aporte_preseed`, que mira UN pedido; este mira UN
-    departamento y un tramo de semanas, que es lo que pide el techo del
-    ciclo: el pedido es la unidad del techo por pedido, el departamento es
-    la unidad del techo acumulado.
+    departamento y un tramo de semanas, que es lo que pide el techo
+    acumulado: el pedido es la unidad del techo por pedido, el
+    departamento es la unidad del techo del caudal.
+
+    Se llamaba `preseed_del_ciclo` mientras el tramo era el ciclo de
+    facturacion. Ya no lo es (`ventana_preseed`) y el nombre viejo mentia
+    sobre la unica cosa que importa entender de este techo: cual es la
+    ventana. La funcion no cambio, cambio quien le pasa las semanas.
 
     Se pliega del LIBRO y no del bus a proposito. El bus dice lo que se
     pidio y lo que se marco; el libro dice lo que se pago, y es lo unico
     que no se puede desescribir. Si una marca del bus se pierde entre dos
     appends -- el hueco que `api_eco_bus_financiar` ya cubre mirando el
-    libro -- el techo del ciclo tiene que seguir contando esa plata.
+    libro -- el techo tiene que seguir contando esa plata.
 
     `motivo == "preseed"` y destino, los dos: la cuenta del departamento
     tambien recibe transferencias que no son pre-seed (un rescate, una
@@ -354,6 +386,89 @@ def preseed_del_ciclo(asientos: list[Asiento], cuenta: str,
                if a.tipo is TipoAsiento.TRANSFERENCIA
                and a.detalle.get("motivo") == "preseed"
                and a.destino == cuenta and a.semana in semanas)
+
+
+def ventana_preseed(semanas_ops: list[str], semana: str) -> list[str]:
+    """Las semanas que cuentan hoy contra `techo_preseed_ciclo_mm`: las
+    ultimas `VENTANA_PRESEED_SEMANAS` semanas OPERATIVAS hasta `semana`,
+    mas `semana` misma. Nunca levanta.
+
+    NO es el ciclo de facturacion, y por eso es una funcion aparte con su
+    propia constante aunque hoy los dos numeros valgan 4. El ciclo
+    (`capacidad.SEMANAS_POR_CICLO`, `semanas_del_ciclo_de_hoy`) es una
+    ventana FIJA -- `ops[c*4:(c+1)*4]` -- y esta bien que lo sea: una
+    suscripcion factura, emite su cuota y la resetea en bloque, de verdad,
+    y de ahi cuelgan el precio por escasez, la emision del cristal y el
+    cierre mensual. Esto mide otra cosa: el CAUDAL de capital hacia un
+    departamento.
+
+    Con la ventana fija el acumulado no decaia, se reseteaba de golpe al
+    abrirse la quinta semana operativa: financiar el techo entero en la
+    ultima semana del ciclo N y otra vez en la primera del N+1 metia 2x el
+    techo en dos semanas de calendario seguidas. El techo existe justamente
+    para acotar cuanto capital entra antes de que Pedro tenga que volver a
+    decidir a conciencia, y una rafaga del doble en siete dias es lo que
+    tiene que impedir. Deslizante, el invariante vale SIEMPRE y no solo en
+    los bordes: en ninguna corrida de cuatro semanas operativas entra mas
+    que el techo.
+
+    Lo que Pedro pierde es el reset predecible ("el lunes vuelve entero") y
+    lo que gana es que el cupo vuelve de a poco, a medida que una semana
+    sale por atras -- y eso se puede DECIR, que un reset invisible no se
+    podia: ver `libera_preseed`.
+
+    Se cuenta por semana OPERATIVA y no por fecha, por dos razones. El
+    libro indexa todo por semana (`a.semana`), asi que es la unica unidad
+    que no hay que reconstruir; y una semana que la fabrica no abrio no es
+    una semana en la que el departamento pudo hacer nada con ese capital.
+
+    Y `semana` entra SIEMPRE, este operativa o no, para que la ventana sea
+    total y no dependa de una guardia de otra capa. Hoy no puede haber
+    pre-seed en una semana sin abrir -- `financiar` corta antes con "semana
+    no operativa" -- pero esa guardia no es de este techo, y este techo ya
+    se rompio dos veces (`server.py`, `situacion.py`) por preguntar "en que
+    ventana estoy" con `if semana in ops`.
+
+    Notar de que lado cae la demora, que es la parte que importa: todo
+    lunes empieza afuera de las operativas porque abrir la semana es un
+    boton manual, y mientras no se abre la ventana NO rueda -- las cuatro
+    operativas de atras siguen todas adentro. O sea que tardar en abrir el
+    lunes aprieta el techo, nunca lo afloja. Un techo que se resetea porque
+    Pedro tardo en tocar un boton no es un techo; este rueda porque Pedro
+    ABRIO la semana, que es un acto deliberado suyo.
+    """
+    previas = sorted(w for w in semanas_ops if w <= semana)
+    ventana = previas[-VENTANA_PRESEED_SEMANAS:]
+    return ventana if semana in ventana else ventana + [semana]
+
+
+def libera_preseed(asientos: list[Asiento], cuenta: str,
+                   semanas_ops: list[str],
+                   semana: str) -> tuple[str | None, int]:
+    """(semana que sale de la ventana cuando se abra la proxima operativa,
+    cuanto pre-seed libera eso). `(None, 0)` si todavia no sale ninguna.
+
+    Es lo que la ventana deslizante PERMITE y la fija no: decir CUANDO
+    vuelve cupo y CUANTO. Con el reset en bloque el cupo aparecia solo y
+    Pedro no tenia ninguna senal de que la ventana acababa de rodar; aca el
+    numero se pinta al lado del techo y le pone fecha al alivio.
+
+    La ventana rueda cuando se abre una semana operativa nueva, no cuando
+    cambia el almanaque: `ventana_preseed` se arma sobre las operativas.
+    Por eso la respuesta es "al abrir la proxima", que ademas es un acto de
+    Pedro y no una espera pasiva.
+
+    Sale la mas vieja de las `VENTANA_PRESEED_SEMANAS` operativas de hoy, y
+    solo si ya hay tantas: con menos, abrir una semana mas alarga la
+    ventana sin tirar nada, y prometer una liberacion ahi seria mentir. La
+    semana de hoy sin abrir no cuenta para esto -- abrirla ELLA es lo que
+    hace rodar la ventana, y lo que se va es la de atras.
+    """
+    previas = sorted(w for w in semanas_ops if w <= semana)
+    if len(previas) < VENTANA_PRESEED_SEMANAS:
+        return None, 0
+    sale = previas[-VENTANA_PRESEED_SEMANAS]
+    return sale, preseed_en_ventana(asientos, cuenta, [sale])
 
 
 def gastado(asientos: list[Asiento], id: str) -> int:

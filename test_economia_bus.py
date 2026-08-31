@@ -490,8 +490,9 @@ def test_el_techo_del_ciclo_frena_la_segunda_ronda(entorno):
     # la segunda no: 50.000 + 50.000 pasa el techo del ciclo
     with pytest.raises(bus_mod.ErrorBus) as exc:
         bus_mod.financiar(m, b, TS, "2026-W30", "p2", t.TESORO, 50_000)
-    assert "techo de pre-seed del ciclo" in str(exc.value)
-    assert k.saldo("dep:a") == 50_000, "cruzo el techo del ciclo"
+    assert "techo de pre-seed superado" in str(exc.value)
+    assert "ultimas 4 semanas operativas" in str(exc.value)
+    assert k.saldo("dep:a") == 50_000, "cruzo el techo acumulado"
 
     # lo que entra en lo que queda, si: el techo acota, no prohibe
     bus_mod.financiar(m, b, TS, "2026-W30", "p2", t.TESORO, 30_000)
@@ -531,15 +532,21 @@ def test_sin_techo_de_ciclo_no_se_paga_ninguna_ronda(entorno):
            {"gasto_max_mm": 10_000}, tipo="preseed")
     with pytest.raises(bus_mod.ErrorBus) as exc:
         bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 10_000)
-    assert "techo de pre-seed por ciclo" in str(exc.value)
+    assert "techo de pre-seed acumulado" in str(exc.value)
     assert k.saldo("dep:a") == 0
 
 
 def test_el_techo_del_ciclo_se_suelta_al_ciclo_siguiente(entorno):
-    """Es un techo POR CICLO, no un tope de por vida: pasadas las cuatro
-    semanas operativas el acumulado vuelve a cero y el departamento puede
-    volver a pedir. Eso es lo que hace que la decision de Pedro sea
-    periodica y no definitiva."""
+    """Es un techo POR VENTANA, no un tope de por vida: pasadas cuatro
+    semanas operativas desde la que consumio el cupo, el acumulado vuelve a
+    cero y el departamento puede volver a pedir. Eso es lo que hace que la
+    decision de Pedro sea periodica y no definitiva.
+
+    El test sobrevivio al cambio de ventana fija a deslizante sin tocar una
+    sola asercion, y eso es el punto: lo que cambio no es CUANTO dura el
+    cupo (cuatro semanas operativas, antes y ahora) sino DESDE CUANDO se
+    cuenta. Con la fija se contaba desde el borde del ciclo, y por eso el
+    borde dejaba pasar el doble."""
     k, m, b = entorno
     for w in ("2026-W30", "2026-W31", "2026-W32", "2026-W33", "2026-W34"):
         _semana_op(k, w)
@@ -556,13 +563,16 @@ def test_el_techo_del_ciclo_se_suelta_al_ciclo_siguiente(entorno):
     with pytest.raises(bus_mod.ErrorBus):
         bus_mod.financiar(m, b, TS, "2026-W33", "p2", t.TESORO, 50_000)
 
-    # W34 es la quinta semana operativa: ciclo 1, acumulado en cero
+    # W34: la ventana de hoy es W31..W34 y W30 ya salio, asi que el
+    # acumulado esta en cero. (Con la ventana fija el motivo era otro -- se
+    # abria el ciclo 1 -- y el mismo motivo era el que dejaba pasar el
+    # doble un dia antes; ver `test_la_ventana_deslizante_frena_la_rafaga`.)
     bus_mod.financiar(m, b, TS, "2026-W34", "p2", t.TESORO, 50_000)
     assert k.saldo("dep:a") == 100_000
 
 
 def test_el_acumulado_del_ciclo_solo_cuenta_pre_seed(entorno):
-    """`preseed_del_ciclo` mira `motivo == "preseed"` y no todo lo que
+    """`preseed_en_ventana` mira `motivo == "preseed"` y no todo lo que
     entra a la cuenta: un rescate o el cobro de un servicio vendido a otro
     departamento no son capital de arranque, y contarlos frenaria rondas
     por plata que no vino del tesoro."""
@@ -576,12 +586,119 @@ def test_el_acumulado_del_ciclo_solo_cuenta_pre_seed(entorno):
     m.vender_servicio(TS, "2026-W30", "dep:b", "dep:a", 300_000)
     assert k.saldo("dep:a") == 300_000
 
-    semanas = cap.semanas_del_ciclo_de_hoy(
+    semanas = bus_mod.ventana_preseed(
         cap.semanas_operativas(k.libro.asientos()), "2026-W30")
-    assert bus_mod.preseed_del_ciclo(k.libro.asientos(), "dep:a", semanas) == 0
+    assert bus_mod.preseed_en_ventana(
+        k.libro.asientos(), "dep:a", semanas) == 0
 
     b.alta(TS, "2026-W30", "p1", "dep:a", "arranco", 50_000, 50_000,
            {"gasto_max_mm": 50_000}, tipo="preseed")
     bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 50_000)
-    assert bus_mod.preseed_del_ciclo(
+    assert bus_mod.preseed_en_ventana(
         k.libro.asientos(), "dep:a", semanas) == 50_000
+
+
+# -- la ventana DESLIZANTE: el agujero que dejaba entrar 2x el techo -------
+
+def test_la_ventana_deslizante_frena_la_rafaga_del_doble(entorno):
+    """EL DEFECTO. El techo acumulado se medía sobre el ciclo de
+    facturacion, que es una ventana FIJA (`ops[c*4:(c+1)*4]`): el acumulado
+    no decaia, se reseteaba de golpe al abrirse la quinta semana operativa.
+    Financiar el techo entero en la ultima semana del ciclo N y otra vez en
+    la primera del N+1 metia 2x el techo en dos semanas de CALENDARIO
+    seguidas -- exactamente la rafaga que el techo existe para impedir,
+    porque la perilla esta para acotar cuanto capital entra antes de que
+    Pedro tenga que volver a decidir a conciencia.
+
+    Con la ventana deslizante el invariante vale siempre y no solo en los
+    bordes del ciclo: en ninguna corrida de cuatro semanas operativas entra
+    mas que el techo. Y no es un bloqueo perpetuo -- la ultima parte del
+    test: el cupo vuelve cuando la semana que lo consumio sale por atras."""
+    k, m, b = entorno
+    for w in ("2026-W30", "2026-W31", "2026-W32", "2026-W33", "2026-W34"):
+        _semana_op(k, w)
+    _capital(k, 1_000_000, t.TESORO)
+    m.registro.ajustar("a", techo_preseed_mm=50_000,
+                       techo_preseed_ciclo_mm=50_000)
+
+    # el techo entero en W33, la ULTIMA semana operativa del ciclo 0
+    b.alta(TS, "2026-W33", "p1", "dep:a", "ronda 1", 50_000, 50_000,
+           {"gasto_max_mm": 50_000}, tipo="preseed")
+    bus_mod.financiar(m, b, TS, "2026-W33", "p1", t.TESORO, 50_000)
+    assert k.saldo("dep:a") == 50_000
+
+    # y el techo entero otra vez en W34, la PRIMERA del ciclo 1: siete dias
+    # despues. Con la ventana fija esto entraba sin que nada se enterara
+    b.alta(TS, "2026-W34", "p2", "dep:a", "ronda 2", 50_000, 50_000,
+           {"gasto_max_mm": 50_000}, tipo="preseed")
+    with pytest.raises(bus_mod.ErrorBus) as exc:
+        bus_mod.financiar(m, b, TS, "2026-W34", "p2", t.TESORO, 50_000)
+    assert "techo de pre-seed superado" in str(exc.value)
+    assert "2026-W31..2026-W34" in str(exc.value), "la ventana no es la de 4"
+    assert k.saldo("dep:a") == 50_000, "entro 2x el techo en dos semanas"
+
+    # y no es perpetuo: W37 es la cuarta operativa despues de W33, asi que
+    # W33 ya salio de la ventana y el cupo volvio entero
+    for w in ("2026-W35", "2026-W36", "2026-W37"):
+        _semana_op(k, w)
+    bus_mod.financiar(m, b, TS, "2026-W37", "p2", t.TESORO, 50_000)
+    assert k.saldo("dep:a") == 100_000
+
+
+def test_la_ventana_dice_cuando_vuelve_el_cupo_y_cuanto(entorno):
+    """Lo que la deslizante PERMITE y la fija no: ponerle nombre y numero
+    al alivio. Con el reset en bloque el cupo volvia entero, de golpe, y
+    Pedro no tenia ninguna senal de que la ventana acababa de rodar."""
+    k, m, b = entorno
+    for w in ("2026-W30", "2026-W31", "2026-W32", "2026-W33"):
+        _semana_op(k, w)
+    _capital(k, 1_000_000, t.TESORO)
+    m.registro.ajustar("a", techo_preseed_mm=50_000,
+                       techo_preseed_ciclo_mm=50_000)
+    b.alta(TS, "2026-W30", "p1", "dep:a", "ronda 1", 50_000, 50_000,
+           {"gasto_max_mm": 50_000}, tipo="preseed")
+    bus_mod.financiar(m, b, TS, "2026-W30", "p1", t.TESORO, 50_000)
+
+    ops = cap.semanas_operativas(k.libro.asientos())
+    assert bus_mod.libera_preseed(
+        k.libro.asientos(), "dep:a", ops, "2026-W33") == ("2026-W30", 50_000)
+
+    b.alta(TS, "2026-W33", "p2", "dep:a", "ronda 2", 50_000, 50_000,
+           {"gasto_max_mm": 50_000}, tipo="preseed")
+    with pytest.raises(bus_mod.ErrorBus) as exc:
+        bus_mod.financiar(m, b, TS, "2026-W33", "p2", t.TESORO, 50_000)
+    assert "sale 2026-W30 de la ventana" in str(exc.value)
+    assert "se liberan 50000 mm" in str(exc.value)
+
+    # y era verdad: abierta W34, W30 salio y el cupo esta
+    _semana_op(k, "2026-W34")
+    bus_mod.financiar(m, b, TS, "2026-W34", "p2", t.TESORO, 50_000)
+    assert k.saldo("dep:a") == 100_000
+
+
+def test_la_ventana_se_cuenta_en_semanas_operativas_y_la_demora_aprieta():
+    """La forma de la ventana, sin libro de por medio.
+
+    Por semana OPERATIVA y no por fecha: el libro indexa todo por semana,
+    y una semana que la fabrica no abrio no es una semana en la que el
+    departamento pudo hacer nada con ese capital.
+
+    Y lo que importa del lunes sin abrir: mientras la semana no se abre la
+    ventana NO rueda y ademas se suma la de hoy, asi que tardar en abrir
+    APRIETA el techo. Un techo que se resetea porque Pedro tardo en tocar
+    un boton no es un techo; este rueda porque Pedro ABRIO la semana."""
+    ops = ["2026-W30", "2026-W31", "2026-W32", "2026-W33"]
+    assert bus_mod.ventana_preseed(ops, "2026-W33") == ops
+    # la de hoy entra siempre, este abierta o no
+    assert bus_mod.ventana_preseed(ops, "2026-W34") == ops + ["2026-W34"]
+    # tres semanas sin abrir el boton: las cuatro viejas siguen adentro
+    assert bus_mod.ventana_preseed(ops, "2026-W37") == ops + ["2026-W37"]
+    # abrir la semana es lo que hace rodar la ventana, y sale la mas vieja
+    abiertas = ops + ["2026-W34"]
+    assert bus_mod.ventana_preseed(abiertas, "2026-W34") == abiertas[1:]
+    # nunca levanta: sin operativas, o con una semana anterior a todas
+    assert bus_mod.ventana_preseed([], "2026-W30") == ["2026-W30"]
+    assert bus_mod.ventana_preseed(ops, "2026-W01") == ["2026-W01"]
+    # y no promete una liberacion que no llega: con menos de cuatro
+    # operativas, abrir una mas alarga la ventana sin tirar nada
+    assert bus_mod.libera_preseed([], "dep:a", ops[:3], "2026-W32") == (None, 0)
