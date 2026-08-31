@@ -454,3 +454,17 @@ html, body {
   background: var(--linea); color: var(--texto); border: 0; border-radius: 4px;
   padding: 8px 12px; cursor: pointer; min-height: 40px;
 }
+
+/* La pila de pedidos de pre-seed vencidos. NO se lee como una fila de la
+   mesa a proposito: no hay ninguna decision que tomar ahi -- no reservan
+   cupo ni se pueden financiar -- y lo unico que ofrece es el tacho. Va
+   plegada y en --tenue para que no compita con lo que si espera a Pedro. */
+.mesa .vencidas { margin-top: 10px; font-size: 12px; color: var(--tenue); }
+.mesa .vencidas summary { cursor: pointer; padding: 4px 0; }
+.mesa .vencidas .nota { font-size: 11px; line-height: 1.4; margin: 4px 0 6px; }
+.mesa .vencida {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 0; border-top: 1px solid var(--linea);
+}
+.mesa .vencida .cabeza { flex: 1 1 auto; }
+.mesa .vencida .datos { color: var(--tenue); }

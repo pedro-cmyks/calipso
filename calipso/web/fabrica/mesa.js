@@ -100,6 +100,45 @@ function fila(propuesta, departamentos, tesoro_mm) {
     `descartar</button></div></div></div>`;
 }
 
+/** La pila de pedidos de pre-seed vencidos, que NO es una fila de la mesa.
+ *
+ *  El agujero que tapa: un pedido vencido sale de la mesa -- y esta bien
+ *  que salga, no hay ninguna decision que tomar sobre el: no reserva cupo,
+ *  no se puede financiar, y la ronda ya se puede volver a pedir con los
+ *  numeros de hoy-- pero el bus es append-only y nadie barre, asi que se
+ *  queda en `alta` para siempre. Sacarlo de la unica pantalla que daba su
+ *  id borraba el ultimo camino para limpiarlo: `descartar` sigue
+ *  contestando 200, solo que el id ya no se veia en ningun lado. Cada
+ *  departamento acumulaba un `alta` muerto por ventana vencida, y los
+ *  cinco lectores del bus los volvian a leer y a evaluar en cada GET.
+ *
+ *  Por eso va PLEGADO y en un bloque aparte: es una pila para tirar, no
+ *  una bandeja de entrada. Si se mezclara con las propuestas volveria a
+ *  ser lo que la mesa dice de si misma que no es -- un historial-- y
+ *  encima con botones que no pueden funcionar. Lo unico que ofrece es
+ *  descartar, que es lo unico que se puede hacer.
+ */
+function bloqueVencidas(vencidas) {
+  if (!vencidas.length) return "";
+  const filas = vencidas.map(v => {
+    const dep = escapar(String(v.departamento || "").replace(/^dep:/, ""));
+    return `<div class="vencida">` +
+      `<div class="cabeza"><b>${dep}</b> · ${escapar(v.titulo || "")}</div>` +
+      `<div class="datos">pedia ${escapar(monedas(v.presupuesto_mm || 0))} ` +
+      `en ${escapar(v.semana || "?")}</div>` +
+      `<button data-accion="descartar" data-id="${escapar(v.id)}">` +
+      `descartar</button></div>`;
+  }).join("");
+  return `<details class="vencidas"><summary>${vencidas.length} ` +
+    `${vencidas.length === 1 ? "pedido de pre-seed vencido"
+                             : "pedidos de pre-seed vencidos"}</summary>` +
+    `<div class="nota">Su semana quedo fuera de la ventana con la que se ` +
+    `podrian pagar: ya no reservan cupo y el departamento puede volver a ` +
+    `pedir la ronda con los numeros de hoy. No hay nada que decidir, pero ` +
+    `siguen escritos en el bus hasta que los descartes.</div>` +
+    filas + `</details>`;
+}
+
 export function hayQueAvisarDeLaSemana(datos) {
   return Boolean(datos && datos.activa && datos.semana_abierta === false);
 }
@@ -127,6 +166,11 @@ export function textoDeMesa(datos, filtro = null) {
   const deps = datos.departamentos || [];
   const todas = datos.propuestas || [];
   const props = filtro ? todas.filter(p => p.departamento === filtro) : todas;
+  // el mismo filtro que las propuestas: tocar un edificio en el mapa acota
+  // la mesa entera, y una pila de otro departamento ahi adentro seria
+  // ruido. `|| []` porque una respuesta vieja del servidor no la trae.
+  const muertas = (datos.vencidas || []).filter(
+    v => !filtro || v.departamento === filtro);
   const semana = hayQueAvisarDeLaSemana(datos)
     ? `<div class="aviso semana">La semana ${escapar(datos.semana)} no esta ` +
       `abierta: financiar va a fallar hasta que la abras.` +
@@ -145,8 +189,13 @@ export function textoDeMesa(datos, filtro = null) {
     const vacio = filtro
       ? "Este departamento no tiene propuestas en la mesa."
       : "Ninguna propuesta esperando.";
-    return semana + cabecera + `<div class="vacio">${vacio}</div>`;
+    // la pila se dibuja igual con la mesa vacia: es justo cuando pasa --
+    // el pedido vencio y no quedo nada que decidir-- y si se fuera con las
+    // propuestas volveria a no tener ninguna cara.
+    return semana + cabecera + `<div class="vacio">${vacio}</div>` +
+           bloqueVencidas(muertas);
   }
   return semana + cabecera +
-         props.map(p => fila(p, deps, datos.tesoro_mm)).join("");
+         props.map(p => fila(p, deps, datos.tesoro_mm)).join("") +
+         bloqueVencidas(muertas);
 }

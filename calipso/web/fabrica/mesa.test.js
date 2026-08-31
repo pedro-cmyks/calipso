@@ -243,3 +243,64 @@ test("el sello sale del campo tipo, no del titulo que escribe el modelo", () => 
   assert.ok(!html.includes('class="sello preseed"'),
             "un titulo alcanzo para disfrazarse de pre-seed");
 });
+
+test("un pre-seed vencido tiene tacho, aunque no tenga fila", () => {
+  // El huerfano permanente: el pedido sale de la mesa (bien: no hay nada
+  // que decidir sobre el) pero el bus es append-only y nadie barre, asi que
+  // se queda en `alta` para siempre. Sacarlo de la unica pantalla que daba
+  // su id borraba el ultimo camino para limpiarlo -- descartar sigue
+  // contestando 200, solo que el id ya no se veia en ningun lado.
+  const html = textoDeMesa({
+    activa: true, semana: "2026-W39", semana_abierta: true,
+    propuestas: [], departamentos: [], tesoro_mm: 500000,
+    vencidas: [{id: "ps1", departamento: "dep:atlas", titulo: "arranco",
+                semana: "2026-W35", presupuesto_mm: 50000}]});
+  assert.match(html, /1 pedido de pre-seed vencido/);
+  assert.match(html, /data-accion="descartar" data-id="ps1"/);
+  // pero NO como una fila de la mesa: nada que financiar
+  assert.ok(!/data-accion="financiar"/.test(html), html);
+  assert.match(html, /class="vencidas"/);
+  // y sigue diciendo que la mesa esta vacia: la pila no es una bandeja
+  assert.match(html, /Ninguna propuesta esperando/);
+});
+
+test("la pila de vencidos respeta el filtro del mapa", () => {
+  const datos = {
+    activa: true, semana: "2026-W39", semana_abierta: true,
+    propuestas: [], departamentos: [], tesoro_mm: 500000,
+    vencidas: [{id: "ps1", departamento: "dep:atlas", titulo: "arranco",
+                semana: "2026-W35", presupuesto_mm: 50000},
+               {id: "ps2", departamento: "dep:mercado", titulo: "yo igual",
+                semana: "2026-W35", presupuesto_mm: 30000}]};
+  const html = textoDeMesa(datos, "dep:atlas");
+  assert.match(html, /data-id="ps1"/);
+  assert.ok(!/data-id="ps2"/.test(html), html);
+  assert.match(html, /1 pedido de pre-seed vencido/);
+  // y sin filtro, los dos
+  assert.match(textoDeMesa(datos), /2 pedidos de pre-seed vencidos/);
+});
+
+test("sin vencidos no se dibuja ningun bloque", () => {
+  // un renglon permanente de "no hay nada tirado" es la misma clase de
+  // ruido que el aviso que siempre esta
+  const html = textoDeMesa({
+    activa: true, semana: "2026-W39", semana_abierta: true,
+    propuestas: [], departamentos: [], tesoro_mm: 500000, vencidas: []});
+  assert.ok(!/vencidas/.test(html), html);
+  // y una respuesta vieja del servidor, sin la clave, tampoco revienta
+  const viejo = textoDeMesa({
+    activa: true, semana: "2026-W39", semana_abierta: true,
+    propuestas: [], departamentos: [], tesoro_mm: 500000});
+  assert.ok(!/vencidas/.test(viejo), viejo);
+});
+
+test("el titulo de un vencido pasa por escapar()", () => {
+  const html = textoDeMesa({
+    activa: true, semana: "2026-W39", semana_abierta: true,
+    propuestas: [], departamentos: [], tesoro_mm: 500000,
+    vencidas: [{id: "ps1", departamento: "dep:atlas",
+                titulo: "<img src=x onerror=alert(1)>",
+                semana: "2026-W35", presupuesto_mm: 50000}]});
+  assert.ok(!html.includes("<img"), "inyecto marcado crudo");
+  assert.match(html, /&lt;img/);
+});

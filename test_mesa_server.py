@@ -599,3 +599,58 @@ def test_la_mesa_no_pinta_la_fila_que_abrir_la_semana_mataria(
     r = c.post("/api/economia/bus/todavia/financiar", params=tok,
                json={"cuenta": t.TESORO, "mm": 50_000})
     assert r.status_code == 200, r.text
+
+
+def test_un_preseed_vencido_no_queda_huerfano_sin_tacho(cliente, monkeypatch):
+    """EL HUERFANO PERMANENTE. Un pedido vencido sale de la lista de
+    propuestas, y esta bien que salga: no hay ninguna decision que tomar
+    sobre el -- no reserva cupo, no se puede financiar, y el departamento ya
+    puede volver a pedir la ronda con los numeros de hoy.
+
+    Pero el bus es append-only y nadie barre, asi que se queda en `alta`
+    para siempre, y la mesa era la unica superficie que daba su id:
+    `descartar` seguia contestando 200 y no habia ningun gesto de Pedro que
+    llegara a el. Cada departamento acumulaba un `alta` muerto por ventana
+    vencida, y los cinco lectores del bus los volvian a leer y a evaluar en
+    cada GET, para siempre, sobre un conjunto que solo crece.
+
+    Va en `vencidas` y no en `propuestas` a proposito: no es una fila de la
+    mesa, es una pila para tirar. Lo unico que hacia falta era el tacho."""
+    c, base = cliente
+    b = Bus(base / "economia" / "bus.jsonl")
+    b.alta(TS, W, "ps1", "dep:atlas", "arranco", 100_000, 100_000,
+           {"gasto_max_mm": 100_000}, tipo="preseed")
+    k = Kernel(Libro(base / "economia" / "libro.jsonl"))
+    for sem in ["2026-W36", "2026-W37", "2026-W38", "2026-W39"]:
+        pt.expirar_pools(k, TS, sem)
+        pt.emitir_semana(k, TS, sem, 4_000, 1_000)
+    monkeypatch.setattr(srv, "_eco_ahora", lambda: (TS, "2026-W39"))
+    tok = {"token": srv.TOKEN}
+
+    datos = c.get("/api/economia/bus", params=tok).json()
+    assert "ps1" not in [p["id"] for p in datos["propuestas"]]
+    assert [v["id"] for v in datos["vencidas"]] == ["ps1"]
+    assert datos["vencidas"][0]["semana"] == W
+    assert datos["vencidas"][0]["departamento"] == "dep:atlas"
+
+    # y el tacho funciona: es el mismo `descartar` de siempre, lo unico que
+    # faltaba era que el id llegara a una pantalla
+    r = c.post("/api/economia/bus/ps1/descartar", params=tok)
+    assert r.status_code == 200, r.text
+    assert Bus(base / "economia" / "bus.jsonl").estado("ps1") == "descartada"
+
+    # y despues no queda nada: ni fila, ni pila
+    despues = c.get("/api/economia/bus", params=tok).json()
+    assert despues["vencidas"] == []
+    assert despues["propuestas"] == []
+
+
+def test_una_propuesta_de_trabajo_viva_no_cae_en_la_pila_de_vencidos(cliente):
+    """La pila es del pre-seed y de nadie mas: una propuesta de trabajo
+    tiene su propia muerte (`criterio` + `evaluar_y_liquidar_muertos`) y
+    sigue siendo una fila de la mesa, con sus dos botones."""
+    c, base = cliente
+    _propuesta(base, "t1")
+    datos = c.get("/api/economia/bus", params={"token": srv.TOKEN}).json()
+    assert [p["id"] for p in datos["propuestas"]] == ["t1"]
+    assert datos["vencidas"] == []

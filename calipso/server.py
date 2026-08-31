@@ -3838,6 +3838,7 @@ def api_eco_bus() -> dict:
             asientos = m.k.libro.asientos()
             ops_mesa = _eco_cap.semanas_operativas(asientos)
             propuestas = []
+            vencidas = []
             for id_ in bus.ids():
                 estado = bus.estado(id_)
                 # la mesa es para decidir, no un historial: lo descartado,
@@ -3855,6 +3856,32 @@ def api_eco_bus() -> dict:
                 # respuestas a "sigue vivo este pedido" serian dos techos.
                 if estado == "alta" and _eco_bus.preseed_vencido(
                         d, ops_mesa, semana):
+                    # pero SI aparte, con su id, porque si no es un
+                    # huerfano permanente. El bus es append-only y nadie
+                    # barre: el pedido se queda en `alta` para siempre, y
+                    # sacarlo de la unica pantalla que daba su id borraba
+                    # el ultimo camino para limpiarlo -- `descartar` sigue
+                    # contestando 200, solo que el id ya no se veia en
+                    # ningun lado. Y no es solo prolijidad: cada
+                    # departamento acumula un `alta` muerto por ventana
+                    # vencida, para siempre, y los cinco lectores del bus
+                    # (esta mesa y la config en cada GET, `_bandeja_llena` y
+                    # el recorte en cada tic del jefe) los vuelven a leer y
+                    # a evaluar cada vez. El conjunto solo crece.
+                    #
+                    # Van en otra lista y no en `propuestas` a proposito:
+                    # no hay ninguna decision que tomar sobre ellos -- no
+                    # reservan cupo, no se pueden financiar, la ronda ya se
+                    # puede volver a pedir-- asi que no son filas de la
+                    # mesa. Es una pila para tirar, y lo unico que hace
+                    # falta es que tenga tacho.
+                    vencidas.append({
+                        "id": id_,
+                        "departamento": d.get("departamento", ""),
+                        "titulo": d.get("titulo", ""),
+                        "semana": d.get("semana", ""),
+                        "presupuesto_mm": d.get("presupuesto_mm", 0),
+                    })
                     continue
                 # .get() con default, como situacion.py: una linea vieja o
                 # de un esquema anterior en el bus real de Pedro no puede
@@ -3891,8 +3918,8 @@ def api_eco_bus() -> dict:
     except _eco_errores_economicos as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     return {"activa": True, "semana": semana, "semana_abierta": abierta,
-            "propuestas": propuestas, "departamentos": deps_fabrica,
-            "tesoro_mm": tesoro}
+            "propuestas": propuestas, "vencidas": vencidas,
+            "departamentos": deps_fabrica, "tesoro_mm": tesoro}
 
 
 @app.post("/api/economia/bus/{id}/financiar")
