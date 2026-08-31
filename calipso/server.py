@@ -70,6 +70,7 @@ from calipso import discovery  # noqa: E402
 from calipso import github as calipso_github  # noqa: E402
 from calipso import learning  # noqa: E402
 from calipso import goals  # noqa: E402
+from calipso import inbox as _inbox  # noqa: E402
 from calipso import jobs  # noqa: E402
 from calipso import librarian  # noqa: E402
 from calipso import orchestrator  # noqa: E402
@@ -4030,6 +4031,47 @@ def api_eco_bus() -> dict:
     return {"activa": True, "semana": semana, "semana_abierta": abierta,
             "propuestas": propuestas, "vencidas": vencidas,
             "departamentos": deps_fabrica, "tesoro_mm": tesoro}
+
+
+@app.get("/api/inbox")
+def api_inbox() -> dict:
+    """Las cuatro bandejas en una lista.
+
+    Un solo endpoint y no cuatro fetch del cliente, por dos razones. La
+    primera es el candado: bus y cola leen el MISMO libro, `api_eco_bus`
+    toma el suyo y `api_eco_cola` NO -- es el unico lector de economia sin
+    candado, y su vecino lo dice textual: "y no es un ejemplo". Sin un
+    candado de afuera, el bus toma y suelta, y despues la cola lee sin
+    ninguno: las dos mitades de la misma pantalla pueden ver estados
+    distintos. Con este, las dos leen bajo una sola tenencia.
+
+    Tomarlo aca y que `api_eco_bus` tome el suyo adentro es seguro y
+    verificado: `candado` es REENTRANTE -- un `rlock` con contador de
+    profundidad (`economia/candado.py:74-90`), asi que la adquisicion
+    interna no suelta la externa al salir.
+
+    La segunda razon es que las cuatro fuentes declaran su disponibilidad
+    con TRES claves distintas (`activa` en economia, `activo` en permisos,
+    ninguna en memoria): traducir eso una vez del lado del servidor es
+    mejor que repetirlo en el cliente.
+    """
+    datos_bus: dict = {"activa": False}
+    datos_cola: dict = {"activa": False}
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
+    if p0:
+        with _eco_candado(p0.ruta_libro):
+            datos_bus = api_eco_bus()
+            datos_cola = api_eco_cola()
+    vista_permisos = ({"activo": True, **_permisos.vista()}
+                      if _permisos is not None else {"activo": False})
+    datos_memoria = {"proposals": librarian.list_proposals(str(ROOT),
+                                                           "pending")}
+    items, fallaron = _inbox.juntar(
+        datos_bus, vista_permisos, datos_memoria, ROOT.name, datos_cola)
+    return {"items": items,
+            "descriptores": _inbox.descriptores(),
+            "pendientes": _inbox.cuenta_de_decisiones(items),
+            "fallaron": fallaron}
 
 
 @app.post("/api/economia/bus/{id}/financiar")
