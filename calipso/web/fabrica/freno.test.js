@@ -91,6 +91,10 @@ test("el default de las perillas se dice en gris, no en rojo", () => {
   assert.match(html, /class="aviso nota"/);
   assert.ok(!/class="aviso freno"/.test(html), `lo pinto trabado: ${html}`);
   assert.match(html, /Pedro todavia no autorizo cuanto puede pedir/);
+  // y sin repetir el sujeto ni encadenar dos dos-puntos: el motivo ya dice
+  // que esta trabado, y la nota vive adentro de la tarjeta del pre-seed
+  assert.ok(!/no puede pedir su ronda pre-seed/.test(html), html);
+  assert.equal((html.match(/:/g) || []).length, 1, html);
 });
 
 test("y el freno de verdad sigue en rojo, aunque haya una nota al lado", () => {

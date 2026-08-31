@@ -68,8 +68,16 @@ export function textoDeFreno(dep, techoPropuestas) {
   // si fueran mil veces distintos. No es reescribir la frase: la frase
   // sigue siendo la del servidor, palabra por palabra.
   if (dep.freno_pedir) {
-    const texto = `no puede pedir su ronda pre-seed: ` +
-                  `${escapar(motivoEnMonedas(dep.freno_pedir))}`;
+    const motivo = escapar(motivoEnMonedas(dep.freno_pedir));
+    // El "no puede pedir su ronda pre-seed:" de adelante hace falta cuando
+    // el motivo por si solo no dice QUE esta trabado ("ya tiene 55 monedas
+    // entre billetera y pedidos en pie"). El del default ya lo dice entero,
+    // y ponerselo repetia el sujeto y encadenaba dos dos-puntos: "no puede
+    // pedir su ronda pre-seed: sin techo de pre-seed: Pedro todavia no
+    // autorizo cuanto puede pedir". Ademas la nota vive adentro de la
+    // tarjeta de las perillas de pre-seed, que ya es el contexto.
+    const texto = dep.freno_pedir_sin_autorizar
+      ? motivo : `no puede pedir su ronda pre-seed: ${motivo}`;
     // y la CLASE, que la manda el servidor (`freno_pedir_sin_autorizar`).
     // Un departamento recien dado de alta tiene las dos perillas de
     // pre-seed en su default cero, y el freno dice "Pedro todavia no
