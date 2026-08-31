@@ -98,14 +98,14 @@ def test_permisos_no_ofrece_despues_ni_vence():
 
 def test_solo_lo_abierto_es_item():
     """`aprobadas` y `registro` no son items pendientes. Contarlos miente."""
-    vista = {"activo": True,
-             "pendientes": [{"id": "sol_a", "ts": "2026-08-31T11:00:00",
-                             "estado": "pendiente", "texto": "acunar 500000 mm",
-                             "siempre_pregunta": False, "accion": {},
-                             "contexto": {}, "motivo": "supera el techo"}],
-             "estacionadas": [], "aprobadas": [{"id": "sol_vieja"}],
-             "registro": [{"id": "sol_x"}], "concedidos": [], "error": None}
-    items = permisos_motor.como_items(vista)
+    datos_endpoint = {"activo": True,
+                      "pendientes": [{"id": "sol_a", "ts": "2026-08-31T11:00:00",
+                                      "estado": "pendiente", "texto": "acunar 500000 mm",
+                                      "siempre_pregunta": False, "accion": {},
+                                      "contexto": {}, "motivo": "supera el techo"}],
+                      "estacionadas": [], "aprobadas": [{"id": "sol_vieja"}],
+                      "registro": [{"id": "sol_x"}], "concedidos": [], "error": None}
+    items = permisos_motor.como_items(datos_endpoint)
     assert [i["id"] for i in items] == ["sol_a"]
     assert items[0]["origen"] == "permisos"
     assert items[0]["clase"] == "decision"
@@ -114,22 +114,22 @@ def test_solo_lo_abierto_es_item():
 def test_siempre_pregunta_no_ofrece_el_verbo_siempre():
     """`si_siempre` sobre una solicitud con siempre_pregunta da 400. El
     inbox no puede dibujar un verbo que el origen no declaro."""
-    vista = {"activo": True, "estacionadas": [], "aprobadas": [],
-             "registro": [], "concedidos": [], "error": None,
-             "pendientes": [{"id": "sol_b", "ts": "", "estado": "pendiente",
-                             "texto": "acunar", "siempre_pregunta": True,
-                             "accion": {}, "contexto": {}, "motivo": ""}]}
-    it = permisos_motor.como_items(vista)[0]
+    datos_endpoint = {"activo": True, "estacionadas": [], "aprobadas": [],
+                      "registro": [], "concedidos": [], "error": None,
+                      "pendientes": [{"id": "sol_b", "ts": "", "estado": "pendiente",
+                                      "texto": "acunar", "siempre_pregunta": True,
+                                      "accion": {}, "contexto": {}, "motivo": ""}]}
+    it = permisos_motor.como_items(datos_endpoint)[0]
     assert it["cuerpo"]["verbos_validos"] == ["si", "no"]
 
 
 def test_vacio_por_error_no_se_confunde_con_vacio_de_verdad():
-    """vista() devuelve `error` con las listas vacias cuando el archivo no
-    se puede leer. Un badge en cero ahi es el badge mintiendo."""
-    vista = {"activo": True, "pendientes": [], "estacionadas": [],
-             "aprobadas": [], "registro": [], "concedidos": [],
-             "error": "solicitudes.json ilegible"}
-    items = permisos_motor.como_items(vista)
+    """El endpoint devuelve `error` con las listas vacias cuando el archivo
+    no se puede leer. Un badge en cero ahi es el badge mintiendo."""
+    datos_endpoint = {"activo": True, "pendientes": [], "estacionadas": [],
+                      "aprobadas": [], "registro": [], "concedidos": [],
+                      "error": "solicitudes.json ilegible"}
+    items = permisos_motor.como_items(datos_endpoint)
     assert len(items) == 1
     assert items[0]["clase"] == "aviso"
     assert items[0]["estado"] == "error"
