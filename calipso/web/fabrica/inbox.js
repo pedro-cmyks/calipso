@@ -5,16 +5,29 @@
 // declara validos y nada mas: un boton que el origen no declaro es un boton
 // que miente -- financiar sobre un vencido da 400, y `si_siempre` sobre una
 // solicitud con siempre_pregunta tambien.
-
-export function escapar(s) {
-  return String(s ?? "").replace(/[&<>"']/g, c => (
-    {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
-}
+//
+// Y uno que el origen SI declaro pero que nadie despacha miente igual: el
+// despacho de data-inbox="responder" es del plan 2 (app.js no tiene
+// listener para eso todavia), asi que estos botones salen `disabled` y con
+// una nota que dice donde si se contesta hoy. Los `data-*` quedan intactos
+// -el plan 2 los necesita tal cual estan.
+import {escapar} from "./paneles.js";
 
 const ETIQUETA_ORIGEN = {
   mesa: "la fabrica", permisos: "permiso",
   biblioteca: "memoria", cartas: "el cierre",
 };
+
+// Donde SI se contesta cada origen hoy, mientras el despacho desde el
+// inbox no existe. Solo mesa y permisos tienen una sub-vista que ya
+// responde de verdad; biblioteca y cartas no tienen ninguna todavia.
+const SUBVISTA_QUE_YA_CONTESTA = {mesa: "Decidir", permisos: "Permisos"};
+
+function notaDeDespacho(origen) {
+  const alt = SUBVISTA_QUE_YA_CONTESTA[origen];
+  return alt ? `todavia no se contesta desde aca: usa ${alt}`
+             : "todavia no se contesta desde aca";
+}
 
 export function contadorDeInbox(datos) {
   return (datos?.items || []).filter(i => i.clase === "decision").length;
@@ -23,20 +36,23 @@ export function contadorDeInbox(datos) {
 function fila(item, descriptores) {
   const desc = descriptores?.[item.origen];
   const validos = item.cuerpo?.verbos_validos || [];
-  const botones = (desc?.verbos || [])
-    .filter(v => validos.includes(v.nombre))
+  const verbosDelItem = (desc?.verbos || [])
+    .filter(v => validos.includes(v.nombre));
+  const botones = verbosDelItem
     .map(v => `<button data-inbox="responder" data-verbo="${escapar(v.nombre)}"` +
               ` data-id="${escapar(item.id)}"` +
-              ` data-origen="${escapar(item.origen)}" type="button">` +
+              ` data-origen="${escapar(item.origen)}" disabled type="button">` +
               `${escapar(v.etiqueta)}</button>`)
     .join("");
+  const nota = verbosDelItem.length
+    ? `<div class="nota">${escapar(notaDeDespacho(item.origen))}</div>` : "";
   const cuenta = item.cuerpo?.cuenta_fija
     ? ` <span class="nota">paga el tesoro</span>` : "";
   return `<div class="fila" data-id="${escapar(item.id)}"` +
          ` data-origen="${escapar(item.origen)}">` +
          `<span class="etiqueta">${escapar(ETIQUETA_ORIGEN[item.origen] || item.origen)}</span> ` +
          `<span class="titulo">${escapar(item.titulo)}</span>${cuenta}` +
-         `<div class="acciones">${botones}</div></div>`;
+         `<div class="acciones">${botones}</div>${nota}</div>`;
 }
 
 export function textoDeInbox(datos) {

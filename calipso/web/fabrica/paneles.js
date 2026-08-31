@@ -17,7 +17,11 @@ export function disposicion(ancho) {
 }
 
 export function escapar(texto) {
-  return String(texto)
+  // `?? ""` y no solo `String(texto)`: sin esto, `escapar(undefined)` sale
+  // como el texto "undefined" -y eso viaja, por ejemplo, a un `data-id`.
+  // inbox.js tenia su propia copia con esta semantica; se unifico aca para
+  // que quede una sola funcion de escapado en el directorio.
+  return String(texto ?? "")
     .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;").replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
