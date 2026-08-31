@@ -4054,20 +4054,43 @@ def api_inbox() -> dict:
     con TRES claves distintas (`activa` en economia, `activo` en permisos,
     ninguna en memoria): traducir eso una vez del lado del servidor es
     mejor que repetirlo en el cliente.
+
+    Se le pasan a `_inbox.juntar` CALLABLES, no datos ya traidos: `api_eco_bus`
+    llama adentro a `mercado_fresco()`, que puede levantar
+    `json.JSONDecodeError` si `suscripciones.json` esta corrupto -- un error
+    que `_ERRORES_ECONOMICOS` no cubre, asi que nadie lo atajaba. Si esos
+    `obtener_*` se llamaran ACA, afuera, un archivo de economia corrupto
+    tumbaria el endpoint entero con un 400 o un 500 sin capturar (no hay
+    handler global) antes de que `juntar` viera un solo item. Dejando que
+    `juntar` sea quien llame a `obtener_bus()` puertas adentro de su propio
+    try/except, traer el dato y traducirlo quedan bajo la MISMA guarda por
+    origen -- el mismo principio de "una bandeja rota no voltea a las otras
+    tres" que el modulo ya declara, extendido a la mitad que antes quedaba
+    afuera.
     """
-    datos_bus: dict = {"activa": False}
-    datos_cola: dict = {"activa": False}
     p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
-    if p0:
-        with _eco_candado(p0.ruta_libro):
-            datos_bus = api_eco_bus()
-            datos_cola = api_eco_cola()
-    vista_permisos = ({"activo": True, **_permisos.vista()}
-                      if _permisos is not None else {"activo": False})
-    datos_memoria = {"proposals": librarian.list_proposals(str(ROOT),
-                                                           "pending")}
-    items, fallaron = _inbox.juntar(
-        datos_bus, vista_permisos, datos_memoria, ROOT.name, datos_cola)
+
+    def obtener_bus() -> dict:
+        return api_eco_bus() if p0 else {"activa": False}
+
+    def obtener_cola() -> dict:
+        return api_eco_cola() if p0 else {"activa": False}
+
+    def obtener_permisos() -> dict:
+        return ({"activo": True, **_permisos.vista()}
+                if _permisos is not None else {"activo": False})
+
+    def obtener_memoria() -> dict:
+        return {"proposals": librarian.list_proposals(str(ROOT), "pending")}
+
+    # nullcontext cuando no hay economia sembrada: sin p0 no hay ruta de
+    # libro que tomar, y las otras dos bandejas no la necesitan.
+    candado_eco = (_eco_candado(p0.ruta_libro) if p0
+                   else contextlib.nullcontext())
+    with candado_eco:
+        items, fallaron = _inbox.juntar(
+            obtener_bus, obtener_permisos, obtener_memoria, ROOT.name,
+            obtener_cola)
     return {"items": items,
             "descriptores": _inbox.descriptores(),
             "pendientes": _inbox.cuenta_de_decisiones(items),

@@ -53,28 +53,40 @@ def descriptores() -> dict:
            (m.descriptor() for m in modulos if m is not None)}
 
 
-def juntar(datos_bus: dict, vista_permisos: dict,
-           datos_memoria: dict, proyecto: str,
-           datos_cola: dict) -> tuple[list[dict], list[str]]:
+def juntar(obtener_bus, obtener_permisos, obtener_memoria, proyecto: str,
+           obtener_cola) -> tuple[list[dict], list[str]]:
     """Devuelve (items, origenes_que_fallaron).
 
     El orden de la lista es el de los origenes y dentro de cada uno el que
     trae la bandeja. Ordenar por urgencia es el PvP, y va en el plan 2.
 
-    Un origen falla por dos motivos distintos y los dos terminan en el
-    mismo lugar de `fallaron`: el modulo no pudo importarse (es None) o
-    `como_items` revento en tiempo de ejecucion. Ninguno de los dos frena
-    a los otros tres.
+    Los cuatro `obtener_*` son CALLABLES sin argumentos, no datos ya
+    traidos. Es a proposito: la primera version de este modulo recibia los
+    datos ya obtenidos, y la guarda de abajo cubria solo la TRADUCCION
+    (`como_items`) -- traerlos (`api_eco_bus()`, que adentro llama a
+    `mercado_fresco()` y puede levantar `json.JSONDecodeError` si
+    `suscripciones.json` esta corrupto, un error que `_ERRORES_ECONOMICOS`
+    no incluye) quedaba AFUERA, sin capturar, en el endpoint. Un archivo de
+    economia corrupto tumbaba las cuatro bandejas juntas -- exactamente lo
+    que "una bandeja rota no voltea a las otras tres" prometia evitar, y no
+    lo cumplia. Metiendo la llamada a `obtener_*()` DENTRO del mismo
+    try/except que traduce, las dos mitades quedan bajo una sola guarda por
+    origen, y no se puede volver a partir en dos por accidente.
+
+    Un origen falla por tres motivos distintos y los tres terminan en el
+    mismo lugar de `fallaron`: el modulo no pudo importarse (es None),
+    `obtener_*()` revento trayendo el dato, o `como_items` revento
+    traduciendolo. Ninguno de los tres frena a los otros tres origenes.
     """
     fallaron: list[str] = []
     items: list[dict] = []
     llamadas = [
-        ("mesa", eco_bus, lambda: eco_bus.como_items(datos_bus)),
+        ("mesa", eco_bus, lambda: eco_bus.como_items(obtener_bus())),
         ("permisos", permisos_motor,
-         lambda: permisos_motor.como_items(vista_permisos)),
+         lambda: permisos_motor.como_items(obtener_permisos())),
         ("biblioteca", librarian,
-         lambda: librarian.como_items(datos_memoria, proyecto)),
-        ("cartas", eco_cola, lambda: eco_cola.como_items(datos_cola)),
+         lambda: librarian.como_items(obtener_memoria(), proyecto)),
+        ("cartas", eco_cola, lambda: eco_cola.como_items(obtener_cola())),
     ]
     for nombre, modulo, fn in llamadas:
         if modulo is None:

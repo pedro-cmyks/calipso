@@ -95,3 +95,50 @@ def test_una_bandeja_rota_no_voltea_el_inbox(cliente, tmp_path, monkeypatch):
     cuerpo = cliente.get("/api/inbox").json()
     assert "biblioteca" in cuerpo["fallaron"]
     assert cuerpo["descriptores"]["mesa"]
+
+
+def test_un_archivo_de_economia_corrupto_no_voltea_las_otras_bandejas(
+        cliente, tmp_path):
+    """Ronda de arreglo 1, hallazgo 1: la guarda de `juntar()` cubria solo
+    la TRADUCCION (`como_items`), no el TRAER el dato. `api_eco_bus` llama
+    adentro a `mercado_fresco()`, que hace `json.loads` sobre
+    `suscripciones.json` -- si ese archivo esta corrupto, levanta
+    `json.JSONDecodeError`, que NO esta en `_ERRORES_ECONOMICOS`
+    (pagador.py), asi que nadie lo atajaba. Antes de esta ronda eso
+    tumbaba el endpoint entero con un 500 sin capturar (no hay handler
+    global en server.py). Es el gemelo del test de la Correccion 1, pero
+    del lado de economia en vez de permisos."""
+    sus = tmp_path / ".calipso" / "economia" / "suscripciones.json"
+    sus.write_text("esto no es json valido", encoding="utf-8")
+
+    r = cliente.get("/api/inbox")
+    assert r.status_code == 200, r.text
+    cuerpo = r.json()
+    assert "mesa" in cuerpo["fallaron"]
+    # solo mesa depende de mercado_fresco(): las otras tres no tienen por
+    # que caer con ella.
+    assert "cartas" not in cuerpo["fallaron"]
+    assert "permisos" not in cuerpo["fallaron"]
+    assert "biblioteca" not in cuerpo["fallaron"]
+    assert set(cuerpo["descriptores"]) == {
+        "mesa", "permisos", "biblioteca", "cartas"}
+
+
+def test_un_modulo_ausente_no_voltea_las_otras_tres(monkeypatch):
+    """Ronda de arreglo 1, hallazgo 2: la rama `modulo is None` de
+    `juntar()` y `descriptores()` no tenia test propio, solo lectura.
+
+    No hace falta forzar un import fallido de verdad: pisar el nombre ya
+    importado deja al modulo exactamente como queda cuando su propio
+    try/except de import (en `calipso/inbox.py`) lo pone en None."""
+    monkeypatch.setattr(srv._inbox, "librarian", None)
+
+    descriptores = srv._inbox.descriptores()
+    assert "biblioteca" not in descriptores
+    assert set(descriptores) == {"mesa", "permisos", "cartas"}
+
+    items, fallaron = srv._inbox.juntar(
+        lambda: {"activa": False}, lambda: {"activo": False},
+        lambda: {"proposals": []}, "x", lambda: {"activa": False})
+    assert fallaron == ["biblioteca"]
+    assert items == []
