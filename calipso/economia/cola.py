@@ -318,6 +318,12 @@ def como_items(datos_endpoint: dict) -> list[dict]:
             "ts": e.get("ts") or "",
             "titulo": plantilla.format(quien=quien).strip(),
             "cuerpo": {"carta": carta,
+                       # verbos_validos es fijo porque este adaptador emite
+                       # un solo estado: todas las cartas aqui son encolada
+                       # (el filtro es_carta descarta compuertas, y una carta
+                       # encolada es lo unico que puede llegar). No es el caso
+                       # de otras bandejas: bus.py condiciona por financiada,
+                       # librarian.py por pending, motor.py por error.
                        "verbos_validos": ["atender", "rechazar"]},
             "estado": "encolada", "respuesta": None})
     return items
