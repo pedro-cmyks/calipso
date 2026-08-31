@@ -185,7 +185,17 @@ class Memory:
 
     # --- escritura ---
     def remember(self, text: str, scope: str = "auto", **meta) -> str:
-        """Guarda episódico. scope 'auto' = proyecto si hay, si no global."""
+        """Guarda episódico. scope 'auto' = proyecto si hay, si no global.
+
+        OJO CON 'auto', que es una trampa y ya mordió: el "si no hay
+        proyecto" casi nunca pasa. El chat SIEMPRE tiene proyecto, así que
+        `auto` ahí quiere decir "el proyecto, siempre" -- y durante dos meses
+        archivó las conversaciones de Pedro bajo el repo que tuviera abierto,
+        dejando el ámbito global en cero filas.
+
+        `auto` no es un enrutador: es un default. Si lo que guardás puede no
+        ser del proyecto, decí el ámbito. Enrutar de verdad -mirar el
+        contenido y decidir dónde va- es trabajo del abismo, no de acá."""
         target = self.glob
         if scope == "global":
             target = self.glob

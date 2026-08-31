@@ -173,6 +173,12 @@ ALLOWLIST: dict[str, dict[str, Any]] = {
         "args": ["{python}", "test_prompt_compiler.py"],
         "timeout": 120,
     },
+    "test_memoria_ambito": {
+        "title": "Probar el ambito de la memoria",
+        "description": "Ejecuta test_memoria_ambito.py con pytest.",
+        "args": ["{python}", "-m", "pytest", "-q", "test_memoria_ambito.py"],
+        "timeout": 120,
+    },
     "test_contrato_departamentos": {
         "title": "Probar los departamentos del contrato",
         "description": "Ejecuta test_contrato_departamentos.py con pytest.",

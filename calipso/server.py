@@ -2662,10 +2662,35 @@ async def ws_chat(ws: WebSocket) -> None:
                 cost_usd=entry["cost_usd"],
             )
 
-            # 5) recordar el intercambio (episÃƒÂ³dica)
+            # 5) recordar el intercambio (episodica)
+            #
+            # Tres cosas se arreglaron aca el 2026-08-31, y las tres son la
+            # misma clase de error: lo que se guarda mal se recupera mal, y
+            # nadie se entera porque no levanta ninguna excepcion.
+            #
+            # 1. El literal tenia las dos vocales acentuadas doble-encodeadas
+            #    (el mojibake clasico: una A con tilde donde va la vocal), asi
+            #    que la cadena rota se EMBEBIA tal cual y cada intercambio
+            #    degradaba su propia recuperacion. No se transcribe aca a
+            #    proposito: escribirla para explicarla es como vuelve.
+            # 2. Iba a `scope="auto"`, que es "el proyecto si hay proyecto"
+            #    (memory.py:187-194) -- y el chat SIEMPRE tiene proyecto. O
+            #    sea que la vida de Pedro se archivaba bajo el repo que
+            #    tuviera abierto, y el ambito global termino con cero filas
+            #    despues de dos meses. Va a global: en la conversacion la
+            #    constante es Pedro, el repo es la variable. Lo que si es
+            #    del proyecto lo escriben los que hablan del proyecto
+            #    (reflect, el bibliotecario, el jefe de departamento).
+            # 3. Corria sobre el event loop, a diferencia del `remember` de
+            #    la meta ocho lineas mas arriba (:2377), que ya va por hilo.
             if full.strip():
-                mem.remember(f"Pedro preguntÃƒÂ³: {user_msg}\nCalipso respondiÃƒÂ³: {full.strip()}",
-                             route=verdict["route"], kind="chat")
+                try:
+                    await asyncio.to_thread(
+                        mem.remember,
+                        f"Pedro pregunto: {user_msg}\nCalipso respondio: {full.strip()}",
+                        scope="global", route=verdict["route"], kind="chat")
+                except Exception:
+                    pass    # recordar no puede voltear un turno ya contestado
             if full.strip():
                 chats.append(chat_id, "assistant", full.strip(), {
                     "route": used_route,

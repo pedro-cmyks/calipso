@@ -78,6 +78,11 @@ def recommend(files: list[dict[str, Any]] | None = None,
         if "librarian" in lower or "memory" in lower or "chronology" in lower or "cronologia" in lower:
             types.add("librarian")
             _add(plan, "test_librarian", f"{path} toca bibliotecario/memoria")
+            # test_memory.py es de los de main(): pytest no colecta nada de el.
+            # Sin esta linea, tocar la memoria da verde sin correr una sola
+            # assertion sobre DONDE aterriza lo que Calipso recuerda.
+            _add(plan, "test_memoria_ambito",
+                 f"{path} toca en que ambito aterriza lo que se recuerda")
         if "prompt_compiler" in lower or "context" in lower or "pedro-perfil" in lower or "pedro-cronologia" in lower:
             types.add("prompt_compiler")
             _add(plan, "test_prompt_compiler", f"{path} toca lenguaje interno/contexto")
