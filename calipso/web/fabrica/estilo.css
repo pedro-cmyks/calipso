@@ -261,9 +261,12 @@ html, body {
 .plantel form { display: flex; gap: 6px; flex-wrap: wrap; }
 .plantel input { min-width: 0; flex: 1 1 90px; }
 
-/* La segunda pestana de la mesa: "Decidir" (plantel+propuestas, lo de
-   siempre) contra "Plata" (las dos perillas de Pedro). Local a
-   #panel-mesa, no toca la grilla de #app ni el #pestanas del telefono. */
+/* Las sub-pestanas del inbox (el panel que hasta esta tarea se llamaba
+   "la mesa" -y que la spec seccion 8 pide que no quede subordinado al
+   inbox, sino que sea uno de sus cuatro origenes): "Decidir"
+   (plantel+propuestas, lo de siempre) contra "Plata" (las dos perillas de
+   Pedro). Local a #panel-mesa, no toca la grilla de #app ni el #pestanas
+   del telefono. */
 #submesa {
   display: flex; gap: 6px; padding: 6px 8px;
   border-bottom: 1px solid var(--linea);
@@ -380,8 +383,11 @@ html, body {
 }
 
 /* El numero de "algo espera tu respuesta", sin que Pedro tenga que ir a
-   buscarlo: aparece junto al boton de la sub-pestana "Permisos" y junto a
-   la pestana global "Mesa" (visible desde Chat o Mapa). */
+   buscarlo: aparece junto al boton de la sub-pestana "Permisos" (solo esa
+   bandeja) y junto a la pestana global "Inbox" (visible desde Chat o
+   Mapa, y con la cuenta de las CUATRO bandejas -superconjunto de la de
+   permisos). Cada uno tiene un solo dueno en app.js: pintarBadgeDePermisos
+   escribe el primero, pintarInbox escribe el segundo. */
 .badge {
   display: inline-block; min-width: 15px; margin-left: 5px; padding: 0 4px;
   border-radius: 999px; background: var(--aviso); color: #1b1b1b;
@@ -494,3 +500,7 @@ html, body {
 .inbox-panel .nota { color: var(--tenue); font-size: 11px; line-height: 1.4; }
 .inbox-panel .acciones { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
 .inbox-panel .acciones button { flex: 1 1 90px; min-height: 40px; cursor: pointer; }
+/* inbox.js los emite `disabled`: el despacho es del plan 2, y sin este
+   `:disabled` la regla de arriba (cursor: pointer) los dejaria viendose
+   tan vivos como un boton que si contesta. */
+.inbox-panel .acciones button:disabled { cursor: not-allowed; opacity: .5; }

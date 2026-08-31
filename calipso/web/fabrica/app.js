@@ -223,11 +223,13 @@ for (const boton of document.querySelectorAll("#pestanas button")) {
     }
     // sin esto, tocar la pestana muestra la foto del momento en que cargo
     // la pagina en vez de lo que hay ahora (spec seccion 9)
-    // permisos tambien, y no solo la mesa: es la otra mitad de "sin
-    // buscarlo" (punto 1) -si algo quedo pendiente mientras Pedro miraba
-    // el chat o el mapa, tocar "Mesa" tiene que traerlo ya, no esperar a
-    // los proximos 60s del refresco de fondo.
-    if (boton.dataset.pestana === "mesa") { pintarMesa(); pintarPermisos(); }
+    // inbox y permisos tambien, y no solo la mesa: es la otra mitad de
+    // "sin buscarlo" (punto 1) -si algo quedo pendiente mientras Pedro
+    // miraba el chat o el mapa, tocar "Mesa" tiene que traerlo ya, no
+    // esperar a los proximos 60s del refresco de fondo.
+    if (boton.dataset.pestana === "mesa") {
+      pintarMesa(); pintarInbox(); pintarPermisos();
+    }
   });
 }
 app.dataset.pestana = "chat";
@@ -448,21 +450,24 @@ function avisarEnPerillas(texto) {
 // se enchufen (calipso/permisos/motor.py), asi que el lugar donde se
 // contesta tambien tiene que ser uno solo.
 //
-// El badge (aca y en la pestana global "Mesa") es lo que hace que Pedro se
-// entere SIN buscarlo: si algo queda esperando su respuesta mientras esta
-// mirando el chat o el mapa, el numero ya esta puesto cuando llegue.
+// El badge de aca (junto a "Permisos") es lo que hace que Pedro se entere
+// SIN buscarlo: si algo queda esperando su respuesta mientras esta mirando
+// el chat o el mapa, el numero ya esta puesto cuando llegue.
+//
+// La pestana global YA NO la pinta esta funcion: la pinta pintarInbox(),
+// con la cuenta de las CUATRO bandejas -que es superconjunto de esta sola.
+// Si las dos escribieran el mismo elemento, el numero parpadearia entre dos
+// valores distintos cada 60 segundos (el intervalo de cada una); un solo
+// dueno por badge evita eso.
 const cajaPermisos = document.getElementById("permisos");
 const badgeSubmesa = document.getElementById("badge-submesa");
-const badgePestanaMesa = document.getElementById("badge-pestana-mesa");
 let mensajePermisos = null;
 
-function pintarBadgesDePermisos(datos) {
+function pintarBadgeDePermisos(datos) {
+  if (!badgeSubmesa) return;
   const n = contadorPendientes(datos);
-  for (const badge of [badgeSubmesa, badgePestanaMesa]) {
-    if (!badge) continue;
-    badge.textContent = String(n);
-    badge.classList.toggle("oculto", n === 0);
-  }
+  badgeSubmesa.textContent = String(n);
+  badgeSubmesa.classList.toggle("oculto", n === 0);
 }
 
 async function pintarPermisos() {
@@ -473,15 +478,15 @@ async function pintarPermisos() {
     const r = await fetch("/api/permisos");
     if (!r.ok) {
       cajaPermisos.innerHTML = '<div class="vacio">No se pudo leer los permisos.</div>';
-      pintarBadgesDePermisos(null);
+      pintarBadgeDePermisos(null);
       return;
     }
     const datos = await r.json();
     cajaPermisos.innerHTML = textoDePermisos(datos, mensajePermisos);
-    pintarBadgesDePermisos(datos);
+    pintarBadgeDePermisos(datos);
   } catch (_) {
     cajaPermisos.innerHTML = '<div class="vacio">No se pudo leer los permisos.</div>';
-    pintarBadgesDePermisos(null);
+    pintarBadgeDePermisos(null);
   }
 }
 
@@ -574,6 +579,23 @@ cajaPermisos?.addEventListener("submit", async evento => {
 // que hay que arreglar antes de poder enchufarlos con un solo patron.
 const cajaInbox = document.getElementById("caja-inbox");
 const badgeInbox = document.getElementById("badge-inbox");
+// El badge de la pestana global "Mesa" (telefono) pasa a ser DEL INBOX, no
+// de permisos: suma las cuatro bandejas, que es superconjunto de la cuenta
+// de permisos sola -y es lo que promete el comentario de mas abajo, junto
+// al pintarInbox() del arranque. Antes lo pintaba pintarBadgeDePermisos()
+// ADEMAS de esta funcion, y los dos escribiendole al mismo elemento hacia
+// que el numero parpadeara entre dos valores distintos cada 60 segundos,
+// uno por intervalo. Un badge necesita un solo dueno; este es el suyo.
+const badgePestanaMesa = document.getElementById("badge-pestana-mesa");
+
+function pintarBadgesDeInbox(n) {
+  for (const badge of [badgeInbox, badgePestanaMesa]) {
+    if (!badge) continue;
+    if (n === null) { badge.classList.add("oculto"); continue; }
+    badge.textContent = String(n);
+    badge.classList.toggle("oculto", n === 0);
+  }
+}
 
 async function pintarInbox() {
   // la guarda no es defensiva por gusto: arranque.test.js monta un DOM que
@@ -589,19 +611,15 @@ async function pintarInbox() {
     // problema.
     if (!r.ok) {
       cajaInbox.innerHTML = `<div class="nota">no se pudo leer el inbox</div>`;
-      if (badgeInbox) badgeInbox.classList.add("oculto");
+      pintarBadgesDeInbox(null);
       return;
     }
     const datos = await r.json();
     cajaInbox.innerHTML = textoDeInbox(datos);
-    const n = contadorDeInbox(datos);
-    if (badgeInbox) {
-      badgeInbox.textContent = String(n);
-      badgeInbox.classList.toggle("oculto", n === 0);
-    }
+    pintarBadgesDeInbox(contadorDeInbox(datos));
   } catch (e) {
     cajaInbox.innerHTML = `<div class="nota">no se pudo leer el inbox</div>`;
-    if (badgeInbox) badgeInbox.classList.add("oculto");
+    pintarBadgesDeInbox(null);
   }
 }
 
@@ -1018,11 +1036,13 @@ setInterval(pintarMesa, 60_000).unref?.();
 // Las perillas cambian por las mismas razones que la mesa -un cierre
 // semanal, un jefe gastando- asi que el mismo refresco de fondo aplica.
 setInterval(pintarPerillas, 60_000).unref?.();
-// Y el inbox, con el mismo intervalo: es lo unico que mantiene el badge de
-// "Todo" al dia si Pedro no vuelve a tocar esa sub-vista.
+// Y el inbox, con el mismo intervalo: es lo unico que mantiene al dia los
+// DOS badges que dependen de el -el de "Todo" y el de la pestana global-
+// si Pedro no vuelve a tocar ninguna de las dos.
 setInterval(pintarInbox, 60_000).unref?.();
-// Y los permisos, con el mismo intervalo: es lo que mantiene el badge al
-// dia mientras Pedro esta en otra pestana.
+// Y los permisos, con el mismo intervalo: es lo que mantiene su propio
+// badge (el de aca, junto a "Permisos") al dia mientras Pedro esta en otra
+// pestana.
 setInterval(pintarPermisos, 60_000).unref?.();
 
 const panelCentro = document.getElementById("panel-centro");
