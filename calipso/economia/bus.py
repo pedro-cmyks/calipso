@@ -812,7 +812,7 @@ def como_items(datos_endpoint: dict) -> list[dict]:
     for p in datos_endpoint.get("propuestas") or []:
         estado = p.get("estado") or "alta"
         # verbos_validos depende del estado porque _TRANSICIONES especifica
-        # qué transiciones son validas. financiada solo puede ir a muerta o
+        # que transiciones son validas. financiada solo puede ir a muerta o
         # cerrada (_TRANSICIONES["financiada"]), no a descartada: eso da 400
         if estado == "financiada":
             verbos_validos = ["financiar"]
