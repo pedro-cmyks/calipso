@@ -267,7 +267,7 @@ def como_items(datos_endpoint: dict, proyecto: str) -> list[dict]:
         verbos_validos = ["aceptar", "descartar"] if estado == "pending" else []
         items.append({
             "id": p.get("id"), "origen": ORIGEN_INBOX, "clase": "decision",
-            "ts": p.get("ts") or "", "titulo": f"[{proyecto}] {resumen}",
+            "ts": p.get("created_at") or "", "titulo": f"[{proyecto}] {resumen}",
             "cuerpo": {"texto": texto, "scope": p.get("scope"),
                        "target": p.get("target"), "proyecto": proyecto,
                        "verbos_validos": verbos_validos},

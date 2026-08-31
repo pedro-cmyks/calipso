@@ -161,9 +161,15 @@ def test_el_proyecto_es_obligatorio():
 
 
 def test_el_item_dice_de_que_proyecto_es():
-    """Es la unica de las cuatro que no es global. Se dice, no se aplana."""
+    """Es la unica de las cuatro que no es global. Se dice, no se aplana.
+
+    El dict de abajo usa las claves que `propose()` escribe de verdad
+    (librarian.py:118-128: `created_at`/`updated_at`, nunca `ts`) -- una
+    propuesta real no tiene `ts`, y un fixture con esa clave inventada
+    tapaba que `como_items` la leyera de un lugar que no existe."""
     datos = {"proposals": [{"id": "mem_abc123", "text": "Pedro prefiere pytest",
-                            "status": "pending", "ts": "2026-08-31T10:00:00",
+                            "status": "pending", "created_at": "2026-08-31T10:00:00",
+                            "updated_at": "2026-08-31T10:00:00",
                             "scope": "global", "target": "pedro-perfil.md"}],
              "events": [{"id": "mem_x"}]}
     items = librarian.como_items(datos, proyecto="calipso")
@@ -171,6 +177,7 @@ def test_el_item_dice_de_que_proyecto_es():
     assert items[0]["origen"] == "biblioteca"
     assert "calipso" in items[0]["titulo"]
     assert items[0]["cuerpo"]["texto"] == "Pedro prefiere pytest"
+    assert items[0]["ts"] == "2026-08-31T10:00:00"
 
 
 def test_los_events_no_son_items():
@@ -186,7 +193,8 @@ def test_una_propuesta_ya_resuelta_no_ofrece_verbos():
     DEFECTO, asi que una resuelta puede llegar: no puede ofrecer verbos que
     el backend ya rechaza."""
     datos = {"proposals": [{"id": "mem_x", "text": "algo", "status": "accepted",
-                            "ts": "2026-08-31T10:00:00", "scope": "global",
+                            "created_at": "2026-08-31T10:00:00",
+                            "updated_at": "2026-08-31T10:05:00", "scope": "global",
                             "target": "pedro-perfil.md"}], "events": []}
     it = librarian.como_items(datos, proyecto="calipso")[0]
     assert it["cuerpo"]["verbos_validos"] == []
@@ -241,3 +249,62 @@ def test_el_id_de_una_carta_lleva_dos_puntos():
 
 def test_sin_economia_sembrada_no_hay_cartas():
     assert eco_cola.como_items({"activa": False}) == []
+
+
+def test_ningun_origen_ofrece_un_verbo_que_su_descriptor_no_declaro():
+    """Cada adaptador repite los nombres de verbo en dos lugares -el
+    descriptor() y el como_items()-, y el cliente hace la interseccion de
+    los dos: un typo en cualquiera de los dos lados no rompe nada, dibuja
+    cero botones, en silencio. Es el ultimo modo de falla silencioso del
+    diseno. Este test cruza los dos lados para los cuatro origenes, con un
+    caso por origen que ejercita TODAS las variantes de verbos_validos que
+    ese adaptador puede emitir."""
+    casos = {
+        "mesa": (eco_bus.descriptor(), eco_bus.como_items({
+            "activa": True,
+            "propuestas": [
+                {"id": "a-1", "estado": "alta", "departamento": "dep:a",
+                 "tipo": "trabajo", "titulo": "x", "presupuesto_mm": 1,
+                 "retorno_mm": 1, "criterio": {}, "gastado_mm": 0,
+                 "aportes": {}},
+                {"id": "a-2", "estado": "financiada", "departamento": "dep:a",
+                 "tipo": "trabajo", "titulo": "y", "presupuesto_mm": 1,
+                 "retorno_mm": 1, "criterio": {}, "gastado_mm": 1,
+                 "aportes": {}},
+            ],
+            "vencidas": [{"id": "a-3", "departamento": "dep:a", "titulo": "z",
+                         "semana": "2026-W35", "presupuesto_mm": 1}]})),
+        "permisos": (permisos_motor.descriptor(), permisos_motor.como_items({
+            "activo": True, "estacionadas": [], "aprobadas": [], "registro": [],
+            "concedidos": [], "error": None,
+            "pendientes": [
+                {"id": "sol_a", "ts": "", "estado": "pendiente", "texto": "x",
+                 "siempre_pregunta": False, "accion": {}, "contexto": {},
+                 "motivo": ""},
+                {"id": "sol_b", "ts": "", "estado": "pendiente", "texto": "y",
+                 "siempre_pregunta": True, "accion": {}, "contexto": {},
+                 "motivo": ""},
+            ]})),
+        "biblioteca": (librarian.descriptor(), librarian.como_items({
+            "proposals": [
+                {"id": "mem_a", "text": "x", "status": "pending",
+                 "created_at": "", "updated_at": "", "scope": "global",
+                 "target": "t"},
+                {"id": "mem_b", "text": "y", "status": "accepted",
+                 "created_at": "", "updated_at": "", "scope": "global",
+                 "target": "t"},
+            ]}, proyecto="calipso")),
+        "cartas": (eco_cola.descriptor(), eco_cola.como_items({
+            "activa": True,
+            "pendientes": [
+                {"id": "mandato:dep:a:2026-W35", "es_carta": True,
+                 "carta": {"tipo": "mandato", "departamento": "dep:a"}},
+            ]})),
+    }
+    for origen, (descriptor, items) in casos.items():
+        declarados = {v["nombre"] for v in descriptor["verbos"]}
+        usados = {n for it in items for n in it["cuerpo"]["verbos_validos"]}
+        assert usados, f"{origen}: el caso de prueba no ejercito ningun verbo"
+        assert usados <= declarados, (
+            f"{origen}: como_items ofrece {sorted(usados - declarados)}, "
+            f"que descriptor() no declara")
