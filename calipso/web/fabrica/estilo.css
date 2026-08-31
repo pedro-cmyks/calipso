@@ -338,6 +338,16 @@ html, body {
   border-top: 1px solid var(--linea); padding-top: 10px; margin-top: 2px;
 }
 .perillas-panel .nota { color: var(--tenue); font-size: 11px; line-height: 1.4; }
+/* Por que un departamento esta callado. Va en --acento y no en --tenue como
+   las notas de al lado a proposito: las notas describen numeros que estan
+   bien, esto dice que algo esta trabado y cual es la salida. Si se leyera
+   igual que el resto se perderia entre cuatro renglones grises, que es
+   justo el problema que vino a resolver. */
+.perillas-panel .freno {
+  color: var(--acento); font-size: 11px; line-height: 1.4;
+  display: flex; flex-direction: column; gap: 4px;
+  border-left: 2px solid var(--acento); padding-left: 6px;
+}
 .perillas-panel .ajuste-suscripcion {
   border: 1px solid var(--linea); border-radius: 6px; padding: 8px;
   display: flex; flex-direction: column; gap: 6px; background: var(--panel);

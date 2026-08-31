@@ -11,6 +11,7 @@
  */
 import {escapar} from "./paneles.js";
 import {monedas} from "./ciudad.js";
+import {textoDeFreno} from "./freno.js";
 
 // Lo que Pedro ya paga de verdad, fuera de la fabrica (spec: "considera que
 // ya estoy pagando dos sucripciones"). Nombres canonicos de
@@ -168,7 +169,7 @@ function formularioMovimiento() {
 // paso hoy con cuatro endpoints de permisos sin pantalla.
 // --------------------------------------------------------------------------
 
-function filaTechoPreseed(dep, sumadas) {
+function filaTechoPreseed(dep, sumadas, techoPropuestas) {
   const n = escapar(dep.nombre);
   const entrado = dep.preseed_ventana_mm || 0;
   const techoCiclo = dep.techo_preseed_ciclo_mm || 0;
@@ -213,12 +214,20 @@ function filaTechoPreseed(dep, sumadas) {
   // Un pedido olvidado en la mesa deja al jefe frenado para siempre con
   // el acumulado en cero, y descartarlo es lo unico que lo suelta: sin
   // este renglon, nada se lo sugiere.
+  //
+  // Y lo que la nota decia hasta hoy -- "esas no se sueltan solas"-- ya no
+  // es cierto, que es todo el arreglo: un pedido de pre-seed VENCE cuando
+  // su semana sale de la ventana (`bus.preseed_vencido`), deja de reservar
+  // y `financiar` no lo paga mas. Antes la unica salida era un gesto de
+  // Pedro, asi que su inaccion apretaba a ese departamento para siempre.
+  // La rodada de la ventana sigue sin soltarlo -- eso libera lo financiado,
+  // no lo pedido-- y por eso las dos frases van juntas y separadas.
   const enLaMesa = pendiente
     ? `<div class="nota">y ${escapar(monedas(pendiente))} pedidas y sin ` +
       `financiar en la mesa: al jefe le reservan cupo de la ventana hasta ` +
-      `que las financies o las descartes. Esas no se sueltan solas: la ` +
-      `ventana rueda pero un pedido en pie sigue reservando cupo de la ` +
-      `ventana en la que lo pagues.</div>`
+      `que las financies, las descartes, o venzan al salir su semana de la ` +
+      `ventana. Rodar la ventana no las suelta: eso libera lo financiado.` +
+      `</div>`
     : "";
   return `<form class="ajuste" data-perillas="techo-preseed" ` +
     `data-departamento="${n}">` +
@@ -228,11 +237,11 @@ function filaTechoPreseed(dep, sumadas) {
     `<label>${n}: techo de la ventana (en monedas)` +
     `<input name="ciclo" inputmode="decimal" ` +
     `value="${escapar(monedasEditable(techoCiclo))}"></label>` +
-    yaEntro + seLibera + enLaMesa +
+    yaEntro + seLibera + enLaMesa + textoDeFreno(dep, techoPropuestas) +
     `<button type="submit">guardar</button></form>`;
 }
 
-function bloquePreseed(departamentos, semanas, sumadas) {
+function bloquePreseed(departamentos, semanas, sumadas, techoPropuestas) {
   const fabrica = departamentos.filter(d => d.zona === "fabrica");
   if (!fabrica.length) {
     return `<div class="vacio">Sin departamentos de fabrica.</div>`;
@@ -270,7 +279,8 @@ function bloquePreseed(departamentos, semanas, sumadas) {
     `para que no se cruce en silencio. El jefe se frena antes que vos, ` +
     `porque el ademas se descuenta lo que ya pidio y sigue en la ` +
     `mesa.</div>` +
-    fabrica.map(d => filaTechoPreseed(d, sumadas)).join("");
+    fabrica.map(d => filaTechoPreseed(d, sumadas, techoPropuestas))
+           .join("");
 }
 
 /** Lo que el probe pasivo propone para esta suscripcion, en palabras.
@@ -346,7 +356,8 @@ export function textoDeAjustes(config) {
   // hacia la pantalla entera hasta hoy.
   const sumadas = config.preseed_ventana_sumadas || semanasVentana;
   return `<div class="ajustes">` +
-    bloquePreseed(deps, semanasVentana, sumadas) +
+    bloquePreseed(deps, semanasVentana, sumadas,
+                  config.techo_propuestas) +
     `<div class="subtitulo">capacidad de las suscripciones</div>` +
     `<div class="nota">Cambiar esto reprecia la capacidad: el precio de la ` +
     `unidad se estampa en cada compra que la fabrica escribe despues, y el ` +

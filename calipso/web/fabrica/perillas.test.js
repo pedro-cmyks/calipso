@@ -380,11 +380,11 @@ test("los dos inputs del techo se pintan con el valor exacto, no formateado",
   assert.equal(aMilimonedasConCero(ciclo), 20_000_000);
 });
 
-test("lo pedido y sin financiar se ve, y dice que descartarlo suelta el cupo",
+test("lo pedido y sin financiar se ve, con las tres salidas que tiene",
      () => {
   // el acumulado de la ventana puede estar en CERO con el jefe frenado: lo que
   // lo frena es el pedido en pie, y hasta hoy ese numero no se veia en
-  // ninguna pantalla -- ni nada sugeria que descartarlo es lo que lo suelta
+  // ninguna pantalla -- ni nada sugeria que hacer con el
   const config = {...CONFIG, departamentos: [
     {...CONFIG.departamentos[0], preseed_ventana_mm: 0,
      techo_preseed_ciclo_mm: 60_000_000, preseed_pendiente_mm: 60_000_000},
@@ -393,9 +393,12 @@ test("lo pedido y sin financiar se ve, y dice que descartarlo suelta el cupo",
   assert.match(html, /entro en las ultimas 4 semanas operativas: 0 de 60\.000/);
   assert.match(html, /60\.000 pedidas y sin financiar en la mesa/);
   assert.match(html, /descartes/);
-  // y que la ventana deslizante NO las suelta: es la unica parte del techo
-  // que esperar no destraba, y decirlo mal es peor que no decirlo
-  assert.match(html, /un pedido en pie sigue reservando cupo/);
+  // la TERCERA salida, la que arregla que la inaccion de Pedro fuera
+  // permanente: el pedido vence solo al salir su semana de la ventana
+  assert.match(html, /venzan al salir su semana de la ventana/);
+  // y sin mentir para el otro lado: RODAR la ventana no lo suelta -- eso
+  // libera lo financiado, que es otra cosa
+  assert.match(html, /Rodar la ventana no las suelta/);
 });
 
 test("la nota del techo del ciclo cuenta lo mismo que el numero de abajo",
@@ -457,4 +460,28 @@ test("con la canilla cerrada no se promete una liberacion que no habilita nada",
     config.departamentos[1]]};
   assert.match(textoDeAjustes(abierta),
                /sale 2026-W31 de la ventana y se liberan 30\.000\./);
+});
+
+test("el freno de un departamento se ve al lado de sus perillas", () => {
+  // La mitad que faltaba: Pedro veia cuatro numeros y un departamento
+  // callado, y no habia nada que dijera por que. El texto es el que armo
+  // `jefe.freno_preseed` en el servidor y viaja hecho en `freno_pedir`:
+  // reescribirlo aca seria una segunda fuente de verdad sobre el techo.
+  const config = {...CONFIG, techo_propuestas: 3, departamentos: [
+    {...CONFIG.departamentos[0], propuestas_propias: 1,
+     freno_pedir: "el techo de la ventana es 60000 mm y entre lo " +
+                  "financiado (0) y lo pedido en pie (60000) ya van 60000"},
+    CONFIG.departamentos[1]]};
+  const html = textoDeAjustes(config);
+  assert.match(html, /class="aviso freno"/);
+  assert.match(html, /no puede pedir su ronda pre-seed/);
+  assert.match(html, /pedido en pie \(60000\)/);
+});
+
+test("sin freno, la fila del departamento no dibuja ningun aviso", () => {
+  // el silencio es la senal: un renglon permanente de "esta todo bien" se
+  // vuelve invisible en dos dias y entonces el aviso de verdad tampoco se ve
+  const html = textoDeAjustes({...CONFIG, techo_propuestas: 3});
+  assert.ok(!html.includes('class="aviso freno"'),
+            "invento un freno donde no hay ninguno");
 });

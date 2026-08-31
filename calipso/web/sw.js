@@ -20,6 +20,7 @@ const SHELL = [
   "/static/fabrica/mesa.js",
   "/static/fabrica/plantel.js",
   "/static/fabrica/perillas.js",
+  "/static/fabrica/freno.js",
   "/static/fabrica/svg.js",
   "/static/fabrica/permisos.js"
 ];
