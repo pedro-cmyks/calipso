@@ -4518,6 +4518,21 @@ def api_eco_config() -> dict:
             # de verdad sobre el mismo techo, y el dia que se mueva la
             # constante la pantalla mentiria sin que nada falle.
             "preseed_ventana_semanas": _eco_bus.VENTANA_PRESEED_SEMANAS,
+            # y al lado, CUANTAS etiquetas de semana se sumaron de verdad
+            # para el acumulado de arriba. No son el mismo numero y la
+            # pantalla los decia con uno solo: la REGLA es "en ninguna
+            # corrida de 4 semanas operativas entra mas que el techo" (la
+            # constante), pero `ventana_preseed` mete la semana de hoy
+            # SIEMPRE, este abierta o no, asi que mientras el lunes no se
+            # abre el tramo que se suma son cinco etiquetas
+            # (`previas[-4:] + [hoy]`) -- y toda semana empieza sin abrir,
+            # que es el estado por defecto de cada lunes, no una ventana
+            # rara. Va en la direccion segura (aprieta, nunca afloja, y eso
+            # es a proposito: ver el docstring de `ventana_preseed`), pero
+            # rotulado con el 4 el numero que Pedro lee al lado del techo no
+            # era la suma de lo que el renglon decia que sumaba. Dos hechos
+            # distintos, una sola fuente de verdad cada uno.
+            "preseed_ventana_sumadas": len(semanas_ventana),
             "medido_generado": resumen.get("generado")}
 
 
@@ -4556,11 +4571,13 @@ def _eco_semanas_del_ciclo_de_hoy(asientos: list, semana: str) -> list[str]:
     La aritmetica vive en `capacidad.semanas_del_ciclo_de_hoy` y su
     docstring explica por que hace falta (toda semana empieza afuera de
     las operativas hasta que Pedro aprieta el boton de abrir). Se movio
-    para alla porque la MISMA pregunta la hacen ahora `bus.financiar` --
-    el techo de pre-seed del ciclo, que decide si sale plata -- y
-    `plantel.situacion`, y dos respuestas distintas a "en que ciclo estoy"
-    serian dos techos. Esto queda como el nombre que ya usan los
-    llamadores de este modulo.
+    para alla porque la MISMA pregunta la hace tambien `plantel.situacion`
+    -- el gasto de API del jefe --, y dos respuestas distintas a "en que
+    ciclo estoy" serian dos techos. Esto queda como el nombre que ya usan
+    los llamadores de este modulo.
+
+    Lo que NO la hace es `bus.financiar`: el techo de pre-seed acumulado
+    se mide sobre `bus.ventana_preseed`, que es deslizante y no el ciclo.
     """
     return _eco_cap.semanas_del_ciclo_de_hoy(
         _eco_cap.semanas_operativas(asientos), semana)
@@ -5187,9 +5204,15 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
                 bus_fresco.alta(ts, semana, propuesta, cuenta, titulo,
                                 monto, monto, {"gasto_max_mm": monto},
                                 tipo="preseed")
+            # `ventana` y no `ciclo` en las claves: los dos numeros salen de
+            # `ventana_preseed` doce lineas mas arriba, que es la ventana
+            # DESLIZANTE del caudal de capital y no el ciclo de facturacion.
+            # El motivo de al lado ya dice "el techo de la ventana es";
+            # estas eran el ultimo resto del nombre viejo.
             return {"accion": "pedir", "ref": ref, "propuesta": propuesta,
                     "tipo": "preseed", "monto_mm": monto, "techo_mm": techo,
-                    "techo_ciclo_mm": techo_ciclo, "libre_ciclo_mm": libre}
+                    "techo_ventana_mm": techo_ciclo,
+                    "libre_ventana_mm": libre}
 
         # accion == "proponer". SIN planificar aca: es una llamada a un
         # modelo cuya salida no lee nadie, en un bucle que corre desatendido

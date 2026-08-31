@@ -168,7 +168,7 @@ function formularioMovimiento() {
 // paso hoy con cuatro endpoints de permisos sin pantalla.
 // --------------------------------------------------------------------------
 
-function filaTechoPreseed(dep, semanas) {
+function filaTechoPreseed(dep, sumadas) {
   const n = escapar(dep.nombre);
   const entrado = dep.preseed_ventana_mm || 0;
   const techoCiclo = dep.techo_preseed_ciclo_mm || 0;
@@ -179,14 +179,29 @@ function filaTechoPreseed(dep, semanas) {
   // ciclo" y eso dejo de ser cierto: el techo ya no se mide sobre el ciclo
   // de facturacion (una ventana fija que se reseteaba entera en la quinta
   // semana) sino sobre las ultimas N semanas operativas, deslizante.
-  const yaEntro = `<div class="nota">entro en las ultimas ` +
-    `${escapar(semanas)} semanas operativas: ${escapar(monedas(entrado))}` +
+  //
+  // Y el N es `preseed_ventana_sumadas`, no la constante de la regla: la
+  // ventana mete la semana de hoy este abierta o no, asi que el lunes,
+  // hasta que Pedro toca el boton de abrir, el tramo sumado son CINCO
+  // etiquetas. Este renglon dice lo que SE SUMO; la regla ("cualquier
+  // corrida de 4") la dice la nota de arriba, que sigue con la constante.
+  const tramo = sumadas === 1
+    ? "la ultima semana operativa"
+    : `las ultimas ${escapar(sumadas)} semanas operativas`;
+  const yaEntro = `<div class="nota">entro en ${tramo}: ` +
+    `${escapar(monedas(entrado))}` +
     (techoCiclo ? ` de ${escapar(monedas(techoCiclo))}` : "") + `</div>`;
   // y CUANDO vuelve cupo, que es lo unico bueno de perder el reset en
   // bloque: con la ventana fija el cupo volvia entero, de golpe y sin
   // ninguna senal de que la ventana acababa de rodar. Solo se dibuja si
-  // hay algo que liberar -- prometer "se liberan 0" es ruido.
-  const seLibera = libera
+  // hay algo que liberar -- prometer "se liberan 0" es ruido-- Y si hay
+  // techo acumulado: en CERO la perilla no es "sin limite" sino "todavia
+  // no" (ver departamentos.py) y `bus.financiar` corta antes con "no tiene
+  // techo de pre-seed acumulado", asi que el cupo que vuelve no habilita
+  // nada. Es el caso real de bajar la perilla a cero despues de haber
+  // financiado -- lo que el resto de esta pantalla llama cerrar la canilla
+  // -- y prometer ahi un alivio es la misma clase de mentira que el ruido.
+  const seLibera = libera && techoCiclo
     ? `<div class="nota">cuando abras la proxima semana operativa sale ` +
       `${escapar(sale)} de la ventana y se liberan ` +
       `${escapar(monedas(libera))}.</div>`
@@ -217,7 +232,7 @@ function filaTechoPreseed(dep, semanas) {
     `<button type="submit">guardar</button></form>`;
 }
 
-function bloquePreseed(departamentos, semanas) {
+function bloquePreseed(departamentos, semanas, sumadas) {
   const fabrica = departamentos.filter(d => d.zona === "fabrica");
   if (!fabrica.length) {
     return `<div class="vacio">Sin departamentos de fabrica.</div>`;
@@ -255,7 +270,7 @@ function bloquePreseed(departamentos, semanas) {
     `para que no se cruce en silencio. El jefe se frena antes que vos, ` +
     `porque el ademas se descuenta lo que ya pidio y sigue en la ` +
     `mesa.</div>` +
-    fabrica.map(d => filaTechoPreseed(d, semanas)).join("");
+    fabrica.map(d => filaTechoPreseed(d, sumadas)).join("");
 }
 
 /** Lo que el probe pasivo propone para esta suscripcion, en palabras.
@@ -325,7 +340,13 @@ export function textoDeAjustes(config) {
   // en vez de escribirse aca: un 4 propio en la pantalla seria una segunda
   // fuente de verdad sobre el mismo techo.
   const semanasVentana = config.preseed_ventana_semanas || 4;
-  return `<div class="ajustes">` + bloquePreseed(deps, semanasVentana) +
+  // y cuantas etiquetas de semana se sumaron de verdad para el acumulado,
+  // que no siempre es la constante de la regla (ver el comentario del
+  // servidor). Sin el dato, el tramo se rotula con la regla, que es lo que
+  // hacia la pantalla entera hasta hoy.
+  const sumadas = config.preseed_ventana_sumadas || semanasVentana;
+  return `<div class="ajustes">` +
+    bloquePreseed(deps, semanasVentana, sumadas) +
     `<div class="subtitulo">capacidad de las suscripciones</div>` +
     `<div class="nota">Cambiar esto reprecia la capacidad: el precio de la ` +
     `unidad se estampa en cada compra que la fabrica escribe despues, y el ` +

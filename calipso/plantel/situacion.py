@@ -65,8 +65,10 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
     # ciclo daba cero y el pre-seed ya entrado tambien, o sea que el techo
     # del ciclo se reseteaba solo cada vez que Pedro tardaba en abrir la
     # semana. Un techo que se reinicia por no tocar un boton no es un
-    # techo. Es la misma funcion que mira `bus.financiar` al pagar: dos
-    # respuestas distintas a "en que ciclo estoy" serian dos techos.
+    # techo. Es la misma funcion que mira `server` para el consumido de
+    # las suscripciones y su guardia: dos respuestas distintas a "en que
+    # ciclo estoy" serian dos techos. (`bus.financiar` NO la mira: el
+    # techo de pre-seed se mide sobre la ventana deslizante de abajo.)
     semanas_ciclo = cap.semanas_del_ciclo_de_hoy(ops, semana)
     # y la OTRA ventana, la del caudal de capital. El techo acumulado de
     # pre-seed no se mide sobre el ciclo de facturacion: se mide sobre las

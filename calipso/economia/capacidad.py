@@ -142,10 +142,17 @@ def semanas_del_ciclo_de_hoy(semanas_ops: list[str], semana: str) -> list[str]:
     a dar despues del boton.
 
     Vive ACA y no en server.py porque la pregunta no es de la frontera
-    http: la hacen tambien `bus.financiar` (el techo de pre-seed del
-    ciclo, que decide si sale plata) y `plantel.situacion` (el jefe, que
-    corre desatendido y no puede reventar por una semana sin abrir). Dos
+    http: la hacen los dos lados. `server` la usa para el consumido de las
+    suscripciones que Pedro ve y para el guardia de POST .../capacidad, y
+    `plantel.situacion` para el gasto de API del jefe, que corre
+    desatendido y no puede reventar por una semana sin abrir. Dos
     respuestas distintas a "en que ciclo estoy" serian dos techos.
+
+    Y NO la usa `bus.financiar`: el techo de pre-seed acumulado dejo de
+    medirse sobre el ciclo de facturacion y se mide sobre una ventana
+    DESLIZANTE propia (`bus.ventana_preseed`), que es otra pregunta con
+    otra respuesta. Nombrarlo aca mandaba a quien persigue "quien contesta
+    en que ciclo estoy" justo al lugar donde vive la OTRA ventana.
     """
     if semana in semanas_ops:
         ciclo, _ = posicion_ciclo(semana, semanas_ops)

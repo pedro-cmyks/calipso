@@ -629,3 +629,40 @@ def test_la_config_muestra_lo_pedido_y_sin_financiar_al_lado_del_acumulado(
     atlas3 = [x for x in cliente.get("/api/economia/config").json()
               ["departamentos"] if x["nombre"] == "atlas"][0]
     assert atlas3["preseed_pendiente_mm"] == 0
+
+
+def test_el_largo_de_la_ventana_es_el_de_verdad_y_no_la_constante(
+        cliente, monkeypatch):
+    """La REGLA y el TRAMO QUE SE SUMO no son el mismo numero, y viajaba
+    uno solo para rotular a los dos.
+
+    La regla es la constante: en ninguna corrida de
+    `VENTANA_PRESEED_SEMANAS` semanas operativas entra mas que el techo. El
+    tramo que se sumo no siempre mide eso, porque `ventana_preseed` mete la
+    semana de hoy SIEMPRE, este abierta o no: mientras el lunes no se abre
+    son cinco etiquetas (`previas[-4:] + [hoy]`), y toda semana empieza sin
+    abrir, que es el estado por defecto de cada lunes y no una ventana
+    rara.
+
+    Va en la direccion segura (aprieta, nunca afloja, y eso es deliberado:
+    ver el docstring de `ventana_preseed`), pero rotulado con el 4 el
+    numero que Pedro lee al lado del techo dejaba de ser la suma de lo que
+    el renglon decia que sumaba. Dos hechos distintos, una sola fuente de
+    verdad cada uno."""
+    k = Kernel(Libro(cliente.home / "economia" / "libro.jsonl"))
+    for w in ("2026-W36", "2026-W37", "2026-W38"):
+        pt.expirar_pools(k, TS, w)
+        pt.emitir_semana(k, TS, w, 4_000, 1_000)
+
+    # jueves, con la semana de hoy ya abierta: los dos coinciden
+    monkeypatch.setattr(srv, "_eco_ahora", lambda: (TS, "2026-W38"))
+    d = cliente.get("/api/economia/config").json()
+    assert d["preseed_ventana_semanas"] == 4
+    assert d["preseed_ventana_sumadas"] == 4
+
+    # lunes, con el boton de abrir todavia sin tocar: la regla sigue siendo
+    # la de 4 y lo que se sumo son CINCO etiquetas
+    monkeypatch.setattr(srv, "_eco_ahora", lambda: (TS, "2026-W39"))
+    d2 = cliente.get("/api/economia/config").json()
+    assert d2["preseed_ventana_semanas"] == 4
+    assert d2["preseed_ventana_sumadas"] == 5

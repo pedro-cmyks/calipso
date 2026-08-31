@@ -413,3 +413,48 @@ test("la nota del techo del ciclo cuenta lo mismo que el numero de abajo",
 test("sin nada pedido en la mesa, el renglon de la reserva no se dibuja", () => {
   assert.ok(!textoDeAjustes(CONFIG).includes("pedidas y sin financiar"));
 });
+
+test("la regla dice 4 y el renglon dice cuantas semanas sumo de verdad", () => {
+  // no son el mismo numero. La REGLA es la constante ("en ninguna corrida
+  // de 4 semanas operativas entra mas que el techo"); el TRAMO que se sumo
+  // mete la semana de hoy este abierta o no, asi que el lunes, hasta que
+  // Pedro toca el boton de abrir, son cinco etiquetas. Rotulado con el 4,
+  // el numero de al lado del techo no era la suma de lo que el renglon
+  // decia que sumaba.
+  const html = textoDeAjustes({...CONFIG, preseed_ventana_semanas: 4,
+                               preseed_ventana_sumadas: 5});
+  assert.match(html, /corrida de 4 semanas operativas/);
+  assert.match(html, /entro en las ultimas 5 semanas operativas: 50 de 150/);
+});
+
+test("con una sola semana sumada el renglon se dice en singular", () => {
+  // una fabrica recien abierta tiene una sola semana operativa: "las
+  // ultimas 1 semanas operativas" es una frase rota, y la frase la lee
+  // Pedro justo cuando esta aprendiendo que mide el techo
+  const html = textoDeAjustes({...CONFIG, preseed_ventana_sumadas: 1});
+  assert.match(html, /entro en la ultima semana operativa: 50 de 150/);
+  assert.doesNotMatch(html, /ultimas 1 semanas/);
+});
+
+test("con la canilla cerrada no se promete una liberacion que no habilita nada",
+     () => {
+  // techo acumulado en CERO es "todavia no" y FRENA todo (departamentos.py),
+  // no "sin limite": `financiar` corta antes con "no tiene techo de pre-seed
+  // acumulado". Prometer ahi que la proxima rodada devuelve cupo es prometer
+  // un alivio que no habilita nada -- y es el caso real de bajar la perilla
+  // a cero despues de haber financiado, que es lo que el resto de la
+  // pantalla llama cerrar la canilla
+  const config = {...CONFIG, departamentos: [
+    {...CONFIG.departamentos[0], techo_preseed_ciclo_mm: 0,
+     preseed_ventana_mm: 30_000_000, preseed_libera_mm: 30_000_000,
+     preseed_libera_al_salir: "2026-W31"},
+    CONFIG.departamentos[1]]};
+  const html = textoDeAjustes(config);
+  assert.doesNotMatch(html, /se liberan/);
+  // y con el techo puesto, el alivio sigue estando
+  const abierta = {...config, departamentos: [
+    {...config.departamentos[0], techo_preseed_ciclo_mm: 60_000_000},
+    config.departamentos[1]]};
+  assert.match(textoDeAjustes(abierta),
+               /sale 2026-W31 de la ventana y se liberan 30\.000\./);
+});

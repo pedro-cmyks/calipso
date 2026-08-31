@@ -474,8 +474,12 @@ def test_el_techo_del_ciclo_recorta_el_pedido_a_lo_que_queda(
          "techo_preseed_mm": 150_000}
 
     r = contratar(s, "pedir", "150000", "quiero todo")
-    assert r["monto_mm"] == 20_000, "no recorto a lo que queda del ciclo"
-    assert r["libre_ciclo_mm"] == 20_000
+    assert r["monto_mm"] == 20_000, "no recorto a lo que queda de la ventana"
+    assert r["libre_ventana_mm"] == 20_000
+    assert r["techo_ventana_mm"] == 60_000
+    # y sin el nombre viejo: los dos numeros se miden sobre la ventana
+    # deslizante, no sobre el ciclo de facturacion
+    assert "libre_ciclo_mm" not in r and "techo_ciclo_mm" not in r
     bus2 = srv._eco_bus.Bus(
         srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
     assert bus2.datos(r["propuesta"])["presupuesto_mm"] == 20_000
