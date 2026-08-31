@@ -2,6 +2,8 @@ import {test} from "node:test";
 import assert from "node:assert/strict";
 import {textoDePerillas, textoDeAjustes, aMilimonedas, aMilimonedasConCero,
         aEntero, cuerpoDeSuscripciones, monedasEditable,
+        capacidadesDeSiembra, departamentosDeSiembra, avisoDeFinanzas,
+        resumenDeSiembra, CAPACIDAD_ESTIMADA, DEPARTAMENTO_FINANZAS,
         SUSCRIPCIONES} from "./perillas.js";
 
 test("las dos suscripciones estan siempre a la vista, este sembrada o no",
@@ -125,8 +127,24 @@ test("cuerpoDeSuscripciones arma el diccionario nombre -> costo_mensual_mm " +
      () => {
   const cuerpo = cuerpoDeSuscripciones();
   assert.deepEqual(Object.keys(cuerpo).sort(), ["chatgpt_plus", "claude_max"]);
-  assert.deepEqual(cuerpo.claude_max, {costo_mensual_mm: 200_000});
-  assert.deepEqual(cuerpo.chatgpt_plus, {costo_mensual_mm: 20_000});
+  // la capacidad viaja SIEMPRE: sin ella el servidor ponia su default
+  // marcado "ESTIMACION A AJUSTAR" y sembrar ignoraba cualquier medicion
+  assert.deepEqual(cuerpo.claude_max,
+                   {costo_mensual_mm: 200_000, capacidad_ciclo: CAPACIDAD_ESTIMADA});
+  assert.deepEqual(cuerpo.chatgpt_plus,
+                   {costo_mensual_mm: 20_000, capacidad_ciclo: CAPACIDAD_ESTIMADA});
+});
+
+test("cuerpoDeSuscripciones manda la capacidad que Pedro tiene delante, no " +
+     "la estimacion", () => {
+  const cuerpo = cuerpoDeSuscripciones([
+    {nombre: "claude_max", capacidad_ciclo: 1360},
+    {nombre: "chatgpt_plus", capacidad_ciclo: 480}]);
+  assert.equal(cuerpo.claude_max.capacidad_ciclo, 1360);
+  assert.equal(cuerpo.chatgpt_plus.capacidad_ciclo, 480);
+  // y el costo sigue saliendo de SUSCRIPCIONES: es el numero que Pedro dio
+  // de verdad, no algo que se lea de un input
+  assert.equal(cuerpo.claude_max.costo_mensual_mm, 200_000);
 });
 
 test("las dos suscripciones sumadas dan lo que Pedro dijo que paga: 220 al mes",
@@ -484,4 +502,249 @@ test("sin freno, la fila del departamento no dibuja ningun aviso", () => {
   const html = textoDeAjustes({...CONFIG, techo_propuestas: 3});
   assert.ok(!html.includes('class="aviso freno"'),
             "invento un freno donde no hay ninguno");
+});
+
+// -- la siembra: la unica escritura de esta pantalla que no se deshace ----
+//
+// `Registro` no tiene baja y `ajustar` no deja tocar ni el nombre ni la
+// zona, asi que un departamento sembrado mal solo se arregla borrando
+// ~/.calipso/economia a mano. Todo lo de abajo existe por eso.
+
+test("el formulario de siembra tiene un campo por zona, no uno solo que las " +
+     "hardcodea todas en fabrica", () => {
+  const html = textoDePerillas({activa: false});
+  assert.match(html, /name="fabrica"/);
+  assert.match(html, /name="personal"/);
+  assert.match(html, /departamentos de la fabrica/);
+  assert.match(html, /departamentos personales/);
+});
+
+test("el departamento que la economia da por hecho viene puesto: olvidarlo " +
+     "tiene que ser una borrada explicita", () => {
+  const html = textoDePerillas({activa: false});
+  assert.match(html, /name="personal" autocomplete="off" value="finanzas"/);
+  assert.match(html, /personal:finanzas/);
+});
+
+test("el formulario dice que sembrar no se deshace y que la zona no se " +
+     "cambia despues", () => {
+  const html = textoDePerillas({activa: false});
+  assert.match(html, /no se deshace/);
+  assert.match(html, /ni el nombre ni la zona/);
+});
+
+test("departamentosDeSiembra pone cada nombre en la zona del campo en el " +
+     "que se escribio", () => {
+  const {departamentos, error} = departamentosDeSiembra(
+    "atlas, mercado", "finanzas");
+  assert.equal(error, null);
+  assert.deepEqual(departamentos, [
+    {nombre: "atlas", zona: "fabrica"},
+    {nombre: "mercado", zona: "fabrica"},
+    {nombre: "finanzas", zona: "personal"},
+  ]);
+});
+
+test("los espacios y las comas de mas no ensucian ningun nombre", () => {
+  const {departamentos} = departamentosDeSiembra("  atlas ,, mercado , ", "");
+  assert.deepEqual(departamentos.map(d => d.nombre), ["atlas", "mercado"]);
+});
+
+test("sin ningun departamento en ninguno de los dos campos, no se manda nada",
+     () => {
+  const {departamentos, error} = departamentosDeSiembra("  ", "");
+  assert.deepEqual(departamentos, []);
+  assert.match(error, /al menos un departamento/);
+});
+
+test("una siembra sin ningun departamento de fabrica se corta: dejaria la " +
+     "fabrica vacia para siempre", () => {
+  // El caso real, y por eso importa: el formulario recien dibujado trae
+  // "finanzas" precargado en el campo personal. Tocar el boton sin escribir
+  // nada -o despues de que el repintado de cada 60 s vacie el campo de
+  // fabrica- pasaba las validaciones del cliente Y las del servidor, que
+  // solo exige que la lista no este vacia. Y no se arregla despues: no hay
+  // alta de departamentos fuera de la siembra, y la siembra no corre dos
+  // veces.
+  const {departamentos, error} = departamentosDeSiembra("", "finanzas");
+  assert.deepEqual(departamentos, []);
+  assert.match(error, /al menos un departamento de la fabrica/);
+});
+
+test("con un departamento de fabrica, los personales entran igual", () => {
+  const {departamentos, error} = departamentosDeSiembra("cerebro", "finanzas");
+  assert.equal(error, null);
+  assert.deepEqual(departamentos, [{nombre: "cerebro", zona: "fabrica"},
+                                   {nombre: "finanzas", zona: "personal"}]);
+});
+
+test("un nombre con dos puntos se corta antes de salir: el nombre arma la " +
+     "cuenta", () => {
+  const {departamentos, error} = departamentosDeSiembra("dep:atlas", "");
+  assert.deepEqual(departamentos, []);
+  assert.match(error, /dos puntos/);
+});
+
+test("el mismo nombre en las dos zonas es uno repetido, no dos " +
+     "departamentos", () => {
+  const {departamentos, error} = departamentosDeSiembra("finanzas", "finanzas");
+  assert.deepEqual(departamentos, []);
+  assert.match(error, /repetido: finanzas/);
+});
+
+test("avisoDeFinanzas calla cuando finanzas esta en la zona personal", () => {
+  assert.equal(avisoDeFinanzas([{nombre: "atlas", zona: "fabrica"},
+                                {nombre: "finanzas", zona: "personal"}]), "");
+});
+
+test("finanzas en la zona de fabrica NO cuenta: la cuenta que el pagador " +
+     "busca es personal:finanzas", () => {
+  // el caso mas facil de errar de todos, y el mas silencioso: el nombre
+  // esta, la pantalla lo muestra, y el cargo personal igual no se aplica
+  // nunca porque la cuenta que arma un departamento de fabrica es
+  // dep:finanzas
+  const aviso = avisoDeFinanzas([{nombre: "finanzas", zona: "fabrica"}]);
+  assert.match(aviso, /OJO/);
+  assert.match(aviso, /personal:finanzas/);
+  assert.match(aviso, /se reintenta para siempre/);
+});
+
+test("resumenDeSiembra lista cada departamento con su zona, no un resumen",
+     () => {
+  const texto = resumenDeSiembra(
+    [{nombre: "atlas", zona: "fabrica"},
+     {nombre: "finanzas", zona: "personal"}],
+    [{nombre: "claude_max", capacidad_ciclo: 1360,
+      medido: {proveedor: "claude", propuesta: 1360}}]);
+  assert.match(texto, /^ {2}atlas - zona fabrica$/m);
+  assert.match(texto, /^ {2}finanzas - zona personal$/m);
+  assert.match(texto, /no se puede deshacer/i);
+});
+
+test("resumenDeSiembra dice la capacidad de cada suscripcion y de donde " +
+     "salio", () => {
+  const texto = resumenDeSiembra(
+    [{nombre: "finanzas", zona: "personal"}],
+    [{nombre: "claude_max", capacidad_ciclo: 1360,
+      medido: {proveedor: "claude", propuesta: 1360}},
+     {nombre: "chatgpt_plus", capacidad_ciclo: CAPACIDAD_ESTIMADA,
+      medido: null}]);
+  assert.match(texto, /claude_max - 1360 unidades por ciclo \(el probe de claude midio 1360\)/);
+  assert.match(texto, /chatgpt_plus - 1000 unidades por ciclo \(estimacion: nadie lo midio todavia\)/);
+});
+
+test("si Pedro corrige el numero medido, el confirm dice los DOS: lo que se " +
+     "siembra y lo que el probe midio", () => {
+  // el input es editable y `data-propuesta` guarda lo que propuso el probe:
+  // sin eso el confirm decia "600 (medido por el probe)" y hacia pasar un
+  // numero tipeado por una medicion
+  const texto = resumenDeSiembra(
+    [{nombre: "finanzas", zona: "personal"}],
+    [{nombre: "chatgpt_plus", capacidad_ciclo: 600,
+      medido: {proveedor: "codex", propuesta: 480}}]);
+  assert.match(texto, /chatgpt_plus - 600 unidades por ciclo \(el probe de codex midio 480\)/);
+});
+
+test("si falta finanzas, el aviso encabeza el confirm: es lo que no se ve " +
+     "mirando la lista", () => {
+  const texto = resumenDeSiembra([{nombre: "atlas", zona: "fabrica"}], []);
+  assert.ok(texto.startsWith("OJO:"), texto.slice(0, 40));
+});
+
+test("capacidadesDeSiembra sin foto del probe cae en la estimacion y lo " +
+     "dice, no la disfraza de medicion", () => {
+  // hoy es SIEMPRE este caso: /api/economia/config corta con
+  // {activa: false} antes de leer la foto mientras la economia no exista,
+  // que es justo cuando este formulario se dibuja
+  const caps = capacidadesDeSiembra({activa: false});
+  assert.deepEqual(caps.map(c => c.capacidad_ciclo),
+                   [CAPACIDAD_ESTIMADA, CAPACIDAD_ESTIMADA]);
+  assert.deepEqual(caps.map(c => c.medido), [null, null]);
+  assert.deepEqual(caps.map(c => c.nombre), ["claude_max", "chatgpt_plus"]);
+});
+
+test("capacidadesDeSiembra usa el numero del probe cuando lo hay, con su " +
+     "proveedor y su nota", () => {
+  const caps = capacidadesDeSiembra(CONFIG);
+  assert.equal(caps[0].capacidad_ciclo, 1360);
+  assert.equal(caps[0].medido.proveedor, "claude");
+  assert.match(caps[0].medido.nota, /NO mide cuota real/);
+  // la otra suscripcion no viene medida en esa config: estimacion
+  assert.equal(caps[1].capacidad_ciclo, CAPACIDAD_ESTIMADA);
+  assert.equal(caps[1].medido, null);
+});
+
+test("una propuesta nula o en cero no se toma por medicion", () => {
+  for (const propuesta of [null, undefined, 0]) {
+    const caps = capacidadesDeSiembra({...CONFIG, suscripciones: [
+      {nombre: "claude_max",
+       medido: {proveedor: "claude", capacidad_ciclo_propuesta: propuesta,
+                nota: "sin suficiente historia todavia"}}]});
+    assert.equal(caps[0].capacidad_ciclo, CAPACIDAD_ESTIMADA);
+    assert.equal(caps[0].medido, null);
+  }
+});
+
+test("el formulario pinta la capacidad medida en el input, con el proveedor " +
+     "del que salio", () => {
+  const html = textoDePerillas({activa: false}, null, CONFIG);
+  assert.match(html, /data-suscripcion="claude_max" data-medido="claude" data-propuesta="1360" value="1360"/);
+  assert.match(html, /medido por el probe de claude/);
+  assert.match(html, /NO mide cuota real/);
+});
+
+test("sin medicion el input no miente: no lleva data-medido y dice que " +
+     "nadie lo midio", () => {
+  const html = textoDePerillas({activa: false});
+  assert.match(html, /data-suscripcion="claude_max" value="1000"/);
+  assert.match(html, /data-suscripcion="chatgpt_plus" value="1000"/);
+  assert.ok(!html.includes("data-medido"),
+            "dijo que un numero estaba medido sin que nadie lo midiera");
+  assert.match(html, /nadie lo midio/);
+});
+
+test("los nombres de las suscripciones del formulario son los canonicos del " +
+     "pagador", () => {
+  const html = textoDePerillas({activa: false});
+  for (const {nombre} of SUSCRIPCIONES) {
+    assert.ok(html.includes(`data-suscripcion="${nombre}"`), nombre);
+  }
+});
+
+test("tambien lo del formulario de siembra pasa por escapar()", () => {
+  const sucio = {...CONFIG, suscripciones: [
+    {nombre: "claude_max",
+     medido: {proveedor: '<img src=x onerror="alert(1)">',
+              capacidad_ciclo_propuesta: 900, nota: "<b>ojo</b>"}}]};
+  const html = textoDePerillas({activa: false}, null, sucio);
+  assert.ok(!html.includes("<img"), "se colo una etiqueta por el proveedor");
+  assert.ok(!html.includes("<b>ojo"), "se colo una etiqueta por la nota");
+  assert.match(html, /&lt;img/);
+});
+
+test("con la economia sembrada no se dibuja ningun campo de siembra", () => {
+  const html = textoDePerillas({activa: true, tablero: {
+    tesoro_mm: 0, direccion_mm: 0, cuenta_pedro_mm: 0, tipo_cambio_mm: 5000,
+    linea_empleo_mm: 0, departamentos: {}, personal: {neto_mm: 0}}}, null,
+    CONFIG);
+  assert.ok(!html.includes('name="fabrica"'));
+  assert.ok(!html.includes('name="personal"'));
+});
+
+test("el formulario de siembra no propone nombres de departamento", () => {
+  // Decia placeholder="atlas, mercado". Los dos salen de la lista inventada
+  // que estaba escrita a mano en el prompt del sistema, y atlas ni siquiera
+  // es un departamento: es un PROYECTO. Un ejemplo al lado de una escritura
+  // que no se deshace no es un ejemplo, es una sugerencia.
+  const html = textoDePerillas({activa: false});
+  for (const inventado of ["atlas", "mercado"]) {
+    assert.ok(!html.includes(inventado),
+              `el formulario todavia propone "${inventado}"`);
+  }
+});
+
+test("el campo de departamentos de fabrica es required en el navegador", () => {
+  const html = textoDePerillas({activa: false});
+  const campo = html.match(/<input name="fabrica"[^>]*>/)[0];
+  assert.match(campo, /required/);
 });

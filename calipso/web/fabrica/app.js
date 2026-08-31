@@ -18,7 +18,8 @@ import {crearPulso, empleadosDe, estadoVisible} from "./pulso.js";
 import {textoDeMesa} from "./mesa.js";
 import {textoDePlantel} from "./plantel.js";
 import {textoDePerillas, aMilimonedas, aMilimonedasConCero, aEntero,
-        cuerpoDeSuscripciones} from "./perillas.js";
+        cuerpoDeSuscripciones, departamentosDeSiembra,
+        resumenDeSiembra} from "./perillas.js";
 import {textoDePermisos, contadorPendientes} from "./permisos.js";
 
 const lienzo = document.getElementById("mapa");
@@ -633,11 +634,34 @@ cajaPerillas?.addEventListener("submit", async evento => {
   const boton = form.querySelector('button[type="submit"]');
 
   if (cual === "sembrar") {
-    const nombres = form.departamentos.value.split(",")
-      .map(s => s.trim()).filter(Boolean);
-    if (!nombres.length) { alert("escribi al menos un departamento"); return; }
-    if (!confirm(`Sembrar la economia con estos departamentos: ` +
-                 `${nombres.join(", ")}? No se puede deshacer.`)) return;
+    // la zona sale del campo en el que Pedro escribio cada nombre. Hasta
+    // hoy iba "fabrica" para todos, hardcodeada aca, y eso hacia imposible
+    // sembrar el departamento personal que la economia da por hecho -- sin
+    // vuelta atras, porque `Registro` no tiene baja ni deja ajustar la zona.
+    const {departamentos, error} = departamentosDeSiembra(
+      form.fabrica.value, form.personal.value);
+    if (error) { alert(error); return; }
+    // y la capacidad sale de los INPUTS, no de la constante: el numero que
+    // se siembra tiene que ser el que Pedro esta viendo, lo haya propuesto
+    // el probe o lo haya corregido el a mano. `data-medido` y
+    // `data-propuesta` guardan de donde salio la propuesta y cual era, para
+    // que el confirm no haga pasar un numero tipeado por una medicion.
+    const capacidades = [...form.querySelectorAll("input[data-suscripcion]")]
+      .map(i => ({nombre: i.dataset.suscripcion,
+                  capacidad_ciclo: aEntero(i.value),
+                  medido: i.dataset.medido
+                    ? {proveedor: i.dataset.medido,
+                       propuesta: Number(i.dataset.propuesta)} : null}));
+    const mala = capacidades.find(c => !c.capacidad_ciclo);
+    if (mala) {
+      alert(`la capacidad de ${mala.nombre} tiene que ser un entero mayor ` +
+            `que cero`);
+      return;
+    }
+    // la lista entera, no un resumen: es el ultimo momento en el que un
+    // nombre o una zona se pueden corregir. `resumenDeSiembra` ademas
+    // encabeza con el aviso de que falta el departamento de finanzas.
+    if (!confirm(resumenDeSiembra(departamentos, capacidades))) return;
     // el freno del doble toque es el mismo que ya usa financiar/descartar
     // en la mesa: deshabilitar ANTES del await, no despues -asi un segundo
     // toque mientras el primero sigue en vuelo no dispara un segundo pedido
@@ -646,8 +670,8 @@ cajaPerillas?.addEventListener("submit", async evento => {
       const r = await fetch("/api/economia/sembrar", {
         method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify({
-          departamentos: nombres.map(nombre => ({nombre, zona: "fabrica"})),
-          suscripciones: cuerpoDeSuscripciones(),
+          departamentos,
+          suscripciones: cuerpoDeSuscripciones(capacidades),
         })});
       if (!r.ok) {
         let detalle = "no se pudo sembrar";
