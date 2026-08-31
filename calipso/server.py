@@ -3600,11 +3600,6 @@ class EcoConciliarBody(BaseModel):
     minutos: int
 
 
-class MesaFinanciarBody(BaseModel):
-    cuenta: str
-    mm: int
-
-
 # El techo de los numeros de plata en la frontera http. No sale del
 # dominio -- el libro no tiene monto maximo -- sino del viaje: estas
 # perillas se serializan a json y las dibuja el navegador, y arriba de
@@ -3622,6 +3617,31 @@ def _no_booleano(v):
     if isinstance(v, bool):
         raise ValueError("se esperaba un entero, no un booleano")
     return v
+
+
+class MesaFinanciarBody(BaseModel):
+    """El unico cuerpo de la frontera que mueve plata de verdad.
+
+    Vive DEBAJO de `_MAX_MM` y `_no_booleano` porque hasta hoy vivia
+    arriba, y por eso era el unico cuerpo de plata sin ninguno de los dos:
+    un `{"mm": true}` entraba como 1 (pydantic en modo lax acepta el bool
+    como int), contestaba 200, escribia una transferencia de 1 mm y
+    CERRABA la ronda -- y como el libro es append-only y un pre-seed pasa
+    a `cerrada` al pagarse, una ronda de 100.000 se quemaba por un `true`
+    perdido en el json, sin forma de completarla. El negativo y el cero se
+    frenaban recien abajo, en `Asiento.__post_init__`: la frontera no los
+    miraba.
+
+    `gt=0` y no `ge=0`: el libro exige monto positivo (`monto debe ser
+    entero positivo`), asi que el cero es un 400 seguro tres capas mas
+    abajo. Frenarlo aca es la misma puerta, dicha antes.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    cuenta: str
+    mm: int = Field(gt=0, le=_MAX_MM)
+
+    sin_booleanos = field_validator("*", mode="before")(_no_booleano)
 
 
 class EcoSembrarDepartamentoBody(BaseModel):
@@ -4419,6 +4439,21 @@ def api_eco_config() -> dict:
         deps_objeto = m.registro.todos()
         departamentos = [dataclasses.asdict(d) for d in deps_objeto]
         suscripciones = dict(m.suscripciones)
+        # lo pedido y todavia en la mesa, por departamento. Va ACA, con el
+        # candado tomado, por la misma razon que el resto de los lectores
+        # de economia: el bus se lee entero de una.
+        pendiente_por_cuenta: dict[str, int] = {}
+        bus_config = _eco_bus.Bus(p0.ruta_bus)
+        for id_ in bus_config.ids():
+            if bus_config.estado(id_) != "alta":
+                continue
+            d_ = bus_config.datos(id_)
+            if d_.get("tipo") != "preseed":
+                continue
+            cuenta_ = d_.get("departamento", "")
+            pendiente_por_cuenta[cuenta_] = (
+                pendiente_por_cuenta.get(cuenta_, 0)
+                + d_.get("presupuesto_mm", 0))
     ops = _eco_cap.semanas_operativas(asientos)
     ciclo = None
     if ops and semana in ops:
@@ -4437,6 +4472,16 @@ def api_eco_config() -> dict:
     for dep, fila in zip(deps_objeto, departamentos):
         fila["preseed_ciclo_mm"] = _eco_bus.preseed_del_ciclo(
             asientos, dep.cuenta, semanas_ciclo)
+        # y al lado, lo PEDIDO que sigue en la mesa. Los dos numeros no
+        # son el mismo y la pantalla los decia como si lo fueran: el
+        # acumulado de arriba es lo que Pedro ya financio (el unico que
+        # mira `bus.financiar`), y este es la reserva que `jefe._puede` le
+        # suma para no publicar lo que no se le va a poder pagar. Sin
+        # este, un pedido olvidado en la mesa deja al jefe mudo con el
+        # acumulado del ciclo a la vista en CERO -- y nada en la pantalla
+        # sugiere que lo que lo suelta es descartarlo.
+        fila["preseed_pendiente_mm"] = pendiente_por_cuenta.get(
+            dep.cuenta, 0)
     resumen = calipso_consumo.cargar_resumen() or {}
     filas = []
     for nombre, sus in sorted(suscripciones.items()):

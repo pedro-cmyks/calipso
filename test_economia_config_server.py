@@ -539,3 +539,93 @@ def test_la_config_muestra_el_acumulado_del_ciclo_al_lado_del_techo(cliente):
     atlas2 = [x for x in d2["departamentos"] if x["nombre"] == "atlas"][0]
     assert atlas2["preseed_ciclo_mm"] == 80_000
     assert atlas2["techo_preseed_ciclo_mm"] == 200_000
+
+
+def test_sembrar_tampoco_deja_poner_el_techo_de_preseed_en_lo_personal(cliente,
+                                                                       tmp_path):
+    """La guardia de zona estaba de un lado solo. `POST .../perillas`
+    rechazaba las dos perillas de pre-seed en un departamento personal con
+    400; `POST /api/economia/sembrar` las escribia con 200 -- y sembrar es
+    de ESCRITURA UNICA, asi que el departamento nacia con un techo que no
+    autoriza nada y no habia forma de sacarlo salvo editando el json.
+
+    Y el numero ahi no es inofensivo: `jefe._puede` y `_contratar_para` no
+    miran la zona, asi que el jefe de un personal con las dos perillas
+    puestas PUBLICA pedidos que `bus.financiar` rechaza siempre ("un
+    pre-seed es capital de fabrica"). La bandeja de Pedro se llena de
+    propuestas impagables y se le come TECHO_PROPUESTAS: exactamente el mal
+    que el techo del ciclo existe para evitar.
+
+    Por eso la guardia bajo al dominio (`Departamento.__post_init__`) en
+    vez de duplicarse en el segundo endpoint: es un invariante del
+    departamento, y dos puertas que hay que acordarse de cerrar de a una
+    ya demostraron que se cierra una sola."""
+    import calipso.server as srv
+
+    home = tmp_path / "otra"
+    (home / "economia").mkdir(parents=True)
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(srv, "_ECO_BASE", home)
+    monkeypatch.setenv("CALIPSO_HOME", str(home))
+    c = TestClient(srv.app, cookies={srv.COOKIE: srv.TOKEN})
+    try:
+        for perilla in ("techo_preseed_mm", "techo_preseed_ciclo_mm"):
+            r = c.post("/api/economia/sembrar", json={
+                "departamentos": [{"nombre": "atlas", "zona": "fabrica"},
+                                  {"nombre": "yo", "zona": "personal",
+                                   perilla: 999_999}],
+                "suscripciones": {}})
+            assert r.status_code == 400, (perilla, r.text)
+            assert "perilla de fabrica" in r.json()["detail"]
+            # y no escribio NADA: sembrar valida todo en memoria antes
+            assert not (home / "economia" / "departamentos.json").exists()
+        # el mismo sembrado sin la perilla entra
+        r = c.post("/api/economia/sembrar", json={
+            "departamentos": [{"nombre": "atlas", "zona": "fabrica",
+                               "techo_preseed_ciclo_mm": 999_999},
+                              {"nombre": "yo", "zona": "personal"}],
+            "suscripciones": {}})
+        assert r.status_code == 200, r.text
+    finally:
+        monkeypatch.undo()
+
+
+def test_la_config_muestra_lo_pedido_y_sin_financiar_al_lado_del_acumulado(
+        cliente):
+    """El acumulado del ciclo y lo pedido en pie NO son el mismo numero, y
+    la pantalla los decia como si lo fueran: la nota prometia que el techo
+    del ciclo contaba "lo que ya financiaste mas lo que sigue en la mesa"
+    -- esa es la regla del JEFE (`jefe._puede`) -- pegada a un
+    "ya entro este ciclo" que sale de `preseed_ciclo_mm` y cuenta solo lo
+    financiado, igual que el freno de `bus.financiar`.
+
+    Con un pedido olvidado en la mesa el bloque se leia
+    "ya entro este ciclo: 0 de 60.000" con 60.000 reservados, el jefe mudo
+    y nada que sugiriera que descartar es lo unico que lo suelta."""
+    from calipso.economia import bus as bus_mod
+
+    cliente.post("/api/economia/departamentos/atlas/perillas",
+                 json={"techo_preseed_mm": 150_000,
+                       "techo_preseed_ciclo_mm": 60_000})
+    b = bus_mod.Bus(cliente.home / "economia" / "bus.jsonl")
+    b.alta(TS, W, "ps1", "dep:atlas", "arranco", 60_000, 60_000,
+           {"gasto_max_mm": 60_000}, tipo="preseed")
+    atlas = [x for x in cliente.get("/api/economia/config").json()
+             ["departamentos"] if x["nombre"] == "atlas"][0]
+    assert atlas["preseed_ciclo_mm"] == 0, "no se financio nada todavia"
+    assert atlas["preseed_pendiente_mm"] == 60_000
+
+    # descartar lo suelta, y la pantalla lo tiene que reflejar
+    bus_mod.descartar(bus_mod.Bus(cliente.home / "economia" / "bus.jsonl"),
+                      TS, W, "ps1")
+    atlas2 = [x for x in cliente.get("/api/economia/config").json()
+              ["departamentos"] if x["nombre"] == "atlas"][0]
+    assert atlas2["preseed_pendiente_mm"] == 0
+
+    # y un trabajo comun no cuenta: la reserva es del pre-seed
+    b2 = bus_mod.Bus(cliente.home / "economia" / "bus.jsonl")
+    b2.alta(TS, W, "t1", "dep:atlas", "un trabajo", 10_000, 30_000,
+            {"gasto_max_mm": 10_000})
+    atlas3 = [x for x in cliente.get("/api/economia/config").json()
+              ["departamentos"] if x["nombre"] == "atlas"][0]
+    assert atlas3["preseed_pendiente_mm"] == 0

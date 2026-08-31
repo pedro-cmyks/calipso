@@ -464,3 +464,48 @@ def test_el_techo_del_ciclo_frena_a_pedro_en_la_mesa(cliente):
     assert r3.status_code == 200, r3.text
     assert Kernel(Libro(base / "economia" / "libro.jsonl")).saldo(
         "dep:atlas") == antes + 200_000
+
+
+def test_la_frontera_de_financiar_mira_el_monto_antes_de_quemar_la_ronda(cliente):
+    """`MesaFinanciarBody` era el UNICO cuerpo de plata de la frontera sin
+    `ge`/`le` ni el validador de booleanos, porque se declaraba arriba de
+    donde esos dos existen en el archivo. Y es el cuerpo que mas caro sale
+    equivocado: un `{"mm": true}` entraba como 1 (pydantic en modo lax
+    acepta el bool como int), contestaba 200, escribia una transferencia
+    de 1 mm y CERRABA la ronda -- el libro es append-only y un pre-seed
+    pasa a `cerrada` al pagarse, asi que una ronda de 100.000 se quemaba
+    por un `true` perdido en el json y no habia forma de completarla.
+
+    El negativo y el cero se frenaban, pero recien abajo, en la validacion
+    del asiento. Ahora los tres se frenan en la puerta, con la ronda
+    intacta."""
+    import json as _json
+
+    c, base = cliente
+    k0 = Kernel(Libro(base / "economia" / "libro.jsonl"))
+    k0.acunar(TS, W, t.TESORO, 900_000, t.SubtipoAcunacion.CAPITAL,
+              {"tipo": "firma_pedro"})
+    antes = Kernel(Libro(base / "economia" / "libro.jsonl")).saldo("dep:atlas")
+    _preseed(base, id="ps1", mm=100_000)
+
+    for crudo in ('{"cuenta": "tesoro", "mm": true}',
+                  '{"cuenta": "tesoro", "mm": 0}',
+                  '{"cuenta": "tesoro", "mm": -500000}',
+                  '{"cuenta": "tesoro", "mm": ' + str(2 ** 53) + '}'):
+        r = c.post("/api/economia/bus/ps1/financiar",
+                   params={"token": srv.TOKEN}, content=crudo,
+                   headers={"Content-Type": "application/json"})
+        assert r.status_code == 422, (crudo, r.text)
+        # y la ronda sigue esperando plata: ni un asiento, ni un cierre
+        assert Bus(base / "economia" / "bus.jsonl").estado("ps1") == "alta"
+        assert Kernel(Libro(base / "economia" / "libro.jsonl")).saldo(
+            "dep:atlas") == antes
+
+    # el monto de verdad si entra, y recien ahi se cierra
+    r = c.post("/api/economia/bus/ps1/financiar", params={"token": srv.TOKEN},
+               json={"cuenta": t.TESORO, "mm": 100_000})
+    assert r.status_code == 200, r.text
+    assert Bus(base / "economia" / "bus.jsonl").estado("ps1") == "cerrada"
+    assert Kernel(Libro(base / "economia" / "libro.jsonl")).saldo(
+        "dep:atlas") == antes + 100_000
+    assert _json.loads(r.text)["ok"] is True
