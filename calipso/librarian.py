@@ -239,7 +239,7 @@ def descriptor() -> dict:
     }
 
 
-def como_items(datos: dict, proyecto: str) -> list[dict]:
+def como_items(datos_endpoint: dict, proyecto: str) -> list[dict]:
     """Traduce la respuesta de GET /api/memory/inbox a items del inbox.
 
     `proyecto` es OBLIGATORIO y no tiene default. Es la unica de las cuatro
@@ -256,14 +256,20 @@ def como_items(datos: dict, proyecto: str) -> list[dict]:
             "como_items necesita el proyecto: el bibliotecario es por "
             "proyecto y sin el lee la bandeja 'global', que es otra")
     items = []
-    for p in datos.get("proposals") or []:
+    for p in datos_endpoint.get("proposals") or []:
         texto = p.get("text") or ""
         resumen = texto if len(texto) <= 80 else texto[:77] + "..."
+        estado = p.get("status") or "pending"
+        # Los verbos dependen del estado. El store solo acciona sobre
+        # status == "pending" (librarian.py:158) y fija "accepted"/"discarded"
+        # al accionar. El endpoint filtra pending solo por DEFECTO, asi que
+        # una propuesta resuelta puede llegar. Solo pending ofrece verbos.
+        verbos_validos = ["aceptar", "descartar"] if estado == "pending" else []
         items.append({
             "id": p.get("id"), "origen": ORIGEN_INBOX, "clase": "decision",
             "ts": p.get("ts") or "", "titulo": f"[{proyecto}] {resumen}",
             "cuerpo": {"texto": texto, "scope": p.get("scope"),
                        "target": p.get("target"), "proyecto": proyecto,
-                       "verbos_validos": ["aceptar", "descartar"]},
-            "estado": p.get("status") or "pending", "respuesta": None})
+                       "verbos_validos": verbos_validos},
+            "estado": estado, "respuesta": None})
     return items

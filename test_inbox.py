@@ -178,3 +178,15 @@ def test_los_events_no_son_items():
     No son cosas que esperen a Pedro."""
     datos = {"proposals": [], "events": [{"id": "a"}, {"id": "b"}]}
     assert librarian.como_items(datos, proyecto="calipso") == []
+
+
+def test_una_propuesta_ya_resuelta_no_ofrece_verbos():
+    """El store solo acciona sobre `pending` (librarian.py:158) y fija
+    "accepted"/"discarded" al accionar. El endpoint filtra pending solo POR
+    DEFECTO, asi que una resuelta puede llegar: no puede ofrecer verbos que
+    el backend ya rechaza."""
+    datos = {"proposals": [{"id": "mem_x", "text": "algo", "status": "accepted",
+                            "ts": "2026-08-31T10:00:00", "scope": "global",
+                            "target": "pedro-perfil.md"}], "events": []}
+    it = librarian.como_items(datos, proyecto="calipso")[0]
+    assert it["cuerpo"]["verbos_validos"] == []
