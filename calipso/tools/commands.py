@@ -173,6 +173,16 @@ ALLOWLIST: dict[str, dict[str, Any]] = {
         "args": ["{python}", "test_prompt_compiler.py"],
         "timeout": 120,
     },
+    "test_contrato_departamentos": {
+        "title": "Probar los departamentos del contrato",
+        "description": "Ejecuta test_contrato_departamentos.py con pytest.",
+        # va por pytest, no como script suelto: necesita el conftest de la
+        # raiz, que es lo que impide que la lectura del registro caiga en el
+        # ~/.calipso real de Pedro.
+        "args": ["{python}", "-m", "pytest", "-q",
+                 "test_contrato_departamentos.py"],
+        "timeout": 120,
+    },
     "test_streaming": {
         "title": "Probar streaming",
         "description": "Ejecuta test_streaming.py.",

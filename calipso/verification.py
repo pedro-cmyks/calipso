@@ -81,6 +81,13 @@ def recommend(files: list[dict[str, Any]] | None = None,
         if "prompt_compiler" in lower or "context" in lower or "pedro-perfil" in lower or "pedro-cronologia" in lower:
             types.add("prompt_compiler")
             _add(plan, "test_prompt_compiler", f"{path} toca lenguaje interno/contexto")
+            # test_prompt_compiler es de los de main(): pytest no colecta nada
+            # de el. Sin esta linea, tocar prompt_compiler.py y correr la
+            # verificacion que el repo indica da verde sin ejecutar una sola
+            # de las assertions que cuidan que la lista de departamentos salga
+            # del registro y no de tres nombres escritos a mano.
+            _add(plan, "test_contrato_departamentos",
+                 f"{path} toca los departamentos que el contrato le nombra al modelo")
         if "connectors" in lower or "capabilities" in lower or "costs" in lower or "config" in lower:
             types.add("connectors")
             _add(plan, "test_connectors", f"{path} toca conectores/cuotas")

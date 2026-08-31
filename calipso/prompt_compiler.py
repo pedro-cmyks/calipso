@@ -28,6 +28,15 @@ ECONOMIA_BRIEF_MAX = 2000
 ECONOMIA_MAX_DEPARTAMENTOS = 15
 ECONOMIA_MAX_PROYECTOS = 10
 
+# Cuantos nombres de departamento entran en el contrato interno. El
+# contrato tambien va en CADA turno, asi que comparte el techo del brief
+# de economia y por la misma razon: quince nombres son una linea, y a
+# partir de ahi la lista deja de ser algo que el modelo pueda usar para
+# marcar el foco y pasa a ser peso muerto. Lo que no entra se dice como
+# "y N mas", nunca se calla: una lista recortada en silencio le hace
+# creer al modelo que los otros no existen.
+CONTRATO_MAX_DEPARTAMENTOS = 15
+
 # Techo del bloque "Proyectos": tambien entra en CADA turno (3.4 del spec
 # de catastro). 1200 caracteres y 20 proyectos son el techo duro decidido
 # ahi -- veinte lineas de sesenta caracteres son unos trescientos tokens
@@ -36,8 +45,22 @@ ECONOMIA_MAX_PROYECTOS = 10
 PROYECTOS_BRIEF_MAX = 1200
 PROYECTOS_MAX_ITEMS = 20
 
+# Una sola entrada viva, con la clave (ruta, mtime_ns, tamano) del
+# registro. `internal_contract` corre en cada turno y el registro no
+# cambia entre turnos casi nunca, asi que sin esto cada turno paga un
+# json.loads y un `Departamento(**campos)` por departamento para llegar
+# siempre a la misma lista; con esto paga un stat.
+#
+# La clave invalida sola: `Registro._guardar` escribe por
+# `escribir_json_atomico` (temporal + os.replace), o sea archivo nuevo
+# -- mtime y tamano nuevos. Sembrar o tocar una perilla, lo haga este
+# proceso o dispatch, se ve en el turno siguiente sin que nadie tenga
+# que acordarse de limpiar nada.
+_CACHE_REGISTRO: dict[tuple, list[str]] = {}
 
-def internal_contract(features: dict[str, Any] | None = None) -> str:
+
+def internal_contract(features: dict[str, Any] | None = None,
+                      base: pathlib.Path | str | None = None) -> str:
     features = features or {}
     task_type = features.get("type") or "chat"
     needs_repo = bool(features.get("needs_repo"))
@@ -49,11 +72,7 @@ def internal_contract(features: dict[str, Any] | None = None) -> str:
         "Usa memoria como contexto probabilistico y editable, no como verdad absoluta.",
         "Si un dato del perfil de Pedro esta desactualizado o contradicho por Pedro, prioriza lo nuevo.",
         "Manten una sola voz visible: Pedro habla con Calipso, no con cada backend.",
-        "Cuando la conversacion pase a tratar de un departamento de la fabrica, "
-        "emiti una vez la marca ⟦foco:<nombre>⟧ con el nombre exacto del "
-        "departamento (atlas, mercado, finanzas). Pedro no la ve: el servidor la "
-        "retira del texto y con ella mueve la camara del mapa. Nunca inventes un "
-        "nombre y no la repitas mientras el tema no cambie.",
+        _linea_foco(departamentos_conocidos(base)),
         "Detecta el idioma de cada turno y responde SIEMPRE en ese mismo idioma, aunque el resto del sistema este en español. Si el mensaje mezcla idiomas en la misma oracion, usa el idioma dominante.",
         "Tono: directo, natural, cercano. Como un colega de confianza que conoce bien a Pedro. "
         "Para chat conversacional: sin headers, sin listas innecesarias, sin frases de apertura como 'Claro,' o 'Por supuesto,'. "
@@ -70,20 +89,132 @@ def internal_contract(features: dict[str, Any] | None = None) -> str:
     ])
 
 
+def departamentos_conocidos(
+        base: pathlib.Path | str | None = None) -> list[tuple[str, str]]:
+    """Los departamentos que el servidor va a poder resolver, con su zona.
+
+    Devuelve pares (nombre, zona). La zona viaja porque el contrato tiene
+    que poder nombrarlos sin mentir: `finanzas` vive en zona personal y
+    llamarlo "departamento de la fabrica" es la misma clase de falsedad
+    que este modulo vino a sacar. Y no se filtran los personales: tienen
+    edificio en el mapa igual que los de fabrica (`ciudad._edificios`
+    recorre todas las zonas), asi que son marcas de foco validas.
+
+    Misma fuente y misma condicion que `_edificios_livianos` en
+    calipso/server.py -el REGISTRO, y solo si `Pagador.desde_entorno`
+    encuentra la economia entera-, porque el nombre que el contrato le
+    ofrece al modelo tiene que ser exactamente uno de los que
+    `_resolver_foco` acepta. Ofrecer en el prompt un nombre que el
+    resolvedor descarta es la misma mentira, movida de lugar.
+
+    Lee el registro, que es un JSON de unas lineas, y NO el libro: no
+    toma el candado y no puede quedarse esperando lo que dura un cierre
+    semanal. El resultado se cachea contra el stat del archivo
+    (`_CACHE_REGISTRO`).
+
+    Lista vacia en los tres casos en que no hay nada seguro que decir: la
+    economia sin sembrar (lo normal hasta que Pedro siembre), la economia
+    a medio sembrar -que para el resolvedor es lo mismo que ninguna- y el
+    registro ilegible. Nunca completa la lista con nombres inventados: el
+    contrato prefiere decir "no hay departamentos" antes que nombrar uno
+    que no existe."""
+    raiz = pathlib.Path(base) if base else pathlib.Path(
+        os.environ.get("CALIPSO_HOME", os.path.expanduser("~/.calipso")))
+    pagador = Pagador.desde_entorno(raiz)
+    if pagador is None:
+        return []
+    try:
+        estado = pagador.ruta_registro.stat()
+    except OSError:
+        return []
+    clave = (str(pagador.ruta_registro), estado.st_mtime_ns, estado.st_size)
+    cacheado = _CACHE_REGISTRO.get(clave)
+    if cacheado is not None:
+        return list(cacheado)
+    try:
+        registro = eco_deps.Registro(pagador.ruta_registro)
+    except Exception:
+        return []      # json roto o campo desconocido: ningun nombre, no uno malo
+    pares = sorted((d.nombre, d.zona) for d in registro.todos())
+    _CACHE_REGISTRO.clear()   # una sola entrada viva: la del registro de ahora
+    _CACHE_REGISTRO[clave] = pares
+    return list(pares)
+
+
+def _linea_foco(departamentos: list[tuple[str, str]]) -> str:
+    """La instruccion de la marca de foco, con los departamentos que hay.
+
+    La lista estaba escrita a mano -"atlas, mercado, finanzas"- y ninguno
+    de los tres existe: atlas ni siquiera es un departamento, es un
+    PROYECTO. El modelo emitia entonces una marca con un nombre que
+    `_resolver_foco` (calipso/server.py) descarta, asi que la camara no
+    volaba a ningun lado, y de paso hablaba con Pedro de tres
+    departamentos que no estan en ninguna parte. Los nombres salen ahora
+    del registro, o no hay ninguno.
+
+    El caso sin departamentos NO calla la marca: la sintaxis se explica
+    igual, porque el contrato tiene que seguir siendo el unico lugar
+    donde vive (spec seccion 8) y porque el dia que Pedro siembre no hay
+    ningun otro texto que actualizar. Lo que cambia es que dice la verdad
+    -hoy no hay a quien enfocar- en vez de ofrecer tres nombres muertos.
+
+    Cada nombre lleva su zona al lado. No es adorno: la fabrica y lo
+    personal son dos zonas con reglas distintas -la invariante 12 le
+    prohibe a una cuenta personal comprar capacidad o API de la fabrica-
+    y `finanzas`, que va a existir el dia uno de la siembra, es personal.
+    Meterlo en una frase que empieza "los departamentos de la fabrica"
+    seria cambiar una mentira por otra mas chica."""
+    if not departamentos:
+        return (
+            "En este turno no hay ningun departamento que enfocar: puede "
+            "que la economia no este sembrada, o que su registro no se "
+            "haya podido leer -la seccion Economia de este mismo contexto "
+            "dice cual de las dos-. La marca ⟦foco:<nombre>⟧ -que Pedro no "
+            "la ve: el servidor la retira del texto y con ella mueve la "
+            "camara del mapa- necesita el nombre exacto de un departamento "
+            "del registro, asi que hoy no hay ninguno que emitir. No la "
+            "emitas, y no afirmes que departamentos existen o no existen: "
+            "no lo sabes en este turno.")
+    mostrados = departamentos[:CONTRATO_MAX_DEPARTAMENTOS]
+    lista = ", ".join(f"{nombre} ({zona})" for nombre, zona in mostrados)
+    extra = len(departamentos) - len(mostrados)
+    if extra > 0:
+        lista += f", y {extra} mas que no entran en esta lista"
+    return (
+        f"Los departamentos registrados, con su zona, son estos: {lista}. "
+        "La fabrica y lo personal son dos zonas con reglas distintas: no "
+        "las mezcles al hablar de ellos. Cuando la "
+        "conversacion pase a tratar de uno, emiti una vez la marca "
+        "⟦foco:<nombre>⟧ con su nombre exacto. Pedro no la ve: el servidor "
+        "la retira del texto y con ella mueve la camara del mapa. Nunca "
+        "inventes un nombre -el servidor descarta la marca cuyo nombre no "
+        "este en el registro- y no la repitas mientras el tema no cambie.")
+
+
 def context_sections(system: str, identity: str = "", core: str = "",
                      recalled: list[dict[str, Any]] | None = None,
                      repo_brief: str = "", goal_block: str = "",
                      runtime: str = "", economia: str = "",
                      proyectos: str = "",
                      features: dict[str, Any] | None = None,
-                     core_limit: int = 5000) -> list[tuple[str, str]]:
-    """Devuelve secciones ordenadas de contexto: estable -> volatil -> estado."""
+                     core_limit: int = 5000,
+                     base: pathlib.Path | str | None = None,
+                     ) -> list[tuple[str, str]]:
+    """Devuelve secciones ordenadas de contexto: estable -> volatil -> estado.
+
+    `base` es el home de Calipso, y viaja hasta aca por una razon: la
+    seccion Economia se arma con `economia_brief(base)` y la del contrato
+    con los departamentos del mismo registro. Si cada una resolviera el
+    home por su cuenta -una por el parametro, la otra por CALIPSO_HOME-
+    las dos secciones del MISMO prompt podrian describir dos economias
+    distintas. Hoy coinciden en produccion; coincidir no es lo mismo que
+    estar atadas."""
     sections: list[tuple[str, str]] = [("Sistema", system)]
     if identity:
         sections.append(("Constitucion de Calipso", identity))
     if core:
         sections.append(("Memoria nucleo", core[:core_limit]))
-    sections.append(("Contrato interno", internal_contract(features)))
+    sections.append(("Contrato interno", internal_contract(features, base)))
     if recalled:
         lines = "\n".join(
             f"- ({item.get('score')}) {item.get('text')}"
@@ -133,12 +264,13 @@ def compile_context(system: str, identity: str = "", core: str = "",
                     runtime: str = "", economia: str = "",
                     proyectos: str = "",
                     features: dict[str, Any] | None = None,
-                    core_limit: int = 5000) -> str:
+                    core_limit: int = 5000,
+                    base: pathlib.Path | str | None = None) -> str:
     return render_context(context_sections(
         system, identity=identity, core=core, recalled=recalled,
         repo_brief=repo_brief, goal_block=goal_block, runtime=runtime,
         economia=economia, proyectos=proyectos, features=features,
-        core_limit=core_limit))
+        core_limit=core_limit, base=base))
 
 
 def economia_brief(base: pathlib.Path | str | None = None) -> str:

@@ -1950,7 +1950,7 @@ def _build_context(user_msg: str, runtime: str, features: dict | None = None) ->
         SYSTEM, identity=ident, core=core, recalled=recalled,
         repo_brief=repo_brief, goal_block=goal_block, runtime=runtime,
         economia=economia, proyectos=proyectos, features=features,
-        core_limit=CONTEXT_CORE_MAX)
+        core_limit=CONTEXT_CORE_MAX, base=_ECO_BASE)
 
 
 def _HISTORY_TURNS_CONST():
