@@ -189,6 +189,21 @@ def financiar(mercado: Mercado, bus: Bus, ts: str, semana: str, id: str,
             raise ErrorBus(
                 "un pre-seed es capital de fabrica: la zona personal se "
                 f"financia desde cuenta_pedro, no desde el tesoro ({dueno})")
+        # VENCIMIENTO. Un pedido vive la ventana en la que nacio y despues
+        # no se paga mas. Es el mismo gesto que las dos puertas de abajo --
+        # releer al PAGAR lo que valia al publicar-- y sin el, el resto del
+        # vencimiento seria de mentira: `situacion` dejaria de reservarle
+        # cupo al pedido viejo, el jefe pediria otra ronda, y Pedro podria
+        # pagar las dos. Dos veces el techo, que es lo que este techo
+        # existe para impedir. Aca es donde la plata sale de verdad, asi que
+        # aca es donde el vencimiento tiene que ser cierto.
+        if preseed_vencido(datos, cap.semanas_operativas(asientos), semana):
+            raise ErrorBus(
+                f"el pre-seed {id} esta vencido: se publico en "
+                f"{datos.get('semana')} y esa semana ya salio de la ventana "
+                f"de {VENTANA_PRESEED_SEMANAS} semanas operativas. Ya no "
+                f"reserva cupo de {dueno}, asi que el jefe puede volver a "
+                "pedir la ronda con los numeros de hoy")
         # el monto autorizado, releido en el momento de PAGAR y no una sola
         # vez cuando se publico. Dos cosas distintas se caian por aca:
         #
@@ -503,6 +518,72 @@ def libera_preseed(asientos: list[Asiento], cuenta: str,
     return sale, preseed_en_ventana(asientos, cuenta, [sale])
 
 
+def preseed_vencido(datos: dict, semanas_ops: list[str], semana: str) -> bool:
+    """Si ese pedido de pre-seed ya salio de la ventana en la que nacio.
+
+    LO QUE ARREGLA. Una propuesta de trabajo puede morir; un pedido de
+    pre-seed no podia. `evaluar_y_liquidar_muertos` solo recorre
+    `activas()` -- las FINANCIADAS-- asi que un pedido en `alta` no pasaba
+    ni cerca, y encima su `criterio` es inerte por construccion (no abre
+    `trabajo:<id>`, no hay gasto que medir: quien lo publica manda
+    `{"gasto_max_mm": monto}` solo porque `alta` exige un criterio no
+    vacio). Resultado: lo unico que sacaba un pedido de la bandeja era que
+    Pedro lo financiara o lo descartara, y mientras tanto seguia
+    reservandole cupo del techo acumulado al departamento -- para siempre.
+    La inaccion de Pedro se volvia una condena.
+
+    CUANTO VIVE, y por que exactamente eso. Vive la ventana en la que
+    nacio: mientras la semana del alta siga adentro de `ventana_preseed`,
+    el pedido esta en pie. Reservar cupo mientras tanto es CORRECTO --
+    Pedro lo puede pagar con un toque y esa plata va a consumir el cupo de
+    la ventana en la que la pague-- y el corte cae justo donde esa reserva
+    deja de tener sentido: `financiar` rechaza un pedido vencido, asi que
+    no hay ninguna ventana futura contra la cual pudiera pagarse. Ni un
+    dia menos (seria romper la reserva, que esta verificada) ni un dia mas
+    (seria la condena de antes).
+
+    QUIEN LO DISPARA: NADIE, y eso es lo importante. Esto es una funcion
+    del libro, no un evento, exactamente como `preseed_en_ventana` y
+    `libera_preseed`: nadie escribe "esta semana salio de la ventana", la
+    ventana se corre sola porque se RECALCULA en cada lectura. Un
+    vencimiento por evento habria tenido que colgarse de
+    `evaluar_y_liquidar_muertos`, que solo corre desde
+    `cierre.cerrar_semana_economia` -- o sea desde la rutina "cierre", que
+    nace deshabilitada A PROPOSITO (`routines.DEFAULTS`: prender ese piloto
+    automatico expira PT, declara quiebras y liquida trabajos mientras
+    Pedro duerme) o desde `POST /api/economia/cierre` a mano. En la maquina
+    de Pedro eso no corre, asi que un vencimiento atado ahi seria
+    decorativo: el bug seguiria vivo con un arreglo escrito al lado. Sin
+    disparador no hay nada que encender.
+
+    Y el reloj es el que ya rige este techo: las semanas OPERATIVAS. La
+    ventana rueda cuando Pedro ABRE una semana, que es un acto deliberado
+    suyo, no cuando cambia el almanaque -- un pedido no caduca porque paso
+    el tiempo, caduca porque la fabrica siguio operando sin el. Tardar en
+    abrir el lunes retrasa el vencimiento, igual que aprieta el techo: la
+    demora cae siempre del lado conservador.
+
+    Y no borra nada. El bus es append-only y el evento `alta` sigue ahi con
+    su semana; lo que cambia es que los lectores dejan de contarlo como
+    vivo y `financiar` deja de pagarlo. Descartarlo sigue siendo legal (es
+    la marca que Pedro ya conocia), solo que ya no hace falta.
+    """
+    if datos.get("tipo") != "preseed":
+        # una propuesta de trabajo ya tiene su muerte (`criterio` +
+        # `evaluar_y_liquidar_muertos`, que si la alcanza porque vive
+        # financiada) y no reserva cupo de ningun techo de caudal
+        return False
+    nacio = datos.get("semana") or ""
+    if not nacio or not semanas_ops:
+        # sin semanas operativas la ventana nunca rodo: hacer vencer aca
+        # seria expirar por el paso del tiempo, que es justo lo que este
+        # techo se niega a hacer. Y sin semana de alta (una linea vieja del
+        # bus real de Pedro) no se inventa un vencimiento: el default
+        # tolerante de siempre.
+        return False
+    return nacio < ventana_preseed(semanas_ops, semana)[0]
+
+
 def gastado(asientos: list[Asiento], id: str) -> int:
     cuenta = cuenta_trabajo(id)
     salidas = (TipoAsiento.TRANSFERENCIA, TipoAsiento.DESTRUCCION,
@@ -537,6 +618,11 @@ def evaluar_y_liquidar_muertos(mercado: Mercado, bus: Bus, ts: str,
             # cambio, que si pueden tener un pre-seed en `financiada`: sin
             # el guard, el primer cierre que los alcance les buscaria un
             # gasto que no existe.
+            #
+            # Y el vencimiento del pre-seed PEDIDO no vive aca ni podria:
+            # esta funcion solo ve `activas()` y solo corre desde el cierre
+            # semanal, que nace deshabilitado. Es `preseed_vencido`, que se
+            # calcula del libro sin que nadie lo dispare.
             continue
         criterio = datos["criterio"]
         gasto = gastado(asientos, id)

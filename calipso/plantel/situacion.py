@@ -106,6 +106,19 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
             continue
         if estado not in ("alta", "financiada"):
             continue                       # muerta, cerrada o liquidada
+        if estado == "alta" and bus_mod.preseed_vencido(datos, ops, semana):
+            # un pedido de pre-seed que ya salio de su ventana. `financiar`
+            # no lo paga mas, asi que no hay nada que reservarle: contarlo
+            # aca es lo que convertia la inaccion de Pedro en una condena
+            # -- el pedido seguia comiendo cupo del techo acumulado y el
+            # unico camino afuera era que Pedro lo mirara. Ahora se suelta
+            # solo, con la misma ventana que ya acota el techo.
+            #
+            # Sale de las TRES listas: no es propia (el departamento tiene
+            # que poder volver a pedir), no es ajena (no hay nada sobre lo
+            # que opinar) y no suma al pendiente. Sigue en el bus, en
+            # `alta`: no se borro nada, dejo de contar.
+            continue
         base = {"id": id_, "titulo": datos.get("titulo", ""),
                 "presupuesto_mm": datos.get("presupuesto_mm", 0)}
         if estado == "financiada":

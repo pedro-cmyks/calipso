@@ -177,3 +177,45 @@ def test_una_propuesta_descartada_desaparece_de_las_propias(fabrica):
     bus_mod.descartar(b, TS, W, "p1")
     despues = sit.situacion(k, r, b, cola, sus, W, "dep:atlas")
     assert despues["propuestas_propias"] == []
+
+
+def test_un_preseed_vencido_sale_de_las_tres_listas(fabrica):
+    """Un pedido de pre-seed vive la ventana en la que nacio. Despues no se
+    puede financiar (`bus.financiar` lo rechaza), asi que no hay nada que
+    reservarle ni sobre lo que opinar: sale de `propuestas_propias` -- el
+    departamento tiene que poder volver a pedir--, de `propuestas_ajenas` y
+    del `preseed_pendiente_mm` que el jefe se descuenta.
+
+    Sigue en el bus, en `alta`: el libro es append-only y aca no se borro
+    nada, dejo de contar."""
+    from calipso.economia import bus as bus_mod
+
+    k, r, bus, cola, sus = fabrica
+    bus.alta(TS, W, "p1", "dep:atlas", "arranco", 200_000, 200_000,
+             {"gasto_max_mm": 200_000}, tipo="preseed")
+    bus.alta(TS, W, "p2", "dep:mercado", "arranco yo", 100_000, 100_000,
+             {"gasto_max_mm": 100_000}, tipo="preseed")
+    s = sit.situacion(k, r, bus, cola, sus, W, "dep:atlas")
+    assert [x["id"] for x in s["propuestas_propias"]] == ["p1"]
+    assert [x["id"] for x in s["propuestas_ajenas"]] == ["p2"]
+    assert s["preseed_pendiente_mm"] == 200_000
+
+    # cuatro semanas operativas mas y W35 sale de la ventana
+    for sem in ["2026-W36", "2026-W37", "2026-W38", "2026-W39"]:
+        pt.expirar_pools(k, TS, sem)
+        pt.emitir_semana(k, TS, sem, 4_000, 1_000)
+    s2 = sit.situacion(k, r, bus, cola, sus, "2026-W39", "dep:atlas")
+    assert s2["propuestas_propias"] == []
+    assert s2["propuestas_ajenas"] == []
+    assert s2["preseed_pendiente_mm"] == 0
+    assert bus.estado("p1") == "alta"
+
+    # y una propuesta de TRABAJO de la misma semana no se toca: tiene su
+    # propia muerte (`criterio` + `evaluar_y_liquidar_muertos`) y no
+    # reserva cupo de ningun techo de caudal
+    bus.alta(TS, W, "t1", "dep:atlas", "un trabajo", 10_000, 30_000,
+             {"gasto_max_mm": 10_000})
+    s3 = sit.situacion(k, r, bus, cola, sus, "2026-W39", "dep:atlas")
+    assert [x["id"] for x in s3["propuestas_propias"]] == ["t1"]
+    assert not bus_mod.preseed_vencido(bus.datos("t1"),
+                                       ["2026-W39"], "2026-W39")

@@ -760,3 +760,78 @@ def test_financiar_una_semana_atras_no_rompe_una_ventana_ya_validada(entorno):
     # ninguna toca el asiento de W34
     bus_mod.financiar(m, b, TS, "2026-W30", "p2", t.TESORO, 50_000)
     assert k.saldo("dep:a") == 100_000
+
+
+def test_un_preseed_pedido_vence_con_la_ventana_en_la_que_nacio(entorno):
+    """El agujero: un pedido de pre-seed no caduca NUNCA.
+
+    `evaluar_y_liquidar_muertos` solo recorre `activas()` -- las
+    financiadas--, asi que un pedido en `alta` no pasa ni cerca; y su
+    criterio de muerte es inerte por construccion (no abre `trabajo:<id>`,
+    no hay gasto que medir). Resultado: lo unico que sacaba un pedido de la
+    bandeja era que Pedro lo financiara o lo descartara, y mientras tanto
+    seguia reservando cupo del techo acumulado -- para siempre.
+
+    Vence con la ventana en la que nacio, que es exactamente lo que dura su
+    financiabilidad: `preseed_en_ventana` cuenta cuatro semanas operativas
+    hacia atras, asi que una vez que la semana del alta sale de la ventana
+    el pedido ya no puede pagarse contra ninguna cuenta honesta."""
+    k, m, b = entorno
+    for sem in ["2026-W30", "2026-W31", "2026-W32", "2026-W33"]:
+        _semana_op(k, sem)
+    _capital(k, 400_000, t.TESORO)
+    b.alta(TS, "2026-W30", "p1", "dep:a", "arranco", 150_000, 150_000,
+           {"gasto_max_mm": 150_000}, tipo="preseed")
+    ops = cap.semanas_operativas(k.libro.asientos())
+    # cuatro operativas: W30 sigue adentro de la ventana, el pedido vive
+    assert bus_mod.preseed_vencido(b.datos("p1"), ops, "2026-W33") is False
+    # Pedro abre la quinta: la ventana rueda y W30 se cae por atras
+    _semana_op(k, "2026-W34")
+    ops = cap.semanas_operativas(k.libro.asientos())
+    assert bus_mod.preseed_vencido(b.datos("p1"), ops, "2026-W34") is True
+    with pytest.raises(bus_mod.ErrorBus) as exc:
+        bus_mod.financiar(m, b, TS, "2026-W34", "p1", t.TESORO, 150_000)
+    assert "vencido" in str(exc.value)
+    assert k.saldo("dep:a") == 0
+
+
+def test_un_pedido_de_preseed_vive_toda_su_ventana(entorno):
+    """El otro lado del mismo corte: mientras la semana del alta siga en la
+    ventana, el pedido se paga. Un vencimiento que llegue antes seria
+    romper lo que ya esta verificado -- que un pedido en pie reserva el cupo
+    de la ventana en la que se lo pague."""
+    k, m, b = entorno
+    for sem in ["2026-W30", "2026-W31", "2026-W32", "2026-W33"]:
+        _semana_op(k, sem)
+    _capital(k, 400_000, t.TESORO)
+    b.alta(TS, "2026-W30", "p1", "dep:a", "arranco", 150_000, 150_000,
+           {"gasto_max_mm": 150_000}, tipo="preseed")
+    bus_mod.financiar(m, b, TS, "2026-W33", "p1", t.TESORO, 150_000)
+    assert k.saldo("dep:a") == 150_000
+    assert b.estado("p1") == "cerrada"
+
+
+def test_el_vencimiento_no_toca_una_propuesta_de_trabajo(entorno):
+    """Una propuesta de trabajo ya tiene su muerte (`criterio` +
+    `evaluar_y_liquidar_muertos`) y no reserva cupo de ningun techo de
+    caudal: el vencimiento es del pre-seed y de nadie mas."""
+    k, m, b = entorno
+    for sem in ["2026-W30", "2026-W31", "2026-W32", "2026-W33", "2026-W34"]:
+        _semana_op(k, sem)
+    _capital(k, 100_000, "dep:b")
+    b.alta(TS, "2026-W30", "t1", "dep:a", "radar", 100_000, 300_000, CRITERIO)
+    ops = cap.semanas_operativas(k.libro.asientos())
+    assert bus_mod.preseed_vencido(b.datos("t1"), ops, "2026-W34") is False
+    bus_mod.financiar(m, b, TS, "2026-W34", "t1", "dep:b", 100_000)
+    assert b.estado("t1") == "financiada"
+
+
+def test_sin_semanas_operativas_no_vence_nada(entorno):
+    """La ventana rueda cuando Pedro ABRE una semana operativa, no cuando
+    cambia el almanaque (`ventana_preseed`). Sin ninguna abierta no rodo
+    nunca, y hacer vencer ahi seria expirar por el paso del tiempo -- justo
+    lo que el resto de este techo se niega a hacer."""
+    _k, _m, b = entorno
+    b.alta(TS, "2026-W30", "p1", "dep:a", "arranco", 150_000, 150_000,
+           {"gasto_max_mm": 150_000}, tipo="preseed")
+    assert bus_mod.preseed_vencido(b.datos("p1"), [], "2026-W40") is False
