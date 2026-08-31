@@ -120,3 +120,37 @@ def precio_unidad_mm(sus: Suscripcion, consumido: int, fraccion_pct: int) -> int
 def recaudacion(asientos: list[Asiento], nombre: str,
                 semanas: list[str]) -> int:
     return sum(a.monto for a in _compras(asientos, nombre, semanas))
+
+
+def semanas_del_ciclo_de_hoy(semanas_ops: list[str], semana: str) -> list[str]:
+    """Las semanas operativas del ciclo en el que cae `semana`, este esa
+    semana ya emitida o no. Nunca levanta.
+
+    `posicion_ciclo` solo sabe de semanas OPERATIVAS -- las que ya
+    emitieron su PT -- y una semana se vuelve operativa recien cuando
+    alguien aprieta `POST /api/economia/semana/abrir`, que es un boton
+    manual. O sea que TODA semana empieza afuera de `semanas_ops` y sigue
+    afuera hasta que Pedro lo toca: no es una ventana rara, es el estado
+    por defecto de cada lunes.
+
+    Preguntar "en que ciclo estoy" con `if semana in ops` contesta "en
+    ninguno" durante esa ventana, y de ahi todo acumulado del ciclo da
+    cero -- un techo de ciclo que se resetea solo los lunes no es un
+    techo. Aca se contesta con la lista que va a existir cuando la semana
+    se abra: la de hoy insertada en su lugar, y despues filtrada a las
+    que existen de verdad. Es la MISMA aritmetica que `posicion_ciclo` va
+    a dar despues del boton.
+
+    Vive ACA y no en server.py porque la pregunta no es de la frontera
+    http: la hacen tambien `bus.financiar` (el techo de pre-seed del
+    ciclo, que decide si sale plata) y `plantel.situacion` (el jefe, que
+    corre desatendido y no puede reventar por una semana sin abrir). Dos
+    respuestas distintas a "en que ciclo estoy" serian dos techos.
+    """
+    if semana in semanas_ops:
+        ciclo, _ = posicion_ciclo(semana, semanas_ops)
+        return semanas_del_ciclo(ciclo, semanas_ops)
+    futuras = sorted(set(semanas_ops) | {semana})
+    ciclo, _ = posicion_ciclo(semana, futuras)
+    reales = set(semanas_ops)
+    return [x for x in semanas_del_ciclo(ciclo, futuras) if x in reales]

@@ -87,3 +87,28 @@ def test_consumo_y_recaudacion_se_derivan_del_libro(k):
     assert cap.consumo_fabrica(asientos, "claude_max", ["2026-W31"]) == 12
     assert cap.recaudacion(asientos, "claude_max",
                            ["2026-W30", "2026-W31"]) == 3_400
+
+
+def test_el_ciclo_de_hoy_no_espera_al_boton_de_abrir_la_semana():
+    """`posicion_ciclo` solo sabe de semanas ya emitidas, y una semana se
+    vuelve operativa recien cuando alguien aprieta el boton de abrir: toda
+    semana empieza afuera. Preguntando con `if semana in ops`, el ciclo da
+    vacio esa ventana entera -- y un techo acumulado por ciclo que se
+    resetea solo porque Pedro tardo en abrir el lunes no es un techo."""
+    ops = ["2026-W31", "2026-W32", "2026-W33"]
+    # la semana de hoy todavia no emitio su PT: igual cae en el ciclo 0
+    assert cap.semanas_del_ciclo_de_hoy(ops, "2026-W34") == ops
+    # y ya emitida, la misma respuesta
+    assert cap.semanas_del_ciclo_de_hoy(ops + ["2026-W34"],
+                                        "2026-W34") == ops + ["2026-W34"]
+
+
+def test_el_ciclo_de_hoy_solo_devuelve_semanas_que_existen():
+    """La semana de hoy se inserta para hacer la cuenta, no para volver: si
+    saliera en la lista, cualquier pliegue por semana la miraria y contaria
+    asientos de una semana que todavia no emitio nada."""
+    ops = ["2026-W31", "2026-W32", "2026-W33", "2026-W34"]
+    # W35 abre el ciclo 1, que todavia no tiene ninguna semana real
+    assert cap.semanas_del_ciclo_de_hoy(ops, "2026-W35") == []
+    # y sin ninguna semana operativa, tampoco revienta
+    assert cap.semanas_del_ciclo_de_hoy([], "2026-W31") == []
