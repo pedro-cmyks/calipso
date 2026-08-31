@@ -3595,6 +3595,7 @@ try:
                                   departamentos as _eco_deps,
                                   operacion as _eco_op,
                                   personal as _eco_personal,
+                                  pt as _eco_pt,
                                   reloj as _eco_reloj,
                                   tipos as _eco_tipos)
     from calipso.economia.candado import (candado as _eco_candado,
@@ -3612,6 +3613,7 @@ except Exception:  # economia no disponible: los endpoints responden inactivo
     _eco_suscripcion = None
     _ECO_SUS_POR_CLIENTE = {}
     _eco_bus = _eco_cola = _eco_op = _eco_personal = _eco_reloj = _eco_candado = None
+    _eco_pt = None
     _eco_balances = None
     _eco_escribir_json = None
     _eco_deps = None
@@ -3647,6 +3649,43 @@ def _eco_ahora() -> tuple[str, str]:
             _eco_op.semana_iso(ahora.date().isoformat()))
 
 
+_RE_SEMANA_ISO = re.compile(r"^\d{4}-W\d{2}$")
+
+
+def _eco_semana_pedida(pedida: str | None, semana_hoy: str) -> str:
+    """La semana sobre la que se opera: la que pidan, o la del calendario.
+
+    `semana_hoy` entra por parametro y no se lee de adentro a proposito: el
+    llamador ya leyo el reloj una vez para el `ts`, y leerlo dos veces en el
+    mismo request puede caer a los dos lados de un borde de semana.
+
+    Abrir y cerrar la semana derivaban la semana de `datetime.now()` y
+    ningun cuerpo aceptaba otra. Eso traba la economia con solo irse de
+    viaje, y el bloqueo es de los dos lados a la vez:
+
+    - `cerrar_semana_operativa` solo cierra la ULTIMA semana abierta
+      (`operacion.py:101`). Si volves un martes de otra semana, la del
+      calendario no es esa, y se niega.
+    - `emitir_semana` se niega a abrir mientras un pool de PT tenga saldo
+      (`pt.py:54`) -- que es exactamente lo que pasa cuando no firmaste
+      nada mientras no estabas.
+
+    O sea: no podes cerrar la vieja porque hoy no es esa, y no podes abrir
+    la nueva porque la vieja no se cerro. La cadencia de la economia es un
+    acto deliberado de Pedro, no una funcion del reloj de la maquina, asi
+    que la semana tiene que poder viajar como dato.
+
+    Se valida con la misma forma que exige el libro (`tipos._RE_SEMANA`):
+    una semana mal escrita entra a un libro append-only y no sale."""
+    if pedida is None:
+        return semana_hoy
+    if not _RE_SEMANA_ISO.match(pedida):
+        raise HTTPException(
+            status_code=400,
+            detail=f"semana invalida: {pedida!r}. La forma es 2026-W35.")
+    return pedida
+
+
 class EcoAtenderBody(BaseModel):
     firma: dict | None = None
 
@@ -3658,11 +3697,13 @@ class EcoRelojInBody(BaseModel):
 
 class EcoCierreBody(BaseModel):
     presupuesto_direccion_mm: int = 0
+    semana: str | None = None      # None = la del calendario
 
 
 class EcoAbrirBody(BaseModel):
     cuota_firmable_mpt: int
     reserva_personal_mpt: int = 0
+    semana: str | None = None      # None = la del calendario
 
 
 class EcoConciliarBody(BaseModel):
@@ -4125,13 +4166,21 @@ def api_eco_cierre(body: EcoCierreBody) -> dict:
     p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
     if not p0:
         return {"activa": False}
-    ts, semana = _eco_ahora()
+    ts, semana_hoy = _eco_ahora()
+    semana = _eco_semana_pedida(body.semana, semana_hoy)
     with _eco_candado(p0.ruta_libro):
         eco = _economia()  # fresco BAJO el candado (reentrante adentro)
-        res = _eco_op.cerrar_semana_operativa(
-            eco["pagador"].mercado_fresco(), eco["bus"], eco["cola"],
-            ts, semana,
-            presupuesto_direccion_mm=body.presupuesto_direccion_mm)
+        try:
+            res = _eco_op.cerrar_semana_operativa(
+                eco["pagador"].mercado_fresco(), eco["bus"], eco["cola"],
+                ts, semana,
+                presupuesto_direccion_mm=body.presupuesto_direccion_mm)
+        except (_eco_op.ErrorOperacion, _eco_pt.ErrorPT) as e:
+            # Salian como 500 opacos: la pantalla muestra `detail` y no
+            # tenia nada que mostrar. Son las dos negativas que Pedro se
+            # come al volver de un viaje, y las dos se resuelven mandando
+            # la semana -- asi que el mensaje tiene que llegar entero.
+            raise HTTPException(status_code=400, detail=str(e)) from None
         aplicados = eco["pagador"].reintentar_pendientes()
     return {"ok": True, "expiradas": res["expiradas"],
             "informes_ciclo": res["informes_ciclo"],
@@ -4143,7 +4192,8 @@ def api_eco_abrir(body: EcoAbrirBody) -> dict:
     p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
     if not p0:
         return {"activa": False}
-    ts, semana = _eco_ahora()
+    ts, semana_hoy = _eco_ahora()
+    semana = _eco_semana_pedida(body.semana, semana_hoy)
     with _eco_candado(p0.ruta_libro):
         eco = _economia()  # fresco BAJO el candado
         m = eco["pagador"].mercado_fresco()
@@ -4151,10 +4201,13 @@ def api_eco_abrir(body: EcoAbrirBody) -> dict:
         # ciclo tambien emite su cuota de cristal (la capacidad que la
         # fabrica va a consumir en el ciclo); sin ellas el pool arranca en
         # cero y todo consumo queda estampado como descubierto
-        _eco_op.abrir_semana(m.k, ts, semana,
-                             body.cuota_firmable_mpt,
-                             body.reserva_personal_mpt,
-                             suscripciones=m.suscripciones)
+        try:
+            _eco_op.abrir_semana(m.k, ts, semana,
+                                 body.cuota_firmable_mpt,
+                                 body.reserva_personal_mpt,
+                                 suscripciones=m.suscripciones)
+        except (_eco_op.ErrorOperacion, _eco_pt.ErrorPT) as e:
+            raise HTTPException(status_code=400, detail=str(e)) from None
     return {"ok": True, "semana": semana}
 
 
