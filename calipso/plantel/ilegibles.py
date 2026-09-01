@@ -49,8 +49,17 @@ def anotar(base, semana: str, departamento: str, crudo: str) -> None:
         f.write(linea + "\n")
 
 
-def colapsados(base) -> list[dict]:
-    """Una fila por texto distinto, con su contador y su ts mas nuevo.
+def colapsados(base, semana: str) -> list[dict]:
+    """Una fila por texto distinto DE ESA SEMANA, con su contador y su ts
+    mas nuevo.
+
+    `semana` es obligatoria y filtra: sin esto `semana` se escribia y no se
+    leia nunca, el colapso cruzaba semanas y `veces` se volvia un contador
+    de por vida -un ilegible de hace tres meses no se iba jamas de la
+    bandeja. Filtrado, la bandeja envejece igual que la lista de
+    descartadas de Pedro, y encaja con el criterio del spec: tres avisos
+    del mismo departamento EN UNA SEMANA es la senal de que al menu le
+    falta una promesa.
 
     Se colapsa por igualdad EXACTA del texto, no por parecido: el modelo
     local corre a temperatura 0, asi que la repeticion dentro de una semana
@@ -59,11 +68,15 @@ def colapsados(base) -> list[dict]:
 
     Una linea rota no voltea la lectura: el archivo lo escribe un proceso
     que puede morir a la mitad, y una linea cortada no puede esconder las
-    demas.
+    demas. `errors="replace"` cubre tambien el corte a mitad de un
+    caracter multibyte -- con `anotar` escribiendo en castellano
+    (`ensure_ascii=False`), ese es EL caso realista, no uno raro- porque
+    sin el, `UnicodeDecodeError` (que no es un `OSError`) tumbaria la
+    lectura entera antes de llegar a la linea rota.
     """
     p = ruta(base)
     try:
-        crudo_texto = p.read_text(encoding="utf-8")
+        crudo_texto = p.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
     filas: dict[tuple[str, str], dict] = {}
@@ -76,6 +89,8 @@ def colapsados(base) -> list[dict]:
             continue
         if not isinstance(d, dict):
             continue
+        if d.get("semana") != semana:
+            continue
         clave = (d.get("departamento", ""), d.get("crudo", ""))
         fila = filas.get(clave)
         if fila is None:
@@ -84,4 +99,9 @@ def colapsados(base) -> list[dict]:
         else:
             fila["veces"] += 1
             fila["ts"] = d.get("ts", "") or fila["ts"]
-    return sorted(filas.values(), key=lambda f: f["ts"], reverse=True)
+    # `str()`: un `ts` de tipo equivocado (JSON valido, dato mal escrito) no
+    # puede tumbar la lectura entera con un TypeError al comparar contra un
+    # string -- misma logica que la linea rota de arriba, un registro malo
+    # no puede esconder todos los demas.
+    return sorted(filas.values(), key=lambda f: str(f.get("ts", "")),
+                  reverse=True)

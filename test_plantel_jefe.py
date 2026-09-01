@@ -423,12 +423,11 @@ def test_memoria_que_revienta_no_borra_la_contratacion(tmp_path):
     assert ("fin", {"resultado": "error"}) in eventos
 
 
-def test_el_motivo_del_parser_llega_al_contratista(tmp_path):
+def test_la_ficha_no_el_motivo_crudo_llega_al_contratista(tmp_path):
     """Lo que aterriza en el contratista es la FICHA, no el motivo crudo del
     parser: esta prueba afirmaba lo contrario -que el titulo del bus era el
     motivo tal cual salio de `dec.parsear`- y eso es justo lo que la
-    gramatica de proponer (seccion 7 del spec) deroga. `titulo_de` arma el
-    titulo desde la ficha, no desde la prosa cruda."""
+    gramatica de proponer (seccion 7 del spec) deroga."""
     capturado = []
     ctx, _contratos, _ = armar(
         tmp_path,
@@ -454,8 +453,12 @@ def test_una_ficha_ilegible_no_contrata_pero_deja_aviso(tmp_path):
     assert out["actuo"] is False
     assert "ilegible" in out["freno"]
     assert contratos == []
-    filas = ilg.colapsados(tmp_path)
-    assert len(filas) == 1 and filas[0]["crudo"] == "hay hueco en precios"
+    filas = ilg.colapsados(tmp_path, W)
+    # la fila lleva la respuesta ENTERA que salio del modelo, no solo el
+    # segundo renglon (`dec.parsear` define `motivo` como `lineas[1]`, y
+    # con eso se perderia contenido de una prosa mas larga)
+    assert len(filas) == 1
+    assert filas[0]["crudo"] == "proponer\nhay hueco en precios"
 
 
 def test_una_ficha_ilegible_SI_escribe_memoria(tmp_path):
@@ -496,11 +499,16 @@ def test_un_aviso_que_revienta_no_voltea_el_tic(tmp_path, monkeypatch):
     def explota(*a, **k):
         raise OSError("disco lleno")
     monkeypatch.setattr(ilg, "anotar", explota)
-    ctx, contratos, _ = armar(tmp_path, "proponer\nhay hueco")
+    ctx, contratos, eventos = armar(tmp_path, "proponer\nhay hueco")
     it.poner_modo(tmp_path, "vivo")
     out = j.tic(ctx, "dep:atlas", W)
     assert out["accion"] == "proponer" and out["actuo"] is False
     assert "reviento" not in (out["motivo"] or "")
+    assert "disco lleno" in out["motivo"]
+    # mismo trato que `test_memoria_que_revienta_no_borra_la_contratacion`:
+    # el `fin` tiene que salir como error, o esta linea se puede borrar del
+    # codigo de produccion y la suite sigue en verde
+    assert ("fin", {"resultado": "error"}) in eventos
 
 
 def test_trabajar_con_id_inventado_no_actua(tmp_path):

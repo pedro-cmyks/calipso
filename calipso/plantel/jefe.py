@@ -370,8 +370,26 @@ def tic(ctx: Contexto, cuenta: str, semana: str) -> dict:
             # verdad, con este texto ilegible de titulo. Por eso el corte se
             # hace aca, con la accion intacta y el permiso en False a mano,
             # sin pasar por `_puede`.
+            #
+            # ACA va `crudo` -la respuesta ENTERA que salio de `ctx.pensar`-
+            # y no `motivo`: `dec.parsear` define `motivo` como
+            # `lineas[1]`, es decir la SEGUNDA linea nada mas. Con `motivo`
+            # el aviso perdia dos tercios de una prosa de tres renglones, o
+            # se quedaba con "sobre: el radar de precios" sin decir cual
+            # campo de la ficha fallo, o quedaba vacio del todo si la
+            # respuesta era solo la palabra "proponer". El aviso existe
+            # para que la gramatica no amordace al departamento: perder el
+            # contenido lo derrota entero.
             try:
-                ilegibles.anotar(ctx.base, semana, cuenta, motivo)
+                ilegibles.anotar(ctx.base, semana, cuenta, crudo)
+            except Exception as exc:
+                # try propio, separado del de `remember` de aca abajo: si
+                # comparten uno solo, un `anotar` que revienta se come el
+                # `remember` entero y el arreglo de la semana congelada se
+                # pierde justo en el caso de falla.
+                fin = "error"
+                motivo = f"{motivo} (no pudo anotar el aviso: {exc})"
+            try:
                 # y ACA se rompe la semana congelada: `nada` no anota
                 # -el modelo eligio no hacer nada- y un freno tampoco -la
                 # maquina lo paro-, pero esto es el modelo intentando y
@@ -387,7 +405,7 @@ def tic(ctx: Contexto, cuenta: str, semana: str) -> dict:
                 # este except lo caza el `except Exception` de afuera y el
                 # tic entero sale como "reviento actuando".
                 fin = "error"
-                motivo = f"{motivo} (no pudo anotar el aviso: {exc})"
+                motivo = f"{motivo} (no pudo anotar en su memoria: {exc})"
             return salida(accion, ref, motivo, False,
                           "ficha ilegible: no se entendio que proponia")
 
