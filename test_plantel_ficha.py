@@ -168,6 +168,14 @@ def test_cada_promesa_trae_su_metrica_y_cada_plazo_su_semana():
     assert len(ficha.PLAZOS) == len(set(ficha.PLAZOS))
 
 
+def test_el_titulo_nunca_pasa_de_120_ni_con_un_dict_armado_a_mano():
+    # parsear_ficha nunca entrega un promete/tarda largo, pero titulo_de
+    # es publica y no valida: el tope tiene que ser incondicional
+    f = {"sobre": "el radar", "clave": "el+radar",
+         "promete": "x" * 150, "tarda": "y" * 150, "porque": ""}
+    assert len(ficha.titulo_de(f)) <= 120
+
+
 def test_el_titulo_se_arma_con_la_ficha():
     f = ficha.parsear_ficha(FICHA_OK)
     assert ficha.titulo_de(f) == (

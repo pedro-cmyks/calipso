@@ -161,11 +161,18 @@ def parsear_ficha(texto: str) -> dict | None:
 def titulo_de(f: dict) -> str:
     """Lo que Pedro lee en la mesa. No participa de ninguna comparacion.
 
-    Sigue cortado a 120 como el titulo de hoy, asi que `bus.alta` recibe
-    exactamente el largo que ya recibia. Lo que se recorta es el `sobre`
-    y, si hace falta, el `porque` -- nunca un slice ciego del resultado
-    final, que podria cortar a mitad de un parentesis o dejar un `--`
+    Sigue acotado a 120 como el titulo de hoy. Lo primero que se
+    sacrifica cuando no entra todo es el `porque` -- puede desaparecer
+    entero -- y recien despues, si hace falta, se recorta el `sobre`,
+    siempre dejando el `(<tarda>)` entero y cerrado: nunca un slice
+    ciego que podria cortar a mitad de un parentesis o dejar un `--`
     colgando y leerse como software roto.
+
+    Ese recorte inteligente asume un `promete` y un `tarda` cortos, como
+    los que entrega `parsear_ficha` -- valores de PROMESAS y PLAZOS. Pero
+    esta funcion es publica y no valida nada, asi que por las dudas
+    lleva ademas un tope duro al final, que vale para cualquier entrada,
+    incluida una armada a mano fuera del camino sancionado.
     """
     prefijo = f"{f['promete']}: "
     sufijo = f" ({f['tarda']})"
@@ -174,9 +181,9 @@ def titulo_de(f: dict) -> str:
     base = f"{prefijo}{sobre}{sufijo}"
 
     porque = f.get("porque")
-    if not porque:
-        return base
-    lugar_porque = TOPE_TITULO - len(base) - len(" -- ")
-    if lugar_porque <= 0:
-        return base
-    return f"{base} -- {porque[:lugar_porque]}"
+    if porque:
+        lugar_porque = TOPE_TITULO - len(base) - len(" -- ")
+        if lugar_porque > 0:
+            base = f"{base} -- {porque[:lugar_porque]}"
+
+    return base[:TOPE_TITULO]
