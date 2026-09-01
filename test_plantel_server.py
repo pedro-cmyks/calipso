@@ -283,12 +283,21 @@ def test_produccion_le_inyecta_la_carta_y_los_proyectos_al_jefe(
         tmp_path, monkeypatch):
     """El arnes de test_plantel_jefe.py construye el Contexto a mano, asi
     que puede pasar aunque produccion nunca las mande. Este es el guarda
-    apuntado al unico lugar que importa."""
+    apuntado al unico lugar que importa.
+
+    `catastro.cargar()` va con stub a proposito: sin uno, el home
+    desechable de este test arranca sin `catastro.json`, y `cargar()` cae
+    siempre en `escanear()` -- que recorre el home REAL de Pedro con
+    subprocesos git y despues escribe. Este test no necesita ejercitar el
+    catastro real, solo que la lista que sea que devuelva `cargar()` llegue
+    al `Contexto`; el stub no le quita poder de deteccion al `assert`."""
     monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
     monkeypatch.setattr(memory, "CALIPSO_HOME", tmp_path)
     carta = memory.ruta_carta("atlas")
     carta.parent.mkdir(parents=True, exist_ok=True)
     carta.write_text("SOY ATLAS", encoding="utf-8")
+    monkeypatch.setattr(srv.catastro, "cargar",
+                        lambda *a, **k: [{"nombre": "atlas"}])
 
     _armar_economia(tmp_path)
 
