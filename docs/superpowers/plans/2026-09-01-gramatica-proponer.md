@@ -709,13 +709,36 @@ def test_el_catalogo_no_pasa_de_doce(tmp_path):
     assert len(s["catalogo"]) == 12
 ```
 
-Los cinco helpers (`_situacion_con`, `_situacion_con_varias`,
-`_situacion_con_dos_redacciones`, `_situacion_con_ajena`,
-`_situacion_con_veinte`) se escriben siguiendo el armado que ya usan los tests
-de ese archivo: construir un `Bus` en `tmp_path`, dar de alta las propuestas
-con `forma=` y llamar a `sit.situacion(...)` con la misma firma que los tests
-vecinos. **Leer un test existente de ese archivo antes de escribirlos**: la
-firma de `situacion()` y los objetos que necesita ya estan resueltos ahi.
+Ese archivo YA tiene todo lo que hace falta y no hay que inventar helpers: el
+fixture `fabrica` (linea 21) devuelve `(k, r, bus, cola, sus)` con dos
+departamentos -- `dep:atlas` y `dep:mercado` -- la semana abierta y plata
+acunada, y los tests llaman `sit.situacion(k, r, bus, cola, sus, W,
+"dep:atlas")`. Los seis tests de arriba se escriben con ese fixture, dando de
+alta las propuestas con `bus.alta(..., forma=...)` antes de llamar a
+`situacion`. Este es el molde exacto, y los otros cinco salen de el cambiando
+las altas:
+
+```python
+def _forma(sobre, clave, promete="medir", tarda="corto"):
+    return {"sobre": sobre, "clave": clave, "promete": promete,
+            "tarda": tarda}
+
+
+def test_las_propuestas_llevan_su_forma(fabrica):
+    k, r, bus, cola, sus = fabrica
+    bus.alta(TS, W, "p1", "dep:atlas", "medir: el radar (corto)", 10_000,
+             10_000, {"gasto_max_mm": 10_000},
+             forma=_forma("el radar de precios", "precios+radar",
+                          promete="descartar"))
+    s = sit.situacion(k, r, bus, cola, sus, W, "dep:atlas")
+    assert s["propuestas_propias"][0]["forma"]["promete"] == "descartar"
+```
+
+Para `test_el_catalogo_no_repite_el_mismo_objeto`, las dos altas llevan
+**la misma `clave`** y distinto `sobre`. Para
+`test_el_catalogo_es_solo_del_propio_departamento`, el alta va con
+`"dep:mercado"`. Para `test_el_catalogo_no_pasa_de_doce`, veinte altas en un
+`for` con `clave=f"obj{i}"`.
 
 Y en `test_plantel_jefe.py`, la linea 596-597 pasa de comparar el dict entero
 a comparar lo que el test dice probar:
@@ -882,10 +905,25 @@ def test_los_trabajos_siguen_mostrando_su_titulo():
     assert "radar de precios" in dec.prompt(s, 50)
 ```
 
-`_situacion_minima()` es el helper que ese archivo ya usa para armar el dict
-`s`; si no existe con ese nombre, usar el que exista y agregarle las claves
-`catalogo: []` y `forma: None` donde haga falta. **Leer los tests vecinos
-antes de escribir estos.**
+**`test_plantel_decision.py` no tiene helpers**: verificado, cada test arma su
+dict `s` inline. Los tests de arriba hacen lo mismo, y `_situacion_minima()` es
+esta funcion, que hay que agregar al archivo una sola vez:
+
+```python
+def _situacion_minima() -> dict:
+    """Lo minimo que `prompt` indexa con corchetes. Las claves que lee con
+    `.get()` -propuestas_propias, descartadas_semana, catalogo- se omiten a
+    proposito: asi los tests que no hablan de ellas ejercitan el camino de
+    una situacion que no las trae."""
+    return {"nombre": "atlas", "disponible_mm": 400_000, "saldo_mm": 400_000,
+            "presupuesto_semanal_mm": 25_000, "salidas_semana_mm": 7_000,
+            "compuertas_pendientes": 2, "trabajos": [],
+            "propuestas_ajenas": [], "capacidad": None}
+```
+
+Ojo con un test que ya existe y que no hay que romper: el de la linea 105
+afirma `for accion in dec.ACCIONES: assert accion in p` -- las cinco acciones
+aparecen en el prompt. La plantilla nueva no las toca.
 
 - [ ] **Step 2: Correr los tests para verificar que fallan**
 
@@ -996,7 +1034,11 @@ git commit -m "feat(plantel): el prompt pide la ficha y le muestra al jefe sus o
 - Consumes: `ficha.parsear_ficha(texto)` de la Tarea 1.
 - Produces, y lo usan las Tareas 6 y 7:
   - `ilegibles.ruta(base) -> pathlib.Path` (`<base>/economia/ilegibles.jsonl`)
-  - `ilegibles.anotar(base, ts, semana, departamento, crudo) -> None`
+  - `ilegibles.anotar(base, semana, departamento, crudo) -> None` -- **sin
+    `ts`**: `jefe.tic` no tiene ninguno. Verificado: su firma es
+    `tic(ctx, cuenta, semana)` y en todo `jefe.py` no hay `ahora`, `_ahora`
+    ni `isoformat`. Un rastro se pone su propia hora; un asiento del libro
+    no, y por eso el libro si la recibe del llamador.
   - `ilegibles.colapsados(base) -> list[dict]` con
     `{departamento, crudo, veces, ts}`, el mas nuevo primero
   - `contratar(situacion, accion, ref, motivo="", ficha=None)`
@@ -1020,12 +1062,11 @@ test_plantel_ilegibles.py — la valvula de la gramatica de proponer.
 """
 from calipso.plantel import ilegibles
 
-TS = "2026-09-01T10:00:00"
 W = "2026-W36"
 
 
 def test_lo_ilegible_queda_anotado(tmp_path):
-    ilegibles.anotar(tmp_path, TS, W, "dep:atlas", "una idea larga")
+    ilegibles.anotar(tmp_path, W, "dep:atlas", "una idea larga")
     filas = ilegibles.colapsados(tmp_path)
     assert len(filas) == 1
     assert filas[0]["crudo"] == "una idea larga"
@@ -1036,14 +1077,14 @@ def test_el_mismo_texto_se_colapsa_con_su_contador(tmp_path):
     """A temperatura 0 la repeticion es byte a byte: 200 tics tienen que dar
     una fila con un contador, no 200 filas."""
     for _ in range(200):
-        ilegibles.anotar(tmp_path, TS, W, "dep:atlas", "la misma idea")
+        ilegibles.anotar(tmp_path, W, "dep:atlas", "la misma idea")
     filas = ilegibles.colapsados(tmp_path)
     assert len(filas) == 1 and filas[0]["veces"] == 200
 
 
 def test_dos_departamentos_no_se_mezclan(tmp_path):
-    ilegibles.anotar(tmp_path, TS, W, "dep:atlas", "misma idea")
-    ilegibles.anotar(tmp_path, TS, W, "dep:taller", "misma idea")
+    ilegibles.anotar(tmp_path, W, "dep:atlas", "misma idea")
+    ilegibles.anotar(tmp_path, W, "dep:taller", "misma idea")
     assert len(ilegibles.colapsados(tmp_path)) == 2
 
 
@@ -1054,7 +1095,7 @@ def test_sin_archivo_la_lista_es_vacia(tmp_path):
 def test_una_linea_rota_no_voltea_la_lectura(tmp_path):
     """Append-only escrito por un proceso que puede morir a la mitad: una
     linea cortada no puede esconder las demas."""
-    ilegibles.anotar(tmp_path, TS, W, "dep:atlas", "buena")
+    ilegibles.anotar(tmp_path, W, "dep:atlas", "buena")
     ruta = ilegibles.ruta(tmp_path)
     with ruta.open("a", encoding="utf-8") as f:
         f.write("{esto no es json\n")
@@ -1178,10 +1219,15 @@ modo "a" no se entrelaza con la de otro proceso.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import pathlib
 
 ARCHIVO = "ilegibles.jsonl"
+
+
+def _ahora() -> str:
+    return datetime.datetime.now().isoformat(timespec="seconds")
 
 
 def ruta(base) -> pathlib.Path:
@@ -1189,11 +1235,17 @@ def ruta(base) -> pathlib.Path:
     return pathlib.Path(base) / "economia" / ARCHIVO
 
 
-def anotar(base, ts: str, semana: str, departamento: str,
-           crudo: str) -> None:
+def anotar(base, semana: str, departamento: str, crudo: str) -> None:
+    """La hora se la pone esta funcion, no el llamador.
+
+    Al reves que un asiento del libro, que la recibe de afuera para que dos
+    escrituras del mismo tic queden con la misma: esto es un rastro, nadie
+    lo concilia contra nada, y `jefe.tic` no tiene ningun timestamp a mano
+    -- su firma es `(ctx, cuenta, semana)`.
+    """
     p = ruta(base)
     p.parent.mkdir(parents=True, exist_ok=True)
-    linea = json.dumps({"ts": ts, "semana": semana,
+    linea = json.dumps({"ts": _ahora(), "semana": semana,
                         "departamento": departamento, "crudo": crudo},
                        ensure_ascii=False)
     with p.open("a", encoding="utf-8") as f:
@@ -1270,7 +1322,7 @@ Y en `tic`, entre `ctx.publicar("razonando", ...)` (`:352-353`) y
             # hace aca, con la accion intacta y el permiso en False a mano,
             # sin pasar por `_puede`.
             try:
-                ilegibles.anotar(ctx.base, ahora, semana, cuenta, motivo)
+                ilegibles.anotar(ctx.base, semana, cuenta, motivo)
                 # y ACA se rompe la semana congelada: `nada` no anota
                 # -el modelo eligio no hacer nada- y un freno tampoco -la
                 # maquina lo paro-, pero esto es el modelo intentando y
@@ -1296,9 +1348,8 @@ Y en `tic`, entre `ctx.publicar("razonando", ...)` (`:352-353`) y
             resultado = ctx.contratar(s, accion, ref, motivo, ficha=f)
 ```
 
-`ahora` es el timestamp que `tic` ya tiene a mano para publicar; si no existe
-con ese nombre, usar el que el archivo ya use para los eventos del pulso.
-**Leer el principio de `tic` antes de escribir esta linea.**
+No hace falta ningun timestamp en `tic`: `ilegibles.anotar` se pone el suyo,
+justamente porque `tic(ctx, cuenta, semana)` no tiene ninguno.
 
 - [ ] **Step 5: El arnes admite el argumento**
 
@@ -1445,10 +1496,20 @@ Y en la rama de `proponer`, reemplazar el armado del titulo y el `alta`:
         return {"accion": accion, "ref": ref, "propuesta": propuesta}
 ```
 
-El import de `ficha` en `server.py` va junto a los demas imports del plantel,
-con el mismo prefijo que ya usan (`_plantel_ficha`), y **bajo el mismo
-try/except** si los del plantel estan envueltos. **Leer como se importan
-`_plantel_jefe` y sus hermanos antes de escribir la linea.**
+El import va en el bloque del plantel que ya existe en `calipso/server.py`
+(cerca de la linea 5256), que tiene su propio try/except a proposito. Queda
+asi, con las dos lineas nuevas de esta tarea y la siguiente:
+
+```python
+try:
+    from calipso.plantel import ficha as _plantel_ficha
+    from calipso.plantel import ilegibles as _plantel_ilegibles
+    from calipso.plantel import interruptor as _plantel_it
+    from calipso.plantel import jefe as _plantel_jefe
+except Exception:  # el plantel no esta disponible: el tablero responde inactivo
+    _plantel_ficha = _plantel_ilegibles = None
+    _plantel_it = _plantel_jefe = None
+```
 
 - [ ] **Step 4: Correr los tests**
 
@@ -1543,7 +1604,53 @@ En `calipso/economia/bus.py`, al final de `como_items`, antes del `return`:
             "estado": "aviso", "respuesta": None})
 ```
 
-- [ ] **Step 4: El endpoint suma la lista**
+- [ ] **Step 4: La metrica llega al item**
+
+La seccion 7 del spec dice que la metrica de exito **se deriva al mostrarla y
+no se guarda**. Sin este paso, `ficha.METRICA` seria una tabla que nadie lee:
+codigo muerto en el primer commit.
+
+Se deriva en el ENDPOINT y no en el adaptador, para no meter un import de
+`calipso.plantel` adentro de `calipso.economia`: el libro no puede depender de
+quien lo escribe. En el endpoint de la mesa, cada propuesta que lleva forma
+gana su metrica:
+
+```python
+        # la metrica de exito NO se guarda en el libro: se deriva de
+        # `promete` cada vez que se muestra. Es la unica manera de que
+        # cambiar la tabla arregle tambien las propuestas viejas.
+        f = datos.get("forma")
+        if f and _plantel_ficha is not None:
+            fila["metrica"] = _plantel_ficha.METRICA.get(f["promete"], "")
+```
+
+sobre el dict que el endpoint ya arma por propuesta. Y en `como_items`, el
+cuerpo del item de una propuesta gana la clave, con `.get()`:
+
+```python
+            "metrica": p.get("metrica", ""),
+```
+
+Con su test, en `test_inbox.py`:
+
+```python
+def test_la_propuesta_muestra_que_promete_medir():
+    """La metrica no se guarda: se deriva. Si no llega al item, la tabla de
+    METRICA es codigo muerto y Pedro no sabe contra que se juzga la
+    propuesta."""
+    datos = {"activa": True, "propuestas": [
+        {"id": "p1", "titulo": "descartar: el radar (corto)",
+         "estado": "alta", "metrica": "milimonedas por semana que dejan de "
+                                      "salir", "presupuesto_mm": 1000}]}
+    item = [i for i in eco_bus.como_items(datos) if i["clase"] == "decision"][0]
+    assert "milimonedas por semana" in item["cuerpo"]["metrica"]
+```
+
+**Leer el endpoint de la mesa y `como_items` antes de escribir esto**: los
+nombres exactos del dict por propuesta salen de ahi, y este paso solo agrega
+una clave a cada uno.
+
+- [ ] **Step 5: El endpoint suma la lista de ilegibles**
 
 En el endpoint de la mesa de `calipso/server.py`, la respuesta gana:
 
@@ -1560,22 +1667,22 @@ Con el import bajo la misma guarda que los demas del plantel. Si el modulo no
 se pudo importar, la clave va `[]`: una bandeja que pierde sus avisos es mejor
 que una que no carga.
 
-- [ ] **Step 5: Correr los tests**
+- [ ] **Step 6: Correr los tests**
 
 Run: `.venv/bin/python -m pytest test_inbox.py test_inbox_server.py test_mesa_server.py -q`
 Expected: PASS
 
-- [ ] **Step 6: La suite entera**
+- [ ] **Step 7: La suite entera**
 
 Run: `.venv/bin/python -m pytest -q`
 Expected: PASS. Es la primera corrida completa con las siete tareas juntas.
 
-- [ ] **Step 7: Verificar que lo agregado es solo ascii**
+- [ ] **Step 8: Verificar que lo agregado es solo ascii**
 
 Run: `git diff $(git merge-base main HEAD)..HEAD | grep -nP '^\+.*[^\x00-\x7F]' || echo "solo ascii"`
 Expected: `solo ascii`
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add calipso/economia/bus.py calipso/server.py test_inbox.py test_mesa_server.py
