@@ -502,9 +502,14 @@ git commit -m "feat(plantel): la gramatica de proponer, pura y sin disco"
 
 - [ ] **Step 1: Escribir los tests que fallan**
 
-En `test_economia_bus.py`, al final. **Ojo con el alias**: ese archivo importa
-`from calipso.economia import bus as bus_mod`, no `bus` -- verificado. Usar
-`bus` a secas da `NameError`.
+En `test_economia_bus.py`, al final. Dos cosas de ese archivo, las dos
+verificadas: importa `from calipso.economia import bus as bus_mod`, no `bus`
+-- usar `bus` a secas da `NameError` -- y **define `TS` pero NO define `W`**
+(usa la semana literal `"2026-W30"`). Agregar arriba, junto a `TS`:
+
+```python
+W = "2026-W30"
+```
 
 ```python
 FORMA_OK = {"sobre": "el radar de precios", "clave": "precios+radar",
