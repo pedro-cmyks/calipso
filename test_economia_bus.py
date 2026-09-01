@@ -1071,3 +1071,13 @@ def test_un_preseed_no_lleva_forma(tmp_path):
     b.alta(TS, W, "p1", "dep:a", "ronda pre-seed de a", 50_000, 50_000,
            {"gasto_max_mm": 50_000}, tipo="preseed")
     assert b.datos("p1").get("forma") is None
+
+
+def test_el_vocabulario_del_libro_y_el_del_plantel_no_se_separan():
+    """La duplicacion es deliberada -- el libro no puede importar de quien
+    lo escribe -- pero tiene que ser una copia, no una deriva. El test
+    importa `ficha`; `bus.py` sigue sin importarlo, que es lo que el diseno
+    protege."""
+    from calipso.plantel import ficha as _ficha
+    assert set(_ficha.PROMESAS) == bus_mod._PROMESAS
+    assert set(_ficha.PLAZOS) == bus_mod._PLAZOS
