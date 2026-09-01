@@ -8,6 +8,7 @@ from calipso.economia.cola import Cola
 from calipso.economia.kernel import Kernel
 from calipso.economia.libro import Libro
 from calipso.plantel import decision as dec
+from calipso.plantel import ficha
 from calipso.plantel import ilegibles as ilg
 from calipso.plantel import interruptor as it
 from calipso.plantel import jefe as j
@@ -490,6 +491,33 @@ def test_una_ficha_buena_contrata_y_le_llega_al_contratista(tmp_path):
     out = j.tic(ctx, "dep:atlas", W)
     assert out["accion"] == "proponer" and out["actuo"] is True
     assert contratos and contratos[0][0] == "proponer"
+
+
+def test_el_pulso_y_la_memoria_muestran_el_titulo_no_el_nombre_del_campo(tmp_path):
+    """Con `dec.parsear` sin cambios, `motivo` es la SEGUNDA linea de la
+    respuesta -el renglon `sobre: ...` en una ficha bien formada- y sin
+    este arreglo el pulso mostraba el nombre de un campo interno en vez
+    del titulo que Pedro tiene que leer. En modo ensayo, que es el
+    default, ese evento es lo UNICO que Pedro ve de una propuesta."""
+    texto = ("proponer\nsobre: el radar de precios\npromete: descartar\n"
+             "tarda: corto\nporque: no rindio")
+    ctx, _, eventos = armar(tmp_path, texto)
+    it.poner_modo(tmp_path, "vivo")
+    j.tic(ctx, "dep:atlas", W)
+    esperado = ficha.titulo_de(ficha.parsear_ficha(texto))
+    razonando = next(c for e, c in eventos if e == "razonando")
+    assert esperado in razonando["texto"]
+    assert "sobre: el radar de precios" not in razonando["texto"]
+    assert any(esperado in nota for nota in ctx.memoria.recordado)
+
+
+def test_sin_ficha_el_pulso_sigue_mostrando_motivo(tmp_path):
+    """Las otras cuatro acciones no tienen ficha: ahi no cambia nada."""
+    ctx, _, eventos = armar(tmp_path, "nada\ntodo tranquilo")
+    it.poner_modo(tmp_path, "vivo")
+    j.tic(ctx, "dep:atlas", W)
+    razonando = next(c for e, c in eventos if e == "razonando")
+    assert "todo tranquilo" in razonando["texto"]
 
 
 def test_un_aviso_que_revienta_no_voltea_el_tic(tmp_path, monkeypatch):

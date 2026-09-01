@@ -350,14 +350,24 @@ def tic(ctx: Contexto, cuenta: str, semana: str) -> dict:
             return salida(motivo=f"no penso: {exc}", freno="el modelo fallo")
 
         accion, ref, motivo = dec.parsear(crudo)
-        ctx.publicar("razonando",
-                     texto=f"{accion} {ref or ''} — {motivo}".strip())
 
         # La ficha solo existe para `proponer`. Se lee aparte y no dentro de
         # `parsear` porque `parsear` devuelve una 3-upla que seis tests
         # desempaquetan o comparan entera, y ninguno de ellos habla de
-        # proponer.
+        # proponer. Se calcula ANTES de publicar "razonando": ese evento y
+        # la memoria no pueden mostrar el nombre de un campo interno --
+        # `motivo` es la SEGUNDA linea de la respuesta (`dec.parsear`), que
+        # en una ficha bien formada es el renglon `sobre: ...` tal cual lo
+        # escribio el modelo, no un titulo pensado para que Pedro lo lea.
         f = ficha.parsear_ficha(crudo) if accion == "proponer" else None
+
+        # Con ficha, lo que se muestra es su titulo (`promete: sobre
+        # (tarda)`); sin ficha -las otras cuatro acciones, o un `proponer`
+        # que todavia no se entiende- se sigue mostrando `motivo` como
+        # siempre.
+        texto_pulso = ficha.titulo_de(f) if f is not None else motivo
+        ctx.publicar("razonando",
+                     texto=f"{accion} {ref or ''} — {texto_pulso}".strip())
 
         if accion == "proponer" and f is None:
             # LA VALVULA. Y ojo con el atajo que parece obvio: NO se le
@@ -414,8 +424,12 @@ def tic(ctx: Contexto, cuenta: str, semana: str) -> dict:
         if permiso:
             resultado = ctx.contratar(s, accion, ref, motivo, ficha=f)
             try:
-                ctx.memoria.remember(f"{accion} {ref or ''}: {motivo}".strip(),
-                                     kind="jefe", departamento=cuenta)
+                # mismo criterio que el evento "razonando": con ficha, el
+                # titulo; sin ficha, `motivo` como siempre.
+                texto_memoria = ficha.titulo_de(f) if f is not None else motivo
+                ctx.memoria.remember(
+                    f"{accion} {ref or ''}: {texto_memoria}".strip(),
+                    kind="jefe", departamento=cuenta)
             except Exception as exc:
                 # contratar ya ocurrio y ya se cobro: decir que no actuo
                 # seria mentir sobre plata que salio

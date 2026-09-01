@@ -677,6 +677,28 @@ def test_la_mesa_deriva_la_metrica_de_la_forma(cliente):
     assert "metrica" not in sin_forma
 
 
+def test_una_forma_sin_promete_no_tumba_la_mesa(cliente):
+    """Un `forma` de un esquema anterior o editado a mano puede llegar sin
+    `promete`. El resto de esta funcion es deliberadamente defensivo con
+    `.get()` (test de arriba, campo faltante en toda la fila): la
+    derivacion de la metrica no puede ser la unica que revienta con un
+    500 en vez de degradar."""
+    c, base = cliente
+    ruta = base / "economia" / "bus.jsonl"
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    linea = {"ts": TS, "semana": W, "evento": "alta", "id": "sin_promete",
+             "departamento": "dep:atlas", "titulo": "algo",
+             "presupuesto_mm": 10_000, "retorno_mm": 10_000,
+             "criterio": {"gasto_max_mm": 10_000}, "tipo": "trabajo",
+             "forma": {"sobre": "algo", "clave": "algo"}}
+    with ruta.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(linea) + "\n")
+    r = c.get("/api/economia/bus", params={"token": srv.TOKEN})
+    assert r.status_code == 200, r.text
+    p = next(x for x in r.json()["propuestas"] if x["id"] == "sin_promete")
+    assert p["metrica"] == ""
+
+
 def test_las_fichas_ilegibles_de_la_semana_en_curso_llegan_a_la_mesa(cliente):
     """El endpoint tiene que pasarle la semana en curso a `colapsados`: sin
     eso el colapso cruza semanas y un ilegible de otra semana nunca se iria

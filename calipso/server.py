@@ -4019,10 +4019,15 @@ def api_eco_bus() -> dict:
                 # `promete` cada vez que se muestra. Es la unica manera de
                 # que cambiar la tabla arregle tambien las propuestas
                 # viejas.
+                # `.get()`, no corchetes: esta funcion es deliberadamente
+                # defensiva para tolerar una linea vieja o editada a mano
+                # del bus real de Pedro (comentario de mas arriba), y con
+                # corchetes esta era la unica de las tres derivaciones que
+                # revienta con un 500 en toda la mesa en vez de degradar.
                 f = d.get("forma")
                 if f and _plantel_ficha is not None:
                     fila["metrica"] = _plantel_ficha.METRICA.get(
-                        f["promete"], "")
+                        f.get("promete"), "")
                 propuestas.append(fila)
             deps_fabrica = [
                 {"cuenta": f"dep:{x.nombre}", "nombre": x.nombre,
