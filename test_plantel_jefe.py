@@ -593,8 +593,8 @@ def test_lo_que_pedro_descarto_esta_semana_le_llega_al_jefe(tmp_path):
                      ctx.suscripciones, W, "dep:atlas")
     # el cupo vuelve (eso no se toca) y ademas queda el rastro
     assert s["propuestas_propias"] == []
-    assert s["descartadas_semana"] == [{"id": "p0",
-                                        "titulo": "radar de precios"}]
+    assert [d["id"] for d in s["descartadas_semana"]] == ["p0"]
+    assert s["descartadas_semana"][0]["titulo"] == "radar de precios"
     # y el prompt se lo dice al modelo con todas las letras
     texto = dec.prompt(s, 50)
     assert "Pedro DESCARTO esta semana" in texto

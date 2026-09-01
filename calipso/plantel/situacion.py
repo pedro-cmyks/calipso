@@ -92,10 +92,20 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
     # propuesta — y `comentar` sin nada sobre lo que opinar.
     trabajos, propias, ajenas, descartadas = [], [], [], []
     preseed_pendiente = 0
+    catalogo: list[str] = []
+    vistas: set[str] = set()
     for id_ in bus.ids():
         estado = bus.estado(id_)
         datos = bus.datos(id_)
         mio = datos.get("departamento") == cuenta
+        forma = datos.get("forma")
+        if mio and forma and forma.get("clave") not in vistas:
+            # el catalogo existe para que el modelo COPIE en vez de
+            # reinventar, asi que incluye tambien lo muerto: el objeto que
+            # nombro hace dos meses es justo el que va a redactar distinto.
+            # Deduplicado por clave, no por texto.
+            vistas.add(forma["clave"])
+            catalogo.append(forma["sobre"])
         if estado == "descartada":
             # el "no" de Pedro, de ESTA semana. Descartar libera el cupo
             # (para eso existe: sin eso el jefe se frena al llegar a su
@@ -106,7 +116,8 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
             # de 3b leyendo "no repitas lo mismo".
             if mio and datos.get("semana_descartada") == semana:
                 descartadas.append({"id": id_,
-                                    "titulo": datos.get("titulo", "")})
+                                    "titulo": datos.get("titulo", ""),
+                                    "forma": datos.get("forma")})
             continue
         if estado not in ("alta", "financiada"):
             continue                       # muerta, cerrada o liquidada
@@ -123,8 +134,12 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
             # que opinar) y no suma al pendiente. Sigue en el bus, en
             # `alta`: no se borro nada, dejo de contar.
             continue
+        # la forma tipada, o None para las escritas antes de que existiera.
+        # El prompt la lee con .get() y cae al titulo, asi que una vieja se
+        # sigue mostrando como siempre.
         base = {"id": id_, "titulo": datos.get("titulo", ""),
-                "presupuesto_mm": datos.get("presupuesto_mm", 0)}
+                "presupuesto_mm": datos.get("presupuesto_mm", 0),
+                "forma": datos.get("forma")}
         if estado == "financiada":
             # un pre-seed financiado no es un trabajo: la plata ya esta en
             # la cuenta del departamento (no en trabajo:<id>), asi que no
@@ -199,4 +214,9 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
         "compuertas_pendientes": sum(
             1 for c in cola.pendientes() if c.get("departamento") == cuenta),
         "capacidad": _capacidad(asientos, suscripciones, semana, ops),
+        # los objetos que este departamento ya nombro, el mas nuevo primero,
+        # hasta doce. El tope es de espacio del prompt, no una regla sobre lo
+        # que puede hacer: nombrar uno que no esta en la lista es correcto y
+        # esperado.
+        "catalogo": list(reversed(catalogo))[:12],
     }
