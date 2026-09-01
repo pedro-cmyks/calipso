@@ -5385,7 +5385,16 @@ def _pensar_local(prompt: str) -> str:
     data = dispatch._http_post_json(
         cfg["base_url"],
         {"model": cfg["model"], "prompt": prompt, "stream": False,
-         "options": {"temperature": 0}})
+         # `num_ctx` explicito y no el default de Ollama, por dos razones que
+         # se descubrieron midiendo: Ollama trunca desde el COMIENZO del
+         # prompt, y `decision.prompt` pone primero lo que mas importa (lo
+         # aprendido, y ahora la carta del departamento). Con el default,
+         # crecer el prompt hace que el jefe deje de ver justo lo que se le
+         # agrego, en silencio: sin error y sin aviso.
+         # 8192 y no mas: `qwen2.5:7b` soporta bastante mas, pero cada token
+         # de contexto cuesta RAM en la maquina de Pedro y el prompt entero
+         # de un tic hoy no llega ni cerca. Es holgura, no capacidad.
+         "options": {"temperature": 0, "num_ctx": 8192}})
     return str(data.get("response") or "")
 
 

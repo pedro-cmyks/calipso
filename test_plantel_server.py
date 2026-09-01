@@ -92,6 +92,24 @@ def test_pensar_local_no_corre_claude_por_subscripcion(monkeypatch):
     assert resultado == "nada -- sin plata"
 
 
+def test_el_modelo_local_recibe_un_contexto_explicito(monkeypatch):
+    """Ollama trunca desde el COMIENZO del prompt cuando no entra, y
+    `decision.prompt` pone lo mas importante primero. Sin `num_ctx` fijo,
+    el jefe puede dejar de ver su carta sin que nada avise -- y la medicion
+    de la Tarea 6 no podria distinguir "el modelo la ignoro" de "nunca le
+    llego"."""
+    visto = {}
+
+    def post_espia(url, cuerpo):
+        visto.update(cuerpo)
+        return {"response": "nada\nno hay nada"}
+
+    monkeypatch.setattr(dispatch, "_http_post_json", post_espia)
+    srv._pensar_local("un prompt cualquiera")
+    assert visto["options"]["num_ctx"] == 8192
+    assert visto["options"]["temperature"] == 0
+
+
 def test_la_rutina_de_departamento_es_un_kind_valido():
     assert "departamento" in routines.KINDS
 
