@@ -151,6 +151,30 @@ def test_la_prosa_libre_de_hoy_ya_no_es_una_ficha():
     assert ficha.parsear_ficha("proponer\nhay hueco en precios") is None
 
 
+def test_un_sobre_gigante_no_se_guarda_entero():
+    # el libro es append-only: un modelo local atascado en un loop de
+    # repeticion no puede escribir un `sobre` sin techo, porque de ahi no
+    # se lo puede borrar nunca
+    sobre_gigante = "palabra " * 200
+    f = ficha.parsear_ficha(
+        f"proponer\nsobre: {sobre_gigante}\npromete: medir\ntarda: corto")
+    assert f is not None
+    assert len(f["sobre"]) <= ficha.TOPE_SOBRE
+
+
+def test_el_recorte_del_sobre_pasa_antes_de_calcular_la_clave():
+    # la clave tiene que salir del texto que efectivamente se guarda, no
+    # de uno mas largo que nunca llega al libro: una palabra que solo
+    # aparece despues del tope no puede colarse en la clave
+    relleno = "palabra " * 200  # muy por encima del tope
+    f = ficha.parsear_ficha(
+        f"proponer\nsobre: {relleno}unica\npromete: medir\ntarda: corto")
+    assert f is not None
+    assert len(f["sobre"]) == ficha.TOPE_SOBRE
+    assert "unica" not in f["sobre"]
+    assert "unica" not in f["clave"]
+
+
 # --------------------------------------------------------------------------
 # las tablas y el titulo
 # --------------------------------------------------------------------------

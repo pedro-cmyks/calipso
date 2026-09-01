@@ -62,6 +62,16 @@ def test_una_linea_con_bytes_invalidos_no_revienta_la_lectura(tmp_path):
     assert len(ilegibles.colapsados(tmp_path, W)) == 1
 
 
+def test_un_crudo_gigante_no_se_guarda_entero(tmp_path):
+    """El libro es append-only: una respuesta degenerada (un loop de
+    repeticion a temperatura 0) no puede escribir una linea sin techo, a
+    doscientos tics por semana."""
+    ilegibles.anotar(tmp_path, W, "dep:atlas", "repite " * 1000)
+    filas = ilegibles.colapsados(tmp_path, W)
+    assert len(filas) == 1
+    assert len(filas[0]["crudo"]) <= ilegibles.TOPE_CRUDO
+
+
 def test_una_semana_no_ve_lo_ilegible_de_otra(tmp_path):
     """`semana` filtra de verdad: sin esto, `veces` es un contador de por
     vida y un ilegible de hace tres meses no se va nunca de la bandeja."""

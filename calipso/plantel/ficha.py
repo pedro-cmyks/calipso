@@ -58,6 +58,16 @@ FUNCIONALES = frozenset(
 
 TOPE_TITULO = 120
 
+# El techo de `sobre` existe por el libro append-only, no por estetica.
+# `_pensar_local` no le manda a Ollama ningun tope de salida y `bus.alta`
+# solo valida que `sobre` sea un string no vacio: un modelo local atascado
+# en un loop de repeticion escribiria un `sobre` gigante en el bus, de
+# donde no se puede borrar nunca, y ademas vuelve al prompt de ese
+# departamento para siempre porque el catalogo incluye lo muerto a
+# proposito. Un objeto real mide decenas de caracteres; con un tope de
+# unos cientos no se pierde nada de lo que importa.
+TOPE_SOBRE = 300
+
 
 def _sin_tildes(texto: str) -> str:
     """Saca acentos y dieresis letra por letra, pero protege la ñ.
@@ -146,7 +156,10 @@ def parsear_ficha(texto: str) -> dict | None:
             continue        # el primero gana: un renglon repetido no pisa
         crudo[campo] = valor.strip()
 
-    sobre = crudo.get("sobre", "")
+    # El recorte pasa ANTES de calcular la clave: la clave tiene que salir
+    # del texto que efectivamente se guarda, no de uno mas largo que nunca
+    # llega al libro.
+    sobre = crudo.get("sobre", "")[:TOPE_SOBRE]
     clave = normalizar(sobre)
     if not clave:
         return None         # sin objeto, o un objeto de puros funcionales

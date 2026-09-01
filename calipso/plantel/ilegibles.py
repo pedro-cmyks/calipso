@@ -22,6 +22,15 @@ import pathlib
 
 ARCHIVO = "ilegibles.jsonl"
 
+# El techo existe por el libro append-only, no por estetica -- mismo
+# motivo que `ficha.TOPE_SOBRE`. `anotar` guarda la respuesta ENTERA del
+# modelo a proposito (guardar solo el segundo renglon perdia dos tercios
+# de la prosa), pero una respuesta degenerada -un loop de repeticion a
+# temperatura 0- escribiria una linea gigante por tic, y a doscientos tics
+# por semana eso es real. Generoso a proposito: una ficha ilegible normal
+# son unos pocos renglones cortos.
+TOPE_CRUDO = 2000
+
 
 def _ahora() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
@@ -43,7 +52,8 @@ def anotar(base, semana: str, departamento: str, crudo: str) -> None:
     p = ruta(base)
     p.parent.mkdir(parents=True, exist_ok=True)
     linea = json.dumps({"ts": _ahora(), "semana": semana,
-                        "departamento": departamento, "crudo": crudo},
+                        "departamento": departamento,
+                        "crudo": crudo[:TOPE_CRUDO]},
                        ensure_ascii=False)
     with p.open("a", encoding="utf-8") as f:
         f.write(linea + "\n")
