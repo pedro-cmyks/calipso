@@ -146,24 +146,29 @@ def decidir(p: str) -> str:
 
 def resultado(p: str) -> tuple[str, str | None]:
     """La accion, y la CLAVE normalizada del objeto si la accion fue
-    `proponer` (`None` en cualquier otro caso).
+    `proponer` Y la ficha se pudo leer (`None` en cualquier otro caso,
+    incluida una ficha ilegible).
 
     La clave -- no el `sobre` crudo -- es lo que hay que comparar para saber
     si dos propuestas hablan del mismo objeto: es el mismo campo que
     `ficha.py` disena para eso ("explicable el dia que Pedro revoque"), y
     normaliza orden de palabras y articulos.
-
-    Si la accion fue `proponer` pero la ficha salio ilegible, la clave es
-    `None` igual que si no hubiera propuesto -- hay un objeto pero no hay
-    forma segura de decir si es el mismo que el de la otra rama, y el
-    llamador tiene que tratar esa incertidumbre como "no se puede confirmar
-    que sea igual", nunca como una coincidencia.
     """
     accion, _ref, _motivo = dec.parsear(p)
     if accion != "proponer":
         return accion, None
     f = ficha.parsear_ficha(p)
     return "proponer", (f["clave"] if f else None)
+
+
+def legible(resultado_par: tuple[str, str | None]) -> bool:
+    """Si esta rama produjo una ficha que se puede leer y comparar.
+
+    `proponer` con clave `None` (ficha ilegible) NO es legible: hay una
+    accion pero no un objeto contra el cual comparar, y el conteo final
+    necesita distinguir eso de un objeto de verdad."""
+    accion, clave = resultado_par
+    return accion == "proponer" and clave is not None
 
 
 def main() -> int:
@@ -174,13 +179,20 @@ def main() -> int:
         print("Levanta Ollama con qwen2.5:7b y volve a correr.")
         return 1
 
-    # Conteo sobre las comparaciones donde AL MENOS UNA rama propuso: un
-    # empate en `nada` de los dos lados no dice nada sobre la hipotesis, asi
-    # que no entra en ninguna de las cuatro categorias.
+    # Particion COMPLETA de las comparaciones -- las 12 caen en exactamente
+    # una de las cinco categorias, ninguna se descarta. "ninguna legible"
+    # incluye tanto un empate en `nada` como dos fichas ilegibles: en los
+    # dos casos no hay un objeto real del que hablar, y separarlos en el
+    # conteo (en vez de en la letra chica de un comentario) es lo que evita
+    # que alguien lea "objetos DISTINTOS: 6" y crea que hubo seis
+    # comparaciones reales cuando la mayoria eran basura de los dos lados.
     mismo_objeto = 0
     objetos_distintos = 0
-    solo_con = 0
-    solo_sin = 0
+    solo_con_legible = 0
+    solo_sin_legible = 0
+    ninguna_legible = 0
+    legibles_con = 0
+    legibles_sin = 0
     total_corridas = 0
 
     for nombre, s in situaciones():
@@ -198,29 +210,38 @@ def main() -> int:
             print(f"    CON carta -> {decidir(crudo_con)}")
             print(f"    SIN carta -> {decidir(crudo_sin)}")
 
-            accion_con, clave_con = resultado(crudo_con)
-            accion_sin, clave_sin = resultado(crudo_sin)
-            propuso_con = accion_con == "proponer"
-            propuso_sin = accion_sin == "proponer"
-            if not propuso_con and not propuso_sin:
-                continue  # empate en nada: no compara nada
-            if propuso_con and propuso_sin:
-                if clave_con is not None and clave_con == clave_sin:
+            res_con = resultado(crudo_con)
+            res_sin = resultado(crudo_sin)
+            legible_con = legible(res_con)
+            legible_sin = legible(res_sin)
+            if legible_con:
+                legibles_con += 1
+            if legible_sin:
+                legibles_sin += 1
+
+            if legible_con and legible_sin:
+                if res_con[1] == res_sin[1]:
                     mismo_objeto += 1
                 else:
                     objetos_distintos += 1
-            elif propuso_con:
-                solo_con += 1
+            elif legible_con:
+                solo_con_legible += 1
+            elif legible_sin:
+                solo_sin_legible += 1
             else:
-                solo_sin += 1
+                ninguna_legible += 1
 
-    informativas = mismo_objeto + objetos_distintos + solo_con + solo_sin
-    print(f"\n=== conteo final ({informativas} de {total_corridas} "
-          "comparaciones tuvieron al menos una propuesta)")
-    print(f"    las dos proponen el MISMO objeto: {mismo_objeto}")
-    print(f"    las dos proponen objetos DISTINTOS: {objetos_distintos}")
-    print(f"    propone SOLO la rama CON carta: {solo_con}")
-    print(f"    propone SOLO la rama SIN carta: {solo_sin}")
+    print(f"\n=== conteo final ({total_corridas} comparaciones)")
+    # El numero que no depende de como se definan las categorias de abajo:
+    # cuantas veces cada lado, solo, produjo algo que se pudiera leer.
+    print(f"    fichas legibles: CON carta {legibles_con}/{total_corridas} "
+          f"| SIN carta {legibles_sin}/{total_corridas}")
+    print(f"    las dos legibles, MISMO objeto: {mismo_objeto}")
+    print(f"    las dos legibles, objetos DISTINTOS: {objetos_distintos}")
+    print(f"    SOLO la rama CON carta es legible: {solo_con_legible}")
+    print(f"    SOLO la rama SIN carta es legible: {solo_sin_legible}")
+    print(f"    NINGUNA legible (empate en nada, o ficha ilegible de un "
+          f"lado o de los dos): {ninguna_legible}")
     return 0
 
 
