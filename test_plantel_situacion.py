@@ -336,3 +336,52 @@ def test_el_catalogo_ordena_por_ts_no_por_id(fabrica):
     assert len(s["catalogo"]) == 12
     assert "el objeto 12" in s["catalogo"]      # el mas nuevo por ts
     assert "el objeto 0" not in s["catalogo"]   # el mas viejo, afuera
+
+
+def test_el_catalogo_ordena_dedup_y_corta_en_ese_orden(fabrica):
+    """El orden de las tres operaciones importa y nada mas lo prueba: mas
+    de doce candidatos Y una clave repetida entre ellos, con ts bien
+    separados. Deduplicar antes de ordenar dejaria la redaccion mas VIEJA
+    de la familia repetida (la que aparece primero en `bus.ids()`,
+    alfabetico); cortar antes de deduplicar dejaria MENOS de doce objetos
+    distintos aunque haya doce o mas en el historial."""
+    k, r, bus, cola, sus = fabrica
+    for i in range(13):
+        if i == 5:
+            forma = _forma("el radar viejo de precios", "precios+radar")
+        elif i == 11:
+            forma = _forma("el radar nuevo de precios", "precios+radar")
+        else:
+            forma = _forma(f"el objeto {i}", f"obj{i}")
+        bus.alta(f"2026-08-26T10:00:{i:02d}", W, f"p{i:02d}", "dep:atlas",
+                 f"medir: el objeto {i} (corto)", 1_000, 1_000,
+                 {"gasto_max_mm": 1_000}, forma=forma)
+    s = sit.situacion(k, r, bus, cola, sus, W, "dep:atlas")
+    assert len(s["catalogo"]) == 12
+    assert "el radar nuevo de precios" in s["catalogo"]
+    assert "el radar viejo de precios" not in s["catalogo"]
+
+
+def test_el_catalogo_incluye_lo_muerto_y_lo_descartado(fabrica):
+    """Es LA razon de que el catalogo exista: lo vivo ya se ve en la
+    pantalla del prompt, y el objeto que el departamento nombro hace dos
+    meses -y que Pedro ya descarto, o que ya murio- es justo el que va a
+    redactar distinto si no lo tiene a mano para copiar."""
+    from calipso.economia import bus as bus_mod
+    k, r, bus, cola, sus = fabrica
+    bus.alta(TS, W, "p1", "dep:atlas", "medir: la alerta vieja (corto)",
+             10_000, 10_000, {"gasto_max_mm": 10_000},
+             forma=_forma("la alerta de stock", "stock+alerta"))
+    bus_mod.descartar(bus, TS, W, "p1")
+
+    bus.alta(TS, W, "p2", "dep:atlas", "medir: el sensor viejo (corto)",
+             10_000, 10_000, {"gasto_max_mm": 10_000},
+             forma=_forma("el sensor de humedad", "humedad+sensor"))
+    bus.marcar(TS, W, "p2", "financiada")
+    bus.marcar(TS, W, "p2", "muerta")
+
+    s = sit.situacion(k, r, bus, cola, sus, W, "dep:atlas")
+    assert s["propuestas_propias"] == []
+    assert s["trabajos"] == []
+    assert "la alerta de stock" in s["catalogo"]
+    assert "el sensor de humedad" in s["catalogo"]
