@@ -360,6 +360,66 @@ def test_revocar_una_regla_deja_linea_en_el_registro(home):
     assert lineas[0]["efecto"] == "denegar"
 
 
+def test_un_no_permanente_tapa_lo_que_despues_pasa_a_ser_directo(home):
+    """El caso que fija DONDE va el corte.
+
+    Acunar 150 monedas esta sobre el techo: pregunta. Pedro contesta que
+    nunca mas. Despues sube el techo a 200 monedas, y eso convierte la misma
+    accion en NIVEL_DIRECTO.
+
+    Si el corte del no viviera donde vive el del si -- despues de
+    `clasificar` y bajo `if not v.siempre_pregunta` -- subir el techo
+    anularia en silencio el no permanente de Pedro. Va antes de clasificar
+    justamente para que no pueda pasar.
+    """
+    r = motor.evaluar(acunar(150_000), Contexto("pedro"))
+    assert r.estado == motor.ESTADO_PENDIENTE
+    motor.responder(r.solicitud["id"], "no_siempre")
+
+    almacen.poner_techo("plata_mm", 200_000)
+    assert acciones.clasificar(acunar(150_000),
+                               almacen.techos()).nivel == NIVEL_DIRECTO
+
+    r2 = motor.evaluar(acunar(150_000), Contexto("pedro"))
+    assert r2.estado == motor.ESTADO_NEGADO
+    assert "regla permanente" in r2.motivo
+
+
+def test_un_no_permanente_no_crea_solicitud(home):
+    """La regla filtra en el productor: el item no llega a existir.
+
+    Es tambien la razon por la que la pantalla de reglas deja de ser un lujo
+    y pasa a ser requisito: una regla de negar demasiado ancha no deja
+    rastro en ninguna bandeja, y el unico lugar donde Pedro puede enterarse
+    es la lista de reglas y el registro.
+    """
+    r = motor.evaluar(acunar(150_000), Contexto("pedro"))
+    motor.responder(r.solicitud["id"], "no_siempre")
+    antes = len(almacen.solicitudes())
+
+    r2 = motor.evaluar(acunar(150_000), Contexto("otro_chat"))
+    assert r2.estado == motor.ESTADO_NEGADO
+    assert len(almacen.solicitudes()) == antes
+
+
+def test_revocar_el_no_devuelve_la_pregunta_y_no_el_si_viejo(home):
+    """La otra mitad de D3, del lado del motor."""
+    r = motor.evaluar(acunar(150_000), Contexto("pedro"))
+    salida = motor.responder(r.solicitud["id"], "no_siempre")
+    almacen.revocar(salida["permiso"]["id"])
+
+    r2 = motor.evaluar(acunar(150_000), Contexto("pedro"))
+    assert r2.estado == motor.ESTADO_PENDIENTE
+
+
+def test_no_siempre_deja_la_solicitud_negada(home):
+    r = motor.evaluar(acunar(150_000), Contexto("pedro"))
+    salida = motor.responder(r.solicitud["id"], "no_siempre")
+    assert salida["solicitud"]["estado"] == almacen.ESTADO_NEGADA
+    assert salida["ejecucion"] is None
+    assert salida["permiso"]["efecto"] == "denegar"
+
+
 # --------------------------------------------------------------------------
 # 5.6 -- cuando no hay nadie a quien preguntar
 # --------------------------------------------------------------------------
@@ -479,6 +539,30 @@ def test_la_rutina_retoma_en_su_proxima_corrida(home):
                                    corrida="c3"))
     assert r3.estado == motor.ESTADO_ESTACIONADA
     assert r3.solicitud["id"] != r.solicitud["id"]
+
+
+def test_una_aprobada_sin_ejecutar_sobrevive_a_la_regla(home):
+    """D4: el corte va DESPUES del consumo de aprobadas. Pedro aprobo esa
+    solicitud concreta antes; la regla gobierna lo que venga.
+
+    `desatendido` no es un parametro de `Contexto`: es una propiedad
+    derivada de `origen not in ORIGENES_ATENDIDOS` (`acciones.py:108-110`,
+    y los atendidos son "chat" y "pedro"). El molde de un contexto de
+    rutina es el de `test_lo_estacionado_termina_la_corrida`. Y la segunda
+    corrida lleva OTRO id a proposito: es lo que hace de verdad la rutina
+    -- "la retoma en su proxima corrida" -- y ademas evita la pared de
+    corrida, que es un corte anterior y taparia lo que este test mide.
+    """
+    ctx = Contexto("rutina", departamento="dep:atlas", corrida="corr-1")
+    r = motor.evaluar(acunar(150_000), ctx)
+    assert r.estado == motor.ESTADO_ESTACIONADA
+    motor.responder(r.solicitud["id"], "si")
+    almacen.anotar_regla(acunar(150_000), Contexto("pedro"), "x",
+                         siempre_pregunta=True, efecto="denegar")
+
+    proxima = Contexto("rutina", departamento="dep:atlas", corrida="corr-2")
+    r2 = motor.evaluar(acunar(150_000), proxima)
+    assert r2.estado == motor.ESTADO_PERMITIDO
 
 
 # --------------------------------------------------------------------------

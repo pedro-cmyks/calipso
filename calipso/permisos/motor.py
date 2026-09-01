@@ -124,7 +124,14 @@ def evaluar(a: Accion, ctx: Contexto | None = None) -> Resolucion:
          consume aca, atomica: es como la rutina retoma en su proxima
          corrida (5.6.2) sin volver a preguntar y sin poder hacerlo dos
          veces.
-      4. recien ahi, el nivel.
+      4. una regla permanente de NO, antes de clasificar. Tiene que ir aca y
+         no donde va el si: despues de clasificar ya pasaron NIVEL_NUNCA y
+         NIVEL_DIRECTO, asi que un no puesto alla jamas taparia escribir
+         dentro de las raices, ni un comando del allowlist, ni un monto bajo
+         el techo -- y subir el techo anularia en silencio un no que Pedro
+         ya habia dado. Va despues del consumo de aprobadas a proposito: lo
+         que Pedro ya aprobo, se ejecuta; la regla gobierna lo que venga.
+      5. recien ahi, el nivel.
     """
     ctx = ctx or Contexto()
     try:
@@ -161,6 +168,12 @@ def evaluar(a: Accion, ctx: Contexto | None = None) -> Resolucion:
                         ESTADO_PERMITIDO,
                         f"Pedro ya la aprobo ({s['id']})",
                         nivel=s.get("nivel", ""), solicitud=tomada))
+
+        regla = almacen.regla_que_cubre(a, "denegar")
+        if regla is not None:
+            return _anotar(a, ctx, Resolucion(
+                ESTADO_NEGADO, f"regla permanente de no: {regla['id']}",
+                permiso=regla))
 
         v = clasificar(a, almacen.techos())
 
@@ -251,8 +264,8 @@ def cerrar(id_solicitud: str, ok: bool, resultado: dict) -> dict | None:
 
 def responder(id_solicitud: str, respuesta: str, quien: str = "pedro",
               forma_permanente: dict | None = None) -> dict:
-    """Las tres salidas de 5.4: si una vez, si y no preguntes mas para
-    esto, no.
+    """Las cuatro salidas de 5.4: si una vez, si y no preguntes mas para
+    esto, no, y no me preguntes mas.
 
     Un "si" sobre una solicitud INTERACTIVA se ejecuta ahi mismo: hay
     alguien esperando el efecto. Un "si" sobre una ESTACIONADA no se
@@ -262,13 +275,20 @@ def responder(id_solicitud: str, respuesta: str, quien: str = "pedro",
     """
     s = almacen.responder(id_solicitud, respuesta, quien)
     permiso = None
-    if respuesta == "si_siempre":
+    if respuesta in ("si_siempre", "no_siempre"):
         a = Accion.de_dict(s["accion"])
         ctx = Contexto.de_dict(s.get("contexto"))
-        permiso = almacen.conceder(a, ctx, s.get("texto", ""),
-                                   siempre_pregunta=s.get("siempre_pregunta",
-                                                          False),
-                                   forma=forma_permanente)
+        # el orden importa y es el de hoy: primero se responde la solicitud,
+        # despues se escribe la regla. Si la segunda escritura falla, queda
+        # una decision sin regla -- molesto, se vuelve a preguntar. Al reves
+        # quedaria una regla sin decision, que es el lado peligroso: una
+        # regla de negar escrita sobre algo que Pedro nunca termino de
+        # contestar.
+        permiso = almacen.anotar_regla(
+            a, ctx, s.get("texto", ""),
+            siempre_pregunta=s.get("siempre_pregunta", False),
+            forma=forma_permanente,
+            efecto="permitir" if respuesta == "si_siempre" else "denegar")
     salida = {"solicitud": s, "permiso": permiso, "ejecucion": None}
     interactiva = not Contexto.de_dict(s.get("contexto")).desatendido
     if s["estado"] == almacen.ESTADO_APROBADA and interactiva:
