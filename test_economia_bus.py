@@ -1056,6 +1056,8 @@ def test_una_forma_invalida_no_entra_al_libro(tmp_path):
         {"sobre": "x", "clave": "", "promete": "medir", "tarda": "corto"},
         {"sobre": "x", "clave": "x", "promete": "medir", "tarda": "corto",
          "de_mas": 1},
+        42,
+        ["sobre", "clave", "promete", "tarda"],
     ]
     for i, forma in enumerate(casos):
         with pytest.raises(bus_mod.ErrorBus):

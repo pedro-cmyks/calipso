@@ -107,7 +107,7 @@ class Bus:
         # El guarda de que el camino de produccion siempre la manda vive en
         # test_plantel_server.py, apuntado al unico lugar que importa.
         if forma is not None:
-            if set(forma) != _CLAVES_FORMA:
+            if not isinstance(forma, dict) or set(forma) != _CLAVES_FORMA:
                 raise ErrorBus(
                     f"forma invalida (claves {_CLAVES_FORMA}): {forma!r}")
             if forma["promete"] not in _PROMESAS:
