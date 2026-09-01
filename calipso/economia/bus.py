@@ -859,6 +859,7 @@ def como_items(datos_endpoint: dict) -> list[dict]:
                   "tipo": p.get("tipo"),
                   "presupuesto_mm": p.get("presupuesto_mm"),
                   "gastado_mm": p.get("gastado_mm"),
+                  "metrica": p.get("metrica", ""),
                   "verbos_validos": verbos_validos}
         if p.get("tipo") == "preseed":
             # un pre-seed lo paga el tesoro y nada mas: bus.financiar
@@ -874,4 +875,20 @@ def como_items(datos_endpoint: dict) -> list[dict]:
              "semana": v.get("semana"),
              "presupuesto_mm": v.get("presupuesto_mm"),
              "verbos_validos": ["descartar"]}))
+    # Las fichas que no se entendieron. Son AVISOS y no decisiones: nada
+    # espera un verbo de Pedro, y contarlas para el badge lo haria mentir.
+    # El molde es el aviso que emite el adaptador de permisos cuando no
+    # puede leer su archivo: clase "aviso", `verbos_validos` vacio.
+    for i, fila in enumerate(datos_endpoint.get("ilegibles") or []):
+        veces = fila.get("veces", 1)
+        repeticion = f" (x{veces})" if veces > 1 else ""
+        items.append({
+            "id": f"ilegible:{i}", "origen": ORIGEN_INBOX, "clase": "aviso",
+            "ts": fila.get("ts", ""),
+            "titulo": f"{fila.get('departamento', '?')} escribio algo que no "
+                      f"entra en una ficha{repeticion}: {fila.get('crudo', '')}",
+            "cuerpo": {"departamento": fila.get("departamento", ""),
+                       "crudo": fila.get("crudo", ""),
+                       "veces": veces, "verbos_validos": []},
+            "estado": "aviso", "respuesta": None})
     return items

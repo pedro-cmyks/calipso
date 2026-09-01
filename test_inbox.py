@@ -83,6 +83,53 @@ def test_una_propuesta_financiada_no_ofrece_descartar():
     assert it["cuerpo"]["verbos_validos"] == ["financiar"]
 
 
+def test_la_propuesta_muestra_que_promete_medir():
+    """La metrica no se guarda: se deriva. Si no llega al item, la tabla de
+    METRICA es codigo muerto y Pedro no sabe contra que se juzga la
+    propuesta."""
+    datos = {"activa": True, "propuestas": [
+        {"id": "p1", "titulo": "descartar: el radar (corto)",
+         "estado": "alta", "metrica": "milimonedas por semana que dejan de "
+                                      "salir", "presupuesto_mm": 1000}]}
+    item = [i for i in eco_bus.como_items(datos) if i["clase"] == "decision"][0]
+    assert "milimonedas por semana" in item["cuerpo"]["metrica"]
+
+
+def test_una_ficha_ilegible_es_un_aviso_y_no_una_decision():
+    """No ocupa lugar, no compite, no se puede financiar y no cuenta para
+    el badge -- pero se ve."""
+    datos = {"activa": True, "propuestas": [], "ilegibles": [
+        {"departamento": "dep:atlas", "crudo": "hay hueco en precios",
+         "veces": 3, "ts": "2026-09-01T10:00:00"}]}
+    items = eco_bus.como_items(datos)
+    avisos = [i for i in items if i["clase"] == "aviso"]
+    assert len(avisos) == 1
+    assert avisos[0]["cuerpo"]["verbos_validos"] == []
+    assert "hay hueco en precios" in avisos[0]["titulo"]
+
+
+def test_el_contador_de_repeticiones_se_ve():
+    """Doscientos tics dan una fila con un contador, no doscientas filas: si
+    el numero no se muestra, la fila miente sobre cuanto se repitio."""
+    datos = {"activa": True, "propuestas": [], "ilegibles": [
+        {"departamento": "dep:atlas", "crudo": "la misma idea",
+         "veces": 200, "ts": "2026-09-01T10:00:00"}]}
+    aviso = [i for i in eco_bus.como_items(datos) if i["clase"] == "aviso"][0]
+    assert "200" in aviso["titulo"]
+
+
+def test_sin_ilegibles_no_hay_avisos():
+    datos = {"activa": True, "propuestas": [], "ilegibles": []}
+    assert [i for i in eco_bus.como_items(datos) if i["clase"] == "aviso"] == []
+
+
+def test_una_respuesta_vieja_sin_la_clave_no_rompe():
+    """El endpoint puede no traerla: el adaptador no puede reventar por
+    eso."""
+    datos = {"activa": True, "propuestas": []}
+    assert eco_bus.como_items(datos) == []
+
+
 from calipso.permisos import motor as permisos_motor
 
 

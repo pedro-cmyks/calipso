@@ -3996,7 +3996,7 @@ def api_eco_bus() -> dict:
                 # .get() con default, como situacion.py: una linea vieja o
                 # de un esquema anterior en el bus real de Pedro no puede
                 # tumbar la mesa entera con un 500 mudo.
-                propuestas.append({
+                fila = {
                     "id": id_, "estado": estado,
                     "departamento": d.get("departamento", ""),
                     # SIN esto la mesa no puede financiar un pre-seed: se
@@ -4014,7 +4014,16 @@ def api_eco_bus() -> dict:
                     "gastado_mm": _eco_bus.gastado(asientos, id_,
                                                    m.suscripciones),
                     "aportes": _eco_bus.aportes(asientos, id_),
-                })
+                }
+                # la metrica de exito NO se guarda en el libro: se deriva de
+                # `promete` cada vez que se muestra. Es la unica manera de
+                # que cambiar la tabla arregle tambien las propuestas
+                # viejas.
+                f = d.get("forma")
+                if f and _plantel_ficha is not None:
+                    fila["metrica"] = _plantel_ficha.METRICA.get(
+                        f["promete"], "")
+                propuestas.append(fila)
             deps_fabrica = [
                 {"cuenta": f"dep:{x.nombre}", "nombre": x.nombre,
                  "zona": x.zona,
@@ -4028,9 +4037,19 @@ def api_eco_bus() -> dict:
             tesoro = m.k.saldo(_eco_tipos.TESORO)
     except _eco_errores_economicos as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    # las fichas que no se entendieron viajan con la mesa y no por un
+    # origen nuevo del inbox: son produccion de la fabrica que no llego
+    # al bus, asi que pertenecen a la misma bandeja que las que si
+    # llegaron -- y un origen nuevo obligaria a un descriptor entero
+    # para algo que no tiene ni un verbo. Si el modulo no se pudo
+    # importar, la clave va vacia: una bandeja que pierde sus avisos es
+    # mejor que una que no carga.
+    ilegibles = (_plantel_ilegibles.colapsados(_ECO_BASE, semana)
+                 if _plantel_ilegibles is not None else [])
     return {"activa": True, "semana": semana, "semana_abierta": abierta,
             "propuestas": propuestas, "vencidas": vencidas,
-            "departamentos": deps_fabrica, "tesoro_mm": tesoro}
+            "departamentos": deps_fabrica, "tesoro_mm": tesoro,
+            "ilegibles": ilegibles}
 
 
 @app.get("/api/inbox")
@@ -5255,10 +5274,12 @@ def api_eco_frontera_acunar(body: EcoFronteraAcunarBody) -> dict:
 # entero cobrando en silencio a nadie.
 try:
     from calipso.plantel import ficha as _plantel_ficha
+    from calipso.plantel import ilegibles as _plantel_ilegibles
     from calipso.plantel import interruptor as _plantel_it
     from calipso.plantel import jefe as _plantel_jefe
 except Exception:  # el plantel no esta disponible: el tablero responde inactivo
     _plantel_ficha = None
+    _plantel_ilegibles = None
     _plantel_it = _plantel_jefe = None
 
 
