@@ -281,6 +281,27 @@ def test_el_prompt_nombra_las_seis_promesas_y_los_cuatro_plazos():
     for plazo in ficha.PLAZOS:
         assert plazo in p, plazo
 
+def test_promete_y_tarda_van_entre_corchetes_no_pegados_a_los_dos_puntos():
+    """Regresion del defecto que encontro el experimento
+    (`carta_vs_sin_carta.py`): con la lista de opciones pegada directo
+    despues de 'promete:' y 'tarda:' -- osea con la misma forma que una
+    respuesta valida --, a sesgo alto el modelo copiaba la lista entera
+    en vez de elegir una palabra (`promete: acelerar | medir`), y
+    `parsear_ficha` la rechazaba. Medido: 10 de 12 fichas salian
+    ilegibles a sesgo 75 con la forma vieja; con las opciones envueltas
+    entre corchetes bajo a 4 de 12. Este test fija la forma nueva para
+    que nadie la vuelva a la que se copiaba."""
+    p = dec.prompt(_situacion_minima(), 50)
+    assert "promete: <UNA de estas -- " in p
+    assert "tarda:   <UNA de estas -- " in p
+    # la forma vieja: la lista pegada justo despues de los dos puntos,
+    # sin corchetes, con la misma pinta que una respuesta ya elegida
+    vieja_promete = "promete: " + " | ".join(ficha.PROMESAS) + "\n"
+    vieja_tarda = "tarda:   " + " | ".join(ficha.PLAZOS) + "\n"
+    assert vieja_promete not in p
+    assert vieja_tarda not in p
+
+
 
 def test_una_propuesta_con_forma_se_muestra_como_ficha():
     s = _situacion_minima()
