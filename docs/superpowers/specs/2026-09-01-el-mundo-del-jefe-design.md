@@ -217,109 +217,193 @@ semana, con la bandeja llena (tres propuestas, el techo de `jefe.py`) y con el
 catalogo poblado -- cada una con **dos sesgos** (50, "mantener el
 equilibrio", y 75, "explorar cosas nuevas") y renderizada con la carta y los
 proyectos y sin ellos: **12 comparaciones**, 24 llamadas al modelo local por
-corrida.
+corrida. Se corrio dos veces completas (corrida 1 y corrida 2, mismo
+prompt en las dos).
 
-**Se encontro y se arreglo un defecto de produccion en el camino.** Las
-primeras corridas con sesgo 75 mostraron que 10 de 12 fichas salian
-ilegibles: el cierre del prompt en `decision.py` ofrecia las promesas y los
-plazos como `promete: ahorrar | acelerar | ...` -- una lista pegada
-directo despues de los dos puntos, con la misma forma que una respuesta ya
-elegida -- y el modelo, al explorar, copiaba la lista entera o varias
-promesas separadas por `|` en vez de elegir una (`promete: acelerar |
-medir`). `ficha._por_prefijo` no matchea eso contra ninguna promesa y
-`parsear_ficha` devuelve `None`. El arreglo fue en la PLANTILLA, no en el
-parser (relajar el parser para aceptar `ahorrar | acelerar` seria aceptar
-que el modelo no eligio): las opciones ahora van entre corchetes, como un
-espacio para completar y no como una respuesta -- `promete: <UNA de estas
--- ahorrar | acelerar | ...>` -- con una frase explicita de que va UNA sola
-palabra, nunca la lista entera. Hay un test nuevo en
-`test_plantel_decision.py`
-(`test_promete_y_tarda_van_entre_corchetes_no_pegados_a_los_dos_puntos`) que
-fija la forma nueva.
+Antes de leer los numeros, dos cosas quedaron establecidas en el camino:
 
-**El arreglo se verifico midiendo, no opinando.** A sesgo 75 (el regimen
-donde el defecto aparecia), fichas ilegibles:
-- **Antes**: 10 de 12 (con la plantilla vieja, en dos corridas identicas).
-- **Despues**: 4 de 12 (con la plantilla nueva) -- reproducido igual en tres
-  mediciones independientes (dos corridas completas del script mas una
-  medicion aislada a sesgo 75 sola).
+**Se encontro y se arreglo un defecto de produccion.** El cierre del prompt
+en `decision.py` ofrecia las promesas y los plazos como `promete: ahorrar |
+acelerar | ...` -- una lista pegada directo despues de los dos puntos, con
+la misma forma que una respuesta ya elegida -- y a sesgo 75 el modelo
+copiaba la lista entera o varias promesas separadas por `|` en vez de
+elegir una. El arreglo fue en la plantilla, no en el parser: las opciones
+ahora van entre corchetes, como un espacio para completar (`promete: <UNA
+de estas -- ahorrar | acelerar | ...>`), con un test de regresion en
+`test_plantel_decision.py`. Medido: a sesgo 75, fichas ilegibles bajo de
+10/12 a 4/12, repetido igual en tres mediciones independientes.
 
-Bajo de 83% a 33% de las fichas a sesgo 75. Sigue habiendo fichas ilegibles
--- ahora por otro motivo: en 3 de los 4 casos restantes, el modelo omite el
-renglon `sobre:` entero, no repite la barra -- pero el defecto que esta
-seccion se propuso arreglar (la barra copiada) no volvio a aparecer en
-ninguna de las mediciones posteriores al arreglo.
+**Ese mismo arreglo tuvo un efecto secundario que hay que decir antes de
+leer cualquier numero de esta seccion:** con la plantilla vieja, a sesgo 50
+el jefe CON carta proponia en 1 de 6 situaciones; con la plantilla nueva,
+en 5 de 6 (en las dos corridas). La rama SIN carta a sesgo 50 no se movio
+(siempre `nada`, con las dos plantillas). O sea que el arreglo del formato
+cambio DOS cosas a la vez -- cuanto se podia leer Y cuanto proponia la rama
+CON carta -- y esta seccion no puede aislar cuanto de lo que sigue viene de
+una cosa o de la otra. Las dos lecturas posibles apuntan igual a favor de
+la hipotesis, pero es una comparacion de mas de una variable, no de una
+sola.
 
-**El conteo, ahora explicito sobre cuantas fichas eran legibles** (H2: la
-version anterior de este conteo mezclaba "ninguna ficha legible de ningun
-lado" con "dos objetos distintos" bajo la misma etiqueta, y eso se podia
-leer mal). Se corrio el script arreglado dos veces completas; los resultados
-de las dos:
+#### Lo cualitativo, que es el hallazgo mas fuerte de los dos
+
+Antes que cualquier conteo: la evidencia mas convincente de toda la corrida
+esta en lo que cada rama efectivamente escribe, no en cuantas veces lo
+escribe. Dos ejemplos, texto crudo de la corrida 1 (situacion "sin nada",
+sesgo 75):
+
+> **CON carta** -> `acelerar: convertir el Musnap en la pantalla de
+> Calipso; el plugin arranca y falta el banco de pruebas (de Pedro) (medio)`
+>
+> **SIN carta** -> `construir: un nuevo taller para reparación de equipos
+> electrónicos avanzados (medio)`
+
+CON carta cita, casi textual, la linea que `PROYECTOS` le paso
+(`calipso-lector`: "el plugin arranca y falta el banco de pruebas"). SIN
+carta inventa un objeto generico que no tiene relacion con nada de la
+situacion. Este patron se repite: en "con un trabajo vivo" (sesgo 75), CON
+carta propuso `acelerar: el desarrollo de un nuevo algoritmo para mejorar
+la eficiencia del plugin de calipso-lector (medio)` -- nombra el proyecto
+otra vez -- mientras que SIN carta propuso `construir: un nuevo banco de
+pruebas para el lector, más eficiente y robusto que el actual (medio)`, un
+objeto generico y ademas parecido a un trabajo que YA existe (redundante,
+no nuevo).
+
+**Salvedad que importa para la Fase 2.** Las dos ramas de este experimento
+difieren en dos bloques a la vez -- la carta Y los proyectos asignados --
+nunca en uno solo. Los objetos que ganan la comparacion de arriba salen
+literalmente del texto de `PROYECTOS`, no de la prosa de la carta. El
+experimento sostiene que **darle mundo al jefe** (carta + proyectos juntos)
+cambia lo que propone; no separa cuanto del cambio viene de la carta y
+cuanto de saber que proyectos tiene asignados. Vale la pena decirlo porque
+la pantalla de la Fase 2 es, sobre todo, para escribir la carta -- y este
+experimento no aisla si eso es lo que mas importa, o si alcanzaba con que
+el catastro le mostrara al jefe sus proyectos sin una sola linea de carta.
+
+**Y del limite que la carta pone, hay poca traza.** La `CARTA` de esta
+prueba dice explicitamente "no le toca mejorar a Calipso mismo". La segunda
+propuesta de arriba (`acelerar: el desarrollo de un nuevo algoritmo para
+mejorar la eficiencia del plugin de calipso-lector`) esta hablando de un
+plugin -- codigo de Calipso -- y roza justo el limite que la carta puso.
+No lo cruza con claridad suficiente para llamarlo una falla, pero tampoco
+hay ninguna propuesta que demuestre que el jefe LEYO el limite y se
+abstuvo por el. El experimento mide si el jefe usa lo que la carta nombra
+(si), no si respeta lo que la carta prohibe (no hay evidencia ni en una
+direccion ni en la otra).
+
+#### Lo cuantitativo, condicionado en lo que corresponde
+
+La primera lectura de esta corrida comparaba "fichas legibles sobre el
+total de comparaciones" (8/12 contra 4/12) y la leia como una ventaja de
+formato de la rama con carta. **Esa lectura no sobrevive a condicionar en
+haber propuesto**, que es la comparacion correcta: `nada` es una decision
+legitima, no una falla de formato, y contarla junto con una ficha rota
+infla el hueco.
+
+**Cuantas veces cada rama eligio `proponer`** (formato aparte):
+
+| | corrida 1 | corrida 2 |
+|---|:---:|:---:|
+| CON carta propuso | 11 / 12 | 11 / 12 |
+| SIN carta propuso | 6 / 12 | 6 / 12 |
+
+**De las que propusieron, cuantas la ficha se pudo leer:**
+
+| | corrida 1 | corrida 2 |
+|---|:---:|:---:|
+| CON carta: legible / propuso | 8/11 (73%) | 7/11 (64%) |
+| SIN carta: legible / propuso | 4/6 (67%) | 4/6 (67%) |
+
+**Condicionado en haber propuesto, no hay ventaja de formato** -- en la
+corrida 2 la rama SIN carta sale apenas mejor. Todo el hueco de "8/12
+contra 4/12" de la lectura vieja era, sobre todo, un hueco de propension a
+proponer (11/12 contra 6/12), no de formato. Una vez que las dos ramas
+deciden proponer, rompen la ficha mas o menos con la misma frecuencia.
+
+**El conteo por pares, sin cambios respecto de la corrida anterior** (sigue
+siendo una particion completa de las 12 comparaciones en 5 categorias):
 
 | categoria                              | corrida 1 | corrida 2 |
 |-----------------------------------------|:---------:|:---------:|
-| fichas legibles, CON carta (de 12)      |     8     |     7     |
-| fichas legibles, SIN carta (de 12)      |     4     |     4     |
 | las dos legibles, MISMO objeto          |     1     |     1     |
 | las dos legibles, objetos DISTINTOS     |     2     |     2     |
 | SOLO la rama CON carta es legible       |     5     |     4     |
 | SOLO la rama SIN carta es legible       |     1     |     1     |
 | NINGUNA legible                         |     3     |     4     |
 
-Las cinco categorias de la tabla sin las dos filas de "fichas legibles" suman
-12 en las dos corridas -- son una particion completa, ninguna comparacion
-queda afuera.
+"SOLO la rama CON carta es legible" es la categoria mas poblada de las
+cuatro que comparan algo real, en las dos corridas. No es, como decia una
+version anterior de este texto, "mas que todas las demas juntas" -- eso es
+cierto en la corrida 1 (5 contra 4) pero FALSO en la corrida 2 (4 contra
+4, empatada). Que sea la mas poblada si vale en las dos.
 
-**Reproducibilidad.** De las 12 comparaciones, **11 categorizaron igual en
-las dos corridas**; una sola ("con la bandeja llena", sesgo 50, CON carta)
-paso de legible a ilegible entre una corrida y otra -- confirmado con una
-tercera llamada aislada al mismo prompt, que volvio a salir legible (2
-legibles contra 1 ilegible en tres intentos del mismo prompt exacto, con
-`temperature=0`). A diferencia de la corrida anterior (donde solo el campo
-`tarda` se movia entre corridas), esta vez la inestabilidad alcanzo a si la
-ficha entera se puede leer o no en un caso. La rama SIN carta fue
-completamente estable en las dos corridas -- ninguna de sus 12 lineas
-cambio.
+**El unico "MISMO objeto" tiene la misma salvedad que arriba.** Pasa en
+"catalogo poblado, sesgo 75", donde las dos ramas nombran "el radar de
+precios" -- pero ese objeto sale del bloque `catalogo`, que es parte de la
+SITUACION y esta identico en el prompt CON y SIN carta. No cuenta a favor
+de que la carta alinee a las dos ramas.
 
-**Lo que el conteo dice.** El numero que no depende de como se agrupen las
-categorias -- fichas legibles por lado sobre el total -- es el mas claro:
-CON carta produjo una ficha legible en 7 u 8 de cada 12 intentos; SIN carta,
-en 4 de cada 12, las dos corridas. Y la categoria mas poblada de las cuatro
-que comparan algo (fuera de "ninguna legible") es "SOLO la rama CON carta es
-legible": 4 o 5 de 12 comparaciones, mas que todas las demas categorias
-informativas juntas. En esos casos la rama SIN carta no aporta nada
-comparable -- ni un objeto igual, ni uno distinto -- mientras que la rama
-CON carta si.
+#### El confundido de propension a proponer (declarado, no escondido)
 
-**Una salvedad sobre el "MISMO objeto" (1 en las dos corridas).** Es el
-unico caso donde las dos ramas convergen, y pasa en "catalogo poblado,
-sesgo 75": las dos nombran "el radar de precios". Pero ese objeto no viene
-de la carta ni de `PROYECTOS` -- viene del bloque `catalogo`, que es un
-campo de la SITUACION (no de la carta) y por eso aparece igual en el prompt
-CON y SIN carta. La convergencia la explica el catalogo compartido, no la
-carta: no hay que leerla como si la carta hubiera alineado a las dos ramas.
+Ya se dijo arriba: con la plantilla nueva, a sesgo 50 la rama CON carta
+paso de proponer en 1 de 6 situaciones a proponer en 5 de 6, mientras que
+SIN carta se mantuvo en `nada` siempre. Esto quiere decir que **la perilla
+del sesgo pierde poder de discriminacion cuando el departamento tiene
+carta**: a sesgo bajo ("mantener el equilibrio"), sin carta el jefe casi
+nunca propone, pero con carta parece proponer casi siempre,
+independientemente del sesgo. Hoy esto no cambia nada en produccion --
+**no hay ningun departamento con carta todavia** -- pero en la Fase 2, si
+Pedro escribe cartas, la mesa se puede llenar de propuestas que ya no
+frena el sesgo de "mantener el equilibrio" como frenaba antes. Queda
+anotado como pendiente, no resuelto.
 
-**Si la carta llega.** Sigue valiendo con la plantilla nueva: los prompts
-crecieron un poco (de 1226-1505 caracteres a 1381-1660, por las palabras
-que agrega el arreglo del formato), y siguen muy por debajo del `num_ctx`
-de 8192 (la medicion de `prompt_eval_count` de la corrida anterior, 409-500
-tokens contra el prompt mas corto de esta, deja margen de sobra).
+#### El limite estadistico de esta medicion
 
-**Lo que no es la hipotesis pero se noto de paso.** En varias respuestas
-`nada` el modelo confunde en su prosa el presupuesto semanal restante
-(`presupuesto_semanal_mm - salidas_semana_mm`) con la billetera total
-(`disponible_mm`) -- llama "disponible" a un numero que es el otro. No afecta
+Es un diseno PAREADO (cada situacion x sesgo genera un par CON/SIN sobre el
+mismo prompt exacto), asi que la comparacion correcta es par por par, no
+frecuencia total. Sobre los pares discordantes en legibilidad (una rama
+legible, la otra no): **5 a favor de CON carta, 1 a favor de SIN carta**
+(p aproximado 0.22, prueba de signos). Sobre "CON carta propone donde SIN
+carta dice `nada`": **5 a favor de CON carta, 0 a favor de SIN carta** (p
+aproximado 0.06). Las dos corridas usan el mismo prompt con
+`temperature=0` -- son casi deterministas, no dos muestras independientes,
+asi que sus conteos NO se suman para mejorar la significancia.
+
+**La frase que resume esto:** para decidir si vale la pena construir una
+pantalla, esta corrida alcanza. Para afirmar que el efecto existe con
+confianza estadistica, no.
+
+#### El resto, sin cambios de fondo
+
+**Reproducibilidad.** De las 12 comparaciones, 11 categorizaron igual entre
+las dos corridas; una ("con la bandeja llena", sesgo 50, CON carta) paso de
+legible a ilegible entre una corrida y otra -- confirmado con una tercera
+llamada aislada al mismo prompt exacto, que volvio a salir legible (2
+legibles contra 1 ilegible en tres intentos identicos, `temperature=0`). La
+rama SIN carta fue completamente estable en las dos corridas.
+
+**Si la carta llega.** Sigue valiendo: los prompts van de 1381 a 1660
+caracteres (crecieron un poco por el arreglo del formato), muy por debajo
+del `num_ctx` de 8192 (409-500 tokens medidos en la corrida anterior, con
+prompts mas cortos).
+
+**Lo que no es la hipotesis pero se noto de paso.** El modelo confunde en
+su prosa el presupuesto semanal restante con la billetera total; no afecta
 la decision parseada.
 
-**La lectura para Pedro.** Con el defecto de formato arreglado, la senal es
-mas fuerte que en la corrida anterior: en la categoria mas grande de
-comparaciones reales, solo la rama CON carta logra decir algo legible, y
-donde las dos logran decir algo legible casi nunca coinciden en el objeto
-(salvo el caso explicado arriba, que no cuenta a favor de la carta). Sigue
-siendo una muestra chica (12 comparaciones, no 120), y una de las 12 no
-reprodujo igual entre corridas -- pero la direccion de la evidencia, con el
-camino ya destrabado del defecto de formato, apunta a la hipotesis con mas
-fuerza que antes de esta ronda.
+**La lectura para Pedro, recalibrada.** El hallazgo que sostiene esta
+corrida no es un conteo de fichas legibles -- ese hueco se cerro con el
+arreglo del formato y ya no distingue nada. Es lo cualitativo: cuando el
+jefe tiene carta y proyectos, nombra el objeto que esos bloques le dieron;
+sin ellos, inventa generico o no propone. Y es la propension a proponer:
+con carta, propone casi siempre (11/12); sin ella, poco mas de la mitad
+(6/12), con una diferencia pareada de 5 a 1 en el peor corte y de 5 a 0 en
+el mas favorable -- ninguna significativa por si sola, pero apuntando
+siempre en la misma direccion, en dos corridas y en dos cortes distintos
+del dato. Esta corrida no dice cuanto de eso es la carta y cuanto son los
+proyectos que van con ella, ni si el jefe respeta el limite que la carta le
+puso. Alcanza para decidir si conviene construir la pantalla de la Fase 2;
+no alcanza para prometer, todavia, que fue la carta -- y no otra cosa -- la
+que hizo la diferencia.
 
 ## 8. La Fase 2, y lo que la revision descubrio que cuesta
 

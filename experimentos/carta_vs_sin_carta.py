@@ -180,17 +180,21 @@ def main() -> int:
         return 1
 
     # Particion COMPLETA de las comparaciones -- las 12 caen en exactamente
-    # una de las cinco categorias, ninguna se descarta. "ninguna legible"
-    # incluye tanto un empate en `nada` como dos fichas ilegibles: en los
-    # dos casos no hay un objeto real del que hablar, y separarlos en el
-    # conteo (en vez de en la letra chica de un comentario) es lo que evita
-    # que alguien lea "objetos DISTINTOS: 6" y crea que hubo seis
-    # comparaciones reales cuando la mayoria eran basura de los dos lados.
+    # una de las cinco categorias de abajo, ninguna se descarta. "ninguna
+    # legible" sigue mezclando dos cosas DENTRO de la categoria (un empate
+    # en `nada` y dos fichas ilegibles), pero la propension a proponer y la
+    # tasa de formato correcto se cuentan aparte, sin esa mezcla: `nada` es
+    # una decision legitima, no una falla de formato, y fundir las dos bajo
+    # "no legible" infla el hueco CON-SIN si se lee como si fuera puro
+    # formato (visto: a sesgo 50 el hueco de "legibles/12" era sobre todo
+    # un hueco de propension a proponer, no de formato).
     mismo_objeto = 0
     objetos_distintos = 0
     solo_con_legible = 0
     solo_sin_legible = 0
     ninguna_legible = 0
+    propuso_con = 0
+    propuso_sin = 0
     legibles_con = 0
     legibles_sin = 0
     total_corridas = 0
@@ -212,6 +216,10 @@ def main() -> int:
 
             res_con = resultado(crudo_con)
             res_sin = resultado(crudo_sin)
+            if res_con[0] == "proponer":
+                propuso_con += 1
+            if res_sin[0] == "proponer":
+                propuso_sin += 1
             legible_con = legible(res_con)
             legible_sin = legible(res_sin)
             if legible_con:
@@ -232,16 +240,23 @@ def main() -> int:
                 ninguna_legible += 1
 
     print(f"\n=== conteo final ({total_corridas} comparaciones)")
-    # El numero que no depende de como se definan las categorias de abajo:
-    # cuantas veces cada lado, solo, produjo algo que se pudiera leer.
-    print(f"    fichas legibles: CON carta {legibles_con}/{total_corridas} "
-          f"| SIN carta {legibles_sin}/{total_corridas}")
+    # Propension a proponer: cuantas veces cada lado eligio `proponer`,
+    # haya salido legible o no. Es el numero que el conteo viejo no
+    # mostraba aparte, y es el que explica la mayor parte del hueco.
+    print(f"    propuso: CON carta {propuso_con}/{total_corridas} | "
+          f"SIN carta {propuso_sin}/{total_corridas}")
+    # Condicionado en haber propuesto: de las que SI eligieron proponer,
+    # cuantas la ficha se pudo leer. Este es el numero de formato -- sin
+    # mezclarlo con `nada`, que no es una falla, es otra decision.
+    print(f"    de las que propusieron, ficha legible: "
+          f"CON carta {legibles_con}/{propuso_con} | "
+          f"SIN carta {legibles_sin}/{propuso_sin}")
     print(f"    las dos legibles, MISMO objeto: {mismo_objeto}")
     print(f"    las dos legibles, objetos DISTINTOS: {objetos_distintos}")
     print(f"    SOLO la rama CON carta es legible: {solo_con_legible}")
     print(f"    SOLO la rama SIN carta es legible: {solo_sin_legible}")
-    print(f"    NINGUNA legible (empate en nada, o ficha ilegible de un "
-          f"lado o de los dos): {ninguna_legible}")
+    print(f"    NINGUNA legible (nada de un lado o los dos, y/o ficha "
+          f"ilegible de un lado o de los dos): {ninguna_legible}")
     return 0
 
 
