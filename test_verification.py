@@ -60,5 +60,17 @@ def main() -> int:
     return 0
 
 
+def test_tocar_permisos_corre_los_tests_de_permisos():
+    """El motor de permisos aparecia solo dentro de la rama del inbox, asi
+    que tocarlo corria test_inbox y no test_permisos; y el almacen no
+    disparaba nada. Un corte que NIEGA antes de crear la solicitud es lo
+    mas silencioso que hay en el motor: sin esta red, romperlo da verde."""
+    for ruta in ("calipso/permisos/almacen.py", "calipso/permisos/motor.py",
+                 "calipso/permisos/acciones.py"):
+        plan = verification.recommend(files=[{"path": ruta}])
+        ids = [c["command_id"] for c in plan["commands"]]
+        assert "test_permisos" in ids, ruta
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

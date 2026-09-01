@@ -99,6 +99,15 @@ def recommend(files: list[dict[str, Any]] | None = None,
         if "launch" in lower or "runbook" in lower or "manifest" in lower or "sw.js" in lower:
             types.add("launch")
             _add(plan, "test_launch", f"{path} toca lanzamiento personal")
+        if "permisos" in lower:
+            types.add("permisos")
+            # el motor de permisos aparecia SOLO dentro de la rama del
+            # inbox, que corre test_inbox: tocar `almacen.py` no disparaba
+            # nada y tocar `motor.py` corria los tests del agregador, no los
+            # del motor. El corte del no permanente niega antes de crear la
+            # solicitud -- no deja item en ninguna bandeja -- asi que es
+            # justo lo que un verde sin assertions no atraparia.
+            _add(plan, "test_permisos", f"{path} toca el motor de permisos")
         if ("inbox" in lower or "economia/bus.py" in lower
                 or "economia/cola.py" in lower or "permisos/motor.py" in lower
                 or "librarian.py" in lower):
