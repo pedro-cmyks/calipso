@@ -1,5 +1,6 @@
 """Tests del sesgo, el prompt y el parseo (spec secciones 4.2 y 5)."""
 from calipso.plantel import decision as dec
+from calipso.plantel import ficha
 
 
 def test_capacidad_barata_empuja_a_explorar():
@@ -254,3 +255,75 @@ def test_un_superindice_no_es_un_monto():
     assert dec.parsear("pedir ²\nmotivo") == ("nada", None, "motivo")
     # el digito arabe SI es decimal y `int()` lo lee: sigue pasando
     assert dec.parsear("pedir ٥\nmotivo") == ("pedir", "٥", "motivo")
+
+
+def _situacion_minima() -> dict:
+    """Lo minimo que `prompt` indexa con corchetes. Las claves que lee con
+    `.get()` -propuestas_propias, descartadas_semana, catalogo- se omiten a
+    proposito: asi los tests que no hablan de ellas ejercitan el camino de
+    una situacion que no las trae."""
+    return {"nombre": "atlas", "disponible_mm": 400_000, "saldo_mm": 400_000,
+            "presupuesto_semanal_mm": 25_000, "salidas_semana_mm": 7_000,
+            "compuertas_pendientes": 2, "trabajos": [],
+            "propuestas_ajenas": [], "capacidad": None}
+
+
+def test_el_prompt_pide_la_ficha_con_sus_cuatro_renglones():
+    p = dec.prompt(_situacion_minima(), 50)
+    for campo in ("sobre:", "promete:", "tarda:", "porque:"):
+        assert campo in p, campo
+
+
+def test_el_prompt_nombra_las_seis_promesas_y_los_cuatro_plazos():
+    p = dec.prompt(_situacion_minima(), 50)
+    for palabra in ficha.PROMESAS:
+        assert palabra in p, palabra
+    for plazo in ficha.PLAZOS:
+        assert plazo in p, plazo
+
+
+def test_una_propuesta_con_forma_se_muestra_como_ficha():
+    s = _situacion_minima()
+    s["propuestas_propias"] = [{
+        "id": "p4", "titulo": "lo viejo", "presupuesto_mm": 0,
+        "forma": {"sobre": "el banco del lector", "clave": "banco+lector",
+                  "promete": "construir", "tarda": "medio"}}]
+    p = dec.prompt(s, 50)
+    assert "construir: el banco del lector (medio)" in p
+    assert "lo viejo" not in p
+
+
+def test_una_propuesta_sin_forma_muestra_su_titulo():
+    """Compatibilidad: no se le inventa una ficha a partir del titulo.
+    Seria adivinar, y un objeto adivinado entraria al catalogo como si el
+    departamento lo hubiera nombrado."""
+    s = _situacion_minima()
+    s["propuestas_propias"] = [{"id": "p4", "titulo": "algo viejo",
+                                "presupuesto_mm": 0, "forma": None}]
+    assert "algo viejo" in dec.prompt(s, 50)
+
+
+def test_el_catalogo_aparece_cuando_hay_objetos():
+    s = _situacion_minima()
+    s["catalogo"] = ["el radar de precios"]
+    p = dec.prompt(s, 50)
+    assert "el radar de precios" in p
+
+
+def test_sin_objetos_el_bloque_del_catalogo_no_aparece():
+    """Un encabezado sobre una lista vacia le ensena al modelo que ese
+    bloque no dice nada."""
+    s = _situacion_minima()
+    s["catalogo"] = []
+    assert "que ya nombraste" not in dec.prompt(s, 50)
+
+
+def test_los_trabajos_siguen_mostrando_su_titulo():
+    """Un trabajo vivo ya no es una propuesta esperando: su identidad no
+    esta en disputa, asi que no cambia de render."""
+    s = _situacion_minima()
+    s["trabajos"] = [{"id": "p1", "titulo": "radar de precios",
+                      "gastado_mm": 1000, "presupuesto_mm": 10_000,
+                      "forma": {"sobre": "x", "clave": "x",
+                                "promete": "medir", "tarda": "corto"}}]
+    assert "radar de precios" in dec.prompt(s, 50)

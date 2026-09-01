@@ -7,6 +7,8 @@ porcentaje contra un precio es pedirle lo unico que no sabe hacer.
 """
 from __future__ import annotations
 
+from . import ficha
+
 ACCIONES = ("nada", "proponer", "trabajar", "comentar", "pedir")
 
 
@@ -22,6 +24,20 @@ def sesgo_efectivo(explorar_pct: int, precio_mm: int,
         return max(0, min(100, explorar_pct))
     rel = precio_mm * 100 // precio_base_mm
     return max(0, min(100, explorar_pct + (100 - rel) // 2))
+
+
+def _como_se_ve(p: dict) -> str:
+    """La ficha si la tiene, el titulo si no.
+
+    Con `.get()` y no con corchetes a proposito: las propuestas escritas
+    antes de que la forma existiera no traen la clave, y los tests del
+    prompt arman sus dicts a mano sin ella. Un `p["forma"]` las reventaria
+    con KeyError en vez de mostrar lo que hay.
+    """
+    f = p.get("forma")
+    if not f:
+        return p.get("titulo", "")
+    return f"{f['promete']}: {f['sobre']} ({f['tarda']})"
 
 
 def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
@@ -40,10 +56,10 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
         f"  - {t['id']}: {t['titulo']} (gastado {t['gastado_mm']} de "
         f"{t['presupuesto_mm']} mm)" for t in s["trabajos"]) or "  (ninguno)"
     propias = "\n".join(
-        f"  - {p['id']}: {p['titulo']}"
+        f"  - {p['id']}: {_como_se_ve(p)}"
         for p in s.get("propuestas_propias", [])) or "  (ninguna)"
     ajenas = "\n".join(
-        f"  - {p['id']}: {p['titulo']} (de {p['dueno']})"
+        f"  - {p['id']}: {_como_se_ve(p)} (de {p['dueno']})"
         for p in s["propuestas_ajenas"]) or "  (ninguna)"
     # el "no" de Pedro, dicho con todas las letras -- y es lo UNICO que
     # hay. No existe ningun freno mecanico: `jefe._puede` no nombra
@@ -52,7 +68,7 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
     # antes de construir `propuestas_propias`. Lo unico que separa al jefe
     # de volver a proponer lo mismo es que un modelo de 3b lea este renglon
     # y le haga caso.
-    rechazadas = "\n".join(f"  - {p['titulo']}"
+    rechazadas = "\n".join(f"  - {_como_se_ve(p)}"
                            for p in s.get("descartadas_semana", []))
     cap = s.get("capacidad")
     precio = (f"{cap['precio_mm']} mm por unidad de {cap['nombre']} "
@@ -63,6 +79,16 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
     aprendido = f"Lo que aprendiste antes:\n{nucleo.strip()}\n\n" if nucleo.strip() else ""
     ultimas = ("Lo que decidiste en los ultimos tics (no repitas lo mismo):\n"
               + "\n".join(f"  - {r}" for r in recientes) + "\n\n") if recientes else ""
+
+    # los objetos que este departamento ya nombro, para que COPIE en vez de
+    # reinventar: sin esto "radar de precios" y "monitor de precios" son dos
+    # familias, ocupan dos lugares en la mesa y un "nunca mas" sobre una no
+    # tapa la otra. Condicional como los otros dos: un encabezado sobre una
+    # lista vacia le ensena al modelo que ese bloque no dice nada.
+    objetos = s.get("catalogo") or []
+    catalogo = ("Objetos que ya nombraste (si hablas de uno, escribilo "
+                "igual):\n" + "\n".join(f"  - {o}" for o in objetos) + "\n\n"
+                ) if objetos else ""
 
     # El menu se arma segun la situacion: ofrecer "trabajar" sin trabajos
     # vivos, o "comentar" sin nada para comentar, empuja al modelo a
@@ -84,6 +110,7 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
     return (
         aprendido +
         ultimas +
+        catalogo +
         f"Sos el jefe del departamento {s['nombre']} de una fabrica de agentes.\n"
         f"Billetera: {s['disponible_mm']} milimonedas disponibles de "
         f"{s['saldo_mm']}.\n"
@@ -103,7 +130,12 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
         f"Ahora inclinate a {inclinacion}.\n\n"
         "Elegi UNA accion. Primera linea, sin nada mas:\n"
         + "\n".join(menu) + "\n"
-        "Segunda linea: un renglon con el motivo.\n"
+        "Segunda linea: un renglon con el motivo.\n\n"
+        "Si elegis proponer, en vez del motivo van CUATRO renglones:\n"
+        "  sobre:   <el objeto, en tus palabras>\n"
+        "  promete: " + " | ".join(ficha.PROMESAS) + "\n"
+        "  tarda:   " + " | ".join(ficha.PLAZOS) + "\n"
+        "  porque:  <un renglon, opcional>\n"
         "IMPORTANTE: escribi TODO en castellano. Ni una sola palabra en chino,\n"
         "ingles ni ningun otro idioma."
     )
