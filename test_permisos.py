@@ -403,12 +403,23 @@ def test_un_no_permanente_no_crea_solicitud(home):
 
 
 def test_revocar_el_no_devuelve_la_pregunta_y_no_el_si_viejo(home):
-    """La otra mitad de D3, del lado del motor."""
-    r = motor.evaluar(acunar(150_000), Contexto("pedro"))
-    salida = motor.responder(r.solicitud["id"], "no_siempre")
+    """La otra mitad de D3, del lado del motor.
+
+    El "si viejo" tiene que existir de verdad para que el test pueda
+    atrapar una regresion del barrido de la regla contraria: si
+    `anotar_regla` dejara de barrer el "si" al escribir el "no", revocar
+    el "no" dejaria ese "si" vivo y la reevaluacion volveria PERMITIDO en
+    vez de PENDIENTE.
+    """
+    r0 = motor.evaluar(npm_test(), Contexto("chat", chat="c1"))
+    si_viejo = almacen.conceder(npm_test(), Contexto("pedro"), "y")
+
+    salida = motor.responder(r0.solicitud["id"], "no_siempre")
+    assert almacen.regla_que_cubre(npm_test(), "permitir") is None
+
     almacen.revocar(salida["permiso"]["id"])
 
-    r2 = motor.evaluar(acunar(150_000), Contexto("pedro"))
+    r2 = motor.evaluar(npm_test(), Contexto("chat", chat="c1"))
     assert r2.estado == motor.ESTADO_PENDIENTE
 
 
@@ -418,6 +429,46 @@ def test_no_siempre_deja_la_solicitud_negada(home):
     assert salida["solicitud"]["estado"] == almacen.ESTADO_NEGADA
     assert salida["ejecucion"] is None
     assert salida["permiso"]["efecto"] == "denegar"
+
+
+def test_la_regla_de_no_escrita_mientras_la_solicitud_esperaba_bloquea_el_si(home):
+    """El agujero de la ventana: la solicitud nacio antes que la regla.
+
+    Si la solicitud ya estaba abierta cuando Pedro escribio el "nunca mas"
+    para esa misma forma, la pared de forma (corte 2 de `evaluar`) sigue
+    mostrando esa solicitud vieja -- `evaluar` no se vuelve a llamar para
+    algo que ya existe, asi que el corte 4 (la regla permanente de no)
+    nunca se corre para ella. Sin este chequeo en `responder`, un "si"
+    sobre ese item viejo ejecutaria la accion a pesar del no permanente.
+    """
+    hechos = []
+    motor.registrar_ejecutor(
+        "plata", "acunar", lambda a: hechos.append(a) or {"ok": True})
+
+    r = motor.evaluar(acunar(150_000), Contexto("pedro"))
+    assert r.estado == motor.ESTADO_PENDIENTE
+
+    almacen.anotar_regla(acunar(150_000), Contexto("pedro"), "x",
+                         siempre_pregunta=True, efecto="denegar")
+
+    with pytest.raises(ErrorPermisos):
+        motor.responder(r.solicitud["id"], "si")
+    assert hechos == []
+    assert almacen.obtener(r.solicitud["id"])["estado"] == \
+        almacen.ESTADO_PENDIENTE
+
+
+def test_sin_regla_de_no_el_si_sigue_funcionando(home):
+    """El caso feliz: sin regla de por medio, un "si" sobre una solicitud
+    abierta sigue haciendo lo que siempre hizo."""
+    hechos = []
+    motor.registrar_ejecutor(
+        "plata", "acunar", lambda a: hechos.append(a) or {"ok": True})
+
+    r = motor.evaluar(acunar(150_000), Contexto("pedro"))
+    salida = motor.responder(r.solicitud["id"], "si")
+    assert hechos
+    assert salida["ejecucion"]["ejecutada"] is True
 
 
 # --------------------------------------------------------------------------

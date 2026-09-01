@@ -25,8 +25,8 @@ cuatro familias de 5.3.
 
 Lo que este modulo NUNCA hace: conceder. El modelo puede pedir; la escalada
 es de Pedro, siempre (5.4). `evaluar` solo lee permisos; el unico camino que
-escribe uno es `responder(..., "si_siempre")`, que sale de un endpoint
-autenticado.
+escribe uno es `responder(..., "si_siempre" o "no_siempre")`, que sale de un
+endpoint autenticado.
 """
 from __future__ import annotations
 

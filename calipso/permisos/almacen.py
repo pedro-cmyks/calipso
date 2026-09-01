@@ -402,9 +402,9 @@ def anotar_intento(id_solicitud: str, a: Accion, ctx: Contexto,
 
 
 def responder(id_solicitud: str, respuesta: str, quien: str) -> dict:
-    """Las tres salidas de 5.4. `si_siempre` no concede aca -- solo marca
-    la solicitud; el permiso lo escribe el motor con `conceder`, que es
-    quien se niega sobre lo irreversible."""
+    """Las cuatro salidas de 5.4. `si_siempre` y `no_siempre` no escriben
+    la regla aca -- solo marcan la solicitud; la regla la escribe el motor
+    con `anotar_regla`, que es quien se niega sobre lo irreversible."""
     if respuesta not in RESPUESTAS:
         raise ErrorPermisos(
             f"respuesta invalida: {respuesta!r} (son {RESPUESTAS})")
@@ -420,6 +420,23 @@ def responder(id_solicitud: str, respuesta: str, quien: str) -> dict:
                 raise ErrorPermisos(
                     "esta operacion pregunta siempre (5.4): no admite "
                     "permiso permanente")
+            if respuesta in ("si", "si_siempre"):
+                # la ventana de la pared de forma: esta solicitud nacio
+                # ANTES que la regla de negar. Mientras estuvo abierta, la
+                # pared de forma la siguio mostrando tal cual -- `evaluar`
+                # no se vuelve a llamar para una solicitud que ya existe,
+                # asi que el corte del no en `evaluar` nunca se corrio para
+                # ella. Esta es la ultima linea antes del disco: si no
+                # corta aca, ningun llamador futuro puede evitar que un
+                # "si" sobre ese item viejo ejecute la accion a pesar del
+                # no permanente que Pedro ya dio.
+                a = Accion.de_dict(s["accion"])
+                regla = regla_que_cubre(a, "denegar")
+                if regla is not None:
+                    raise ErrorPermisos(
+                        f"hay una regla permanente de no ({regla['id']}) "
+                        "que cubre esta accion: revocala si en realidad "
+                        "querias decir que si")
             s["estado"] = (ESTADO_APROBADA if respuesta in ("si", "si_siempre")
                            else ESTADO_NEGADA)
             s["respondida"] = {"ts": _ahora(), "respuesta": respuesta,
