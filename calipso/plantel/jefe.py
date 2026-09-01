@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from . import decision as dec
+from . import ficha, ilegibles
 from . import interruptor as it
 from . import situacion as sit
 
@@ -30,7 +31,7 @@ class Contexto:
     suscripciones: dict
     memoria: Any                  # el Scope del departamento
     pensar: Callable[[str], str]
-    contratar: Callable[[dict, str, "str | None", str], Any]
+    contratar: Callable[..., Any]
     publicar: Callable[..., None] = field(
         default=lambda evento, **campos: None)
 
@@ -352,10 +353,48 @@ def tic(ctx: Contexto, cuenta: str, semana: str) -> dict:
         ctx.publicar("razonando",
                      texto=f"{accion} {ref or ''} — {motivo}".strip())
 
+        # La ficha solo existe para `proponer`. Se lee aparte y no dentro de
+        # `parsear` porque `parsear` devuelve una 3-upla que seis tests
+        # desempaquetan o comparan entera, y ninguno de ellos habla de
+        # proponer.
+        f = ficha.parsear_ficha(crudo) if accion == "proponer" else None
+
+        if accion == "proponer" and f is None:
+            # LA VALVULA. Y ojo con el atajo que parece obvio: NO se le
+            # puede dar a esto un valor de accion propio. `_puede` no tiene
+            # rama por defecto -- una accion desconocida cae al tramo final
+            # y devuelve True con saldo -- y el `contratar` de produccion no
+            # tiene guarda de accion: todo lo que no es comentar, trabajar o
+            # pedir termina en el camino que llama a `bus.alta`. O sea que
+            # una accion nueva escribiria en el libro una propuesta de
+            # verdad, con este texto ilegible de titulo. Por eso el corte se
+            # hace aca, con la accion intacta y el permiso en False a mano,
+            # sin pasar por `_puede`.
+            try:
+                ilegibles.anotar(ctx.base, semana, cuenta, motivo)
+                # y ACA se rompe la semana congelada: `nada` no anota
+                # -el modelo eligio no hacer nada- y un freno tampoco -la
+                # maquina lo paro-, pero esto es el modelo intentando y
+                # fallando. Sin la anotacion el prompt del tic siguiente es
+                # identico, y a temperatura 0 la respuesta tambien: el
+                # primer tic que no parsea le termina la semana al
+                # departamento.
+                ctx.memoria.remember(f"ficha ilegible: {motivo}",
+                                     kind="jefe", departamento=cuenta)
+            except Exception as exc:
+                # mismo trato que el `remember` de mas abajo: que el rastro
+                # falle no puede volverse una forma de tumbar el tic. Sin
+                # este except lo caza el `except Exception` de afuera y el
+                # tic entero sale como "reviento actuando".
+                fin = "error"
+                motivo = f"{motivo} (no pudo anotar el aviso: {exc})"
+            return salida(accion, ref, motivo, False,
+                          "ficha ilegible: no se entendio que proponia")
+
         permiso, freno = _puede(estado, s, accion, ref)
         resultado = None
         if permiso:
-            resultado = ctx.contratar(s, accion, ref, motivo)
+            resultado = ctx.contratar(s, accion, ref, motivo, ficha=f)
             try:
                 ctx.memoria.remember(f"{accion} {ref or ''}: {motivo}".strip(),
                                      kind="jefe", departamento=cuenta)

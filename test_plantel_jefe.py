@@ -8,6 +8,7 @@ from calipso.economia.cola import Cola
 from calipso.economia.kernel import Kernel
 from calipso.economia.libro import Libro
 from calipso.plantel import decision as dec
+from calipso.plantel import ilegibles as ilg
 from calipso.plantel import interruptor as it
 from calipso.plantel import jefe as j
 from calipso.plantel import situacion as sit
@@ -61,7 +62,8 @@ def armar(tmp_path, respuesta="nada\nno hay nada", saldo=400_000,
             costo_api_mm_por_unidad=500)},
         memoria=MemoriaFalsa(),
         pensar=lambda _p: respuesta,
-        contratar=lambda s, a, ref, m="": contratos.append((a, ref, m)) or {"ok": True},
+        contratar=lambda s, a, ref, m="", ficha=None: (
+            contratos.append((a, ref, m)) or {"ok": True}),
         publicar=lambda evento, **c: eventos.append((evento, c)))
     return ctx, contratos, eventos
 
@@ -69,7 +71,10 @@ def armar(tmp_path, respuesta="nada\nno hay nada", saldo=400_000,
 def test_en_ensayo_decide_y_publica_pero_no_contrata(tmp_path):
     """Es el modo en el que arranca: la unica forma de mirar que decide
     antes de soltarlo con la billetera."""
-    ctx, contratos, eventos = armar(tmp_path, "proponer\nhay hueco en precios")
+    ctx, contratos, eventos = armar(
+        tmp_path,
+        "proponer\nsobre: hueco en precios\npromete: medir\ntarda: corto\n"
+        "porque: no sabemos cuanto perdemos")
     out = j.tic(ctx, "dep:atlas", W)
     assert out["accion"] == "proponer"
     assert out["actuo"] is False
@@ -80,10 +85,14 @@ def test_en_ensayo_decide_y_publica_pero_no_contrata(tmp_path):
 
 
 def test_en_vivo_contrata(tmp_path):
-    ctx, contratos, _ = armar(tmp_path, "proponer\nhay hueco")
+    ctx, contratos, _ = armar(
+        tmp_path,
+        "proponer\nsobre: hay hueco\npromete: medir\ntarda: corto\n"
+        "porque: conviene mirarlo")
     it.poner_modo(tmp_path, "vivo")
     out = j.tic(ctx, "dep:atlas", W)
-    assert out["actuo"] is True and contratos == [("proponer", None, "hay hueco")]
+    assert out["actuo"] is True
+    assert contratos == [("proponer", None, "sobre: hay hueco")]
     assert ctx.memoria.recordado, "no dejo rastro en su memoria"
 
 
@@ -137,11 +146,14 @@ def test_sin_saldo_si_puede_proponer(tmp_path):
     la rama de `proponer`, asi que un departamento sin plata no podia ni
     pedir plata. Proponer no gasta -solo escribe en el bus- asi que el
     freno de saldo no le corresponde."""
-    ctx, contratos, _ = armar(tmp_path, "proponer\nnecesito arrancar", saldo=0)
+    ctx, contratos, _ = armar(
+        tmp_path,
+        "proponer\nsobre: necesito arrancar\npromete: construir\n"
+        "tarda: corto\nporque: sin capital no arranca", saldo=0)
     it.poner_modo(tmp_path, "vivo")
     out = j.tic(ctx, "dep:atlas", W)
     assert out["actuo"] is True
-    assert contratos == [("proponer", None, "necesito arrancar")]
+    assert contratos == [("proponer", None, "sobre: necesito arrancar")]
 
 
 def test_presupuesto_semanal_cero_no_frena_proponer_por_agresividad(tmp_path):
@@ -150,12 +162,15 @@ def test_presupuesto_semanal_cero_no_frena_proponer_por_agresividad(tmp_path):
     25.000*0//100... no, daba presupuesto*agresividad//100 = 0, y
     `salidas_semana_mm >= 0` es siempre verdadero -nunca podia proponer, y
     el freno registrado hablaba de agresividad, que no tenia nada que ver."""
-    ctx, contratos, _ = armar(tmp_path, "proponer\narranco de cero", saldo=100_000,
-                              presupuesto_semanal_mm=0)
+    ctx, contratos, _ = armar(
+        tmp_path,
+        "proponer\nsobre: arranco de cero\npromete: construir\n"
+        "tarda: corto\nporque: sin presupuesto todavia",
+        saldo=100_000, presupuesto_semanal_mm=0)
     it.poner_modo(tmp_path, "vivo")
     out = j.tic(ctx, "dep:atlas", W)
     assert out["actuo"] is True
-    assert contratos == [("proponer", None, "arranco de cero")]
+    assert contratos == [("proponer", None, "sobre: arranco de cero")]
 
 
 def test_pedir_es_la_ronda_preseed_y_no_gasta(tmp_path):
@@ -276,11 +291,20 @@ def test_la_agresividad_frena_proponer_pero_no_trabajar(tmp_path):
     """La perilla deja de ser decoracion: con el presupuesto de la semana ya
     comprometido, el departamento no abre apuestas nuevas — pero sigue
     pudiendo terminar lo que empezo."""
-    ctx, contratos, _ = armar(tmp_path, "proponer\notra apuesta")
+    ctx, contratos, _ = armar(
+        tmp_path,
+        "proponer\nsobre: otra apuesta\npromete: construir\ntarda: corto\n"
+        "porque: probar algo nuevo")
     it.poner_modo(tmp_path, "vivo")
     # agresividad 40% de 25.000 = 10.000; sacamos 12.000 de la semana
     ctx.kernel.destruir(TS, W, "dep:atlas", 12_000, motivo="api")
-    assert j.tic(ctx, "dep:atlas", W)["actuo"] is False
+    out1 = j.tic(ctx, "dep:atlas", W)
+    assert out1["actuo"] is False
+    # la ficha es valida, asi que si esto pasara por accidente (por ejemplo
+    # porque la valvula la interceptara antes de llegar a `_puede`) el freno
+    # diria "ilegible" y no "agresividad": esta linea es la que prueba que
+    # el freno de verdad se ejercito.
+    assert "agresividad" in out1["freno"]
     ctx.bus.alta(TS, W, "p1", "dep:atlas", "ya en marcha", 1_000, 2_000,
                 {"gasto_max_mm": 5_000})
     ctx.bus.marcar(TS, W, "p1", "financiada")
@@ -328,13 +352,17 @@ def test_un_departamento_personal_corre_el_mismo_bucle(tmp_path):
     ctx = j.Contexto(base=tmp_path, kernel=k, registro=r,
                      bus=Bus(eco / "bus.jsonl"), cola=Cola(eco / "cola.jsonl"),
                      suscripciones={}, memoria=MemoriaFalsa(),
-                     pensar=lambda _p: "proponer\nordenar los gastos del mes",
-                     contratar=lambda s, a, ref, m="": contratos.append((a, ref, m)),
+                     pensar=lambda _p: (
+                         "proponer\nsobre: ordenar los gastos del mes\n"
+                         "promete: arreglar\ntarda: corto\n"
+                         "porque: ayuda a planificar"),
+                     contratar=lambda s, a, ref, m="", ficha=None: (
+                         contratos.append((a, ref, m))),
                      publicar=lambda e, **c: None)
     it.poner_modo(tmp_path, "vivo")
     out = j.tic(ctx, "personal:finanzas", W)
     assert out["accion"] == "proponer" and out["actuo"] is True
-    assert contratos == [("proponer", None, "ordenar los gastos del mes")]
+    assert contratos == [("proponer", None, "sobre: ordenar los gastos del mes")]
     # sin suscripciones el sesgo es la perilla pelada, sin modular por precio
     # (70, no 50: si el modulo leyera agresividad_pct en vez de
     # explorar_explotar_pct, este assert lo agarraria igual)
@@ -382,24 +410,97 @@ def test_memoria_que_revienta_no_borra_la_contratacion(tmp_path):
         def remember(self, texto, **meta):
             raise RuntimeError("disco lleno")
 
-    ctx, contratos, eventos = armar(tmp_path, "proponer\nhay hueco")
+    ctx, contratos, eventos = armar(
+        tmp_path,
+        "proponer\nsobre: hay hueco\npromete: medir\ntarda: corto\n"
+        "porque: hace falta mirarlo")
     ctx.memoria = MemoriaQueRevienta()
     it.poner_modo(tmp_path, "vivo")
     out = j.tic(ctx, "dep:atlas", W)
     assert out["actuo"] is True
     assert out["resultado"] == {"ok": True}
-    assert contratos == [("proponer", None, "hay hueco")]
+    assert contratos == [("proponer", None, "sobre: hay hueco")]
     assert ("fin", {"resultado": "error"}) in eventos
 
 
 def test_el_motivo_del_parser_llega_al_contratista(tmp_path):
-    """El titulo con el que la propuesta aterriza en el bus es el motivo
-    que el jefe razono, no relleno del planificador: es literalmente lo
-    que Pedro lee para decidir si financia."""
-    ctx, contratos, _ = armar(tmp_path, "proponer\nhay hueco en precios de GPU")
+    """Lo que aterriza en el contratista es la FICHA, no el motivo crudo del
+    parser: esta prueba afirmaba lo contrario -que el titulo del bus era el
+    motivo tal cual salio de `dec.parsear`- y eso es justo lo que la
+    gramatica de proponer (seccion 7 del spec) deroga. `titulo_de` arma el
+    titulo desde la ficha, no desde la prosa cruda."""
+    capturado = []
+    ctx, _contratos, _ = armar(
+        tmp_path,
+        "proponer\nsobre: hueco en precios de GPU\npromete: medir\n"
+        "tarda: corto\nporque: hay que cuantificarlo")
+    ctx.contratar = lambda s, a, ref, m="", ficha=None: (
+        capturado.append(ficha) or {"ok": True})
     it.poner_modo(tmp_path, "vivo")
     j.tic(ctx, "dep:atlas", W)
-    assert contratos == [("proponer", None, "hay hueco en precios de GPU")]
+    assert capturado and capturado[0] is not None
+    assert capturado[0]["sobre"] == "hueco en precios de GPU"
+    assert capturado[0]["promete"] == "medir"
+    assert capturado[0]["tarda"] == "corto"
+
+
+def test_una_ficha_ilegible_no_contrata_pero_deja_aviso(tmp_path):
+    """La valvula: la prosa que no entra en la ficha no cae en `nada`, cae
+    en un aviso con la prosa cruda adentro."""
+    ctx, contratos, _ = armar(tmp_path, "proponer\nhay hueco en precios")
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["accion"] == "proponer"
+    assert out["actuo"] is False
+    assert "ilegible" in out["freno"]
+    assert contratos == []
+    filas = ilg.colapsados(tmp_path)
+    assert len(filas) == 1 and filas[0]["crudo"] == "hay hueco en precios"
+
+
+def test_una_ficha_ilegible_SI_escribe_memoria(tmp_path):
+    """El arreglo de la semana congelada. `nada` no anota -el modelo eligio
+    no hacer nada- y un freno tampoco -la maquina lo paro-. Pero una ficha
+    ilegible es el modelo intentando y fallando: sin anotarla, el prompt del
+    tic siguiente es identico, y a temperatura 0 la respuesta tambien. El
+    primer tic que no parsea le termina la semana al departamento."""
+    ctx, _, _ = armar(tmp_path, "proponer\nhay hueco en precios")
+    it.poner_modo(tmp_path, "vivo")
+    j.tic(ctx, "dep:atlas", W)
+    assert ctx.memoria.recordado != []
+
+
+def test_nada_sigue_sin_escribir_memoria(tmp_path):
+    """El otro lado de la distincion: elegir no hacer nada no es fallar."""
+    ctx, _, _ = armar(tmp_path, "nada\ntodo tranquilo")
+    it.poner_modo(tmp_path, "vivo")
+    j.tic(ctx, "dep:atlas", W)
+    assert ctx.memoria.recordado == []
+
+
+def test_una_ficha_buena_contrata_y_le_llega_al_contratista(tmp_path):
+    ctx, contratos, _ = armar(
+        tmp_path,
+        "proponer\nsobre: el radar de precios\npromete: descartar\n"
+        "tarda: corto\nporque: no rindio")
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["accion"] == "proponer" and out["actuo"] is True
+    assert contratos and contratos[0][0] == "proponer"
+
+
+def test_un_aviso_que_revienta_no_voltea_el_tic(tmp_path, monkeypatch):
+    """Mismo trato que la memoria: el rastro no puede volverse una forma de
+    tumbar el tic. Sin su propio try/except, el `except Exception` de `tic`
+    lo reporta como 'reviento actuando'."""
+    def explota(*a, **k):
+        raise OSError("disco lleno")
+    monkeypatch.setattr(ilg, "anotar", explota)
+    ctx, contratos, _ = armar(tmp_path, "proponer\nhay hueco")
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["accion"] == "proponer" and out["actuo"] is False
+    assert "reviento" not in (out["motivo"] or "")
 
 
 def test_trabajar_con_id_inventado_no_actua(tmp_path):
@@ -428,7 +529,10 @@ def test_el_techo_de_propuestas_frena_proponer(tmp_path):
     """A 200 tics por semana, el modelo ve sus propias propuestas sin
     financiar y propone otra igual: el bus de Pedro se llena de duplicados
     y deja de servir para lo unico que sirve, que Pedro elija."""
-    ctx, contratos, _ = armar(tmp_path, "proponer\notra idea mas")
+    ctx, contratos, _ = armar(
+        tmp_path,
+        "proponer\nsobre: otra idea mas\npromete: construir\ntarda: corto\n"
+        "porque: seguir probando")
     for i in range(j.TECHO_PROPUESTAS):
         ctx.bus.alta(TS, W, f"p{i}", "dep:atlas", f"propuesta {i}", 1_000,
                     2_000, {"gasto_max_mm": 5_000})
@@ -447,7 +551,10 @@ def test_descartar_una_propuesta_destraba_el_techo(tmp_path):
     esta cubierto en test_plantel_situacion.py; esto prueba el circuito
     entero via j.tic."""
     from calipso.economia import bus as bus_mod
-    ctx, contratos, _ = armar(tmp_path, "proponer\notra idea mas")
+    ctx, contratos, _ = armar(
+        tmp_path,
+        "proponer\nsobre: otra idea mas\npromete: construir\ntarda: corto\n"
+        "porque: seguir probando")
     for i in range(j.TECHO_PROPUESTAS):
         ctx.bus.alta(TS, W, f"p{i}", "dep:atlas", f"propuesta {i}", 1_000,
                     2_000, {"gasto_max_mm": 5_000})
@@ -461,27 +568,33 @@ def test_descartar_una_propuesta_destraba_el_techo(tmp_path):
 
     destrabado = j.tic(ctx, "dep:atlas", W)
     assert destrabado["actuo"] is True
-    assert contratos == [("proponer", None, "otra idea mas")]
+    assert contratos == [("proponer", None, "sobre: otra idea mas")]
 
 
 def test_con_menos_propuestas_que_el_techo_sigue_pudiendo_proponer(tmp_path):
     """El techo no puede volverse un cero disfrazado: por debajo, proponer
     sigue pasando."""
-    ctx, contratos, _ = armar(tmp_path, "proponer\notra idea mas")
+    ctx, contratos, _ = armar(
+        tmp_path,
+        "proponer\nsobre: otra idea mas\npromete: construir\ntarda: corto\n"
+        "porque: seguir probando")
     for i in range(j.TECHO_PROPUESTAS - 1):
         ctx.bus.alta(TS, W, f"p{i}", "dep:atlas", f"propuesta {i}", 1_000,
                     2_000, {"gasto_max_mm": 5_000})
     it.poner_modo(tmp_path, "vivo")
     out = j.tic(ctx, "dep:atlas", W)
     assert out["actuo"] is True
-    assert contratos == [("proponer", None, "otra idea mas")]
+    assert contratos == [("proponer", None, "sobre: otra idea mas")]
 
 
 def test_el_techo_de_propuestas_no_tapa_la_agresividad(tmp_path):
     """El chequeo nuevo va primero por ser mas barato, pero no puede dejar
     inalcanzable el de agresividad: con pocas propuestas en pie, la perilla
     sigue frenando proponer y el freno lo sigue diciendo."""
-    ctx, contratos, _ = armar(tmp_path, "proponer\notra apuesta")
+    ctx, contratos, _ = armar(
+        tmp_path,
+        "proponer\nsobre: otra apuesta\npromete: construir\ntarda: corto\n"
+        "porque: probar algo nuevo")
     ctx.bus.alta(TS, W, "p0", "dep:atlas", "una nomas", 1_000, 2_000,
                 {"gasto_max_mm": 5_000})
     it.poner_modo(tmp_path, "vivo")
