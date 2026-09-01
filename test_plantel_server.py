@@ -290,7 +290,15 @@ def test_produccion_le_inyecta_la_carta_y_los_proyectos_al_jefe(
     siempre en `escanear()` -- que recorre el home REAL de Pedro con
     subprocesos git y despues escribe. Este test no necesita ejercitar el
     catastro real, solo que la lista que sea que devuelva `cargar()` llegue
-    al `Contexto`; el stub no le quita poder de deteccion al `assert`."""
+    al `Contexto`.
+
+    El `assert` de mas abajo compara contra el valor EXACTO que devuelve el
+    stub, no solo `isinstance(..., list)`: ese chequeo mas debil pasaba
+    igual si `server.py` dejara de pasar `proyectos=catastro.cargar()`,
+    porque `Contexto.proyectos` tiene `default_factory=list` y llegaria
+    `[]` -- una lista vacia tambien es una lista. Comparar contra el valor
+    fijo del stub es lo que hace que este test pruebe la mitad del nombre
+    que dice "y los proyectos", no solo la de la carta."""
     monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
     monkeypatch.setattr(memory, "CALIPSO_HOME", tmp_path)
     carta = memory.ruta_carta("atlas")
@@ -311,7 +319,7 @@ def test_produccion_le_inyecta_la_carta_y_los_proyectos_al_jefe(
     handlers["departamento"]({"cuenta": "dep:atlas"})
 
     assert visto["ctx"].carta["texto"] == "SOY ATLAS"
-    assert isinstance(visto["ctx"].proyectos, list)
+    assert visto["ctx"].proyectos == [{"nombre": "atlas"}]
 
 
 # Una ficha real, compartida por todos los tests de `proponer` de aca en
