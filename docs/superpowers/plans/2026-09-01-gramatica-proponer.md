@@ -1667,7 +1667,7 @@ En el endpoint de la mesa de `calipso/server.py`, la respuesta gana:
         # al bus, asi que pertenecen a la misma bandeja que las que si
         # llegaron -- y un origen nuevo obligaria a un descriptor entero
         # para algo que no tiene ni un verbo.
-        "ilegibles": _plantel_ilegibles.colapsados(_ECO_BASE),
+        "ilegibles": _plantel_ilegibles.colapsados(_ECO_BASE, semana),
 ```
 
 Con el import bajo la misma guarda que los demas del plantel. Si el modulo no
