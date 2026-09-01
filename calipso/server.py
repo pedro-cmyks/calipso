@@ -87,7 +87,7 @@ from calipso import telemetry  # noqa: E402
 from calipso import web as calipso_web  # noqa: E402
 from calipso import verification  # noqa: E402
 from calipso.tools import commands as calipso_commands  # noqa: E402
-from calipso.memory import Memory  # noqa: E402
+from calipso.memory import Memory, leer_carta  # noqa: E402
 
 # RaÃƒÂ­z del proyecto que Calipso muestra/edita. Por defecto, el cwd.
 ROOT = pathlib.Path(os.environ.get("CALIPSO_ROOT", os.getcwd())).resolve()
@@ -2788,6 +2788,8 @@ def _routine_handlers() -> dict:
             memoria=mem.departamento(cuenta.split(":", 1)[1]),
             pensar=_pensar_local,
             contratar=_contratar_para(cuenta, eco["pagador"], ts, semana),
+            carta=leer_carta(cuenta.split(":", 1)[1]),
+            proyectos=catastro.cargar(),
             publicar=_publicar_jefe(cuenta))
         # SIN candado envolvente durante el tic: incluye una llamada a un
         # modelo, y tener el flock tomado durante segundos serializa el chat

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 import calipso.routines as routines
 import calipso.server as srv
+from calipso import memory
 from calipso.economia import departamentos as eco_deps
 from calipso.economia import tipos as eco_tipos
 from calipso.economia.candado import candado as candado_real
@@ -276,6 +277,32 @@ def test_el_tic_no_pierde_un_asiento_escrito_a_medias(tmp_path, monkeypatch):
         "el escritor completara su append")
     assert ruta_libro.read_text(encoding="utf-8").count("\n") == 2, (
         "el archivo quedo truncado")
+
+
+def test_produccion_le_inyecta_la_carta_y_los_proyectos_al_jefe(
+        tmp_path, monkeypatch):
+    """El arnes de test_plantel_jefe.py construye el Contexto a mano, asi
+    que puede pasar aunque produccion nunca las mande. Este es el guarda
+    apuntado al unico lugar que importa."""
+    monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
+    monkeypatch.setattr(memory, "CALIPSO_HOME", tmp_path)
+    carta = memory.ruta_carta("atlas")
+    carta.parent.mkdir(parents=True, exist_ok=True)
+    carta.write_text("SOY ATLAS", encoding="utf-8")
+
+    _armar_economia(tmp_path)
+
+    visto = {}
+    monkeypatch.setattr(srv._plantel_jefe, "tic",
+                        lambda ctx, cuenta, semana: visto.update(ctx=ctx))
+    # disparar la rutina de departamento por el mismo camino que la corre el
+    # ticker; el mismo que ejercita
+    # test_el_tic_no_pierde_un_asiento_escrito_a_medias, de aca arriba.
+    handlers = srv._routine_handlers()
+    handlers["departamento"]({"cuenta": "dep:atlas"})
+
+    assert visto["ctx"].carta["texto"] == "SOY ATLAS"
+    assert isinstance(visto["ctx"].proyectos, list)
 
 
 # Una ficha real, compartida por todos los tests de `proponer` de aca en

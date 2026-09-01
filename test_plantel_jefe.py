@@ -39,7 +39,7 @@ class MemoriaFalsa:
 
 def armar(tmp_path, respuesta="nada\nno hay nada", saldo=400_000,
          presupuesto_semanal_mm=25_000, techo_preseed_mm=0,
-         techo_preseed_ciclo_mm=10_000_000):
+         techo_preseed_ciclo_mm=10_000_000, carta=None, proyectos=None):
     eco = tmp_path / "economia"
     eco.mkdir(parents=True, exist_ok=True)
     k = Kernel(Libro(eco / "libro.jsonl"))
@@ -65,8 +65,40 @@ def armar(tmp_path, respuesta="nada\nno hay nada", saldo=400_000,
         pensar=lambda _p: respuesta,
         contratar=lambda s, a, ref, m="", ficha=None: (
             contratos.append((a, ref, m)) or {"ok": True}),
+        carta=carta or {"estado": "ausente", "texto": ""},
+        proyectos=proyectos or [],
         publicar=lambda evento, **c: eventos.append((evento, c)))
     return ctx, contratos, eventos
+
+
+def test_la_carta_del_contexto_llega_al_prompt(tmp_path):
+    visto = {}
+    ctx, _, _ = armar(tmp_path, carta={"estado": "escrita",
+                                       "texto": "SOY EL TALLER"})
+    ctx.pensar = lambda p: visto.setdefault("p", p) or "nada\nx"
+    it.poner_modo(tmp_path, "vivo")
+    j.tic(ctx, "dep:atlas", W)
+    assert "SOY EL TALLER" in visto["p"]
+
+
+def test_los_proyectos_del_contexto_llegan_filtrados_por_cuenta(tmp_path):
+    """El jefe de `dep:atlas` no puede ver los proyectos de otro."""
+    visto = {}
+    ctx, _, _ = armar(tmp_path, proyectos=[
+        {"nombre": "mio", "departamento": "dep:atlas", "linea": "el mio"},
+        {"nombre": "ajeno", "departamento": "dep:taller", "linea": "el ajeno"}])
+    ctx.pensar = lambda p: visto.setdefault("p", p) or "nada\nx"
+    it.poner_modo(tmp_path, "vivo")
+    j.tic(ctx, "dep:atlas", W)
+    assert "el mio" in visto["p"] and "el ajeno" not in visto["p"]
+
+
+def test_sin_carta_ni_proyectos_el_tic_sigue_andando(tmp_path):
+    """Los 44 tests viejos construyen el Contexto sin los campos nuevos."""
+    ctx, contratos, _ = armar(tmp_path, "nada\ntodo tranquilo")
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["accion"] == "nada" and contratos == []
 
 
 def test_en_ensayo_decide_y_publica_pero_no_contrata(tmp_path):
