@@ -65,11 +65,29 @@ def test_tocar_permisos_corre_los_tests_de_permisos():
     que tocarlo corria test_inbox y no test_permisos; y el almacen no
     disparaba nada. Un corte que NIEGA antes de crear la solicitud es lo
     mas silencioso que hay en el motor: sin esta red, romperlo da verde."""
+    # 1) el paquete del motor sigue disparando test_permisos.
     for ruta in ("calipso/permisos/almacen.py", "calipso/permisos/motor.py",
                  "calipso/permisos/acciones.py"):
         plan = verification.recommend(files=[{"path": ruta}])
         ids = [c["command_id"] for c in plan["commands"]]
         assert "test_permisos" in ids, ruta
+    # 2) los propios archivos de test del motor tambien lo disparan, aunque
+    # no viven adentro de calipso/permisos/: esta es la red contra el
+    # arreglo mal hecho de pasar la condicion a "permisos/" a secas.
+    for ruta in ("test_permisos.py", "test_permisos_server.py"):
+        plan = verification.recommend(files=[{"path": ruta}])
+        ids = [c["command_id"] for c in plan["commands"]]
+        assert "test_permisos" in ids, ruta
+    # 3) un archivo JS de presentacion que solo comparte la palabra
+    # "permisos" en la ruta no tiene que correr la suite pytest del motor.
+    plan = verification.recommend(
+        files=[{"path": "calipso/web/fabrica/permisos.js"}])
+    ids = [c["command_id"] for c in plan["commands"]]
+    assert "test_permisos" not in ids
+    # 4) un doc historico que se llame "permisos-algo.md" tampoco.
+    plan = verification.recommend(files=[{"path": "docs/permisos-notas.md"}])
+    ids = [c["command_id"] for c in plan["commands"]]
+    assert "test_permisos" not in ids
 
 
 if __name__ == "__main__":
