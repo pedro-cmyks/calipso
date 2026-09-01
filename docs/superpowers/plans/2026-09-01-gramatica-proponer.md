@@ -502,7 +502,9 @@ git commit -m "feat(plantel): la gramatica de proponer, pura y sin disco"
 
 - [ ] **Step 1: Escribir los tests que fallan**
 
-En `test_economia_bus.py`, al final:
+En `test_economia_bus.py`, al final. **Ojo con el alias**: ese archivo importa
+`from calipso.economia import bus as bus_mod`, no `bus` -- verificado. Usar
+`bus` a secas da `NameError`.
 
 ```python
 FORMA_OK = {"sobre": "el radar de precios", "clave": "precios+radar",
@@ -510,7 +512,7 @@ FORMA_OK = {"sobre": "el radar de precios", "clave": "precios+radar",
 
 
 def test_una_propuesta_puede_llevar_su_forma(tmp_path):
-    b = bus.Bus(tmp_path / "bus.jsonl")
+    b = bus_mod.Bus(tmp_path / "bus.jsonl")
     b.alta(TS, W, "p1", "dep:a", "descartar: el radar (corto)", 10_000,
            10_000, {"gasto_max_mm": 10_000, "semanas_max": 1},
            forma=FORMA_OK)
@@ -521,7 +523,7 @@ def test_una_propuesta_sin_forma_sigue_siendo_valida(tmp_path):
     """Compatibilidad: las que se escribieron antes de que la forma
     existiera se leen, se financian y se descartan igual. No hay
     migracion."""
-    b = bus.Bus(tmp_path / "bus.jsonl")
+    b = bus_mod.Bus(tmp_path / "bus.jsonl")
     b.alta(TS, W, "p1", "dep:a", "radar", 10_000, 10_000,
            {"gasto_max_mm": 10_000})
     assert b.datos("p1").get("forma") is None
@@ -531,7 +533,7 @@ def test_una_propuesta_sin_forma_sigue_siendo_valida(tmp_path):
 def test_una_forma_invalida_no_entra_al_libro(tmp_path):
     """El libro es append-only: una forma mal escrita no se puede borrar
     despues, asi que se corta antes de escribirla."""
-    b = bus.Bus(tmp_path / "bus.jsonl")
+    b = bus_mod.Bus(tmp_path / "bus.jsonl")
     casos = [
         {"sobre": "x", "clave": "x", "promete": "bailar", "tarda": "corto"},
         {"sobre": "x", "clave": "x", "promete": "medir", "tarda": "ya"},
@@ -542,14 +544,14 @@ def test_una_forma_invalida_no_entra_al_libro(tmp_path):
          "de_mas": 1},
     ]
     for i, forma in enumerate(casos):
-        with pytest.raises(bus.ErrorBus):
+        with pytest.raises(bus_mod.ErrorBus):
             b.alta(TS, W, f"p{i}", "dep:a", "t", 1000, 1000,
                    {"gasto_max_mm": 1000}, forma=forma)
 
 
 def test_un_preseed_no_lleva_forma(tmp_path):
     """No sale de una ficha: sale de `pedir <monto>`, que es otro verbo."""
-    b = bus.Bus(tmp_path / "bus.jsonl")
+    b = bus_mod.Bus(tmp_path / "bus.jsonl")
     b.alta(TS, W, "p1", "dep:a", "ronda pre-seed de a", 50_000, 50_000,
            {"gasto_max_mm": 50_000}, tipo="preseed")
     assert b.datos("p1").get("forma") is None
