@@ -184,9 +184,12 @@ problema de los sinonimos: sin el, "radar de precios" y "monitor de precios"
 son dos familias, ocupan dos lugares y un "nunca mas" sobre una no tapa la
 otra.
 
-Lleva un tope de renglones. **Ese tope es de espacio del prompt, no una regla
-sobre lo que un departamento puede hacer**: nombrar un objeto que no esta en la
-lista es correcto y esperado.
+Lleva un tope de **doce** objetos, los mas nuevos. **Ese tope es de espacio del
+prompt, no una regla sobre lo que un departamento puede hacer**: nombrar un
+objeto que no esta en la lista es correcto y esperado. Doce porque el prompt ya
+carga cinco bloques de listas y el modelo local es de 7b; si la medicion de la
+seccion 13 muestra que el bloque se ignora, el numero es lo primero que se
+toca.
 
 Y las listas que ya existen en el prompt (`propuestas_propias`,
 `propuestas_ajenas`, `descartadas_semana`) dejan de mostrar el titulo libre y
@@ -198,6 +201,11 @@ Propuestas tuyas todavia sin financiar:
 ```
 
 Asi lo que el modelo lee y lo que tiene que escribir tienen la misma forma.
+
+**Una propuesta sin `forma` -- escrita antes de este cambio -- sigue mostrando
+su titulo tal cual.** No se le inventa una ficha a partir del titulo: seria
+adivinar, y un objeto adivinado entra al catalogo como si el departamento lo
+hubiera nombrado.
 
 ## 7. Lo que el codigo deriva, y lo que no
 
@@ -242,8 +250,8 @@ copia de `presupuesto_mm`. `gasto_max_mm` sigue siendo el presupuesto.
 
 ## 8. Lo que queda escrito en el bus
 
-`bus.alta` (`bus.py:70-99`) gana un parametro `forma`, obligatorio para
-`tipo="trabajo"`:
+`bus.alta` (`bus.py:70-99`) gana un parametro `forma`, **opcional, con
+default `None`**:
 
 ```python
 forma = {
@@ -254,9 +262,24 @@ forma = {
 }
 ```
 
-Se valida como se valida `criterio`: claves conocidas, `promete` y `tarda` en
-sus listas, `sobre` y `clave` strings no vacios. Un `alta` sin `forma` valida
-levanta `ErrorBus`, igual que hoy un `criterio` invalido.
+**Cuando viene, se valida como se valida `criterio`**: exactamente esas cuatro
+claves, `promete` y `tarda` en sus listas, `sobre` y `clave` strings no vacios.
+Una `forma` presente pero invalida levanta `ErrorBus`, igual que hoy un
+`criterio` invalido.
+
+**Por que opcional y no obligatoria para `tipo="trabajo"`**, que era lo natural:
+`bus.alta` tiene DOS llamadores de produccion (`server.py:5561` para el
+pre-seed y `:5616` para el trabajo) y **123 sitios de llamada en los tests**,
+repartidos en doce archivos. Hacerla obligatoria convierte un cambio de dos
+lineas en un barrido mecanico de 123 ediciones, que es justo la clase de
+cambio donde se cuela un error que nadie mira. Y seria incoherente con la
+compatibilidad de mas abajo: si LEER tolera que no este, ESCRIBIR tambien
+tiene que tolerarlo.
+
+El riesgo de que un llamador futuro se olvide y escriba una propuesta sin
+identidad se cubre donde es barato: **un test que fija que el camino de
+produccion de `proponer` siempre manda `forma`**. Un guarda apuntado en el
+unico lugar que importa, en vez de 123 ediciones.
 
 **`clave` se guarda ademas de derivarse** -- es la unica excepcion al principio
 de la seccion 7, y a proposito: el libro es append-only, y si la funcion de
@@ -282,7 +305,16 @@ financia y se descarta como siempre. No hay migracion.
 como un item de clase `aviso` con esa prosa adentro.
 
 **No va al bus.** El libro es contable y un aviso no es un objeto economico: no
-ocupa lugar, no compite, no se puede financiar y no cuenta para el badge. Se
+ocupa lugar, no compite, no se puede financiar y no cuenta para el badge.
+
+**Sale por el adaptador de la mesa** (`economia/bus.py`, su `como_items`), no
+por un origen nuevo del inbox. Dos razones: una ficha ilegible es produccion de
+la fabrica que no llego al bus, asi que pertenece a la misma bandeja que las
+propuestas que si llegaron; y un origen nuevo obliga a un descriptor nuevo para
+algo que no tiene ni un verbo -- el inbox ya tiene el molde de un aviso sin
+verbos en el adaptador de permisos, que emite uno con `verbos_validos: []`
+cuando no puede leer su archivo. El endpoint de la mesa gana la lista en su
+respuesta; el adaptador la traduce. Se
 colapsa por texto identico -- a temperatura 0 (`server.py`, config del modelo
 local) la repeticion es byte a byte -- asi que doscientos tics dan una fila con
 un contador.
