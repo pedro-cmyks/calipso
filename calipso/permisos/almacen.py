@@ -268,8 +268,8 @@ def anotar_regla(a: Accion, ctx: Contexto, texto: str,
             "permanente")
     if forma and efecto == "denegar":
         raise ErrorPermisos(
-            "una regla de negar se escribe con la forma exacta de la accion: "
-            "no admite una forma mas ancha")
+            "una regla de negar no admite forma: siempre se escribe con la "
+            "forma exacta de la accion que se esta contestando")
     regla = {"id": _id("per"), "ts": _ahora(),
              "familia": a.familia, "operacion": a.operacion,
              "forma": dict(forma) if forma else dict(a.forma),

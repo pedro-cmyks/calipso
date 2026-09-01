@@ -7,9 +7,10 @@ const DESCRIPTORES = {
     {nombre: "financiar", etiqueta: "Financiar", parametros: ["cuenta"]},
     {nombre: "descartar", etiqueta: "Descartar", parametros: []}]},
   permisos: {origen: "permisos", verbos: [
-    {nombre: "si", etiqueta: "Si", parametros: []},
-    {nombre: "si_siempre", etiqueta: "Si, siempre", parametros: []},
-    {nombre: "no", etiqueta: "No", parametros: []},
+    {nombre: "si", etiqueta: "Si", alcances: ["una_vez"], parametros: []},
+    {nombre: "si_siempre", etiqueta: "Si, siempre", alcances: ["siempre"],
+     parametros: []},
+    {nombre: "no", etiqueta: "No", alcances: ["una_vez"], parametros: []},
     {nombre: "no_siempre", etiqueta: "No, nunca mas", alcances: ["siempre"],
      parametros: []}]},
   biblioteca: {origen: "biblioteca", verbos: [

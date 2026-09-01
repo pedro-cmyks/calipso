@@ -434,11 +434,10 @@ html, body {
    no-siempre- salvo cuando el permiso permanente no esta disponible: ahi la
    nota ocupa el lugar del boton que no se dibuja, para no dejar un hueco que
    parezca un error de layout.
-   En un telefono angosto el cuarto envuelve a un segundo renglon, y se
-   acepta a proposito: que "no, nunca mas" caiga en su propio renglon lo
-   separa de las dos respuestas de una sola vez, y para una decision que no
-   se deshace facil esa separacion es mejor que cuatro botones apretados en
-   una fila. */
+   La fila paso de tres botones a cuatro con el no permanente. `flex-wrap`
+   esta puesto a proposito para que, en un ancho suficientemente chico, los
+   botones envuelvan a un segundo renglon en vez de desbordar la tarjeta --
+   no se midio en que ancho exacto pasa una cosa o la otra. */
 .permisos-panel .botones { display: flex; gap: 6px; flex-wrap: wrap; }
 .permisos-panel .botones button {
   flex: 1 1 90px; min-height: 40px; cursor: pointer;
