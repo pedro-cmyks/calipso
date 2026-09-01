@@ -4450,9 +4450,12 @@ except Exception:  # sin motor de permisos los endpoints lo dicen, no mienten
 class EcoPermisoResponderBody(BaseModel):
     # "si" | "si_siempre" | "no" | "no_siempre" (las cuatro salidas de 5.4)
     respuesta: str
-    # una forma MAS ANCHA para el permiso permanente ("escribir bajo
-    # ~/Downloads" en vez de ese archivo suelto). Tiene que cubrir la
-    # accion que se esta aprobando o `conceder` la rechaza.
+    # una forma MAS ANCHA para la regla permanente ("escribir bajo
+    # ~/Downloads" en vez de ese archivo suelto). Viaja con las dos
+    # respuestas que dejan regla, pero solo la acepta `si_siempre`: tiene
+    # que cubrir la accion que se esta contestando o `anotar_regla` la
+    # rechaza, y con `no_siempre` la rechaza siempre -- una regla de negar
+    # mas ancha que la accion bloquea sin dejar item en ninguna bandeja.
     forma: dict | None = None
 
 

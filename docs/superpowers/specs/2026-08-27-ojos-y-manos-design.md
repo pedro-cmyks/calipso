@@ -418,6 +418,14 @@ Un solo caso, y no es una carpeta de Pedro: **`~/.calipso/token` y
 El prompt es el de cualquier agente de CLI, y por eso tiene que tener las
 mismas tres salidas: **sí una vez**, **sí y no preguntes más para esto**, **no**.
 
+> **Addendum (2026-09-01).** Son cuatro salidas, no tres. Se agregó **no, nunca
+> más** (`no_siempre`): la regla permanente que niega, la simétrica de la
+> segunda. Está especificada en
+> `docs/superpowers/specs/2026-08-31-inbox-design.md`, sección 4c, y se guarda
+> en la misma lista `concedidos` de `~/.calipso/permisos.json` que las de
+> permitir, distinguida por un campo `efecto`. Lo que sigue de esta sección
+> vale igual para los dos signos salvo donde diga otra cosa.
+
 La segunda es la que hace que el modelo sea usable en vez de una tortura, y es
 la que reemplaza al pase de quince minutos de la versión anterior. Un permiso
 que vence en quince minutos obliga a Pedro a contestar lo mismo cuarenta veces

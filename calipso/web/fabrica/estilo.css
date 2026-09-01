@@ -430,10 +430,15 @@ html, body {
   padding: 8px; overflow-x: auto; font-size: 11px; margin: 6px 0 0;
   white-space: pre-wrap; word-break: break-word;
 }
-/* Los tres botones de 5.4 comparten fila y ancho -si, si-siempre, no- salvo
-   cuando el permiso permanente no esta disponible: ahi la nota ocupa el
-   lugar del boton que no se dibuja, para no dejar un hueco que parezca un
-   error de layout. */
+/* Los cuatro botones de 5.4 comparten fila y ancho -si, si-siempre, no,
+   no-siempre- salvo cuando el permiso permanente no esta disponible: ahi la
+   nota ocupa el lugar del boton que no se dibuja, para no dejar un hueco que
+   parezca un error de layout.
+   En un telefono angosto el cuarto envuelve a un segundo renglon, y se
+   acepta a proposito: que "no, nunca mas" caiga en su propio renglon lo
+   separa de las dos respuestas de una sola vez, y para una decision que no
+   se deshace facil esa separacion es mejor que cuatro botones apretados en
+   una fila. */
 .permisos-panel .botones { display: flex; gap: 6px; flex-wrap: wrap; }
 .permisos-panel .botones button {
   flex: 1 1 90px; min-height: 40px; cursor: pointer;

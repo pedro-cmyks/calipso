@@ -953,12 +953,26 @@ archivos cada 60 segundos para no dibujarlos.
 
 ## Dos limites conocidos que quedan escritos
 
-- **Un `permisos.json` ilegible desactiva las reglas de negar.** `config()`
-  devuelve la configuracion vacia cuando el archivo no se puede leer
-  (`almacen.py:140-149`), y para el si eso es el lado seguro -- se pregunta de
-  mas. Para el no significa que un json corrupto vuelve a abrir el caudal: se
-  vuelve a preguntar, que sigue siendo mejor que ejecutar, pero contradice la
-  intuicion de "la regla es permanente".
+- **Un `permisos.json` ilegible desactiva las reglas de negar, y la siguiente
+  escritura las borra.** `config()` devuelve la configuracion vacia cuando el
+  archivo no se puede leer (`almacen.py:148-166`), y mientras solo se LEE eso
+  es el lado seguro para el si -- se pregunta de mas -- y para el no significa
+  que un json corrupto vuelve a abrir el caudal: se vuelve a preguntar, que
+  sigue siendo mejor que ejecutar, pero contradice la intuicion de "la regla
+  es permanente". Esa es la mitad tranquilizadora, y no es toda la verdad. La
+  otra mitad es la ESCRITURA: `anotar_regla` y `poner_techo` hacen `d =
+  config()` y despues `_guardar(ruta_permisos(), d)`, asi que la primera
+  escritura exitosa que ocurra despues reescribe el archivo ENTERO a partir de
+  esa configuracion vacia. Ahi no se vuelve a preguntar: se pierden, y
+  definitivamente, todas las reglas -- las de negar y las de permitir --, los
+  techos que Pedro haya movido vuelven al defecto, y los preautorizados de los
+  departamentos se van con ellos, lo que ademas los ENSANCHA de vuelta a
+  `PREAUTORIZADO_DEFECTO`. Es preexistente y no lo trajo esta rama: `conceder`
+  y `poner_techo` ya se comportaban asi antes del campo `efecto`, y por eso no
+  se arregla aca. Arreglarlo es hacer que `config()` distinga AUSENTE de
+  ILEGIBLE, exactamente como ya hace `_leer_solicitudes` (`almacen.py:351-366`):
+  ausente es legitimo y da la configuracion vacia; ilegible tiene que levantar,
+  para que nadie escriba encima de lo que no pudo leer.
 
 - **"No corras git nunca mas" no es expresable.** `cubre` exige igualdad de
   `familia` y de `operacion`, y la forma por defecto es igualdad exacta de dict

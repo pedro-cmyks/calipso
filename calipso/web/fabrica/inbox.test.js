@@ -9,7 +9,9 @@ const DESCRIPTORES = {
   permisos: {origen: "permisos", verbos: [
     {nombre: "si", etiqueta: "Si", parametros: []},
     {nombre: "si_siempre", etiqueta: "Si, siempre", parametros: []},
-    {nombre: "no", etiqueta: "No", parametros: []}]},
+    {nombre: "no", etiqueta: "No", parametros: []},
+    {nombre: "no_siempre", etiqueta: "No, nunca mas", alcances: ["siempre"],
+     parametros: []}]},
   biblioteca: {origen: "biblioteca", verbos: [
     {nombre: "aceptar", etiqueta: "Aceptar", parametros: ["texto"]},
     {nombre: "descartar", etiqueta: "Descartar", parametros: ["motivo"]}]},

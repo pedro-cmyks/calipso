@@ -169,6 +169,11 @@ def evaluar(a: Accion, ctx: Contexto | None = None) -> Resolucion:
                         f"Pedro ya la aprobo ({s['id']})",
                         nivel=s.get("nivel", ""), solicitud=tomada))
 
+        # este corte precede a NIVEL_NUNCA: si alguna vez una regla llegara a
+        # cubrir una accion de ese nivel, el registro diria "regla permanente
+        # de no" en vez del motivo real (la credencial del propio servidor,
+        # 5.7). Inalcanzable hoy -- una accion NUNCA nunca crea solicitud, y
+        # sin solicitud no hay de donde escribir la regla.
         regla = almacen.regla_que_cubre(a, "denegar")
         if regla is not None:
             return _anotar(a, ctx, Resolucion(

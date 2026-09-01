@@ -17,8 +17,11 @@ import pytest
 FABRICA = pathlib.Path(__file__).parent / "calipso" / "web" / "fabrica"
 
 # Piso deliberadamente flojo: no es un trinquete sobre cuantos tests hay
-# (hoy 111), es una red contra que desaparezcan TODOS de golpe.
-PISO_DE_TESTS = 90
+# (hoy 364), es una red contra que desaparezcan TODOS de golpe. Tiene que
+# quedar proporcionado al numero real: un piso de 90 sobre 364 deja perder
+# tres cuartos de la suite del cliente sin que nada se ponga en rojo, que
+# es justo lo que este numero vino a evitar.
+PISO_DE_TESTS = 300
 
 
 def version_de(ruta: pathlib.Path) -> tuple[int, int, int]:

@@ -538,7 +538,7 @@ cajaPermisos?.addEventListener("click", async evento => {
         || "contestada";
       avisarEnPermisos(`listo: la solicitud quedo ${etiqueta}`);
     } else {
-      avisarEnPermisos("listo: se revoco el permiso");
+      avisarEnPermisos("listo: se revoco la regla permanente");
     }
   } finally {
     for (const b of botones) b.disabled = false;
