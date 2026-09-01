@@ -83,6 +83,26 @@ def recommend(files: list[dict[str, Any]] | None = None,
             # assertion sobre DONDE aterriza lo que Calipso recuerda.
             _add(plan, "test_memoria_ambito",
                  f"{path} toca en que ambito aterriza lo que se recuerda")
+            # test_memoria_carta.py es de los mismos: pytest no colecta nada
+            # de test_memory.py, asi que sin esta linea tocar la carta de un
+            # departamento tambien daria verde sin correr sus tests.
+            _add(plan, "test_memoria_carta",
+                 f"{path} toca la carta que Pedro le escribe a un departamento")
+        if "calipso/plantel/" in lower:
+            types.add("plantel")
+            # test_plantel_decision.py, test_plantel_jefe.py y
+            # test_plantel_ficha.py son de los de main(): pytest no colecta
+            # nada de test_memory.py y esta carpeta no tenia ninguna regla
+            # propia. Sin esta linea, "limpiar" la plantilla de `decision.py`
+            # y devolver el defecto del separador (H1, la lista de promesas
+            # pegada con `|`) daba verde sin correr el test de regresion que
+            # lo prohibe.
+            _add(plan, "test_plantel_decision",
+                 f"{path} toca el plantel: sesgo, prompt y parseo del jefe")
+            _add(plan, "test_plantel_jefe",
+                 f"{path} toca el plantel: el bucle del jefe")
+            _add(plan, "test_plantel_ficha",
+                 f"{path} toca el plantel: la gramatica de proponer")
         if "prompt_compiler" in lower or "context" in lower or "pedro-perfil" in lower or "pedro-cronologia" in lower:
             types.add("prompt_compiler")
             _add(plan, "test_prompt_compiler", f"{path} toca lenguaje interno/contexto")

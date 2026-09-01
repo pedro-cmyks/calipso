@@ -193,6 +193,30 @@ ALLOWLIST: dict[str, dict[str, Any]] = {
         "args": ["{python}", "-m", "pytest", "-q", "test_memoria_ambito.py"],
         "timeout": 120,
     },
+    "test_memoria_carta": {
+        "title": "Probar la carta del departamento",
+        "description": "Ejecuta test_memoria_carta.py con pytest.",
+        "args": ["{python}", "-m", "pytest", "-q", "test_memoria_carta.py"],
+        "timeout": 120,
+    },
+    "test_plantel_decision": {
+        "title": "Probar el sesgo, el prompt y el parseo del jefe",
+        "description": "Ejecuta test_plantel_decision.py con pytest.",
+        "args": ["{python}", "-m", "pytest", "-q", "test_plantel_decision.py"],
+        "timeout": 120,
+    },
+    "test_plantel_jefe": {
+        "title": "Probar el bucle del jefe",
+        "description": "Ejecuta test_plantel_jefe.py con pytest.",
+        "args": ["{python}", "-m", "pytest", "-q", "test_plantel_jefe.py"],
+        "timeout": 120,
+    },
+    "test_plantel_ficha": {
+        "title": "Probar la gramatica de proponer",
+        "description": "Ejecuta test_plantel_ficha.py con pytest.",
+        "args": ["{python}", "-m", "pytest", "-q", "test_plantel_ficha.py"],
+        "timeout": 120,
+    },
     "test_contrato_departamentos": {
         "title": "Probar los departamentos del contrato",
         "description": "Ejecuta test_contrato_departamentos.py con pytest.",

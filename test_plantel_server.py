@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 import calipso.routines as routines
 import calipso.server as srv
+from calipso import memory
 from calipso.economia import departamentos as eco_deps
 from calipso.economia import tipos as eco_tipos
 from calipso.economia.candado import candado as candado_real
@@ -90,6 +91,24 @@ def test_pensar_local_no_corre_claude_por_subscripcion(monkeypatch):
     assert llamadas == [(cfg["base_url"], cfg["model"])]
     assert cfg["model"] != dispatch.CONFIG["classifier"]["model"]
     assert resultado == "nada -- sin plata"
+
+
+def test_el_modelo_local_recibe_un_contexto_explicito(monkeypatch):
+    """Ollama trunca desde el COMIENZO del prompt cuando no entra, y
+    `decision.prompt` pone lo mas importante primero. Sin `num_ctx` fijo,
+    el jefe puede dejar de ver su carta sin que nada avise -- y la medicion
+    de la Tarea 6 no podria distinguir "el modelo la ignoro" de "nunca le
+    llego"."""
+    visto = {}
+
+    def post_espia(url, cuerpo):
+        visto.update(cuerpo)
+        return {"response": "nada\nno hay nada"}
+
+    monkeypatch.setattr(dispatch, "_http_post_json", post_espia)
+    srv._pensar_local("un prompt cualquiera")
+    assert visto["options"]["num_ctx"] == 8192
+    assert visto["options"]["temperature"] == 0
 
 
 def test_la_rutina_de_departamento_es_un_kind_valido():
@@ -258,6 +277,49 @@ def test_el_tic_no_pierde_un_asiento_escrito_a_medias(tmp_path, monkeypatch):
         "el escritor completara su append")
     assert ruta_libro.read_text(encoding="utf-8").count("\n") == 2, (
         "el archivo quedo truncado")
+
+
+def test_produccion_le_inyecta_la_carta_y_los_proyectos_al_jefe(
+        tmp_path, monkeypatch):
+    """El arnes de test_plantel_jefe.py construye el Contexto a mano, asi
+    que puede pasar aunque produccion nunca las mande. Este es el guarda
+    apuntado al unico lugar que importa.
+
+    `catastro.cargar()` va con stub a proposito: sin uno, el home
+    desechable de este test arranca sin `catastro.json`, y `cargar()` cae
+    siempre en `escanear()` -- que recorre el home REAL de Pedro con
+    subprocesos git y despues escribe. Este test no necesita ejercitar el
+    catastro real, solo que la lista que sea que devuelva `cargar()` llegue
+    al `Contexto`.
+
+    El `assert` de mas abajo compara contra el valor EXACTO que devuelve el
+    stub, no solo `isinstance(..., list)`: ese chequeo mas debil pasaba
+    igual si `server.py` dejara de pasar `proyectos=catastro.cargar()`,
+    porque `Contexto.proyectos` tiene `default_factory=list` y llegaria
+    `[]` -- una lista vacia tambien es una lista. Comparar contra el valor
+    fijo del stub es lo que hace que este test pruebe la mitad del nombre
+    que dice "y los proyectos", no solo la de la carta."""
+    monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
+    monkeypatch.setattr(memory, "CALIPSO_HOME", tmp_path)
+    carta = memory.ruta_carta("atlas")
+    carta.parent.mkdir(parents=True, exist_ok=True)
+    carta.write_text("SOY ATLAS", encoding="utf-8")
+    monkeypatch.setattr(srv.catastro, "cargar",
+                        lambda *a, **k: [{"nombre": "atlas"}])
+
+    _armar_economia(tmp_path)
+
+    visto = {}
+    monkeypatch.setattr(srv._plantel_jefe, "tic",
+                        lambda ctx, cuenta, semana: visto.update(ctx=ctx))
+    # disparar la rutina de departamento por el mismo camino que la corre el
+    # ticker; el mismo que ejercita
+    # test_el_tic_no_pierde_un_asiento_escrito_a_medias, de aca arriba.
+    handlers = srv._routine_handlers()
+    handlers["departamento"]({"cuenta": "dep:atlas"})
+
+    assert visto["ctx"].carta["texto"] == "SOY ATLAS"
+    assert visto["ctx"].proyectos == [{"nombre": "atlas"}]
 
 
 # Una ficha real, compartida por todos los tests de `proponer` de aca en

@@ -87,7 +87,7 @@ from calipso import telemetry  # noqa: E402
 from calipso import web as calipso_web  # noqa: E402
 from calipso import verification  # noqa: E402
 from calipso.tools import commands as calipso_commands  # noqa: E402
-from calipso.memory import Memory  # noqa: E402
+from calipso.memory import Memory, leer_carta  # noqa: E402
 
 # RaÃƒÂ­z del proyecto que Calipso muestra/edita. Por defecto, el cwd.
 ROOT = pathlib.Path(os.environ.get("CALIPSO_ROOT", os.getcwd())).resolve()
@@ -2788,6 +2788,8 @@ def _routine_handlers() -> dict:
             memoria=mem.departamento(cuenta.split(":", 1)[1]),
             pensar=_pensar_local,
             contratar=_contratar_para(cuenta, eco["pagador"], ts, semana),
+            carta=leer_carta(cuenta.split(":", 1)[1]),
+            proyectos=catastro.cargar(),
             publicar=_publicar_jefe(cuenta))
         # SIN candado envolvente durante el tic: incluye una llamada a un
         # modelo, y tener el flock tomado durante segundos serializa el chat
@@ -5385,7 +5387,16 @@ def _pensar_local(prompt: str) -> str:
     data = dispatch._http_post_json(
         cfg["base_url"],
         {"model": cfg["model"], "prompt": prompt, "stream": False,
-         "options": {"temperature": 0}})
+         # `num_ctx` explicito y no el default de Ollama, por dos razones que
+         # se descubrieron midiendo: Ollama trunca desde el COMIENZO del
+         # prompt, y `decision.prompt` pone primero lo que mas importa (lo
+         # aprendido, y ahora la carta del departamento). Con el default,
+         # crecer el prompt hace que el jefe deje de ver justo lo que se le
+         # agrego, en silencio: sin error y sin aviso.
+         # 8192 y no mas: `qwen2.5:7b` soporta bastante mas, pero cada token
+         # de contexto cuesta RAM en la maquina de Pedro y el prompt entero
+         # de un tic hoy no llega ni cerca. Es holgura, no capacidad.
+         "options": {"temperature": 0, "num_ctx": 8192}})
     return str(data.get("response") or "")
 
 

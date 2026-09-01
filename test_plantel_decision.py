@@ -281,6 +281,27 @@ def test_el_prompt_nombra_las_seis_promesas_y_los_cuatro_plazos():
     for plazo in ficha.PLAZOS:
         assert plazo in p, plazo
 
+def test_promete_y_tarda_van_entre_corchetes_no_pegados_a_los_dos_puntos():
+    """Regresion del defecto que encontro el experimento
+    (`carta_vs_sin_carta.py`): con la lista de opciones pegada directo
+    despues de 'promete:' y 'tarda:' -- osea con la misma forma que una
+    respuesta valida --, a sesgo alto el modelo copiaba la lista entera
+    en vez de elegir una palabra (`promete: acelerar | medir`), y
+    `parsear_ficha` la rechazaba. Medido: 10 de 12 fichas salian
+    ilegibles a sesgo 75 con la forma vieja; con las opciones envueltas
+    entre corchetes bajo a 4 de 12. Este test fija la forma nueva para
+    que nadie la vuelva a la que se copiaba."""
+    p = dec.prompt(_situacion_minima(), 50)
+    assert "promete: <UNA de estas -- " in p
+    assert "tarda:   <UNA de estas -- " in p
+    # la forma vieja: la lista pegada justo despues de los dos puntos,
+    # sin corchetes, con la misma pinta que una respuesta ya elegida
+    vieja_promete = "promete: " + " | ".join(ficha.PROMESAS) + "\n"
+    vieja_tarda = "tarda:   " + " | ".join(ficha.PLAZOS) + "\n"
+    assert vieja_promete not in p
+    assert vieja_tarda not in p
+
+
 
 def test_una_propuesta_con_forma_se_muestra_como_ficha():
     s = _situacion_minima()
@@ -327,3 +348,129 @@ def test_los_trabajos_siguen_mostrando_su_titulo():
                       "forma": {"sobre": "x", "clave": "x",
                                 "promete": "medir", "tarda": "corto"}}]
     assert "radar de precios" in dec.prompt(s, 50)
+
+
+def test_solo_los_proyectos_de_esa_cuenta():
+    proyectos = [
+        {"nombre": "lector", "departamento": "dep:taller", "linea": "el banco"},
+        {"nombre": "atlas", "departamento": "dep:research", "linea": "feeds"},
+        {"nombre": "suelto", "departamento": None, "linea": "x"},
+    ]
+    salida = dec.proyectos_de(proyectos, "dep:taller")
+    assert [p["nombre"] for p in salida] == ["lector"]
+
+
+def test_el_filtro_compara_la_cuenta_COMPLETA():
+    """El jefe despierta como `dep:taller` y el catastro guarda lo que se le
+    haya escrito. Si el filtro comparara el nombre desnudo contra la cuenta,
+    o al reves, el resultado seria la lista vacia SIN QUE NADA FALLE: la
+    asignacion se ve bien en el disco y el prompt sale sin proyectos."""
+    assert dec.proyectos_de(
+        [{"nombre": "lector", "departamento": "taller"}], "dep:taller") == []
+    assert dec.proyectos_de(
+        [{"nombre": "lector", "departamento": "dep:taller"}], "taller") == []
+
+
+def test_la_linea_de_pedro_gana_al_readme():
+    p = [{"nombre": "lector", "departamento": "dep:taller",
+          "linea": "lo que escribio Pedro", "resumen": "lo del README"}]
+    salida = dec.proyectos_de(p, "dep:taller")[0]
+    assert salida["texto"] == "lo que escribio Pedro"
+    assert salida["fuente"] == "pedro"
+
+
+def test_sin_linea_cae_al_readme_y_lo_dice():
+    p = [{"nombre": "lector", "departamento": "dep:taller",
+          "linea": "", "resumen": "lo del README"}]
+    salida = dec.proyectos_de(p, "dep:taller")[0]
+    assert salida["texto"] == "lo del README"
+    assert salida["fuente"] == "readme"
+
+
+def test_sin_nada_lo_dice_en_vez_de_inventar():
+    p = [{"nombre": "lector", "departamento": "dep:taller"}]
+    salida = dec.proyectos_de(p, "dep:taller")[0]
+    assert salida["texto"] == ""
+    assert salida["fuente"] == "ninguna"
+
+
+def test_una_linea_de_puros_espacios_no_es_una_linea():
+    p = [{"nombre": "lector", "departamento": "dep:taller",
+          "linea": "   ", "resumen": "lo del README"}]
+    assert dec.proyectos_de(p, "dep:taller")[0]["fuente"] == "readme"
+
+
+def test_sin_proyectos_devuelve_lista_vacia_y_no_revienta():
+    assert dec.proyectos_de([], "dep:taller") == []
+    assert dec.proyectos_de(None, "dep:taller") == []
+
+
+def test_la_carta_sale_como_su_propio_bloque():
+    p = dec.prompt(_situacion_minima(), 50,
+                   carta={"estado": "escrita", "texto": "I+D para Pedro."})
+    assert "Este departamento:" in p
+    assert "I+D para Pedro." in p
+
+
+def test_la_carta_NO_sale_bajo_lo_que_aprendiste_antes():
+    """El invariante de procedencia. Si la carta viajara por el nucleo, el
+    prompt le diria al modelo que una instruccion de Pedro es algo que el
+    departamento concluyo solo."""
+    p = dec.prompt(_situacion_minima(), 50, nucleo="lo que aprendi solo",
+                   carta={"estado": "escrita", "texto": "LA CARTA"})
+    cabeza = p.split("Lo que aprendiste antes:")[1].split("\n\n")[0]
+    assert "LA CARTA" not in cabeza
+
+
+def test_sin_carta_el_bloque_lo_dice_en_vez_de_desaparecer():
+    """Hoy el bloque del nucleo se esfuma cuando esta vacio, asi que "nadie
+    escribio" y "escribio nada" se leen igual y el jefe no puede notar que le
+    falta algo."""
+    p = dec.prompt(_situacion_minima(), 50,
+                   carta={"estado": "ausente", "texto": ""})
+    assert "Este departamento:" in p
+    assert "no tiene carta" in p
+
+
+def test_una_carta_vacia_no_se_lee_igual_que_una_ausente():
+    ausente = dec.prompt(_situacion_minima(), 50,
+                         carta={"estado": "ausente", "texto": ""})
+    vacia = dec.prompt(_situacion_minima(), 50,
+                       carta={"estado": "vacia", "texto": ""})
+    assert ausente != vacia
+
+
+def test_los_proyectos_salen_con_su_procedencia():
+    p = dec.prompt(_situacion_minima(), 50, proyectos=[
+        {"nombre": "lector", "texto": "el banco", "fuente": "pedro"},
+        {"nombre": "atlas", "texto": "feeds", "fuente": "readme"}])
+    assert "Proyectos a tu cargo:" in p
+    assert "lector" in p and "el banco" in p
+    assert "(de Pedro)" in p and "(del README)" in p
+
+
+def test_sin_proyectos_el_bloque_lo_dice():
+    p = dec.prompt(_situacion_minima(), 50, proyectos=[])
+    assert "Proyectos a tu cargo:" in p
+    assert "ninguno asignado" in p
+
+
+def test_un_proyecto_sin_texto_lo_dice_y_no_miente():
+    p = dec.prompt(_situacion_minima(), 50, proyectos=[
+        {"nombre": "suelto", "texto": "", "fuente": "ninguna"}])
+    assert "suelto" in p
+
+
+def test_los_bloques_nuevos_no_traen_las_palabras_prohibidas():
+    """Dos tests que ya existen afirman que `trabajar` y `comentar` no
+    aparecen cuando el menu no las ofrece. Cualquier texto nuevo que las
+    contenga los rompe aunque el menu este perfecto."""
+    p = dec.prompt(_situacion_minima(), 50,
+                   carta={"estado": "ausente", "texto": ""}, proyectos=[])
+    assert "trabajar" not in p and "comentar" not in p
+
+
+def test_sin_los_parametros_nuevos_el_prompt_sigue_saliendo():
+    """Los doce tests viejos del prompt llaman sin carta y sin proyectos.
+    Los defaults tienen que dejarlos pasar."""
+    assert dec.prompt(_situacion_minima(), 50)

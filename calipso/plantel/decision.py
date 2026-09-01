@@ -40,8 +40,42 @@ def _como_se_ve(p: dict) -> str:
     return f"{f['promete']}: {f['sobre']} ({f['tarda']})"
 
 
+def proyectos_de(proyectos, cuenta: str) -> list[dict]:
+    """Los proyectos que le tocan a esta cuenta, con la procedencia de su
+    texto dicha.
+
+    Compara la CUENTA COMPLETA (`dep:taller`), no el nombre desnudo. Si los
+    dos lados usaran formatos distintos, esto devolveria la lista vacia sin
+    que nada fallara: la asignacion se veria bien guardada y el prompt
+    saldria sin proyectos. Hay un test que fija las dos direcciones.
+
+    La procedencia se devuelve como un valor -- `pedro`, `readme` o
+    `ninguna` -- y no como texto ya formateado, para que el prompt decida
+    como decirlo y para que no haya dos implementaciones de la misma frase.
+    Un jefe que lee una linea de Pedro y una sacada de un README no puede
+    tratarlas igual: la primera es una decision, la segunda es lo que un
+    archivo dijo alguna vez.
+    """
+    salida = []
+    for p in (proyectos or []):
+        if p.get("departamento") != cuenta:
+            continue
+        linea = (p.get("linea") or "").strip()
+        resumen = (p.get("resumen") or "").strip()
+        if linea:
+            texto, fuente = linea, "pedro"
+        elif resumen:
+            texto, fuente = resumen, "readme"
+        else:
+            texto, fuente = "", "ninguna"
+        salida.append({"nombre": p.get("nombre", ""), "texto": texto,
+                       "fuente": fuente})
+    return salida
+
+
 def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
-          recientes: "list[str] | tuple" = ()) -> str:
+          recientes: "list[str] | tuple" = (), carta: dict | None = None,
+          proyectos: "list[dict] | None" = None) -> str:
     """Corto a proposito: corre seguido y en el escalon barato.
 
     `nucleo` es el markdown de la memoria del departamento. Sin el, el jefe
@@ -80,6 +114,43 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
     ultimas = ("Lo que decidiste en los ultimos tics (no repitas lo mismo):\n"
               + "\n".join(f"  - {r}" for r in recientes) + "\n\n") if recientes else ""
 
+    # La carta de Pedro, en SU PROPIO bloque y no adentro de `aprendido`.
+    # El bloque de arriba se titula "Lo que aprendiste antes": una
+    # instruccion de Pedro ahi adentro le llegaria al modelo rotulada como
+    # una conclusion que el departamento saco solo, que es lo contrario de
+    # lo que es.
+    #
+    # Y habla cuando esta vacia, con tres estados y no dos. Hoy el bloque
+    # del nucleo desaparece entero si no hay texto, asi que "nadie escribio"
+    # y "escribio nada" se leen igual y el jefe no puede notar que le falta
+    # algo.
+    c = carta or {"estado": "ausente", "texto": ""}
+    if c["estado"] == "escrita":
+        bloque_carta = f"Este departamento:\n{c['texto']}\n\n"
+    elif c["estado"] == "vacia":
+        bloque_carta = ("Este departamento: Pedro empezo su carta y la dejo "
+                        "en blanco.\n\n")
+    else:
+        bloque_carta = ("Este departamento: todavia no tiene carta. Pedro no "
+                        "escribio para que existe, asi que no sabes que te "
+                        "toca ni que no.\n\n")
+
+    # Los proyectos, con la procedencia DICHA: una linea de Pedro es una
+    # decision; una sacada de un README es lo que un archivo dijo alguna vez.
+    _COMO = {"pedro": "(de Pedro)", "readme": "(del README)",
+             "ninguna": "(sin descripcion)"}
+    ps = proyectos or []
+    if ps:
+        filas = "\n".join(
+            # sin `texto` no se deja un doble espacio ni dos puntos huerfanos:
+            # "  - suelto (sin descripcion)" se lee; "  - suelto:  (...)" no.
+            (f"  - {p['nombre']}: {p['texto']} {_COMO[p['fuente']]}"
+             if p["texto"] else f"  - {p['nombre']} {_COMO[p['fuente']]}")
+            for p in ps)
+        bloque_proyectos = f"Proyectos a tu cargo:\n{filas}\n\n"
+    else:
+        bloque_proyectos = "Proyectos a tu cargo: ninguno asignado.\n\n"
+
     # los objetos que este departamento ya nombro, para que COPIE en vez de
     # reinventar: sin esto "radar de precios" y "monitor de precios" son dos
     # familias, ocupan dos lugares en la mesa y un "nunca mas" sobre una no
@@ -108,6 +179,8 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
         menu.append("  comentar <id>")
 
     return (
+        bloque_carta +
+        bloque_proyectos +
         aprendido +
         ultimas +
         catalogo +
@@ -131,10 +204,12 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
         "Elegi UNA accion. Primera linea, sin nada mas:\n"
         + "\n".join(menu) + "\n"
         "Segunda linea: un renglon con el motivo.\n\n"
-        "Si elegis proponer, en vez del motivo van CUATRO renglones:\n"
+        "Si elegis proponer, en vez del motivo van CUATRO renglones. En\n"
+        "'promete' y 'tarda' va UNA SOLA palabra de la lista entre\n"
+        "corchetes -- nunca la lista entera ni mas de una palabra:\n"
         "  sobre:   <el objeto, en tus palabras>\n"
-        "  promete: " + " | ".join(ficha.PROMESAS) + "\n"
-        "  tarda:   " + " | ".join(ficha.PLAZOS) + "\n"
+        "  promete: <UNA de estas -- " + " | ".join(ficha.PROMESAS) + ">\n"
+        "  tarda:   <UNA de estas -- " + " | ".join(ficha.PLAZOS) + ">\n"
         "  porque:  <un renglon, opcional>\n"
         "IMPORTANTE: escribi TODO en castellano. Ni una sola palabra en chino,\n"
         "ingles ni ningun otro idioma."

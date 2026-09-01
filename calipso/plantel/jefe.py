@@ -34,6 +34,13 @@ class Contexto:
     contratar: Callable[..., Any]
     publicar: Callable[..., None] = field(
         default=lambda evento, **campos: None)
+    # Lo que el departamento ES, y que proyectos le tocan. Se INYECTAN, no se
+    # leen: `jefe.py` no importa `memory` ni `catastro`, igual que no importa
+    # el kernel ni el bus. Es lo que deja que los tests pongan una carta sin
+    # tocar disco, y lo que evita que leer una carta cree directorios.
+    carta: dict = field(default_factory=lambda: {"estado": "ausente",
+                                                 "texto": ""})
+    proyectos: list = field(default_factory=list)
 
 
 def freno_preseed(s: dict) -> str | None:
@@ -335,7 +342,9 @@ def tic(ctx: Contexto, cuenta: str, semana: str) -> dict:
     # agente abierto en el pulso sin nadie que lo cierre
     try:
         p = dec.prompt(s, sesgo, ctx.memoria.load_core(),
-                       ctx.memoria.recent(limit=5))
+                       ctx.memoria.recent(limit=5),
+                       carta=ctx.carta,
+                       proyectos=dec.proyectos_de(ctx.proyectos, cuenta))
     except Exception as exc:
         return salida(motivo=f"no armo el prompt: {exc}",
                       freno="fallo antes de pensar")
