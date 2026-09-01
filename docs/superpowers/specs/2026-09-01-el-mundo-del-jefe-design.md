@@ -209,6 +209,64 @@ un resultado util y barato.
 **Es un script de una corrida, no una suite.** Vive en el repo, se corre a mano,
 y su salida se lee una vez. No corre en CI y no bloquea nada.
 
+### Resultado de la corrida (2026-09-01, qwen2.5:7b)
+
+`experimentos/carta_vs_sin_carta.py` corrio **6 situaciones** -- sin nada, con
+un trabajo vivo, con dos propuestas propias en pie, con una descartada de esta
+semana, con la bandeja llena (tres propuestas, el techo de `jefe.py`) y con el
+catalogo poblado -- cada una renderizada con la carta y los proyectos y sin
+ellos: 12 llamadas al modelo local. Se corrio dos veces completas para ver si
+el resultado se repetia, y se repitio identico en las 12 comparaciones.
+
+**Si la ficha cambia.** En **5 de las 6 situaciones el jefe contesto `nada`
+con carta y sin carta por igual** -- la carta no cambio la decision porque no
+hubo decision de proponer que comparar. En la sexta -- catalogo poblado --
+las dos corridas coincidieron:
+- **CON carta**: `proponer -> acelerar: el banco del lector para
+  calipso-lector (corto|medio)`. Nombro exactamente el proyecto que
+  `PROYECTOS` le paso (`calipso-lector`, "falta el banco de pruebas") y
+  respeto el limite que la carta le puso (I+D de hardware, no tocar Calipso
+  mismo).
+- **SIN carta**: `nada`, con el motivo textual "no veo necesidad de proponer
+  algo **sin tener un proyecto asignado**".
+Es un solo punto de datos, pero es exactamente la hipotesis: con contexto
+nombra el objeto que el contexto le dio; sin contexto, dice explicitamente
+que no tiene de que proponer.
+
+**Si la ficha sigue parseando.** Si. Las dos veces que el modelo eligio
+`proponer` los cuatro renglones (`sobre`, `promete`, `tarda`, `porque`)
+vinieron completos y con valores del vocabulario de `ficha.py`
+(`acelerar`, `corto`/`medio`). En las 22 respuestas restantes la primera
+linea fue una accion valida del menu (siempre `nada`), sin prosa suelta, sin
+mezcla de idioma. `parsear_ficha` no devolvio `None` ninguna vez que hizo
+falta parsear.
+
+**Si la carta llega.** Si, con margen amplio. `prompt_eval_count` de Ollama
+fue de **409 a 500 tokens** en las doce situaciones (el prompt mas largo,
+"bandeja llena" con carta, tiene 1505 caracteres). Contra el `num_ctx` de
+8192 fijado en la Tarea 1, sobran mas de 7600 tokens: nada se corta.
+
+**Lo que hay que decir sobre la fuerza de la evidencia.** El sesgo que el
+script le pasa a `dec.prompt` es 50 ("mantener el equilibrio"), y con ese
+sesgo el modelo casi nunca elige `proponer`: de las 12 llamadas, 11 dijeron
+`nada`. Eso deja **una sola comparacion informativa de seis posibles**, no
+seis. Las otras cinco no contradicen la hipotesis -- pero tampoco la prueban,
+son un empate. Una corrida futura con el sesgo inclinado a explorar (>=60)
+generaria mas propuestas y mas comparaciones reales.
+
+**Lo que no es la hipotesis pero se noto de paso.** En varias respuestas
+`nada` el modelo confunde en su prosa el presupuesto semanal restante
+(`presupuesto_semanal_mm - salidas_semana_mm`) con la billetera total
+(`disponible_mm`) -- llama "disponible" a un numero que es el otro. No afecta
+la decision parseada, pero es una senal de que el modelo de 7b no lee los
+numeros del prompt con precision.
+
+**La lectura para Pedro.** El unico punto de datos que compara algo real
+confirma la hipotesis sin contradecirla en ningun lado, y el costo tecnico
+(parseo, contexto) no aparecio. Pero es un punto, no una tendencia: antes de
+pagar la Fase 2 completa vale la pena, como minimo, repetir la corrida con el
+sesgo inclinado a explorar para juntar mas de una comparacion real.
+
 ## 8. La Fase 2, y lo que la revision descubrio que cuesta
 
 Esto **no se escribe hasta que la Fase 1 conteste**. Se documenta ahora porque
