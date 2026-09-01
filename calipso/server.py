@@ -3996,7 +3996,7 @@ def api_eco_bus() -> dict:
                 # .get() con default, como situacion.py: una linea vieja o
                 # de un esquema anterior en el bus real de Pedro no puede
                 # tumbar la mesa entera con un 500 mudo.
-                propuestas.append({
+                fila = {
                     "id": id_, "estado": estado,
                     "departamento": d.get("departamento", ""),
                     # SIN esto la mesa no puede financiar un pre-seed: se
@@ -4014,7 +4014,21 @@ def api_eco_bus() -> dict:
                     "gastado_mm": _eco_bus.gastado(asientos, id_,
                                                    m.suscripciones),
                     "aportes": _eco_bus.aportes(asientos, id_),
-                })
+                }
+                # la metrica de exito NO se guarda en el libro: se deriva de
+                # `promete` cada vez que se muestra. Es la unica manera de
+                # que cambiar la tabla arregle tambien las propuestas
+                # viejas.
+                # `.get()`, no corchetes: esta funcion es deliberadamente
+                # defensiva para tolerar una linea vieja o editada a mano
+                # del bus real de Pedro (comentario de mas arriba), y con
+                # corchetes esta era la unica de las tres derivaciones que
+                # revienta con un 500 en toda la mesa en vez de degradar.
+                f = d.get("forma")
+                if f and _plantel_ficha is not None:
+                    fila["metrica"] = _plantel_ficha.METRICA.get(
+                        f.get("promete"), "")
+                propuestas.append(fila)
             deps_fabrica = [
                 {"cuenta": f"dep:{x.nombre}", "nombre": x.nombre,
                  "zona": x.zona,
@@ -4028,9 +4042,19 @@ def api_eco_bus() -> dict:
             tesoro = m.k.saldo(_eco_tipos.TESORO)
     except _eco_errores_economicos as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    # las fichas que no se entendieron viajan con la mesa y no por un
+    # origen nuevo del inbox: son produccion de la fabrica que no llego
+    # al bus, asi que pertenecen a la misma bandeja que las que si
+    # llegaron -- y un origen nuevo obligaria a un descriptor entero
+    # para algo que no tiene ni un verbo. Si el modulo no se pudo
+    # importar, la clave va vacia: una bandeja que pierde sus avisos es
+    # mejor que una que no carga.
+    ilegibles = (_plantel_ilegibles.colapsados(_ECO_BASE, semana)
+                 if _plantel_ilegibles is not None else [])
     return {"activa": True, "semana": semana, "semana_abierta": abierta,
             "propuestas": propuestas, "vencidas": vencidas,
-            "departamentos": deps_fabrica, "tesoro_mm": tesoro}
+            "departamentos": deps_fabrica, "tesoro_mm": tesoro,
+            "ilegibles": ilegibles}
 
 
 @app.get("/api/inbox")
@@ -5254,9 +5278,13 @@ def api_eco_frontera_acunar(body: EcoFronteraAcunarBody) -> dict:
 # _mapa_ficha is None. Antes de esto, romper el plantel dejaba el chat
 # entero cobrando en silencio a nadie.
 try:
+    from calipso.plantel import ficha as _plantel_ficha
+    from calipso.plantel import ilegibles as _plantel_ilegibles
     from calipso.plantel import interruptor as _plantel_it
     from calipso.plantel import jefe as _plantel_jefe
 except Exception:  # el plantel no esta disponible: el tablero responde inactivo
+    _plantel_ficha = None
+    _plantel_ilegibles = None
     _plantel_it = _plantel_jefe = None
 
 
@@ -5438,7 +5466,7 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
         return propias >= _plantel_jefe.TECHO_PROPUESTAS
 
     def contratar(situacion: dict, accion: str, ref: str | None,
-                  motivo: str = ""):
+                  motivo: str = "", ficha=None):
         if accion == "comentar":
             # opinar es barato: no contrata a nadie y no cobra
             return {"accion": "comentar", "ref": ref, "en": "memoria"}
@@ -5599,11 +5627,25 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
             tope = (situacion.get("disponible_mm", 0)
                     * situacion["agresividad_pct"] // 100)
         presupuesto = max(1, tope - situacion["salidas_semana_mm"])
+        if ficha is None:
+            # No hay camino de produccion que llegue aca sin ficha: `tic` la
+            # desvia a la valvula antes de contratar. Pero el libro es
+            # append-only, asi que una propuesta sin identidad escrita por
+            # un llamador futuro no se podria borrar despues.
+            return {"accion": accion, "ref": ref, "en": "nada",
+                    "motivo": "una propuesta sin ficha no tiene identidad: "
+                              "no se escribe"}
         propuesta = f"{situacion['nombre']}-{uuid.uuid4().hex[:8]}"
-        # El titulo del bus es lo que Pedro lee para decidir si financia: que
-        # sea el motivo que el jefe razono, no el relleno del planificador
-        # (`synthesis` es casi siempre la misma constante de fallback).
-        titulo = (motivo or f"{accion} {ref or ''}".strip())[:120]
+        # El titulo sale de la ficha, no del motivo crudo: es lo que Pedro
+        # lee, y ahora lleva adentro lo mismo que la maquina compara.
+        titulo = _plantel_ficha.titulo_de(ficha)
+        # `semanas_max` sale del plazo que declaro el jefe. Antes eran
+        # cuatro semanas escritas a mano, iguales para una propuesta de una
+        # semana que para una de un trimestre.
+        semanas = _plantel_ficha.SEMANAS_MAX[ficha["tarda"]]
+        # al libro va la forma SIN `porque`: la prosa no se compara, y
+        # guardarla adentro de la forma invitaria a compararla.
+        forma = {c: ficha[c] for c in ("sobre", "clave", "promete", "tarda")}
         # bus.alta ES una escritura: va bajo el mismo candado que las demas
         # escrituras de economia, con un Bus fresco construido adentro.
         with _eco_candado(pagador.ruta_libro):
@@ -5615,7 +5657,9 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
                                   "sumar otra"}
             bus_fresco.alta(ts, semana, propuesta, cuenta, titulo,
                             presupuesto, presupuesto,
-                            {"gasto_max_mm": presupuesto, "semanas_max": 4})
+                            {"gasto_max_mm": presupuesto,
+                             "semanas_max": semanas},
+                            forma=forma)
         return {"accion": accion, "ref": ref, "propuesta": propuesta}
     return contratar
 

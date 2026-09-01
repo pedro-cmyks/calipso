@@ -92,10 +92,23 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
     # propuesta — y `comentar` sin nada sobre lo que opinar.
     trabajos, propias, ajenas, descartadas = [], [], [], []
     preseed_pendiente = 0
+    # ternas (ts, sobre, clave) crudas; el orden y el deduplicado se
+    # resuelven DESPUES del bucle, sobre el `ts` del alta. No se puede
+    # ordenar por `bus.ids()`: ese orden es alfabetico, y el id de
+    # produccion lleva un uuid (ver server.py) -- ordenar por id es
+    # ordenar al azar.
+    catalogo: list[tuple[str, str, str]] = []
     for id_ in bus.ids():
         estado = bus.estado(id_)
         datos = bus.datos(id_)
         mio = datos.get("departamento") == cuenta
+        forma = datos.get("forma")
+        if mio and forma:
+            # el catalogo existe para que el modelo COPIE en vez de
+            # reinventar, asi que incluye tambien lo muerto: el objeto que
+            # nombro hace dos meses es justo el que va a redactar distinto.
+            catalogo.append((datos.get("ts", ""), forma["sobre"],
+                             forma["clave"]))
         if estado == "descartada":
             # el "no" de Pedro, de ESTA semana. Descartar libera el cupo
             # (para eso existe: sin eso el jefe se frena al llegar a su
@@ -106,7 +119,8 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
             # de 3b leyendo "no repitas lo mismo".
             if mio and datos.get("semana_descartada") == semana:
                 descartadas.append({"id": id_,
-                                    "titulo": datos.get("titulo", "")})
+                                    "titulo": datos.get("titulo", ""),
+                                    "forma": datos.get("forma")})
             continue
         if estado not in ("alta", "financiada"):
             continue                       # muerta, cerrada o liquidada
@@ -123,8 +137,12 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
             # que opinar) y no suma al pendiente. Sigue en el bus, en
             # `alta`: no se borro nada, dejo de contar.
             continue
+        # la forma tipada, o None para las escritas antes de que existiera.
+        # El prompt la lee con .get() y cae al titulo, asi que una vieja se
+        # sigue mostrando como siempre.
         base = {"id": id_, "titulo": datos.get("titulo", ""),
-                "presupuesto_mm": datos.get("presupuesto_mm", 0)}
+                "presupuesto_mm": datos.get("presupuesto_mm", 0),
+                "forma": datos.get("forma")}
         if estado == "financiada":
             # un pre-seed financiado no es un trabajo: la plata ya esta en
             # la cuenta del departamento (no en trabajo:<id>), asi que no
@@ -145,6 +163,20 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
                 preseed_pendiente += datos.get("presupuesto_mm", 0)
         else:
             ajenas.append({**base, "dueno": datos.get("departamento", "")})
+
+    # el orden sale del `ts` del alta, DESCENDENTE -- el mas nuevo primero.
+    # Recien con eso ordenado se deduplica por clave, quedandose con la
+    # primera aparicion (que ya es la mas nueva de esa familia), y recien
+    # ahi se corta a doce: deduplicar antes de ordenar dejaria una
+    # redaccion arbitraria, y cortar antes de deduplicar podria dejar menos
+    # de doce objetos distintos.
+    catalogo.sort(key=lambda tripleta: tripleta[0], reverse=True)
+    vistas: set[str] = set()
+    objetos_catalogo: list[str] = []
+    for _, sobre, clave in catalogo:
+        if clave not in vistas:
+            vistas.add(clave)
+            objetos_catalogo.append(sobre)
 
     return {
         "cuenta": cuenta,
@@ -199,4 +231,9 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
         "compuertas_pendientes": sum(
             1 for c in cola.pendientes() if c.get("departamento") == cuenta),
         "capacidad": _capacidad(asientos, suscripciones, semana, ops),
+        # los objetos que este departamento ya nombro, el mas nuevo por
+        # `ts` primero, hasta doce. El tope es de espacio del prompt, no
+        # una regla sobre lo que puede hacer: nombrar uno que no esta en la
+        # lista es correcto y esperado.
+        "catalogo": objetos_catalogo[:12],
     }

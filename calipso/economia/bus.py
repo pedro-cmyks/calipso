@@ -30,6 +30,19 @@ from .tipos import Asiento, TESORO, TipoAsiento
 _CLAVES_CRITERIO = {"gasto_max_mm", "semanas_max"}
 _TIPOS_PROPUESTA = {"trabajo", "preseed"}
 
+# La forma de una propuesta: lo UNICO que se compara. El titulo es prosa y
+# no participa de ninguna comparacion, igual que en el motor de permisos.
+#
+# Se listan aca y NO se importan de `calipso.plantel.ficha` a proposito: el
+# bus es el libro, y el libro no puede depender de quien lo escribe. Si el
+# plantel cambia su vocabulario, el bus tiene que seguir leyendo lo que ya
+# esta escrito -- y que las dos listas se separen tiene que romper un test,
+# no una lectura del libro.
+_CLAVES_FORMA = {"sobre", "clave", "promete", "tarda"}
+_PROMESAS = {"ahorrar", "acelerar", "arreglar", "medir", "construir",
+             "descartar"}
+_PLAZOS = {"corto", "medio", "largo", "no se"}
+
 # Cuantas semanas operativas mira hacia atras el techo acumulado de
 # pre-seed (`Departamento.techo_preseed_ciclo_mm`). Vive ACA y no en
 # `capacidad` a proposito: coincide en valor con `SEMANAS_POR_CICLO` pero
@@ -69,7 +82,8 @@ class Bus:
 
     def alta(self, ts: str, semana: str, id: str, departamento_cuenta: str,
              titulo: str, presupuesto_mm: int, retorno_mm: int,
-             criterio: dict, tipo: str = "trabajo") -> None:
+             criterio: dict, tipo: str = "trabajo",
+             forma: dict | None = None) -> None:
         if not id or ":" in id:
             raise ErrorBus(f"id invalido: {id!r}")
         if any(e["id"] == id for e in self._eventos):
@@ -84,6 +98,26 @@ class Bus:
             if not (isinstance(valor, int) and not isinstance(valor, bool)
                     and valor > 0):
                 raise ErrorBus(f"criterio con valor invalido: {clave}={valor!r}")
+        # OPCIONAL, no obligatoria para tipo="trabajo", que era lo natural:
+        # `alta` tiene dos llamadores de produccion y 123 sitios de llamada
+        # en los tests. Hacerla obligatoria convierte un cambio de dos
+        # lineas en un barrido mecanico de 123 ediciones. Y seria
+        # incoherente: si LEER tolera que no este -- una propuesta escrita
+        # antes de que la forma existiera -- ESCRIBIR tambien.
+        # El guarda de que el camino de produccion siempre la manda vive en
+        # test_plantel_server.py, apuntado al unico lugar que importa.
+        if forma is not None:
+            if not isinstance(forma, dict) or set(forma) != _CLAVES_FORMA:
+                raise ErrorBus(
+                    f"forma invalida (claves {_CLAVES_FORMA}): {forma!r}")
+            if forma["promete"] not in _PROMESAS:
+                raise ErrorBus(f"promesa invalida: {forma['promete']!r}")
+            if forma["tarda"] not in _PLAZOS:
+                raise ErrorBus(f"plazo invalido: {forma['tarda']!r}")
+            for clave in ("sobre", "clave"):
+                if not (isinstance(forma[clave], str) and forma[clave].strip()):
+                    raise ErrorBus(
+                        f"forma con {clave} vacio: {forma[clave]!r}")
         if not (isinstance(presupuesto_mm, int) and not isinstance(presupuesto_mm, bool)
                 and presupuesto_mm > 0):
             raise ErrorBus(
@@ -92,11 +126,14 @@ class Bus:
                 and retorno_mm > 0):
             raise ErrorBus(
                 f"retorno_mm debe ser entero positivo: {retorno_mm!r}")
-        self._apilar({"ts": ts, "semana": semana, "evento": "alta", "id": id,
-                      "departamento": departamento_cuenta, "titulo": titulo,
-                      "presupuesto_mm": presupuesto_mm,
-                      "retorno_mm": retorno_mm, "criterio": criterio,
-                      "tipo": tipo})
+        evento = {"ts": ts, "semana": semana, "evento": "alta", "id": id,
+                  "departamento": departamento_cuenta, "titulo": titulo,
+                  "presupuesto_mm": presupuesto_mm,
+                  "retorno_mm": retorno_mm, "criterio": criterio,
+                  "tipo": tipo}
+        if forma is not None:
+            evento["forma"] = dict(forma)
+        self._apilar(evento)
 
     def _eventos_de(self, id: str) -> list[dict]:
         eventos = [e for e in self._eventos if e["id"] == id]
@@ -822,6 +859,7 @@ def como_items(datos_endpoint: dict) -> list[dict]:
                   "tipo": p.get("tipo"),
                   "presupuesto_mm": p.get("presupuesto_mm"),
                   "gastado_mm": p.get("gastado_mm"),
+                  "metrica": p.get("metrica", ""),
                   "verbos_validos": verbos_validos}
         if p.get("tipo") == "preseed":
             # un pre-seed lo paga el tesoro y nada mas: bus.financiar
@@ -837,4 +875,20 @@ def como_items(datos_endpoint: dict) -> list[dict]:
              "semana": v.get("semana"),
              "presupuesto_mm": v.get("presupuesto_mm"),
              "verbos_validos": ["descartar"]}))
+    # Las fichas que no se entendieron. Son AVISOS y no decisiones: nada
+    # espera un verbo de Pedro, y contarlas para el badge lo haria mentir.
+    # El molde es el aviso que emite el adaptador de permisos cuando no
+    # puede leer su archivo: clase "aviso", `verbos_validos` vacio.
+    for i, fila in enumerate(datos_endpoint.get("ilegibles") or []):
+        veces = fila.get("veces", 1)
+        repeticion = f" (x{veces})" if veces > 1 else ""
+        items.append({
+            "id": f"ilegible:{i}", "origen": ORIGEN_INBOX, "clase": "aviso",
+            "ts": fila.get("ts", ""),
+            "titulo": f"{fila.get('departamento', '?')} escribio algo que no "
+                      f"entra en una ficha{repeticion}: {fila.get('crudo', '')}",
+            "cuerpo": {"departamento": fila.get("departamento", ""),
+                       "crudo": fila.get("crudo", ""),
+                       "veces": veces, "verbos_validos": []},
+            "estado": "aviso", "respuesta": None})
     return items

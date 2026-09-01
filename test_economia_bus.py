@@ -11,6 +11,7 @@ from calipso.economia.libro import Libro
 from calipso.economia.kernel import Kernel
 
 TS = "2026-08-25T10:00:00"
+W = "2026-W30"
 
 SUS = cap.Suscripcion(nombre="claude_max", costo_mensual_mm=100_000,
                       capacidad_ciclo=1_000, reserva_personal=200,
@@ -1018,3 +1019,65 @@ def test_gastado_sin_suscripciones_cuenta_solo_la_plata(entorno):
     asientos = k.libro.asientos()
     assert bus_mod.gastado(asientos, "p1") == 7_000
     assert bus_mod.gastado(asientos, "p1", m.suscripciones) == 9_000
+
+
+FORMA_OK = {"sobre": "el radar de precios", "clave": "precios+radar",
+            "promete": "descartar", "tarda": "corto"}
+
+
+def test_una_propuesta_puede_llevar_su_forma(tmp_path):
+    b = bus_mod.Bus(tmp_path / "bus.jsonl")
+    b.alta(TS, W, "p1", "dep:a", "descartar: el radar (corto)", 10_000,
+           10_000, {"gasto_max_mm": 10_000, "semanas_max": 1},
+           forma=FORMA_OK)
+    assert b.datos("p1")["forma"] == FORMA_OK
+
+
+def test_una_propuesta_sin_forma_sigue_siendo_valida(tmp_path):
+    """Compatibilidad: las que se escribieron antes de que la forma
+    existiera se leen, se financian y se descartan igual. No hay
+    migracion."""
+    b = bus_mod.Bus(tmp_path / "bus.jsonl")
+    b.alta(TS, W, "p1", "dep:a", "radar", 10_000, 10_000,
+           {"gasto_max_mm": 10_000})
+    assert b.datos("p1").get("forma") is None
+    assert b.estado("p1") == "alta"
+
+
+def test_una_forma_invalida_no_entra_al_libro(tmp_path):
+    """El libro es append-only: una forma mal escrita no se puede borrar
+    despues, asi que se corta antes de escribirla."""
+    b = bus_mod.Bus(tmp_path / "bus.jsonl")
+    casos = [
+        {"sobre": "x", "clave": "x", "promete": "bailar", "tarda": "corto"},
+        {"sobre": "x", "clave": "x", "promete": "medir", "tarda": "ya"},
+        {"sobre": "x", "clave": "x", "promete": "medir"},
+        {"sobre": "", "clave": "x", "promete": "medir", "tarda": "corto"},
+        {"sobre": "x", "clave": "", "promete": "medir", "tarda": "corto"},
+        {"sobre": "x", "clave": "x", "promete": "medir", "tarda": "corto",
+         "de_mas": 1},
+        42,
+        ["sobre", "clave", "promete", "tarda"],
+    ]
+    for i, forma in enumerate(casos):
+        with pytest.raises(bus_mod.ErrorBus):
+            b.alta(TS, W, f"p{i}", "dep:a", "t", 1000, 1000,
+                   {"gasto_max_mm": 1000}, forma=forma)
+
+
+def test_un_preseed_no_lleva_forma(tmp_path):
+    """No sale de una ficha: sale de `pedir <monto>`, que es otro verbo."""
+    b = bus_mod.Bus(tmp_path / "bus.jsonl")
+    b.alta(TS, W, "p1", "dep:a", "ronda pre-seed de a", 50_000, 50_000,
+           {"gasto_max_mm": 50_000}, tipo="preseed")
+    assert b.datos("p1").get("forma") is None
+
+
+def test_el_vocabulario_del_libro_y_el_del_plantel_no_se_separan():
+    """La duplicacion es deliberada -- el libro no puede importar de quien
+    lo escribe -- pero tiene que ser una copia, no una deriva. El test
+    importa `ficha`; `bus.py` sigue sin importarlo, que es lo que el diseno
+    protege."""
+    from calipso.plantel import ficha as _ficha
+    assert set(_ficha.PROMESAS) == bus_mod._PROMESAS
+    assert set(_ficha.PLAZOS) == bus_mod._PLAZOS

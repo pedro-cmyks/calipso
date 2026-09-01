@@ -10,6 +10,8 @@ from calipso.economia import tipos as t
 from calipso.economia.bus import Bus, cuenta_trabajo
 from calipso.economia.kernel import Kernel
 from calipso.economia.libro import Libro
+from calipso.plantel import ficha as plantel_ficha
+from calipso.plantel import ilegibles as ilg
 import calipso.server as srv
 
 TS = "2026-08-26T10:00:00"
@@ -654,3 +656,56 @@ def test_una_propuesta_de_trabajo_viva_no_cae_en_la_pila_de_vencidos(cliente):
     datos = c.get("/api/economia/bus", params={"token": srv.TOKEN}).json()
     assert [p["id"] for p in datos["propuestas"]] == ["t1"]
     assert datos["vencidas"] == []
+
+
+def test_la_mesa_deriva_la_metrica_de_la_forma(cliente):
+    """La metrica no se guarda en el libro: el endpoint la deriva de
+    `promete` cada vez que arma la fila, con la tabla METRICA del plantel.
+    Una propuesta sin forma (una linea vieja del bus real de Pedro) no
+    tiene de donde derivarla."""
+    c, base = cliente
+    b = Bus(base / "economia" / "bus.jsonl")
+    b.alta(TS, W, "p1", "dep:atlas", "descartar el radar", 10_000, 10_000,
+           {"gasto_max_mm": 10_000, "semanas_max": 1},
+           forma={"sobre": "el radar", "clave": "el radar",
+                  "promete": "descartar", "tarda": "corto"})
+    _propuesta(base, "sin_forma")
+    datos = c.get("/api/economia/bus", params={"token": srv.TOKEN}).json()
+    con_forma = next(p for p in datos["propuestas"] if p["id"] == "p1")
+    assert con_forma["metrica"] == plantel_ficha.METRICA["descartar"]
+    sin_forma = next(p for p in datos["propuestas"] if p["id"] == "sin_forma")
+    assert "metrica" not in sin_forma
+
+
+def test_una_forma_sin_promete_no_tumba_la_mesa(cliente):
+    """Un `forma` de un esquema anterior o editado a mano puede llegar sin
+    `promete`. El resto de esta funcion es deliberadamente defensivo con
+    `.get()` (test de arriba, campo faltante en toda la fila): la
+    derivacion de la metrica no puede ser la unica que revienta con un
+    500 en vez de degradar."""
+    c, base = cliente
+    ruta = base / "economia" / "bus.jsonl"
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    linea = {"ts": TS, "semana": W, "evento": "alta", "id": "sin_promete",
+             "departamento": "dep:atlas", "titulo": "algo",
+             "presupuesto_mm": 10_000, "retorno_mm": 10_000,
+             "criterio": {"gasto_max_mm": 10_000}, "tipo": "trabajo",
+             "forma": {"sobre": "algo", "clave": "algo"}}
+    with ruta.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(linea) + "\n")
+    r = c.get("/api/economia/bus", params={"token": srv.TOKEN})
+    assert r.status_code == 200, r.text
+    p = next(x for x in r.json()["propuestas"] if x["id"] == "sin_promete")
+    assert p["metrica"] == ""
+
+
+def test_las_fichas_ilegibles_de_la_semana_en_curso_llegan_a_la_mesa(cliente):
+    """El endpoint tiene que pasarle la semana en curso a `colapsados`: sin
+    eso el colapso cruza semanas y un ilegible de otra semana nunca se iria
+    de la bandeja."""
+    c, base = cliente
+    ilg.anotar(base, W, "dep:atlas", "hay hueco en precios")
+    ilg.anotar(base, "2026-W01", "dep:atlas", "de otra semana")
+    datos = c.get("/api/economia/bus", params={"token": srv.TOKEN}).json()
+    crudos = {f["crudo"] for f in datos["ilegibles"]}
+    assert crudos == {"hay hueco en precios"}

@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from . import decision as dec
+from . import ficha, ilegibles
 from . import interruptor as it
 from . import situacion as sit
 
@@ -30,7 +31,7 @@ class Contexto:
     suscripciones: dict
     memoria: Any                  # el Scope del departamento
     pensar: Callable[[str], str]
-    contratar: Callable[[dict, str, "str | None", str], Any]
+    contratar: Callable[..., Any]
     publicar: Callable[..., None] = field(
         default=lambda evento, **campos: None)
 
@@ -349,16 +350,86 @@ def tic(ctx: Contexto, cuenta: str, semana: str) -> dict:
             return salida(motivo=f"no penso: {exc}", freno="el modelo fallo")
 
         accion, ref, motivo = dec.parsear(crudo)
+
+        # La ficha solo existe para `proponer`. Se lee aparte y no dentro de
+        # `parsear` porque `parsear` devuelve una 3-upla que seis tests
+        # desempaquetan o comparan entera, y ninguno de ellos habla de
+        # proponer. Se calcula ANTES de publicar "razonando": ese evento y
+        # la memoria no pueden mostrar el nombre de un campo interno --
+        # `motivo` es la SEGUNDA linea de la respuesta (`dec.parsear`), que
+        # en una ficha bien formada es el renglon `sobre: ...` tal cual lo
+        # escribio el modelo, no un titulo pensado para que Pedro lo lea.
+        f = ficha.parsear_ficha(crudo) if accion == "proponer" else None
+
+        # Con ficha, lo que se muestra es su titulo (`promete: sobre
+        # (tarda)`); sin ficha -las otras cuatro acciones, o un `proponer`
+        # que todavia no se entiende- se sigue mostrando `motivo` como
+        # siempre.
+        texto_pulso = ficha.titulo_de(f) if f is not None else motivo
         ctx.publicar("razonando",
-                     texto=f"{accion} {ref or ''} — {motivo}".strip())
+                     texto=f"{accion} {ref or ''} — {texto_pulso}".strip())
+
+        if accion == "proponer" and f is None:
+            # LA VALVULA. Y ojo con el atajo que parece obvio: NO se le
+            # puede dar a esto un valor de accion propio. `_puede` no tiene
+            # rama por defecto -- una accion desconocida cae al tramo final
+            # y devuelve True con saldo -- y el `contratar` de produccion no
+            # tiene guarda de accion: todo lo que no es comentar, trabajar o
+            # pedir termina en el camino que llama a `bus.alta`. O sea que
+            # una accion nueva escribiria en el libro una propuesta de
+            # verdad, con este texto ilegible de titulo. Por eso el corte se
+            # hace aca, con la accion intacta y el permiso en False a mano,
+            # sin pasar por `_puede`.
+            #
+            # ACA va `crudo` -la respuesta ENTERA que salio de `ctx.pensar`-
+            # y no `motivo`: `dec.parsear` define `motivo` como
+            # `lineas[1]`, es decir la SEGUNDA linea nada mas. Con `motivo`
+            # el aviso perdia dos tercios de una prosa de tres renglones, o
+            # se quedaba con "sobre: el radar de precios" sin decir cual
+            # campo de la ficha fallo, o quedaba vacio del todo si la
+            # respuesta era solo la palabra "proponer". El aviso existe
+            # para que la gramatica no amordace al departamento: perder el
+            # contenido lo derrota entero.
+            try:
+                ilegibles.anotar(ctx.base, semana, cuenta, crudo)
+            except Exception as exc:
+                # try propio, separado del de `remember` de aca abajo: si
+                # comparten uno solo, un `anotar` que revienta se come el
+                # `remember` entero y el arreglo de la semana congelada se
+                # pierde justo en el caso de falla.
+                fin = "error"
+                motivo = f"{motivo} (no pudo anotar el aviso: {exc})"
+            try:
+                # y ACA se rompe la semana congelada: `nada` no anota
+                # -el modelo eligio no hacer nada- y un freno tampoco -la
+                # maquina lo paro-, pero esto es el modelo intentando y
+                # fallando. Sin la anotacion el prompt del tic siguiente es
+                # identico, y a temperatura 0 la respuesta tambien: el
+                # primer tic que no parsea le termina la semana al
+                # departamento.
+                ctx.memoria.remember(f"ficha ilegible: {motivo}",
+                                     kind="jefe", departamento=cuenta)
+            except Exception as exc:
+                # mismo trato que el `remember` de mas abajo: que el rastro
+                # falle no puede volverse una forma de tumbar el tic. Sin
+                # este except lo caza el `except Exception` de afuera y el
+                # tic entero sale como "reviento actuando".
+                fin = "error"
+                motivo = f"{motivo} (no pudo anotar en su memoria: {exc})"
+            return salida(accion, ref, motivo, False,
+                          "ficha ilegible: no se entendio que proponia")
 
         permiso, freno = _puede(estado, s, accion, ref)
         resultado = None
         if permiso:
-            resultado = ctx.contratar(s, accion, ref, motivo)
+            resultado = ctx.contratar(s, accion, ref, motivo, ficha=f)
             try:
-                ctx.memoria.remember(f"{accion} {ref or ''}: {motivo}".strip(),
-                                     kind="jefe", departamento=cuenta)
+                # mismo criterio que el evento "razonando": con ficha, el
+                # titulo; sin ficha, `motivo` como siempre.
+                texto_memoria = ficha.titulo_de(f) if f is not None else motivo
+                ctx.memoria.remember(
+                    f"{accion} {ref or ''}: {texto_memoria}".strip(),
+                    kind="jefe", departamento=cuenta)
             except Exception as exc:
                 # contratar ya ocurrio y ya se cobro: decir que no actuo
                 # seria mentir sobre plata que salio
