@@ -271,16 +271,23 @@ def test_una_carta_escrita_vuelve_con_su_texto(home):
         "estado": "escrita", "texto": "I+D para los proyectos de Pedro."}
 
 
-def test_la_carta_no_entra_al_core(home):
-    """El invariante de procedencia: el core alimenta el bloque "Lo que
-    aprendiste antes", y una instruccion de Pedro no puede llegarle al
-    modelo rotulada como una conclusion propia del jefe. Por eso la carta
-    vive AFUERA de core/, y `load_core` no la ve."""
-    r = memory.ruta_carta("taller")
-    r.parent.mkdir(parents=True, exist_ok=True)
-    r.write_text("la carta", encoding="utf-8")
-    dep = memory.Memory(project_root=None).departamento("taller")
-    assert "la carta" not in dep.load_core()
+def test_la_carta_vive_afuera_del_core(home):
+    """El invariante de procedencia, verificado por RUTA y no construyendo
+    una `Memory`.
+
+    El core alimenta el bloque "Lo que aprendiste antes" del prompt, y una
+    instruccion de Pedro no puede llegarle al modelo rotulada como una
+    conclusion propia del jefe. `load_core` hace glob sobre `core/*.md`:
+    alcanza con que la carta no este ahi abajo.
+
+    Y se prueba asi a proposito: `Memory.__init__` carga un modelo de
+    embeddings (`SentenceTransformerEmbeddingFunction`), asi que construir
+    una para comprobar una ruta seria un test lento y fragil por un motivo
+    ajeno a lo que prueba.
+    """
+    carta = memory.ruta_carta("taller")
+    core = home / "memoria" / "departamento" / "taller" / "core"
+    assert core not in carta.parents
 
 
 def test_dos_departamentos_no_comparten_carta(home):
