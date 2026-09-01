@@ -74,7 +74,8 @@ def proyectos_de(proyectos, cuenta: str) -> list[dict]:
 
 
 def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
-          recientes: "list[str] | tuple" = ()) -> str:
+          recientes: "list[str] | tuple" = (), carta: dict | None = None,
+          proyectos: "list[dict] | None" = None) -> str:
     """Corto a proposito: corre seguido y en el escalon barato.
 
     `nucleo` es el markdown de la memoria del departamento. Sin el, el jefe
@@ -113,6 +114,43 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
     ultimas = ("Lo que decidiste en los ultimos tics (no repitas lo mismo):\n"
               + "\n".join(f"  - {r}" for r in recientes) + "\n\n") if recientes else ""
 
+    # La carta de Pedro, en SU PROPIO bloque y no adentro de `aprendido`.
+    # El bloque de arriba se titula "Lo que aprendiste antes": una
+    # instruccion de Pedro ahi adentro le llegaria al modelo rotulada como
+    # una conclusion que el departamento saco solo, que es lo contrario de
+    # lo que es.
+    #
+    # Y habla cuando esta vacia, con tres estados y no dos. Hoy el bloque
+    # del nucleo desaparece entero si no hay texto, asi que "nadie escribio"
+    # y "escribio nada" se leen igual y el jefe no puede notar que le falta
+    # algo.
+    c = carta or {"estado": "ausente", "texto": ""}
+    if c["estado"] == "escrita":
+        bloque_carta = f"Este departamento:\n{c['texto']}\n\n"
+    elif c["estado"] == "vacia":
+        bloque_carta = ("Este departamento: Pedro empezo su carta y la dejo "
+                        "en blanco.\n\n")
+    else:
+        bloque_carta = ("Este departamento: todavia no tiene carta. Pedro no "
+                        "escribio para que existe, asi que no sabes que te "
+                        "toca ni que no.\n\n")
+
+    # Los proyectos, con la procedencia DICHA: una linea de Pedro es una
+    # decision; una sacada de un README es lo que un archivo dijo alguna vez.
+    _COMO = {"pedro": "(de Pedro)", "readme": "(del README)",
+             "ninguna": "(sin descripcion)"}
+    ps = proyectos or []
+    if ps:
+        filas = "\n".join(
+            # sin `texto` no se deja un doble espacio ni dos puntos huerfanos:
+            # "  - suelto (sin descripcion)" se lee; "  - suelto:  (...)" no.
+            (f"  - {p['nombre']}: {p['texto']} {_COMO[p['fuente']]}"
+             if p["texto"] else f"  - {p['nombre']} {_COMO[p['fuente']]}")
+            for p in ps)
+        bloque_proyectos = f"Proyectos a tu cargo:\n{filas}\n\n"
+    else:
+        bloque_proyectos = "Proyectos a tu cargo: ninguno asignado.\n\n"
+
     # los objetos que este departamento ya nombro, para que COPIE en vez de
     # reinventar: sin esto "radar de precios" y "monitor de precios" son dos
     # familias, ocupan dos lugares en la mesa y un "nunca mas" sobre una no
@@ -141,6 +179,8 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
         menu.append("  comentar <id>")
 
     return (
+        bloque_carta +
+        bloque_proyectos +
         aprendido +
         ultimas +
         catalogo +

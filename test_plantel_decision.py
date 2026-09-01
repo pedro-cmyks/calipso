@@ -382,3 +382,74 @@ def test_una_linea_de_puros_espacios_no_es_una_linea():
 def test_sin_proyectos_devuelve_lista_vacia_y_no_revienta():
     assert dec.proyectos_de([], "dep:taller") == []
     assert dec.proyectos_de(None, "dep:taller") == []
+
+
+def test_la_carta_sale_como_su_propio_bloque():
+    p = dec.prompt(_situacion_minima(), 50,
+                   carta={"estado": "escrita", "texto": "I+D para Pedro."})
+    assert "Este departamento:" in p
+    assert "I+D para Pedro." in p
+
+
+def test_la_carta_NO_sale_bajo_lo_que_aprendiste_antes():
+    """El invariante de procedencia. Si la carta viajara por el nucleo, el
+    prompt le diria al modelo que una instruccion de Pedro es algo que el
+    departamento concluyo solo."""
+    p = dec.prompt(_situacion_minima(), 50, nucleo="lo que aprendi solo",
+                   carta={"estado": "escrita", "texto": "LA CARTA"})
+    cabeza = p.split("Lo que aprendiste antes:")[1].split("\n\n")[0]
+    assert "LA CARTA" not in cabeza
+
+
+def test_sin_carta_el_bloque_lo_dice_en_vez_de_desaparecer():
+    """Hoy el bloque del nucleo se esfuma cuando esta vacio, asi que "nadie
+    escribio" y "escribio nada" se leen igual y el jefe no puede notar que le
+    falta algo."""
+    p = dec.prompt(_situacion_minima(), 50,
+                   carta={"estado": "ausente", "texto": ""})
+    assert "Este departamento:" in p
+    assert "no tiene carta" in p
+
+
+def test_una_carta_vacia_no_se_lee_igual_que_una_ausente():
+    ausente = dec.prompt(_situacion_minima(), 50,
+                         carta={"estado": "ausente", "texto": ""})
+    vacia = dec.prompt(_situacion_minima(), 50,
+                       carta={"estado": "vacia", "texto": ""})
+    assert ausente != vacia
+
+
+def test_los_proyectos_salen_con_su_procedencia():
+    p = dec.prompt(_situacion_minima(), 50, proyectos=[
+        {"nombre": "lector", "texto": "el banco", "fuente": "pedro"},
+        {"nombre": "atlas", "texto": "feeds", "fuente": "readme"}])
+    assert "Proyectos a tu cargo:" in p
+    assert "lector" in p and "el banco" in p
+    assert "(de Pedro)" in p and "(del README)" in p
+
+
+def test_sin_proyectos_el_bloque_lo_dice():
+    p = dec.prompt(_situacion_minima(), 50, proyectos=[])
+    assert "Proyectos a tu cargo:" in p
+    assert "ninguno asignado" in p
+
+
+def test_un_proyecto_sin_texto_lo_dice_y_no_miente():
+    p = dec.prompt(_situacion_minima(), 50, proyectos=[
+        {"nombre": "suelto", "texto": "", "fuente": "ninguna"}])
+    assert "suelto" in p
+
+
+def test_los_bloques_nuevos_no_traen_las_palabras_prohibidas():
+    """Dos tests que ya existen afirman que `trabajar` y `comentar` no
+    aparecen cuando el menu no las ofrece. Cualquier texto nuevo que las
+    contenga los rompe aunque el menu este perfecto."""
+    p = dec.prompt(_situacion_minima(), 50,
+                   carta={"estado": "ausente", "texto": ""}, proyectos=[])
+    assert "trabajar" not in p and "comentar" not in p
+
+
+def test_sin_los_parametros_nuevos_el_prompt_sigue_saliendo():
+    """Los doce tests viejos del prompt llaman sin carta y sin proyectos.
+    Los defaults tienen que dejarlos pasar."""
+    assert dec.prompt(_situacion_minima(), 50)
