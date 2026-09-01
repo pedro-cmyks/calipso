@@ -363,6 +363,11 @@ def descriptor() -> dict:
     `reloj: None` no es un olvido: permisos no vence. Es una de las dos
     bandejas que tienen que declararlo explicitamente, porque el default
     no se puede inferir.
+
+    `no_siempre` es la mitad que el spec (4c) dice que le faltaba al sistema
+    entero, y permisos es la unica de las cuatro bandejas donde se puede
+    escribir hoy: es la unica que ya tiene una FORMA tipada que comparar
+    (`acciones.cubre`). Las otras tres identifican sus items por prosa libre.
     """
     return {
         "origen": ORIGEN_INBOX,
@@ -373,6 +378,8 @@ def descriptor() -> dict:
              "alcances": ["siempre"], "parametros": []},
             {"nombre": "no", "etiqueta": "No",
              "alcances": ["una_vez"], "parametros": []},
+            {"nombre": "no_siempre", "etiqueta": "No, nunca mas",
+             "alcances": ["siempre"], "parametros": []},
         ],
         "reloj": None,
         "clase_por_defecto": "decision",
@@ -411,9 +418,13 @@ def como_items(datos_endpoint: dict) -> list[dict]:
             "respuesta": None})
     for s in (datos_endpoint.get("pendientes") or []) + (datos_endpoint.get("estacionadas") or []):
         # si_siempre sobre una solicitud con siempre_pregunta devuelve 400:
-        # lo cortan almacen.responder y almacen.conceder, las dos capas
-        verbos = ["si", "no"] if s.get("siempre_pregunta") \
-            else ["si", "si_siempre", "no"]
+        # lo cortan `almacen.responder` y `almacen.anotar_regla`, las dos
+        # capas. no_siempre no tiene esa restriccion y es a proposito: lo que
+        # pregunta siempre es lo irreversible, y un NO permanente sobre eso
+        # falla hacia el lado conservador. Dibujar el verbo que va a dar 400
+        # es dibujar un boton que miente, asi que la lista se parte aca.
+        verbos = ["si", "no", "no_siempre"] if s.get("siempre_pregunta") \
+            else ["si", "si_siempre", "no", "no_siempre"]
         items.append({
             "id": s.get("id"), "origen": ORIGEN_INBOX, "clase": "decision",
             "ts": s.get("ts") or "", "titulo": s.get("texto") or "",
