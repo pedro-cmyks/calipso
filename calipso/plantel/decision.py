@@ -40,6 +40,39 @@ def _como_se_ve(p: dict) -> str:
     return f"{f['promete']}: {f['sobre']} ({f['tarda']})"
 
 
+def proyectos_de(proyectos, cuenta: str) -> list[dict]:
+    """Los proyectos que le tocan a esta cuenta, con la procedencia de su
+    texto dicha.
+
+    Compara la CUENTA COMPLETA (`dep:taller`), no el nombre desnudo. Si los
+    dos lados usaran formatos distintos, esto devolveria la lista vacia sin
+    que nada fallara: la asignacion se veria bien guardada y el prompt
+    saldria sin proyectos. Hay un test que fija las dos direcciones.
+
+    La procedencia se devuelve como un valor -- `pedro`, `readme` o
+    `ninguna` -- y no como texto ya formateado, para que el prompt decida
+    como decirlo y para que no haya dos implementaciones de la misma frase.
+    Un jefe que lee una linea de Pedro y una sacada de un README no puede
+    tratarlas igual: la primera es una decision, la segunda es lo que un
+    archivo dijo alguna vez.
+    """
+    salida = []
+    for p in (proyectos or []):
+        if p.get("departamento") != cuenta:
+            continue
+        linea = (p.get("linea") or "").strip()
+        resumen = (p.get("resumen") or "").strip()
+        if linea:
+            texto, fuente = linea, "pedro"
+        elif resumen:
+            texto, fuente = resumen, "readme"
+        else:
+            texto, fuente = "", "ninguna"
+        salida.append({"nombre": p.get("nombre", ""), "texto": texto,
+                       "fuente": fuente})
+    return salida
+
+
 def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
           recientes: "list[str] | tuple" = ()) -> str:
     """Corto a proposito: corre seguido y en el escalon barato.

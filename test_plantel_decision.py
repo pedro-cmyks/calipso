@@ -327,3 +327,58 @@ def test_los_trabajos_siguen_mostrando_su_titulo():
                       "forma": {"sobre": "x", "clave": "x",
                                 "promete": "medir", "tarda": "corto"}}]
     assert "radar de precios" in dec.prompt(s, 50)
+
+
+def test_solo_los_proyectos_de_esa_cuenta():
+    proyectos = [
+        {"nombre": "lector", "departamento": "dep:taller", "linea": "el banco"},
+        {"nombre": "atlas", "departamento": "dep:research", "linea": "feeds"},
+        {"nombre": "suelto", "departamento": None, "linea": "x"},
+    ]
+    salida = dec.proyectos_de(proyectos, "dep:taller")
+    assert [p["nombre"] for p in salida] == ["lector"]
+
+
+def test_el_filtro_compara_la_cuenta_COMPLETA():
+    """El jefe despierta como `dep:taller` y el catastro guarda lo que se le
+    haya escrito. Si el filtro comparara el nombre desnudo contra la cuenta,
+    o al reves, el resultado seria la lista vacia SIN QUE NADA FALLE: la
+    asignacion se ve bien en el disco y el prompt sale sin proyectos."""
+    assert dec.proyectos_de(
+        [{"nombre": "lector", "departamento": "taller"}], "dep:taller") == []
+    assert dec.proyectos_de(
+        [{"nombre": "lector", "departamento": "dep:taller"}], "taller") == []
+
+
+def test_la_linea_de_pedro_gana_al_readme():
+    p = [{"nombre": "lector", "departamento": "dep:taller",
+          "linea": "lo que escribio Pedro", "resumen": "lo del README"}]
+    salida = dec.proyectos_de(p, "dep:taller")[0]
+    assert salida["texto"] == "lo que escribio Pedro"
+    assert salida["fuente"] == "pedro"
+
+
+def test_sin_linea_cae_al_readme_y_lo_dice():
+    p = [{"nombre": "lector", "departamento": "dep:taller",
+          "linea": "", "resumen": "lo del README"}]
+    salida = dec.proyectos_de(p, "dep:taller")[0]
+    assert salida["texto"] == "lo del README"
+    assert salida["fuente"] == "readme"
+
+
+def test_sin_nada_lo_dice_en_vez_de_inventar():
+    p = [{"nombre": "lector", "departamento": "dep:taller"}]
+    salida = dec.proyectos_de(p, "dep:taller")[0]
+    assert salida["texto"] == ""
+    assert salida["fuente"] == "ninguna"
+
+
+def test_una_linea_de_puros_espacios_no_es_una_linea():
+    p = [{"nombre": "lector", "departamento": "dep:taller",
+          "linea": "   ", "resumen": "lo del README"}]
+    assert dec.proyectos_de(p, "dep:taller")[0]["fuente"] == "readme"
+
+
+def test_sin_proyectos_devuelve_lista_vacia_y_no_revienta():
+    assert dec.proyectos_de([], "dep:taller") == []
+    assert dec.proyectos_de(None, "dep:taller") == []
