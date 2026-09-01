@@ -10,6 +10,13 @@ Este script arma situaciones sinteticas, renderiza el prompt CON y SIN los dos
 bloques nuevos, se los manda al mismo modelo y muestra las dos decisiones al
 lado. No decide nada solo: lo lee Pedro.
 
+Cada situacion corre con DOS sesgos (50 y 75), no uno: con sesgo 50
+("mantener el equilibrio") el jefe casi siempre contesta `nada` de los dos
+lados, y un empate en `nada` no dice nada sobre la hipotesis -- hace falta
+tambien un sesgo que empuje a `proponer` (75, "explorar cosas nuevas") para
+que la mitad de las corridas caiga en el regimen donde comparar sirve de
+algo.
+
 CALIPSO_HOME va a un temporal ANTES de importar el paquete: importar calipso
 suelto escribe en el home real.
 """
@@ -42,6 +49,11 @@ PROYECTOS = [{"nombre": "calipso-lector",
               "fuente": "pedro"}]
 
 SIN_CARTA = {"estado": "ausente", "texto": ""}
+
+# 50 es "mantener el equilibrio" y 75 cae en "explorar cosas nuevas"
+# (`decision.prompt` traduce >=60 asi). Sin el 75 casi todo empata en `nada`
+# de los dos lados y la comparacion no dice nada sobre la hipotesis.
+SESGOS = (50, 75)
 
 
 def _base() -> dict:
@@ -132,6 +144,28 @@ def decidir(p: str) -> str:
     return f"proponer -> {f['promete']}: {f['sobre']} ({f['tarda']})"
 
 
+def resultado(p: str) -> tuple[str, str | None]:
+    """La accion, y la CLAVE normalizada del objeto si la accion fue
+    `proponer` (`None` en cualquier otro caso).
+
+    La clave -- no el `sobre` crudo -- es lo que hay que comparar para saber
+    si dos propuestas hablan del mismo objeto: es el mismo campo que
+    `ficha.py` disena para eso ("explicable el dia que Pedro revoque"), y
+    normaliza orden de palabras y articulos.
+
+    Si la accion fue `proponer` pero la ficha salio ilegible, la clave es
+    `None` igual que si no hubiera propuesto -- hay un objeto pero no hay
+    forma segura de decir si es el mismo que el de la otra rama, y el
+    llamador tiene que tratar esa incertidumbre como "no se puede confirmar
+    que sea igual", nunca como una coincidencia.
+    """
+    accion, _ref, _motivo = dec.parsear(p)
+    if accion != "proponer":
+        return accion, None
+    f = ficha.parsear_ficha(p)
+    return "proponer", (f["clave"] if f else None)
+
+
 def main() -> int:
     try:
         pensar("hola")
@@ -140,15 +174,53 @@ def main() -> int:
         print("Levanta Ollama con qwen2.5:7b y volve a correr.")
         return 1
 
+    # Conteo sobre las comparaciones donde AL MENOS UNA rama propuso: un
+    # empate en `nada` de los dos lados no dice nada sobre la hipotesis, asi
+    # que no entra en ninguna de las cuatro categorias.
+    mismo_objeto = 0
+    objetos_distintos = 0
+    solo_con = 0
+    solo_sin = 0
+    total_corridas = 0
+
     for nombre, s in situaciones():
-        con = dec.prompt(s, 50, carta=CARTA, proyectos=PROYECTOS)
-        sin = dec.prompt(s, 50, carta=SIN_CARTA, proyectos=[])
-        print(f"\n=== {nombre}")
-        print(f"    prompt con carta: {len(con):5d} chars | "
-              f"sin carta: {len(sin):5d} chars")
-        print(f"    la carta esta en el prompt: {CARTA['texto'][:20] in con}")
-        print(f"    CON carta -> {decidir(pensar(con))}")
-        print(f"    SIN carta -> {decidir(pensar(sin))}")
+        for sesgo in SESGOS:
+            total_corridas += 1
+            con = dec.prompt(s, sesgo, carta=CARTA, proyectos=PROYECTOS)
+            sin = dec.prompt(s, sesgo, carta=SIN_CARTA, proyectos=[])
+            crudo_con = pensar(con)
+            crudo_sin = pensar(sin)
+
+            print(f"\n=== {nombre} (sesgo {sesgo})")
+            print(f"    prompt con carta: {len(con):5d} chars | "
+                  f"sin carta: {len(sin):5d} chars")
+            print(f"    la carta esta en el prompt: {CARTA['texto'][:20] in con}")
+            print(f"    CON carta -> {decidir(crudo_con)}")
+            print(f"    SIN carta -> {decidir(crudo_sin)}")
+
+            accion_con, clave_con = resultado(crudo_con)
+            accion_sin, clave_sin = resultado(crudo_sin)
+            propuso_con = accion_con == "proponer"
+            propuso_sin = accion_sin == "proponer"
+            if not propuso_con and not propuso_sin:
+                continue  # empate en nada: no compara nada
+            if propuso_con and propuso_sin:
+                if clave_con is not None and clave_con == clave_sin:
+                    mismo_objeto += 1
+                else:
+                    objetos_distintos += 1
+            elif propuso_con:
+                solo_con += 1
+            else:
+                solo_sin += 1
+
+    informativas = mismo_objeto + objetos_distintos + solo_con + solo_sin
+    print(f"\n=== conteo final ({informativas} de {total_corridas} "
+          "comparaciones tuvieron al menos una propuesta)")
+    print(f"    las dos proponen el MISMO objeto: {mismo_objeto}")
+    print(f"    las dos proponen objetos DISTINTOS: {objetos_distintos}")
+    print(f"    propone SOLO la rama CON carta: {solo_con}")
+    print(f"    propone SOLO la rama SIN carta: {solo_sin}")
     return 0
 
 
