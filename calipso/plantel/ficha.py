@@ -47,17 +47,36 @@ SEMANAS_MAX = {"corto": 1, "medio": 4, "largo": 12, "no se": 4}
 CAMPOS = ("sobre", "promete", "tarda", "porque")
 
 # Se descartan al normalizar para que "el radar de precios" y "radar
-# precios" sean el mismo objeto.
+# precios" sean el mismo objeto. `y` y `o` NO estan en esta lista: un
+# articulo no cambia que es el objeto, pero una conjuncion puede unir dos
+# objetos distintos -- "el banco y el lector" no es lo mismo que "el
+# banco del lector", y confundirlos fundiria "dos cosas" con "una cosa de
+# otra".
 FUNCIONALES = frozenset(
-    "el la los las un una unos unas de del al a en para por con y o que "
+    "el la los las un una unos unas de del al a en para por con que "
     "su sus mi mis lo".split())
 
 TOPE_TITULO = 120
 
 
 def _sin_tildes(texto: str) -> str:
-    return "".join(c for c in unicodedata.normalize("NFKD", texto)
-                   if not unicodedata.combining(c))
+    """Saca acentos y dieresis letra por letra, pero protege la ñ.
+
+    La ñ no es una vocal acentuada: es su propia letra, distinta de la
+    ene, y por eso el NFKD no la puede descomponer -- si se le sacara la
+    virgulilla, "campaña" (la de marketing) se fundiria con "campana"
+    (la del campanario), y son dos objetos distintos de verdad. La
+    dieresis si se saca, porque ahi es un accesorio sobre una vocal: la
+    palabra es la misma con o sin ella.
+    """
+    resultado = []
+    for c in texto:
+        if c in ("ñ", "Ñ"):
+            resultado.append(c)
+            continue
+        resultado.extend(d for d in unicodedata.normalize("NFKD", c)
+                          if not unicodedata.combining(d))
+    return "".join(resultado)
 
 
 def normalizar(texto: str) -> str:
@@ -89,13 +108,19 @@ def normalizar(texto: str) -> str:
 def _por_prefijo(dado: str, opciones) -> str | None:
     """El valor de `opciones` que `dado` prefija, si es UNO solo.
 
-    Un prefijo ambiguo no matchea: `a` esta entre `ahorrar` y `acelerar`, y
-    adivinar cual quiso decir seria peor que no entender -- la ficha caeria
-    en el bus con una promesa que el jefe no eligio.
+    Un valor EXACTO gana aunque prefije a otra opcion mas larga: el
+    vocabulario esta pensado para crecer de mano de Pedro, y el dia que
+    una promesa nueva prefije a una vieja, escribir la vieja completa y
+    exacta tiene que seguir matcheando. Fuera de ese caso, un prefijo
+    ambiguo no matchea: `a` esta entre `ahorrar`, `acelerar` y
+    `arreglar`, y adivinar cual quiso decir seria peor que no entender --
+    la ficha caeria en el bus con una promesa que el jefe no eligio.
     """
     dado = _sin_tildes((dado or "").strip()).lower()
     if not dado:
         return None
+    if dado in opciones:
+        return dado
     calzan = [o for o in opciones if o.startswith(dado)]
     return calzan[0] if len(calzan) == 1 else None
 
@@ -137,9 +162,21 @@ def titulo_de(f: dict) -> str:
     """Lo que Pedro lee en la mesa. No participa de ninguna comparacion.
 
     Sigue cortado a 120 como el titulo de hoy, asi que `bus.alta` recibe
-    exactamente el largo que ya recibia.
+    exactamente el largo que ya recibia. Lo que se recorta es el `sobre`
+    y, si hace falta, el `porque` -- nunca un slice ciego del resultado
+    final, que podria cortar a mitad de un parentesis o dejar un `--`
+    colgando y leerse como software roto.
     """
-    base = f"{f['promete']}: {f['sobre']} ({f['tarda']})"
-    if f.get("porque"):
-        base = f"{base} -- {f['porque']}"
-    return base[:TOPE_TITULO]
+    prefijo = f"{f['promete']}: "
+    sufijo = f" ({f['tarda']})"
+    lugar_sobre = max(TOPE_TITULO - len(prefijo) - len(sufijo), 0)
+    sobre = f["sobre"][:lugar_sobre]
+    base = f"{prefijo}{sobre}{sufijo}"
+
+    porque = f.get("porque")
+    if not porque:
+        return base
+    lugar_porque = TOPE_TITULO - len(base) - len(" -- ")
+    if lugar_porque <= 0:
+        return base
+    return f"{base} -- {porque[:lugar_porque]}"

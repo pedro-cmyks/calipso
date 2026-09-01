@@ -43,6 +43,34 @@ def test_solo_funcionales_no_es_un_objeto():
     assert ficha.normalizar("de la") == ""
 
 
+def test_la_enie_sobrevive_pero_la_diaresis_no():
+    # la eñe es una letra propia, no una vocal con acento: fundirla con la
+    # ene confundiria dos objetos distintos de verdad
+    assert ficha.normalizar("el año") != ficha.normalizar("el ano")
+    assert ficha.normalizar("la campaña") != ficha.normalizar("la campana")
+    # la diaresis si es un accesorio sobre una vocal: la palabra es la misma
+    assert ficha.normalizar("el pingüino") == ficha.normalizar("el pinguino")
+
+
+def test_conjuncion_no_es_funcional():
+    # un articulo no cambia que es el objeto, pero una conjuncion puede
+    # unir dos objetos distintos: "dos cosas" no es "una cosa de otra"
+    assert ficha.normalizar("el banco y el lector") != ficha.normalizar(
+        "el banco del lector")
+
+
+# --------------------------------------------------------------------------
+# _por_prefijo: el matcheo de claves y valores
+# --------------------------------------------------------------------------
+
+def test_un_valor_exacto_gana_aunque_prefije_a_otro_mas_largo():
+    # el vocabulario esta pensado para crecer: el dia que una promesa nueva
+    # prefije a una vieja, la vieja completa y exacta tiene que seguir
+    # matcheando en vez de caer en la cuenta de ambiguos
+    opciones = ("medir", "medirlo")
+    assert ficha._por_prefijo("medir", opciones) == "medir"
+
+
 # --------------------------------------------------------------------------
 # parsear_ficha: la reparacion antes de rendirse
 # --------------------------------------------------------------------------
@@ -80,7 +108,8 @@ def test_los_valores_tambien_se_matchean_por_prefijo():
 
 
 def test_un_prefijo_ambiguo_no_matchea():
-    # `a` esta entre ahorrar y acelerar: adivinar seria peor que no entender
+    # `a` esta entre ahorrar, acelerar y arreglar: adivinar seria peor que
+    # no entender
     assert ficha.parsear_ficha(
         "proponer\nsobre: el radar\npromete: a\ntarda: corto") is None
 
@@ -134,6 +163,9 @@ def test_cada_promesa_trae_su_metrica_y_cada_plazo_su_semana():
     # `no se` toma el valor de hoy a proposito: es el unico que no empeora
     # nada respecto del 4 literal que habia
     assert ficha.SEMANAS_MAX["no se"] == 4
+    # un repetido en la tupla no lo atrapa el set: lo atrapa el largo
+    assert len(ficha.PROMESAS) == len(set(ficha.PROMESAS))
+    assert len(ficha.PLAZOS) == len(set(ficha.PLAZOS))
 
 
 def test_el_titulo_se_arma_con_la_ficha():
@@ -150,4 +182,17 @@ def test_sin_porque_el_titulo_no_arrastra_el_separador():
 def test_el_titulo_no_pasa_de_120():
     f = ficha.parsear_ficha(
         "proponer\nsobre: " + "x" * 200 + "\npromete: medir\ntarda: corto")
-    assert len(ficha.titulo_de(f)) <= 120
+    titulo = ficha.titulo_de(f)
+    assert len(titulo) <= 120
+    # se recorta el sobre, nunca el resultado final: el parentesis del
+    # plazo tiene que quedar entero y cerrado
+    assert titulo.endswith(")")
+
+
+def test_el_titulo_recorta_el_porque_y_no_el_plazo():
+    f = ficha.parsear_ficha(
+        "proponer\nsobre: el radar\npromete: medir\ntarda: corto\n"
+        "porque: " + "x" * 300)
+    titulo = ficha.titulo_de(f)
+    assert len(titulo) <= 120
+    assert "(corto)" in titulo
