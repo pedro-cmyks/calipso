@@ -70,10 +70,12 @@ function bloqueCrudo(accion) {
     `<pre>${escapar(json)}</pre></details>`;
 }
 
-/** Los tres botones de 5.4: si una vez, si y no preguntes mas, no. El
- *  segundo solo si el endpoint de verdad lo admite -`si_siempre` sobre una
- *  solicitud con `siempre_pregunta` devuelve 400- y si no, se DICE por que
- *  no esta en vez de dibujar un boton que miente. */
+/** Las cuatro salidas de 5.4: si una vez, si y no preguntes mas, no, y no
+ *  nunca mas. El segundo solo si el endpoint de verdad lo admite -`si_siempre`
+ *  sobre una solicitud con `siempre_pregunta` devuelve 400- y si no, se DICE
+ *  por que no esta en vez de dibujar un boton que miente. El cuarto esta
+ *  siempre: negar para siempre lo irreversible es el lado conservador, asi
+ *  que no tiene la restriccion que tiene su gemelo. */
 function botonesDeRespuesta(s) {
   const id = escapar(s.id);
   const siSiempre = s.siempre_pregunta
@@ -86,7 +88,9 @@ function botonesDeRespuesta(s) {
     `data-respuesta="si">si, una vez</button>` +
     siSiempre +
     `<button data-accion="responder" data-id="${id}" ` +
-    `data-respuesta="no">no</button></div>`;
+    `data-respuesta="no">no</button>` +
+    `<button data-accion="responder" data-id="${id}" ` +
+    `data-respuesta="no_siempre">no, nunca mas</button></div>`;
 }
 
 function intentosDeRodeo(s) {
@@ -130,14 +134,20 @@ function seccionEsperando(pendientes, estacionadas) {
   return todas.join("");
 }
 
-function tarjetaConcedido(permiso) {
-  const p = permiso || {};
+/** El signo va primero y con todas las letras. Dos reglas de la misma
+ *  familia y operacion se ven identicas si no se dice cual permite y cual
+ *  niega, y revocar la equivocada es exactamente la trampa que la regla 3
+ *  del spec quiere evitar. Una regla vieja no trae el campo -- se escribio
+ *  antes de que existiera el no-- y esas son todas de permitir. */
+function tarjetaConcedido(regla) {
+  const p = regla || {};
+  const verbo = p.efecto === "denegar" ? "niega" : "permite";
   return `<div class="permiso">` +
-    `<div class="cabeza">${escapar(p.familia || "?")}/${escapar(p.operacion || "?")}` +
-    `</div>` +
+    `<div class="cabeza">${verbo} ${escapar(p.familia || "?")}/` +
+    `${escapar(p.operacion || "?")}</div>` +
     `<div class="fila"><span>forma</span>` +
     `<span>${escapar(JSON.stringify(p.forma || {}))}</span></div>` +
-    `<div class="fila"><span>concedido</span><span>${escapar(p.ts || "")}` +
+    `<div class="fila"><span>escrita</span><span>${escapar(p.ts || "")}` +
     `</span></div>` +
     `<button data-accion="revocar" data-id="${escapar(p.id)}">revocar</button>` +
     `</div>`;
@@ -146,8 +156,8 @@ function tarjetaConcedido(permiso) {
 function seccionConcedidos(concedidos) {
   const cuerpo = concedidos.length
     ? concedidos.map(tarjetaConcedido).join("")
-    : `<div class="vacio">Ningun permiso permanente concedido.</div>`;
-  return `<div class="subtitulo">permisos permanentes</div>` + cuerpo;
+    : `<div class="vacio">Ninguna regla permanente.</div>`;
+  return `<div class="subtitulo">reglas permanentes</div>` + cuerpo;
 }
 
 function seccionTecho(techos) {
