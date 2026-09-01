@@ -180,8 +180,15 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
         # invisible. `None`/0 mientras todavia no salga ninguna.
         "preseed_libera_mm": libera_mm,
         "preseed_libera_al_salir": sale_de_ventana,
-        # lo que Pedro descarto esta semana: cuenta contra el mismo techo
-        # que las propuestas en pie (ver `jefe._puede`)
+        # lo que Pedro descarto esta semana. NO cuenta contra ningun techo
+        # y no frena nada: alimenta solo el renglon del prompt que arma
+        # `decision.py`. Descartar LIBERA el cupo a proposito -- es la
+        # salida cuando la bandeja de tres esta llena -- asi que el "no" no
+        # puede ser un freno de cupo sin romper eso. El freno que falta es
+        # de identidad ("esto ya lo rechazaste"), es una regla aparte, y
+        # todavia no se puede escribir: necesita que la propuesta tenga una
+        # forma comparable, y hoy lo unico que la identifica es un titulo
+        # de prosa libre cortado a 120 caracteres.
         "descartadas_semana": descartadas,
         "gasto_api_ciclo_mm": mercado_mod.gasto_api_ciclo(
             asientos, cuenta, semanas_ciclo) if semanas_ciclo else 0,

@@ -45,10 +45,13 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
     ajenas = "\n".join(
         f"  - {p['id']}: {p['titulo']} (de {p['dueno']})"
         for p in s["propuestas_ajenas"]) or "  (ninguna)"
-    # el "no" de Pedro, dicho con todas las letras. El freno mecanico vive
-    # en `jefe._puede` (las descartadas gastan intentos de la semana); esto
-    # es para que el modelo sepa POR QUE, en vez de chocar contra un freno
-    # mudo y volver a proponer lo mismo.
+    # el "no" de Pedro, dicho con todas las letras -- y es lo UNICO que
+    # hay. No existe ningun freno mecanico: `jefe._puede` no nombra
+    # `descartadas_semana` por ningun lado, y una descartada ni siquiera
+    # gasta cupo del techo de tres, porque `situacion` hace `continue`
+    # antes de construir `propuestas_propias`. Lo unico que separa al jefe
+    # de volver a proponer lo mismo es que un modelo de 3b lea este renglon
+    # y le haga caso.
     rechazadas = "\n".join(f"  - {p['titulo']}"
                            for p in s.get("descartadas_semana", []))
     cap = s.get("capacidad")
