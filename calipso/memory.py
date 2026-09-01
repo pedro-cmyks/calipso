@@ -264,6 +264,51 @@ class Memory:
         return promoted
 
 
+# --- la carta de un departamento -------------------------------------------
+# A nivel de modulo y junto a `Memory.departamento`, para que el layout de
+# "memoria/departamento/<clave>/..." viva en un solo lugar.
+
+def ruta_carta(nombre: str) -> pathlib.Path:
+    """Donde vive la carta de un departamento: el texto que Pedro escribe
+    diciendo para que existe, que mira y que no le toca.
+
+    PURA: no crea directorios y no abre chroma. Es lo que la separa de
+    `Memory.departamento(...)`, que construye un `Scope` y cuyo `__init__`
+    hace mkdir de dos carpetas y abre un `PersistentClient`. Leer una carta
+    -- o pintar una pantalla con N departamentos -- no puede crear N sqlite
+    como efecto.
+
+    AFUERA de `core/` a proposito. El core alimenta el bloque "Lo que
+    aprendiste antes" del prompt del jefe: una carta ahi adentro le llegaria
+    al modelo rotulada como una conclusion que el departamento saco solo, y
+    es justo lo contrario -- es una instruccion de Pedro. Los dos canales
+    quedan separados por construccion, sin exclusiones ni nombres
+    reservados.
+    """
+    clave = _slug(pathlib.Path(nombre))
+    return CALIPSO_HOME / "memoria" / "departamento" / clave / "carta.md"
+
+
+def leer_carta(nombre: str) -> dict:
+    """La carta y su estado, que son tres y no dos.
+
+    `load_core` no sirve para esto porque devuelve "" tanto si no hay
+    archivo como si lo hay vacio, y el prompt tiene que distinguir "Pedro no
+    escribio" de "Pedro escribio nada": la segunda es una respuesta.
+
+    Una carta ilegible se trata como ausente. Es el lado honesto: el jefe
+    dice que no tiene carta, que es verdad, en vez de recibir bytes rotos.
+    """
+    try:
+        crudo = ruta_carta(nombre).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return {"estado": "ausente", "texto": ""}
+    texto = crudo.strip()
+    if not texto:
+        return {"estado": "vacia", "texto": ""}
+    return {"estado": "escrita", "texto": texto}
+
+
 if __name__ == "__main__":
     m = Memory(project_root=os.getcwd())
     print(f"[calipso.memory] global core: {m.glob.core_dir}")
