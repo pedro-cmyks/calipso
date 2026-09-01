@@ -5254,9 +5254,11 @@ def api_eco_frontera_acunar(body: EcoFronteraAcunarBody) -> dict:
 # _mapa_ficha is None. Antes de esto, romper el plantel dejaba el chat
 # entero cobrando en silencio a nadie.
 try:
+    from calipso.plantel import ficha as _plantel_ficha
     from calipso.plantel import interruptor as _plantel_it
     from calipso.plantel import jefe as _plantel_jefe
 except Exception:  # el plantel no esta disponible: el tablero responde inactivo
+    _plantel_ficha = None
     _plantel_it = _plantel_jefe = None
 
 
@@ -5438,7 +5440,7 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
         return propias >= _plantel_jefe.TECHO_PROPUESTAS
 
     def contratar(situacion: dict, accion: str, ref: str | None,
-                  motivo: str = ""):
+                  motivo: str = "", ficha=None):
         if accion == "comentar":
             # opinar es barato: no contrata a nadie y no cobra
             return {"accion": "comentar", "ref": ref, "en": "memoria"}
@@ -5599,11 +5601,25 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
             tope = (situacion.get("disponible_mm", 0)
                     * situacion["agresividad_pct"] // 100)
         presupuesto = max(1, tope - situacion["salidas_semana_mm"])
+        if ficha is None:
+            # No hay camino de produccion que llegue aca sin ficha: `tic` la
+            # desvia a la valvula antes de contratar. Pero el libro es
+            # append-only, asi que una propuesta sin identidad escrita por
+            # un llamador futuro no se podria borrar despues.
+            return {"accion": accion, "ref": ref, "en": "nada",
+                    "motivo": "una propuesta sin ficha no tiene identidad: "
+                              "no se escribe"}
         propuesta = f"{situacion['nombre']}-{uuid.uuid4().hex[:8]}"
-        # El titulo del bus es lo que Pedro lee para decidir si financia: que
-        # sea el motivo que el jefe razono, no el relleno del planificador
-        # (`synthesis` es casi siempre la misma constante de fallback).
-        titulo = (motivo or f"{accion} {ref or ''}".strip())[:120]
+        # El titulo sale de la ficha, no del motivo crudo: es lo que Pedro
+        # lee, y ahora lleva adentro lo mismo que la maquina compara.
+        titulo = _plantel_ficha.titulo_de(ficha)
+        # `semanas_max` sale del plazo que declaro el jefe. Antes eran
+        # cuatro semanas escritas a mano, iguales para una propuesta de una
+        # semana que para una de un trimestre.
+        semanas = _plantel_ficha.SEMANAS_MAX[ficha["tarda"]]
+        # al libro va la forma SIN `porque`: la prosa no se compara, y
+        # guardarla adentro de la forma invitaria a compararla.
+        forma = {c: ficha[c] for c in ("sobre", "clave", "promete", "tarda")}
         # bus.alta ES una escritura: va bajo el mismo candado que las demas
         # escrituras de economia, con un Bus fresco construido adentro.
         with _eco_candado(pagador.ruta_libro):
@@ -5615,7 +5631,9 @@ def _contratar_para(cuenta: str, pagador, ts: str, semana: str):
                                   "sumar otra"}
             bus_fresco.alta(ts, semana, propuesta, cuenta, titulo,
                             presupuesto, presupuesto,
-                            {"gasto_max_mm": presupuesto, "semanas_max": 4})
+                            {"gasto_max_mm": presupuesto,
+                             "semanas_max": semanas},
+                            forma=forma)
         return {"accion": accion, "ref": ref, "propuesta": propuesta}
     return contratar
 

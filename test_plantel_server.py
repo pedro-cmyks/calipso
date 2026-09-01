@@ -13,6 +13,7 @@ from calipso.economia import tipos as eco_tipos
 from calipso.economia.candado import candado as candado_real
 from calipso.economia.kernel import Kernel
 from calipso.economia.libro import Libro
+from calipso.plantel import ficha as _ficha
 from calipso.plantel import interruptor as it
 from calipso.plantel import jefe as _jefe
 
@@ -259,6 +260,14 @@ def test_el_tic_no_pierde_un_asiento_escrito_a_medias(tmp_path, monkeypatch):
         "el archivo quedo truncado")
 
 
+# Una ficha real, compartida por todos los tests de `proponer` de aca en
+# mas: produccion ya no escribe nada en el bus sin ella, asi que hasta los
+# tests que no miran `forma` ni `titulo` (los de candado, techo y billetera)
+# tienen que pasarla para seguir ejercitando el camino que dicen ejercitar.
+FICHA = {"sobre": "el radar de precios", "clave": "precios+radar",
+         "promete": "descartar", "tarda": "corto", "porque": "no rindio"}
+
+
 def test_contratar_escribe_el_alta_bajo_candado(tmp_path, monkeypatch):
     """C1: `bus.alta` es una ESCRITURA; tiene que tomar el mismo candado que
     las demas escrituras de economia, con un Bus construido de nuevo
@@ -308,7 +317,8 @@ def test_contratar_escribe_el_alta_bajo_candado(tmp_path, monkeypatch):
                                     "2026-08-01T09:10:00", "2026-W31")
     situacion = {"nombre": "atlas", "presupuesto_semanal_mm": 1000,
                 "agresividad_pct": 100, "salidas_semana_mm": 0}
-    resultado = contratar(situacion, "proponer", None, "hay hueco")
+    resultado = contratar(situacion, "proponer", None, "hay hueco",
+                          ficha=FICHA)
 
     assert altas, "bus.alta nunca se llamo"
     assert resultado["accion"] == "proponer"
@@ -322,6 +332,76 @@ def _contratar_real(tmp_path, monkeypatch, **perillas):
     contratar = srv._contratar_para("dep:atlas", pagador,
                                     "2026-08-01T09:10:00", "2026-W31")
     return contratar, srv._eco_bus.Bus(pagador.ruta_bus)
+
+
+def test_el_camino_de_produccion_siempre_manda_la_forma(tmp_path, monkeypatch):
+    """El guarda de la seccion 8 del spec, apuntado al unico lugar que
+    importa: `forma` es opcional en `bus.alta` para no barrer 123 sitios de
+    test, asi que lo que hay que fijar es que produccion nunca se la
+    olvide."""
+    contratar, _ = _contratar_real(tmp_path, monkeypatch)
+    r = contratar({"nombre": "atlas", "presupuesto_semanal_mm": 10_000,
+                   "agresividad_pct": 100, "salidas_semana_mm": 0},
+                  "proponer", None, "no rindio", ficha=FICHA)
+    # `Bus` no relee disco: es una foto tomada al construirse. Hay que
+    # construir uno NUEVO despues del alta para ver lo que quedo escrito,
+    # el mismo criterio que usa el resto del archivo.
+    bus_real = srv._eco_bus.Bus(srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
+    datos = bus_real.datos(r["propuesta"])
+    assert datos["forma"] == {"sobre": "el radar de precios",
+                              "clave": "precios+radar",
+                              "promete": "descartar", "tarda": "corto"}
+
+
+def test_el_titulo_sale_de_la_ficha_y_no_del_motivo_crudo(tmp_path, monkeypatch):
+    contratar, _ = _contratar_real(tmp_path, monkeypatch)
+    r = contratar({"nombre": "atlas", "presupuesto_semanal_mm": 10_000,
+                   "agresividad_pct": 100, "salidas_semana_mm": 0},
+                  "proponer", None, "no rindio", ficha=FICHA)
+    bus_real = srv._eco_bus.Bus(srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
+    assert bus_real.datos(r["propuesta"])["titulo"] == (
+        "descartar: el radar de precios (corto) -- no rindio")
+
+
+def test_el_plazo_de_la_ficha_manda_el_criterio_de_muerte(tmp_path, monkeypatch):
+    """Antes eran cuatro semanas escritas a mano, iguales para una
+    propuesta de una semana que para una de un trimestre."""
+    contratar, _ = _contratar_real(tmp_path, monkeypatch)
+    largo = {**FICHA, "tarda": "largo"}
+    r = contratar({"nombre": "atlas", "presupuesto_semanal_mm": 10_000,
+                   "agresividad_pct": 100, "salidas_semana_mm": 0},
+                  "proponer", None, "x", ficha=largo)
+    bus_real = srv._eco_bus.Bus(srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
+    assert bus_real.datos(r["propuesta"])["criterio"]["semanas_max"] == 12
+
+
+def test_sin_ficha_el_contratista_no_escribe_nada(tmp_path, monkeypatch):
+    """No hay camino de produccion que llegue aca sin ficha -- el jefe la
+    desvia antes -- pero si alguna vez lo hubiera, escribir una propuesta
+    sin identidad en un libro append-only es peor que no escribir."""
+    contratar, bus_real = _contratar_real(tmp_path, monkeypatch)
+    r = contratar({"nombre": "atlas", "presupuesto_semanal_mm": 10_000,
+                   "agresividad_pct": 100, "salidas_semana_mm": 0},
+                  "proponer", None, "hay hueco")
+    assert r["en"] == "nada"
+    assert bus_real.ids() == []
+
+
+def test_la_clave_de_la_forma_real_corresponde_a_su_sobre(tmp_path, monkeypatch):
+    """`bus.alta` no puede verificar esto: para comparar `clave` contra
+    `sobre` tendria que importar `calipso.plantel.ficha.normalizar`, y el
+    libro no puede depender de quien lo escribe. Una `clave` mentirosa
+    entraria al libro sin que nada la detecte, y en un libro append-only
+    eso no se corrige despues. Esta es la unica garantia que va a existir
+    de esa correspondencia: contra el contratista de produccion, no contra
+    un doble de test."""
+    contratar, _ = _contratar_real(tmp_path, monkeypatch)
+    r = contratar({"nombre": "atlas", "presupuesto_semanal_mm": 10_000,
+                   "agresividad_pct": 100, "salidas_semana_mm": 0},
+                  "proponer", None, "no rindio", ficha=FICHA)
+    bus_real = srv._eco_bus.Bus(srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
+    forma = bus_real.datos(r["propuesta"])["forma"]
+    assert forma["clave"] == _ficha.normalizar(forma["sobre"])
 
 
 def test_pedir_publica_un_preseed_en_el_bus(tmp_path, monkeypatch):
@@ -423,7 +503,8 @@ def test_el_techo_de_propuestas_se_relee_adentro_del_candado(
 
     def tic():
         arranque.wait()
-        salidas.append(contratar(dict(s), "proponer", None, "otra apuesta"))
+        salidas.append(contratar(dict(s), "proponer", None, "otra apuesta",
+                                 ficha=FICHA))
 
     hilos = [threading.Thread(target=tic) for _ in range(6)]
     for h in hilos:
@@ -447,7 +528,7 @@ def test_sin_presupuesto_semanal_el_tope_lo_da_la_billetera(
     s = {"nombre": "atlas", "presupuesto_semanal_mm": 0,
          "agresividad_pct": 30, "salidas_semana_mm": 0,
          "disponible_mm": 300_000}
-    r = contratar(s, "proponer", None, "ahora si a trabajar")
+    r = contratar(s, "proponer", None, "ahora si a trabajar", ficha=FICHA)
     bus = srv._eco_bus.Bus(srv._EcoPagador.desde_entorno(tmp_path).ruta_bus)
     assert bus.datos(r["propuesta"])["presupuesto_mm"] == 90_000
 
@@ -571,7 +652,7 @@ def test_la_bandeja_no_pliega_el_libro_si_no_hay_preseed_que_mirar(
          "agresividad_pct": 100, "salidas_semana_mm": 0,
          "techo_preseed_mm": 150_000}
 
-    r = contratar(s, "proponer", None, "hay hueco")
+    r = contratar(s, "proponer", None, "hay hueco", ficha=FICHA)
     assert r["propuesta"]
     assert pagador.lecturas == 0, "proponer plego el libro sin un pre-seed"
 
@@ -583,6 +664,6 @@ def test_la_bandeja_no_pliega_el_libro_si_no_hay_preseed_que_mirar(
     # y con un pre-seed en pie el vencimiento SI se consulta: la guardia
     # ahorra el parseo, no lo saltea
     pagador.lecturas = 0
-    r3 = contratar(s, "proponer", None, "otra")
+    r3 = contratar(s, "proponer", None, "otra", ficha=FICHA)
     assert r3["propuesta"]
     assert pagador.lecturas == 1
