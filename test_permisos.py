@@ -291,6 +291,75 @@ def test_no_se_contesta_dos_veces(home):
         motor.responder(r.solicitud["id"], "si")
 
 
+def test_una_regla_de_negar_se_guarda_con_su_efecto(home):
+    almacen.anotar_regla(acunar(150_000), Contexto("pedro"),
+                         "acunar 150 monedas", siempre_pregunta=True,
+                         efecto="denegar")
+    reglas = almacen.concedidos()
+    assert len(reglas) == 1
+    assert reglas[0]["efecto"] == "denegar"
+    # la regla de negar vive en la MISMA lista que las de permitir: por eso
+    # nace revocable, visible y barrible sin codigo nuevo (D1)
+    assert reglas[0]["familia"] == "plata"
+
+
+def test_negar_para_siempre_si_admite_lo_que_pregunta_siempre(home):
+    # el corte de 5.4 es contra el SI en blanco sobre lo irreversible. Un NO
+    # permanente sobre acunar falla hacia el lado conservador (D2).
+    with pytest.raises(ErrorPermisos):
+        almacen.anotar_regla(acunar(500_000), Contexto("pedro"), "x",
+                             siempre_pregunta=True, efecto="permitir")
+    r = almacen.anotar_regla(acunar(500_000), Contexto("pedro"), "x",
+                             siempre_pregunta=True, efecto="denegar")
+    assert r["efecto"] == "denegar"
+
+
+def test_conceder_sigue_siendo_lo_que_era(home):
+    # `conceder` es ahora un envoltorio, y no puede cambiar de significado:
+    # sigue escribiendo permitir y sigue negandose sobre lo irreversible
+    r = almacen.conceder(acunar(99_999), Contexto("pedro"), "x")
+    assert r["efecto"] == "permitir"
+    assert almacen.regla_que_cubre(acunar(99_999), "permitir") is not None
+    assert almacen.regla_que_cubre(acunar(99_999), "denegar") is None
+
+
+def test_una_regla_sin_efecto_se_lee_como_permitir(home):
+    # `config()` no normaliza: un permisos.json escrito por la version
+    # anterior tiene reglas sin la clave. El default se aplica al comparar,
+    # nunca confiando en que la escritura lo puso.
+    almacen.conceder(acunar(99_999), Contexto("pedro"), "x")
+    p = almacen.ruta_permisos()
+    d = json.loads(p.read_text(encoding="utf-8"))
+    del d["concedidos"][0]["efecto"]
+    p.write_text(json.dumps(d), encoding="utf-8")
+    assert almacen.regla_que_cubre(acunar(99_999), "permitir") is not None
+
+
+def test_una_regla_nueva_barre_a_la_contraria_sobre_la_misma_forma(home):
+    # sin esto la pantalla seria una trampa: Pedro revocaria el "no"
+    # esperando volver a que le pregunten, y en silencio quedaria vivo el
+    # "si" viejo (D3)
+    almacen.conceder(acunar(99_999), Contexto("pedro"), "x")
+    almacen.anotar_regla(acunar(99_999), Contexto("pedro"), "x",
+                         efecto="denegar")
+    reglas = almacen.concedidos()
+    assert len(reglas) == 1
+    assert reglas[0]["efecto"] == "denegar"
+
+
+def test_revocar_una_regla_deja_linea_en_el_registro(home):
+    # revocar un "no" devuelve el futuro. Sin esta linea no queda en ningun
+    # lado cuando dejo de valer.
+    r = almacen.anotar_regla(acunar(150_000), Contexto("pedro"), "x",
+                             siempre_pregunta=True, efecto="denegar")
+    assert almacen.revocar(r["id"]) is True
+    lineas = [l for l in almacen.registro(50)
+              if l.get("evento") == "revocacion"]
+    assert len(lineas) == 1
+    assert lineas[0]["permiso"] == r["id"]
+    assert lineas[0]["efecto"] == "denegar"
+
+
 # --------------------------------------------------------------------------
 # 5.6 -- cuando no hay nadie a quien preguntar
 # --------------------------------------------------------------------------
