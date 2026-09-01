@@ -130,8 +130,9 @@ falso al implementar, es un defecto del plan: se arregla el plan.
 
 - [ ] **Step 1: Escribir el test que falla**
 
-En `test_plantel_server.py`. **Abri el archivo primero** y usa su convencion
-para espiar el POST -- ya tiene tests que monkeypatchean cosas de `srv`.
+En `test_plantel_server.py`. Ese archivo **ya importa `dispatch` directo**
+(linea 5) y ya tiene un test que hace `monkeypatch.setattr(dispatch,
+"_http_post_json", ...)` (linea 84): usa ese mismo camino, no `srv.dispatch`.
 
 ```python
 def test_el_modelo_local_recibe_un_contexto_explicito(monkeypatch):
@@ -146,7 +147,7 @@ def test_el_modelo_local_recibe_un_contexto_explicito(monkeypatch):
         visto.update(cuerpo)
         return {"response": "nada\nno hay nada"}
 
-    monkeypatch.setattr(srv.dispatch, "_http_post_json", post_espia)
+    monkeypatch.setattr(dispatch, "_http_post_json", post_espia)
     srv._pensar_local("un prompt cualquiera")
     assert visto["options"]["num_ctx"] == 8192
     assert visto["options"]["temperature"] == 0
@@ -227,7 +228,14 @@ from calipso import memory
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    monkeypatch.setenv("CALIPSO_HOME", str(tmp_path))
+    """Parchea la CONSTANTE, no el entorno.
+
+    `memory.py` congela `CALIPSO_HOME` al importarse (es una constante de
+    modulo, no una funcion), y el `conftest.py` de la raiz ya la fijo a un
+    home desechable antes de que nada importara. Un `monkeypatch.setenv`
+    aca no tendria ningun efecto: el valor ya esta leido.
+    """
+    monkeypatch.setattr(memory, "CALIPSO_HOME", tmp_path)
     return tmp_path
 
 
@@ -322,7 +330,7 @@ def ruta_carta(nombre: str) -> pathlib.Path:
     reservados.
     """
     clave = _slug(pathlib.Path(nombre))
-    return calipso_home() / "memoria" / "departamento" / clave / "carta.md"
+    return CALIPSO_HOME / "memoria" / "departamento" / clave / "carta.md"
 
 
 def leer_carta(nombre: str) -> dict:
@@ -345,9 +353,11 @@ def leer_carta(nombre: str) -> dict:
     return {"estado": "escrita", "texto": texto}
 ```
 
-**Ojo con `calipso_home()`**: verifica como se resuelve el home en ese modulo
--- `Memory.departamento` ya lo hace y hay que usar el mismo camino, porque
-varios modulos del repo congelan el home al importar y este NO puede.
+**`CALIPSO_HOME` es la constante de modulo**, la misma que usa
+`Memory.departamento` en su linea `base = CALIPSO_HOME / "memoria" / ...`. Se
+lee como global adentro de la funcion, que es lo que hace que el
+`monkeypatch.setattr(memory, "CALIPSO_HOME", ...)` del fixture funcione: la
+busqueda del global pasa en cada llamada, no al definir.
 
 - [ ] **Step 4: Correr los tests**
 
@@ -367,7 +377,16 @@ problema y necesita la misma linea:
 ```
 
 Y su comando en el allowlist de `calipso/tools/commands.py`, con el molde de
-sus vecinos.
+`test_memoria_ambito` que ya esta ahi:
+
+```python
+    "test_memoria_carta": {
+        "title": "Probar la carta del departamento",
+        "description": "Ejecuta test_memoria_carta.py con pytest.",
+        "args": ["{python}", "-m", "pytest", "-q", "test_memoria_carta.py"],
+        "timeout": 120,
+    },
+```
 
 - [ ] **Step 6: Commit**
 
@@ -658,7 +677,10 @@ Y arriba del `return`, junto a `aprendido` y `ultimas`:
     ps = proyectos or []
     if ps:
         filas = "\n".join(
-            f"  - {p['nombre']}: {p['texto']} {_COMO[p['fuente']]}".rstrip()
+            # sin `texto` no se deja un doble espacio ni dos puntos huerfanos:
+            # "  - suelto (sin descripcion)" se lee; "  - suelto:  (...)" no.
+            (f"  - {p['nombre']}: {p['texto']} {_COMO[p['fuente']]}"
+             if p["texto"] else f"  - {p['nombre']} {_COMO[p['fuente']]}")
             for p in ps)
         bloque_proyectos = f"Proyectos a tu cargo:\n{filas}\n\n"
     else:
@@ -763,9 +785,34 @@ def test_sin_carta_ni_proyectos_el_tic_sigue_andando(tmp_path):
     assert out["accion"] == "nada" and contratos == []
 ```
 
-Y en `test_plantel_server.py`, uno que fije que produccion inyecta las dos
-cosas. **Abri el archivo y usa su convencion** para construir el Contexto de
-produccion.
+Y en `test_plantel_server.py`, uno que fije que **produccion** inyecta las dos
+cosas -- no alcanza con que el arnes las acepte:
+
+```python
+def test_produccion_le_inyecta_la_carta_y_los_proyectos_al_jefe(
+        tmp_path, monkeypatch):
+    """El arnes de test_plantel_jefe.py construye el Contexto a mano, asi
+    que puede pasar aunque produccion nunca las mande. Este es el guarda
+    apuntado al unico lugar que importa."""
+    monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
+    monkeypatch.setattr(memory, "CALIPSO_HOME", tmp_path)
+    carta = memory.ruta_carta("atlas")
+    carta.parent.mkdir(parents=True, exist_ok=True)
+    carta.write_text("SOY ATLAS", encoding="utf-8")
+
+    visto = {}
+    monkeypatch.setattr(srv._plantel_jefe, "tic",
+                        lambda ctx, cuenta, semana: visto.update(ctx=ctx))
+    # disparar la rutina de departamento por el mismo camino que la corre el
+    # ticker; mira como lo hace el test vecino que ya la ejercita.
+    ...
+    assert visto["ctx"].carta["texto"] == "SOY ATLAS"
+    assert isinstance(visto["ctx"].proyectos, list)
+```
+
+Los puntos suspensivos son deliberados: **el disparo de la rutina sale del
+test vecino que ya la ejercita en ese archivo**, y copiarlo mal es peor que
+leerlo. Lo que este test fija son las dos ultimas assertions.
 
 - [ ] **Step 2: Correr los tests para verificar que fallan**
 
@@ -805,13 +852,23 @@ Donde se arma el `Contexto` del jefe, las dos lineas nuevas. La carta sale de
 catastro, que ya se lee en otros lugares del server:
 
 ```python
-            carta=mem_mod.leer_carta(cuenta.split(":", 1)[1]),
-            proyectos=_catastro_mod.cargar(),
+            carta=leer_carta(cuenta.split(":", 1)[1]),
+            proyectos=catastro.cargar(),
 ```
 
-**Verifica los nombres reales de esos dos modulos en `server.py` antes de
-escribir la linea** -- el server los importa con sus propios alias y este plan
-no los adivina.
+Los dos nombres estan verificados. `catastro` ya se importa asi en
+`server.py:62` (`from calipso import catastro`). `leer_carta` **hay que
+agregarlo** a la linea que ya existe en `server.py:90`:
+
+```python
+from calipso.memory import Memory, leer_carta  # noqa: E402
+```
+
+Y ojo con el corte del prefijo: `leer_carta` recibe el nombre **sin** `dep:`,
+igual que `mem.departamento(...)` dos lineas mas arriba, porque el slug del
+directorio no lleva prefijo. Pero `proyectos_de` compara la cuenta **con**
+prefijo. Los dos cortes son correctos y distintos: uno es una ruta de disco, el
+otro es una cuenta contable.
 
 - [ ] **Step 6: Correr los tests**
 
@@ -868,21 +925,97 @@ suelto escribe en el home real.
 """
 ```
 
-El cuerpo hace cuatro cosas:
+El cuerpo, completo salvo las situaciones:
 
-1. **Fija `CALIPSO_HOME`** a un temporal antes de cualquier import de
-   `calipso`.
-2. **Arma media docena de situaciones sinteticas** -- el mismo dict que
-   `_situacion_minima()` en los tests, variando lo que importa: con y sin
-   trabajos vivos, con y sin propuestas propias, con y sin descartadas.
-3. **Para cada una, renderiza dos prompts**: uno con `carta` y `proyectos`
-   puestos, otro con los defaults. Los manda al modelo local por el mismo
-   camino que `_pensar_local` (mismo modelo, misma temperatura, mismo
-   `num_ctx`) y parsea las dos respuestas con `decision.parsear` y
-   `ficha.parsear_ficha`.
-4. **Imprime, por situacion:** el largo de los dos prompts en caracteres, las
-   dos acciones, las dos fichas si parsearon, y si la carta aparece o no en el
-   prompt que efectivamente se mando.
+```python
+import os
+import pathlib
+import tempfile
+
+# ANTES de importar calipso: el paquete escribe en el home real.
+os.environ["CALIPSO_HOME"] = tempfile.mkdtemp(prefix="carta-exp-")
+
+import dispatch                                          # noqa: E402
+from calipso.plantel import decision as dec              # noqa: E402
+from calipso.plantel import ficha                        # noqa: E402
+
+CARTA = {"estado": "escrita", "texto":
+         "El taller hace I+D para los proyectos de Pedro. Mira prototipos, "
+         "bancos de prueba y hardware. No le toca mejorar a Calipso mismo."}
+
+PROYECTOS = [{"nombre": "calipso-lector",
+              "texto": "convertir el Musnap en la pantalla de Calipso; el "
+                       "plugin arranca y falta el banco de pruebas",
+              "fuente": "pedro"}]
+
+SIN_CARTA = {"estado": "ausente", "texto": ""}
+
+
+def situaciones() -> list[tuple[str, dict]]:
+    """Media docena de fotos distintas del mismo departamento.
+
+    Se arman a mano y no salen del disco: el experimento no necesita
+    economia sembrada, y asi cada corrida compara exactamente lo mismo.
+    """
+    ...   # ver abajo
+
+
+def pensar(prompt: str) -> str:
+    """El mismo camino que `_pensar_local`, con el mismo `num_ctx`."""
+    cfg = dispatch.CONFIG["local"]
+    data = dispatch._http_post_json(
+        cfg["base_url"],
+        {"model": cfg["model"], "prompt": prompt, "stream": False,
+         "options": {"temperature": 0, "num_ctx": 8192}})
+    return (data or {}).get("response", "")
+
+
+def decidir(p: str) -> str:
+    """De la respuesta cruda a una linea legible: la accion, y la ficha si
+    parseo."""
+    accion, _ref, _motivo = dec.parsear(p)
+    if accion != "proponer":
+        return accion
+    f = ficha.parsear_ficha(p)
+    if f is None:
+        return "proponer (ficha ilegible)"
+    return f"proponer -> {f['promete']}: {f['sobre']} ({f['tarda']})"
+
+
+def main() -> int:
+    try:
+        pensar("hola")
+    except Exception as exc:
+        print(f"No hay modelo local disponible: {exc}")
+        print("Levanta Ollama con qwen2.5:7b y volve a correr.")
+        return 1
+
+    for nombre, s in situaciones():
+        con = dec.prompt(s, 50, carta=CARTA, proyectos=PROYECTOS)
+        sin = dec.prompt(s, 50, carta=SIN_CARTA, proyectos=[])
+        print(f"\n=== {nombre}")
+        print(f"    prompt con carta: {len(con):5d} chars | "
+              f"sin carta: {len(sin):5d} chars")
+        print(f"    la carta esta en el prompt: {CARTA['texto'][:20] in con}")
+        print(f"    CON carta -> {decidir(pensar(con))}")
+        print(f"    SIN carta -> {decidir(pensar(sin))}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+**Las situaciones son lo unico que queda por escribir**, y salen de copiar
+`_situacion_minima()` de `test_plantel_decision.py` seis veces, variando lo que
+puede cambiar la decision: sin nada; con un trabajo vivo; con dos propuestas
+propias en pie; con una descartada de esta semana; con la bandeja llena
+(tres propuestas); y una con el catalogo poblado. Cada una es una tupla
+`(nombre_legible, dict)`.
+
+**Por que `dispatch._http_post_json` y no un `requests` propio:** es el mismo
+camino que usa produccion, asi que si la config del modelo cambia, el
+experimento cambia con ella en vez de medir otra cosa.
 
 - [ ] **Step 2: Correrlo**
 

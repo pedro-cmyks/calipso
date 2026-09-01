@@ -318,13 +318,13 @@ no cambie nada.
   cuenta completa como clave -- un catastro que guarde el nombre desnudo no
   debe matchear.
 - La procedencia se dice, y las tres ramas producen textos distinguibles.
-- Un departamento sin rutina de jefe se dice como tal, derivado de las rutinas
-  y no de su nombre.
 
 **Fase 1, contra el modelo:** el experimento de la seccion 7. No es criterio de
 aceptacion del codigo.
 
-**Fase 2:** no se especifica hasta que la Fase 1 conteste. Cuando se escriba,
+**Fase 2:** no se especifica hasta que la Fase 1 conteste. Entre lo suyo va
+tambien que un departamento sin rutina de jefe se diga como tal, derivado de
+las rutinas y no de su nombre -- es de la pantalla, que la Fase 1 no construye. Cuando se escriba,
 sus tres tests dificiles ya se conocen: correr `escanear` **despues** de
 declarar y ver que la entrada sobrevive; escribir **mientras** el escaneo corre
 y ver que no se pierde; y corromper el json y ver que el escaneo **se niega a
