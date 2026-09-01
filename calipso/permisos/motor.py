@@ -277,7 +277,24 @@ def responder(id_solicitud: str, respuesta: str, quien: str = "pedro",
     ejecuta aca -- la rutina la retoma en su proxima corrida (5.6.2), y
     `evaluar` la consume sola cuando esa corrida vuelve a pedir la misma
     forma.
+
+    `no_siempre` con `forma_permanente` se rechaza ACA, antes de llamar a
+    `almacen.responder` -- dos capas a proposito, igual que las dos de
+    `si_siempre` (una que lee la solicitud antes de mutarla, y la de
+    `anotar_regla` como ultima linea antes del disco). Esta funcion tiene
+    que ser la que valide porque `forma_permanente` es un parametro que
+    solo llega hasta aca: `almacen.responder` no lo recibe, asi que no
+    puede cortar por su cuenta como corta si_siempre. Y una validacion de
+    ENTRADA no puede correr DESPUES de mutar estado -- `almacen.responder`
+    ya deja la solicitud negada, y `anotar_regla` corre recien despues dos
+    lineas mas abajo; si esta guarda no estuviera aca, la solicitud
+    quedaria negada, sin regla y sin linea en el registro, porque el
+    `anotar` del final tampoco llegaria a correr.
     """
+    if respuesta == "no_siempre" and forma_permanente:
+        raise ErrorPermisos(
+            "una regla de negar no admite forma: siempre se escribe con la "
+            "forma exacta de la accion que se esta contestando")
     s = almacen.responder(id_solicitud, respuesta, quien)
     permiso = None
     if respuesta in ("si_siempre", "no_siempre"):

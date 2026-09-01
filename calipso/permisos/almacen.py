@@ -281,8 +281,10 @@ def anotar_regla(a: Accion, ctx: Contexto, texto: str,
     contraria = "denegar" if efecto == "permitir" else "permitir"
     with candado(ruta_permisos()):
         d = config()
-        # ANTES del barrido, no despues: el barrido se lleva justo las
-        # reglas que estas dos comprobaciones tienen que encontrar
+        # esta SI tiene que ir antes del barrido: el barrido se lleva justo
+        # las reglas de signo contrario que esta comprobacion tiene que
+        # poder encontrar, y corrida despues ya no quedaria ninguna para
+        # avisar.
         if efecto == "permitir":
             ya_no = next((r for r in d["concedidos"]
                           if r.get("efecto", "permitir") == "denegar"
@@ -292,11 +294,17 @@ def anotar_regla(a: Accion, ctx: Contexto, texto: str,
                     f"hay una regla permanente de no ({ya_no['id']}) que "
                     "cubre esta accion: revocala si en realidad querias "
                     "decir que si")
-        igual = next((r for r in d["concedidos"]
-                      if r.get("efecto", "permitir") == efecto
-                      and cubre(r, a)), None)
-        if igual is not None:
-            return dict(igual)
+        # esta en cambio mira el MISMO efecto -- el barrido nunca la toca --
+        # asi que su posicion no depende de el; solo vale cuando el llamador
+        # NO paso una `forma` explicita. Si la paso, esta pidiendo una regla
+        # DISTINTA de la que ya cubre la accion (tipicamente mas ancha), y
+        # devolver la vieja descartaria ese ensanchamiento en silencio (R1).
+        if forma is None:
+            igual = next((r for r in d["concedidos"]
+                          if r.get("efecto", "permitir") == efecto
+                          and cubre(r, a)), None)
+            if igual is not None:
+                return dict(igual)
         quedan, barridas = [], []
         for r in d["concedidos"]:
             if r.get("efecto", "permitir") == contraria and cubre(r, a):

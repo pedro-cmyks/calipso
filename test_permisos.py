@@ -427,6 +427,34 @@ def test_dos_reglas_iguales_no_se_acumulan(home):
     assert len(almacen.concedidos()) == 2
 
 
+def test_una_forma_explicita_mas_ancha_se_escribe_aunque_la_angosta_ya_cubra(home):
+    """El atajo de no-duplicar (`test_dos_reglas_iguales_no_se_acumulan`)
+    vale SOLO cuando el llamador no paso una `forma` explicita. Si la paso,
+    esta pidiendo una regla distinta de la que ya cubre la accion -- Pedro
+    tiene un permiso para escribir bajo /a/b y contesta otra solicitud con
+    una forma explicita mas ancha, {"raiz": "/a"} -- y devolver la regla
+    vieja descartaria ese ensanchamiento en silencio (R1: la UI diria
+    "aprobada para siempre" mientras lo escrito sigue siendo /a/b).
+    """
+    angosta = almacen.conceder(
+        Accion("archivo", "escribir", {"ruta": "/a/b/x.txt"}),
+        Contexto("pedro"), "x", forma={"raiz": "/a/b"})
+
+    # esta accion ya esta cubierta por la angosta: sin el arreglo, el atajo
+    # de no-duplicar devolveria "angosta" y la forma pedida se perderia
+    cubierta_por_la_angosta = Accion("archivo", "escribir",
+                                     {"ruta": "/a/b/y.txt"})
+    ancha = almacen.conceder(cubierta_por_la_angosta, Contexto("pedro"), "y",
+                             forma={"raiz": "/a"})
+    assert ancha["id"] != angosta["id"]
+    assert ancha["forma"] == {"raiz": "/a"}
+    assert len(almacen.concedidos()) == 2
+
+    # y una accion que SOLO la ancha cubre queda cubierta
+    solo_la_ancha = Accion("archivo", "escribir", {"ruta": "/a/c/z.txt"})
+    assert almacen.regla_que_cubre(solo_la_ancha, "permitir") is not None
+
+
 def test_un_no_permanente_tapa_lo_que_despues_pasa_a_ser_directo(home):
     """El caso que fija DONDE va el corte.
 
@@ -496,6 +524,22 @@ def test_no_siempre_deja_la_solicitud_negada(home):
     assert salida["solicitud"]["estado"] == almacen.ESTADO_NEGADA
     assert salida["ejecucion"] is None
     assert salida["permiso"]["efecto"] == "denegar"
+
+
+def test_no_siempre_con_forma_rechaza_antes_de_tocar_la_solicitud(home):
+    """R2: una validacion de ENTRADA no puede correr despues de haber
+    mutado estado. `no_siempre` con `forma_permanente` tiene que
+    rechazarse ANTES de llamar a `almacen.responder` -- si se rechazara
+    recien en `anotar_regla`, la solicitud ya habria quedado negada, sin
+    regla y sin linea en el registro (ni el `anotar` del final de
+    `motor.responder` llega a correr).
+    """
+    r = motor.evaluar(acunar(150_000), Contexto("pedro"))
+    with pytest.raises(ErrorPermisos):
+        motor.responder(r.solicitud["id"], "no_siempre",
+                        forma_permanente={"familia": "plata"})
+    abierta = almacen.obtener(r.solicitud["id"])
+    assert abierta["estado"] in almacen.ESTADOS_ABIERTOS
 
 
 def test_la_regla_de_no_escrita_mientras_la_solicitud_esperaba_bloquea_el_si(home):
