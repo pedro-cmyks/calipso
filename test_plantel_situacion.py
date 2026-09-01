@@ -315,3 +315,24 @@ def test_el_catalogo_no_pasa_de_doce(fabrica):
                  forma=_forma(f"el objeto {i}", f"obj{i}"))
     s = sit.situacion(k, r, bus, cola, sus, W, "dep:atlas")
     assert len(s["catalogo"]) == 12
+
+
+def test_el_catalogo_ordena_por_ts_no_por_id(fabrica):
+    """`bus.ids()` ordena alfabeticamente y el id de produccion lleva un
+    uuid (server.py), asi que ordenar el catalogo por id es ordenar al
+    azar. Ids elegidos a proposito al reves del orden temporal: si el
+    catalogo se sigue armando por el orden de `bus.ids()`, se queda con
+    los doce mas VIEJOS en vez de los doce mas nuevos."""
+    k, r, bus, cola, sus = fabrica
+    ids = ["m", "l", "k", "j", "i", "h", "g", "f", "e", "d", "c", "b", "a"]
+    for i, id_ in enumerate(ids):
+        # ts creciente (el mas nuevo es el ultimo, i=12, con id "a"), pero
+        # el id ordena exactamente al reves.
+        bus.alta(f"2026-08-26T10:00:{i:02d}", W, id_, "dep:atlas",
+                 f"medir: el objeto {i} (corto)", 1_000, 1_000,
+                 {"gasto_max_mm": 1_000},
+                 forma=_forma(f"el objeto {i}", f"obj{i}"))
+    s = sit.situacion(k, r, bus, cola, sus, W, "dep:atlas")
+    assert len(s["catalogo"]) == 12
+    assert "el objeto 12" in s["catalogo"]      # el mas nuevo por ts
+    assert "el objeto 0" not in s["catalogo"]   # el mas viejo, afuera
