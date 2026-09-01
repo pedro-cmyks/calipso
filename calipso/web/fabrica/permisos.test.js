@@ -119,7 +119,7 @@ test("una familia sin vista propia muestra el titulo del motor tal cual",
   assert.match(html, /correr git push en \/x/);
 });
 
-// --- las tres salidas de 5.4, y cuando una no esta disponible -------------
+// --- las cuatro salidas de 5.4, y cuando una no esta disponible -----------
 
 test("una solicitud siempre trae los botones si y no", () => {
   const html = textoDePermisos(datos({pendientes: [SOL_ACUNAR]}));
@@ -141,7 +141,28 @@ test("si siempre_pregunta es falso, el boton de permiso permanente aparece",
   const sol = {...SOL_ACUNAR, siempre_pregunta: false};
   const html = textoDePermisos(datos({pendientes: [sol]}));
   assert.match(html, /data-respuesta="si_siempre"/);
-  assert.match(html, /no preguntes mas/);
+  // contra el texto del boton de SI, no contra "no preguntes mas" a secas:
+  // el boton de negar tambien lo dice y taparia la ausencia del de si
+  assert.match(html, /si, no preguntes mas/);
+});
+
+test("el boton de no permanente aparece tambien sobre lo que pregunta " +
+     "siempre: un no sobre lo irreversible es el lado conservador", () => {
+  const html = textoDePermisos(datos({pendientes: [SOL_ACUNAR]}));
+  assert.ok(!html.includes('data-respuesta="si_siempre"'),
+            "aparecio un si permanente sobre algo que pregunta siempre");
+  assert.match(html, /data-respuesta="no_siempre"/);
+});
+
+test("una regla dice si permite o si niega, y una vieja sin efecto permite",
+     () => {
+  const html = textoDePermisos(datos({concedidos: [
+    {id: "per_1", familia: "plata", operacion: "acunar", forma: {}, ts: "",
+     efecto: "denegar"},
+    {id: "per_2", familia: "comando", operacion: "correr", forma: {}, ts: ""},
+  ]}));
+  assert.match(html, /niega plata\/acunar/);
+  assert.match(html, /permite comando\/correr/);
 });
 
 // --- estacionadas: la misma respuesta, otra etiqueta ----------------------
@@ -190,7 +211,7 @@ test("una aprobada que espera a la rutina se ve, sin botones de respuesta",
 test("sin permisos concedidos, lo dice: una firma en blanco que no se ve " +
      "no sirve, pero tampoco hay que inventar una lista vacia muda", () => {
   const html = textoDePermisos(datos());
-  assert.match(html, /ningun permiso permanente concedido/i);
+  assert.match(html, /ninguna regla permanente/i);
 });
 
 test("un permiso concedido se ve con su forma y su boton de revocar", () => {

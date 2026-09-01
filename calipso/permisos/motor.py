@@ -25,8 +25,8 @@ cuatro familias de 5.3.
 
 Lo que este modulo NUNCA hace: conceder. El modelo puede pedir; la escalada
 es de Pedro, siempre (5.4). `evaluar` solo lee permisos; el unico camino que
-escribe uno es `responder(..., "si_siempre")`, que sale de un endpoint
-autenticado.
+escribe uno es `responder(..., "si_siempre" o "no_siempre")`, que sale de un
+endpoint autenticado.
 """
 from __future__ import annotations
 
@@ -124,7 +124,14 @@ def evaluar(a: Accion, ctx: Contexto | None = None) -> Resolucion:
          consume aca, atomica: es como la rutina retoma en su proxima
          corrida (5.6.2) sin volver a preguntar y sin poder hacerlo dos
          veces.
-      4. recien ahi, el nivel.
+      4. una regla permanente de NO, antes de clasificar. Tiene que ir aca y
+         no donde va el si: despues de clasificar ya pasaron NIVEL_NUNCA y
+         NIVEL_DIRECTO, asi que un no puesto alla jamas taparia escribir
+         dentro de las raices, ni un comando del allowlist, ni un monto bajo
+         el techo -- y subir el techo anularia en silencio un no que Pedro
+         ya habia dado. Va despues del consumo de aprobadas a proposito: lo
+         que Pedro ya aprobo, se ejecuta; la regla gobierna lo que venga.
+      5. recien ahi, el nivel.
     """
     ctx = ctx or Contexto()
     try:
@@ -161,6 +168,17 @@ def evaluar(a: Accion, ctx: Contexto | None = None) -> Resolucion:
                         ESTADO_PERMITIDO,
                         f"Pedro ya la aprobo ({s['id']})",
                         nivel=s.get("nivel", ""), solicitud=tomada))
+
+        # este corte precede a NIVEL_NUNCA: si alguna vez una regla llegara a
+        # cubrir una accion de ese nivel, el registro diria "regla permanente
+        # de no" en vez del motivo real (la credencial del propio servidor,
+        # 5.7). Inalcanzable hoy -- una accion NUNCA nunca crea solicitud, y
+        # sin solicitud no hay de donde escribir la regla.
+        regla = almacen.regla_que_cubre(a, "denegar")
+        if regla is not None:
+            return _anotar(a, ctx, Resolucion(
+                ESTADO_NEGADO, f"regla permanente de no: {regla['id']}",
+                permiso=regla))
 
         v = clasificar(a, almacen.techos())
 
@@ -251,24 +269,48 @@ def cerrar(id_solicitud: str, ok: bool, resultado: dict) -> dict | None:
 
 def responder(id_solicitud: str, respuesta: str, quien: str = "pedro",
               forma_permanente: dict | None = None) -> dict:
-    """Las tres salidas de 5.4: si una vez, si y no preguntes mas para
-    esto, no.
+    """Las cuatro salidas de 5.4: si una vez, si y no preguntes mas para
+    esto, no, y no me preguntes mas.
 
     Un "si" sobre una solicitud INTERACTIVA se ejecuta ahi mismo: hay
     alguien esperando el efecto. Un "si" sobre una ESTACIONADA no se
     ejecuta aca -- la rutina la retoma en su proxima corrida (5.6.2), y
     `evaluar` la consume sola cuando esa corrida vuelve a pedir la misma
     forma.
+
+    `no_siempre` con `forma_permanente` se rechaza ACA, antes de llamar a
+    `almacen.responder` -- dos capas a proposito, igual que las dos de
+    `si_siempre` (una que lee la solicitud antes de mutarla, y la de
+    `anotar_regla` como ultima linea antes del disco). Esta funcion tiene
+    que ser la que valide porque `forma_permanente` es un parametro que
+    solo llega hasta aca: `almacen.responder` no lo recibe, asi que no
+    puede cortar por su cuenta como corta si_siempre. Y una validacion de
+    ENTRADA no puede correr DESPUES de mutar estado -- `almacen.responder`
+    ya deja la solicitud negada, y `anotar_regla` corre recien despues dos
+    lineas mas abajo; si esta guarda no estuviera aca, la solicitud
+    quedaria negada, sin regla y sin linea en el registro, porque el
+    `anotar` del final tampoco llegaria a correr.
     """
+    if respuesta == "no_siempre" and forma_permanente:
+        raise ErrorPermisos(
+            "una regla de negar no admite forma: siempre se escribe con la "
+            "forma exacta de la accion que se esta contestando")
     s = almacen.responder(id_solicitud, respuesta, quien)
     permiso = None
-    if respuesta == "si_siempre":
+    if respuesta in ("si_siempre", "no_siempre"):
         a = Accion.de_dict(s["accion"])
         ctx = Contexto.de_dict(s.get("contexto"))
-        permiso = almacen.conceder(a, ctx, s.get("texto", ""),
-                                   siempre_pregunta=s.get("siempre_pregunta",
-                                                          False),
-                                   forma=forma_permanente)
+        # el orden importa y es el de hoy: primero se responde la solicitud,
+        # despues se escribe la regla. Si la segunda escritura falla, queda
+        # una decision sin regla -- molesto, se vuelve a preguntar. Al reves
+        # quedaria una regla sin decision, que es el lado peligroso: una
+        # regla de negar escrita sobre algo que Pedro nunca termino de
+        # contestar.
+        permiso = almacen.anotar_regla(
+            a, ctx, s.get("texto", ""),
+            siempre_pregunta=s.get("siempre_pregunta", False),
+            forma=forma_permanente,
+            efecto="permitir" if respuesta == "si_siempre" else "denegar")
     salida = {"solicitud": s, "permiso": permiso, "ejecucion": None}
     interactiva = not Contexto.de_dict(s.get("contexto")).desatendido
     if s["estado"] == almacen.ESTADO_APROBADA and interactiva:
@@ -343,6 +385,11 @@ def descriptor() -> dict:
     `reloj: None` no es un olvido: permisos no vence. Es una de las dos
     bandejas que tienen que declararlo explicitamente, porque el default
     no se puede inferir.
+
+    `no_siempre` es la mitad que el spec (4c) dice que le faltaba al sistema
+    entero, y permisos es la unica de las cuatro bandejas donde se puede
+    escribir hoy: es la unica que ya tiene una FORMA tipada que comparar
+    (`acciones.cubre`). Las otras tres identifican sus items por prosa libre.
     """
     return {
         "origen": ORIGEN_INBOX,
@@ -353,6 +400,8 @@ def descriptor() -> dict:
              "alcances": ["siempre"], "parametros": []},
             {"nombre": "no", "etiqueta": "No",
              "alcances": ["una_vez"], "parametros": []},
+            {"nombre": "no_siempre", "etiqueta": "No, nunca mas",
+             "alcances": ["siempre"], "parametros": []},
         ],
         "reloj": None,
         "clase_por_defecto": "decision",
@@ -391,9 +440,13 @@ def como_items(datos_endpoint: dict) -> list[dict]:
             "respuesta": None})
     for s in (datos_endpoint.get("pendientes") or []) + (datos_endpoint.get("estacionadas") or []):
         # si_siempre sobre una solicitud con siempre_pregunta devuelve 400:
-        # lo cortan almacen.responder y almacen.conceder, las dos capas
-        verbos = ["si", "no"] if s.get("siempre_pregunta") \
-            else ["si", "si_siempre", "no"]
+        # lo cortan `almacen.responder` y `almacen.anotar_regla`, las dos
+        # capas. no_siempre no tiene esa restriccion y es a proposito: lo que
+        # pregunta siempre es lo irreversible, y un NO permanente sobre eso
+        # falla hacia el lado conservador. Dibujar el verbo que va a dar 400
+        # es dibujar un boton que miente, asi que la lista se parte aca.
+        verbos = ["si", "no", "no_siempre"] if s.get("siempre_pregunta") \
+            else ["si", "si_siempre", "no", "no_siempre"]
         items.append({
             "id": s.get("id"), "origen": ORIGEN_INBOX, "clase": "decision",
             "ts": s.get("ts") or "", "titulo": s.get("texto") or "",

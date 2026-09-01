@@ -93,7 +93,13 @@ def test_permisos_no_ofrece_despues_ni_vence():
     assert d["origen"] == "permisos"
     assert d["reloj"] is None
     assert "despues" not in {v["nombre"] for v in d["verbos"]}
-    assert {v["nombre"] for v in d["verbos"]} == {"si", "si_siempre", "no"}
+    assert {v["nombre"] for v in d["verbos"]} == {"si", "si_siempre", "no",
+                                                  "no_siempre"}
+    # `alcances` es donde un origen declara que verbos dejan regla. Hoy
+    # permisos es el unico que declara "siempre", y ahora lo declara en los
+    # dos signos: es la mitad que el spec (4c, regla 2) dice que faltaba.
+    siempre = {v["nombre"] for v in d["verbos"] if "siempre" in v["alcances"]}
+    assert siempre == {"si_siempre", "no_siempre"}
 
 
 def test_solo_lo_abierto_es_item():
@@ -120,7 +126,10 @@ def test_siempre_pregunta_no_ofrece_el_verbo_siempre():
                                       "texto": "acunar", "siempre_pregunta": True,
                                       "accion": {}, "contexto": {}, "motivo": ""}]}
     it = permisos_motor.como_items(datos_endpoint)[0]
-    assert it["cuerpo"]["verbos_validos"] == ["si", "no"]
+    # si_siempre no aparece sobre lo que pregunta siempre -- lo cortan las
+    # dos capas del almacen y daria 400. no_siempre SI, porque un no
+    # permanente sobre lo irreversible falla hacia el lado conservador.
+    assert it["cuerpo"]["verbos_validos"] == ["si", "no", "no_siempre"]
 
 
 def test_vacio_por_error_no_se_confunde_con_vacio_de_verdad():

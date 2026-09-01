@@ -174,6 +174,13 @@ ALLOWLIST: dict[str, dict[str, Any]] = {
                  "test_inbox.py", "test_inbox_server.py"],
         "timeout": 120,
     },
+    "test_permisos": {
+        "title": "Probar el motor de permisos",
+        "description": "Ejecuta test_permisos.py y test_permisos_server.py.",
+        "args": ["{python}", "-m", "pytest", "-q",
+                 "test_permisos.py", "test_permisos_server.py"],
+        "timeout": 120,
+    },
     "test_prompt_compiler": {
         "title": "Probar lenguaje interno",
         "description": "Ejecuta test_prompt_compiler.py.",

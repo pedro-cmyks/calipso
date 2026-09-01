@@ -70,7 +70,15 @@ ESTADO_FALLIDA = "fallida"
 # otro lado.
 ESTADOS_ABIERTOS = (ESTADO_PENDIENTE, ESTADO_ESTACIONADA)
 
-RESPUESTAS = ("si", "si_siempre", "no")
+RESPUESTAS = ("si", "si_siempre", "no", "no_siempre")
+
+# El signo de una regla permanente. Vive en la MISMA lista `concedidos`
+# porque `revocar`, su endpoint y su boton ya cuelgan de esa lista: con un
+# campo, el "no para siempre" nace revocable y visible sin una linea de
+# revocacion nueva. `config()` no normaliza los dicts que lee del disco, asi
+# que el default se aplica SIEMPRE al comparar (`.get("efecto", "permitir")`)
+# y nunca confiando en que la escritura lo puso.
+EFECTOS = ("permitir", "denegar")
 
 # El default de 5.6, "que es de Pedro cambiar (asi no queda vacio)": lo que
 # un departamento puede hacer de noche sin preguntarle a nadie. Comandos de
@@ -187,11 +195,17 @@ def preautorizados(departamento: str | None) -> list[dict]:
     return list(PREAUTORIZADO_DEFECTO)
 
 
-def cubierta_por_permiso(a: Accion) -> dict | None:
-    for permiso in concedidos():
-        if cubre(permiso, a):
-            return permiso
+def regla_que_cubre(a: Accion, efecto: str) -> dict | None:
+    for regla in concedidos():
+        if regla.get("efecto", "permitir") == efecto and cubre(regla, a):
+            return regla
     return None
+
+
+def cubierta_por_permiso(a: Accion) -> dict | None:
+    """El si permanente. Se deja con su nombre y su firma de siempre para no
+    tocar al llamador de `motor.evaluar`."""
+    return regla_que_cubre(a, "permitir")
 
 
 def cubierta_por_preautorizacion(a: Accion, departamento: str | None) -> dict | None:
@@ -201,48 +215,140 @@ def cubierta_por_preautorizacion(a: Accion, departamento: str | None) -> dict | 
     return None
 
 
-def conceder(a: Accion, ctx: Contexto, texto: str,
-             siempre_pregunta: bool = False, forma: dict | None = None) -> dict:
-    """El permiso permanente de 5.4. Guarda cuando se concedio, desde que
-    chat y con que texto exacto.
+def anotar_regla(a: Accion, ctx: Contexto, texto: str,
+                 siempre_pregunta: bool = False, forma: dict | None = None,
+                 efecto: str = "permitir") -> dict:
+    """La regla permanente de 5.4, en sus dos signos. Guarda cuando se
+    escribio, desde que chat y con que texto exacto.
 
-    Se NIEGA sobre lo que pregunta siempre, y la negativa vive aca y no
-    solo en el endpoint: es la ultima linea antes del disco, asi que
+    El SI se NIEGA sobre lo que pregunta siempre, y la negativa vive aca y
+    no solo en el endpoint: es la ultima linea antes del disco, asi que
     ningun llamador futuro -- ni un endpoint nuevo, ni el motor -- puede
     escribir por accidente un si permanente sobre un git push o sobre una
-    acunacion.
+    acunacion. El NO no tiene esa restriccion a proposito: lo que pregunta
+    siempre es lo irreversible, y un no permanente sobre eso falla hacia el
+    lado conservador.
 
-    `forma` permite conceder una forma MAS ANCHA que la de la accion
-    -- "escribir bajo ~/Downloads" en vez de ese archivo suelto -- pero
-    solo cuando esa forma efectivamente tapa la accion que se esta
-    aprobando: nadie concede algo que no cubre lo que tiene delante.
+    Por la MISMA razon, un si tampoco se escribe cuando ya hay una regla de
+    negar que cubre la accion. Esa comprobacion esta DUPLICADA con la de
+    `almacen.responder` a proposito, igual que la de arriba: alla cierra la
+    ventana del item que ya estaba abierto, y aca cierra a cualquier
+    llamador que escriba sin pasar por una solicitud -- `conceder` directo
+    sobre una accion tapada por un "no" borraba ese "no" en el barrido, en
+    silencio, y `evaluar` volvia a permitir.
+
+    `forma` permite escribir una forma MAS ANCHA que la de la accion
+    -- "escribir bajo ~/Downloads" en vez de ese archivo suelto -- pero solo
+    cuando esa forma efectivamente tapa la accion que se esta contestando:
+    nadie escribe una regla que no cubre lo que tiene delante. Y solo para
+    el SI: `cubre` comprueba que la regla TAPA la accion y jamas que no la
+    excede, asi que del lado del no ensanchar es el radio de explosion. Una
+    regla de negar se escribe con la forma EXACTA de lo que Pedro tenia
+    delante; una mas ancha es un bloqueo que no deja item en ninguna
+    bandeja, porque el motor niega antes de crear la solicitud.
+
+    Escribir dos veces la misma regla es un no-op, no un error: se devuelve
+    la que ya estaba. Pedro puede contestar dos items distintos que caen
+    bajo la misma regla y ninguna de las dos respuestas esta mal; lo que no
+    puede quedar son dos tarjetas indistinguibles en la pantalla de las
+    cuales revocar una no cambia nada.
+
+    Y escribir una regla BORRA la contraria que cubra esta misma accion, en
+    la misma escritura. Si no, revocar el "no" devolveria en silencio el
+    "si" viejo en vez de devolver la pregunta, que es exactamente la trampa
+    que la regla 3 del spec quiere evitar. Cada barrida deja su linea en el
+    registro por lo mismo que la deja `revocar`: es una regla que dejo de
+    valer sin que nadie la revocara.
     """
-    if siempre_pregunta:
+    if efecto not in EFECTOS:
+        raise ErrorPermisos(f"efecto invalido: {efecto!r} (son {EFECTOS})")
+    if siempre_pregunta and efecto == "permitir":
         raise ErrorPermisos(
             "esta operacion pregunta siempre (5.4): no admite permiso "
             "permanente")
-    permiso = {"id": _id("per"), "ts": _ahora(),
-               "familia": a.familia, "operacion": a.operacion,
-               "forma": dict(forma) if forma else dict(a.forma),
-               "chat": ctx.chat, "origen": ctx.origen, "texto": texto}
-    if not cubre(permiso, a):
+    if forma and efecto == "denegar":
         raise ErrorPermisos(
-            "la forma concedida no cubre la accion que se esta aprobando")
+            "una regla de negar no admite forma: siempre se escribe con la "
+            "forma exacta de la accion que se esta contestando")
+    regla = {"id": _id("per"), "ts": _ahora(),
+             "familia": a.familia, "operacion": a.operacion,
+             "forma": dict(forma) if forma else dict(a.forma),
+             "efecto": efecto,
+             "chat": ctx.chat, "origen": ctx.origen, "texto": texto}
+    if not cubre(regla, a):
+        raise ErrorPermisos(
+            "la forma de la regla no cubre la accion que se esta contestando")
+    contraria = "denegar" if efecto == "permitir" else "permitir"
     with candado(ruta_permisos()):
         d = config()
-        d["concedidos"].append(permiso)
+        # esta SI tiene que ir antes del barrido: el barrido se lleva justo
+        # las reglas de signo contrario que esta comprobacion tiene que
+        # poder encontrar, y corrida despues ya no quedaria ninguna para
+        # avisar.
+        if efecto == "permitir":
+            ya_no = next((r for r in d["concedidos"]
+                          if r.get("efecto", "permitir") == "denegar"
+                          and cubre(r, a)), None)
+            if ya_no is not None:
+                raise ErrorPermisos(
+                    f"hay una regla permanente de no ({ya_no['id']}) que "
+                    "cubre esta accion: revocala si en realidad querias "
+                    "decir que si")
+        # esta en cambio mira el MISMO efecto -- el barrido nunca la toca --
+        # asi que su posicion no depende de el; solo vale cuando el llamador
+        # NO paso una `forma` explicita. Si la paso, esta pidiendo una regla
+        # DISTINTA de la que ya cubre la accion (tipicamente mas ancha), y
+        # devolver la vieja descartaria ese ensanchamiento en silencio (R1).
+        if forma is None:
+            igual = next((r for r in d["concedidos"]
+                          if r.get("efecto", "permitir") == efecto
+                          and cubre(r, a)), None)
+            if igual is not None:
+                return dict(igual)
+        quedan, barridas = [], []
+        for r in d["concedidos"]:
+            if r.get("efecto", "permitir") == contraria and cubre(r, a):
+                barridas.append(r)
+            else:
+                quedan.append(r)
+        d["concedidos"] = quedan + [regla]
         _guardar(ruta_permisos(), d)
-    return permiso
+        for vieja in barridas:
+            anotar({"evento": "barrida", "permiso": vieja.get("id"),
+                    "efecto": vieja.get("efecto", "permitir"),
+                    "por": regla["id"], "familia": vieja.get("familia"),
+                    "operacion": vieja.get("operacion"),
+                    "forma": vieja.get("forma")})
+    return regla
+
+
+def conceder(a: Accion, ctx: Contexto, texto: str,
+             siempre_pregunta: bool = False, forma: dict | None = None) -> dict:
+    """El si permanente. Envoltorio de `anotar_regla` con su firma de
+    siempre: lo llaman el motor y los tests, y cambiarles la firma no
+    agregaria nada."""
+    return anotar_regla(a, ctx, texto, siempre_pregunta, forma,
+                        efecto="permitir")
 
 
 def revocar(id_permiso: str) -> bool:
     with candado(ruta_permisos()):
         d = config()
-        quedan = [c for c in d["concedidos"] if c.get("id") != id_permiso]
-        if len(quedan) == len(d["concedidos"]):
+        revocada = next((c for c in d["concedidos"]
+                         if c.get("id") == id_permiso), None)
+        if revocada is None:
             return False
-        d["concedidos"] = quedan
+        d["concedidos"] = [c for c in d["concedidos"]
+                           if c.get("id") != id_permiso]
         _guardar(ruta_permisos(), d)
+        # revocar una regla de negar devuelve el futuro. Sin esta linea no
+        # queda en ningun lado cuando dejo de valer, y el rastro de 5.4
+        # tendria un agujero justo en el unico evento que reabre un caudal.
+        anotar({"evento": "revocacion", "permiso": id_permiso,
+                "efecto": revocada.get("efecto", "permitir"),
+                "familia": revocada.get("familia"),
+                "operacion": revocada.get("operacion"),
+                "forma": revocada.get("forma")})
         return True
 
 
@@ -351,9 +457,9 @@ def anotar_intento(id_solicitud: str, a: Accion, ctx: Contexto,
 
 
 def responder(id_solicitud: str, respuesta: str, quien: str) -> dict:
-    """Las tres salidas de 5.4. `si_siempre` no concede aca -- solo marca
-    la solicitud; el permiso lo escribe el motor con `conceder`, que es
-    quien se niega sobre lo irreversible."""
+    """Las cuatro salidas de 5.4. `si_siempre` y `no_siempre` no escriben
+    la regla aca -- solo marcan la solicitud; la regla la escribe el motor
+    con `anotar_regla`, que es quien se niega sobre lo irreversible."""
     if respuesta not in RESPUESTAS:
         raise ErrorPermisos(
             f"respuesta invalida: {respuesta!r} (son {RESPUESTAS})")
@@ -369,6 +475,23 @@ def responder(id_solicitud: str, respuesta: str, quien: str) -> dict:
                 raise ErrorPermisos(
                     "esta operacion pregunta siempre (5.4): no admite "
                     "permiso permanente")
+            if respuesta in ("si", "si_siempre"):
+                # la ventana de la pared de forma: esta solicitud nacio
+                # ANTES que la regla de negar. Mientras estuvo abierta, la
+                # pared de forma la siguio mostrando tal cual -- `evaluar`
+                # no se vuelve a llamar para una solicitud que ya existe,
+                # asi que el corte del no en `evaluar` nunca se corrio para
+                # ella. Esta es la ultima linea antes del disco: si no
+                # corta aca, ningun llamador futuro puede evitar que un
+                # "si" sobre ese item viejo ejecute la accion a pesar del
+                # no permanente que Pedro ya dio.
+                a = Accion.de_dict(s["accion"])
+                regla = regla_que_cubre(a, "denegar")
+                if regla is not None:
+                    raise ErrorPermisos(
+                        f"hay una regla permanente de no ({regla['id']}) "
+                        "que cubre esta accion: revocala si en realidad "
+                        "querias decir que si")
             s["estado"] = (ESTADO_APROBADA if respuesta in ("si", "si_siempre")
                            else ESTADO_NEGADA)
             s["respondida"] = {"ts": _ahora(), "respuesta": respuesta,

@@ -4448,10 +4448,14 @@ except Exception:  # sin motor de permisos los endpoints lo dicen, no mienten
 
 
 class EcoPermisoResponderBody(BaseModel):
-    respuesta: str  # "si" | "si_siempre" | "no" (las tres salidas de 5.4)
-    # una forma MAS ANCHA para el permiso permanente ("escribir bajo
-    # ~/Downloads" en vez de ese archivo suelto). Tiene que cubrir la
-    # accion que se esta aprobando o `conceder` la rechaza.
+    # "si" | "si_siempre" | "no" | "no_siempre" (las cuatro salidas de 5.4)
+    respuesta: str
+    # una forma MAS ANCHA para la regla permanente ("escribir bajo
+    # ~/Downloads" en vez de ese archivo suelto). Viaja con las dos
+    # respuestas que dejan regla, pero solo la acepta `si_siempre`: tiene
+    # que cubrir la accion que se esta contestando o `anotar_regla` la
+    # rechaza, y con `no_siempre` la rechaza siempre -- una regla de negar
+    # mas ancha que la accion bloquea sin dejar item en ninguna bandeja.
     forma: dict | None = None
 
 
@@ -4601,7 +4605,7 @@ def api_permisos() -> dict:
 @app.post("/api/permisos/solicitudes/{id_solicitud}/responder")
 def api_permisos_responder(id_solicitud: str,
                            body: EcoPermisoResponderBody) -> dict:
-    """Las tres salidas de 5.4. El modelo puede PEDIR; conceder es de
+    """Las cuatro salidas de 5.4. El modelo puede PEDIR; conceder es de
     Pedro, siempre, y este endpoint es el unico camino que escribe un
     permiso permanente."""
     if _permisos is None:

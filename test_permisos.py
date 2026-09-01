@@ -291,6 +291,297 @@ def test_no_se_contesta_dos_veces(home):
         motor.responder(r.solicitud["id"], "si")
 
 
+def test_una_regla_de_negar_se_guarda_con_su_efecto(home):
+    almacen.anotar_regla(acunar(150_000), Contexto("pedro"),
+                         "acunar 150 monedas", siempre_pregunta=True,
+                         efecto="denegar")
+    reglas = almacen.concedidos()
+    assert len(reglas) == 1
+    assert reglas[0]["efecto"] == "denegar"
+    # la regla de negar vive en la MISMA lista que las de permitir: por eso
+    # nace revocable, visible y barrible sin codigo nuevo (D1)
+    assert reglas[0]["familia"] == "plata"
+
+
+def test_negar_para_siempre_si_admite_lo_que_pregunta_siempre(home):
+    # el corte de 5.4 es contra el SI en blanco sobre lo irreversible. Un NO
+    # permanente sobre acunar falla hacia el lado conservador (D2).
+    with pytest.raises(ErrorPermisos):
+        almacen.anotar_regla(acunar(500_000), Contexto("pedro"), "x",
+                             siempre_pregunta=True, efecto="permitir")
+    r = almacen.anotar_regla(acunar(500_000), Contexto("pedro"), "x",
+                             siempre_pregunta=True, efecto="denegar")
+    assert r["efecto"] == "denegar"
+
+
+def test_conceder_sigue_siendo_lo_que_era(home):
+    # `conceder` es ahora un envoltorio, y no puede cambiar de significado:
+    # sigue escribiendo permitir y sigue negandose sobre lo irreversible
+    r = almacen.conceder(acunar(99_999), Contexto("pedro"), "x")
+    assert r["efecto"] == "permitir"
+    assert almacen.regla_que_cubre(acunar(99_999), "permitir") is not None
+    assert almacen.regla_que_cubre(acunar(99_999), "denegar") is None
+
+
+def test_una_regla_sin_efecto_se_lee_como_permitir(home):
+    # `config()` no normaliza: un permisos.json escrito por la version
+    # anterior tiene reglas sin la clave. El default se aplica al comparar,
+    # nunca confiando en que la escritura lo puso.
+    almacen.conceder(acunar(99_999), Contexto("pedro"), "x")
+    p = almacen.ruta_permisos()
+    d = json.loads(p.read_text(encoding="utf-8"))
+    del d["concedidos"][0]["efecto"]
+    p.write_text(json.dumps(d), encoding="utf-8")
+    assert almacen.regla_que_cubre(acunar(99_999), "permitir") is not None
+
+
+def test_una_regla_nueva_barre_a_la_contraria_sobre_la_misma_forma(home):
+    # sin esto la pantalla seria una trampa: Pedro revocaria el "no"
+    # esperando volver a que le pregunten, y en silencio quedaria vivo el
+    # "si" viejo (D3)
+    almacen.conceder(acunar(99_999), Contexto("pedro"), "x")
+    almacen.anotar_regla(acunar(99_999), Contexto("pedro"), "x",
+                         efecto="denegar")
+    reglas = almacen.concedidos()
+    assert len(reglas) == 1
+    assert reglas[0]["efecto"] == "denegar"
+
+
+def test_revocar_una_regla_deja_linea_en_el_registro(home):
+    # revocar un "no" devuelve el futuro. Sin esta linea no queda en ningun
+    # lado cuando dejo de valer.
+    r = almacen.anotar_regla(acunar(150_000), Contexto("pedro"), "x",
+                             siempre_pregunta=True, efecto="denegar")
+    assert almacen.revocar(r["id"]) is True
+    lineas = [l for l in almacen.registro(50)
+              if l.get("evento") == "revocacion"]
+    assert len(lineas) == 1
+    assert lineas[0]["permiso"] == r["id"]
+    assert lineas[0]["efecto"] == "denegar"
+
+
+def test_el_barrido_de_la_contraria_deja_linea_en_el_registro(home):
+    # el barrido borra una regla del disco sin que Pedro la revoque. Es el
+    # mismo agujero que la revocacion: sin la linea no queda en ningun lado
+    # cuando esa regla dejo de valer, y el rastro de 5.4 se corta justo en
+    # el evento que cambia lo que pasa la proxima vez.
+    si_viejo = almacen.conceder(acunar(99_999), Contexto("pedro"), "x")
+    no = almacen.anotar_regla(acunar(99_999), Contexto("pedro"), "y",
+                              efecto="denegar")
+    lineas = [l for l in almacen.registro(50) if l.get("evento") == "barrida"]
+    assert len(lineas) == 1
+    assert lineas[0]["permiso"] == si_viejo["id"]
+    assert lineas[0]["efecto"] == "permitir"
+    assert lineas[0]["por"] == no["id"]
+    assert lineas[0]["familia"] == "plata"
+    assert lineas[0]["forma"] == si_viejo["forma"]
+
+
+def test_conceder_directo_no_puede_pisar_una_regla_de_no(home):
+    # la guarda del si sobre lo tapado por un no vivia solo en
+    # `almacen.responder`: llamar a `conceder` directo borraba el no en
+    # silencio y `evaluar` volvia a permitir.
+    no = almacen.anotar_regla(acunar(150_000), Contexto("pedro"), "x",
+                              siempre_pregunta=True, efecto="denegar")
+    with pytest.raises(ErrorPermisos) as exc:
+        almacen.conceder(acunar(150_000), Contexto("pedro"), "y")
+    assert no["id"] in str(exc.value)
+    # y el no sigue en pie: la comprobacion corre ANTES del barrido, asi
+    # que no se borra a si misma la regla que tenia que encontrar
+    assert almacen.regla_que_cubre(acunar(150_000), "denegar") is not None
+    assert almacen.regla_que_cubre(acunar(150_000), "permitir") is None
+    assert motor.evaluar(acunar(150_000), Contexto("pedro")).estado \
+        == motor.ESTADO_NEGADO
+
+
+def test_una_regla_de_negar_no_acepta_una_forma_a_mano(home):
+    # ensanchar un si es su funcion; ensanchar un no es el radio de
+    # explosion, y no deja item en ninguna bandeja donde verlo
+    a = Accion("archivo", "escribir", {"ruta": "/tmp/bandeja/uno.txt"})
+    with pytest.raises(ErrorPermisos):
+        almacen.anotar_regla(a, Contexto("pedro"), "x", forma={"raiz": "/"},
+                             efecto="denegar")
+    assert almacen.concedidos() == []
+    # el mismo ensanchamiento del lado del si se sigue aceptando
+    ancho = almacen.anotar_regla(a, Contexto("pedro"), "x",
+                                 forma={"raiz": "/tmp/bandeja"},
+                                 efecto="permitir")
+    assert ancho["forma"] == {"raiz": "/tmp/bandeja"}
+
+
+def test_dos_reglas_iguales_no_se_acumulan(home):
+    # dos solicitudes distintas pueden caer bajo la misma regla, y
+    # contestar las dos no esta mal: la segunda escritura es un no-op, no
+    # un error. Dos tarjetas identicas en la pantalla, con una sola que
+    # cambia algo al revocarla, es la misma trampa de la regla 3 del spec.
+    uno = almacen.anotar_regla(acunar(150_000), Contexto("pedro"), "x",
+                               siempre_pregunta=True, efecto="denegar")
+    dos = almacen.anotar_regla(acunar(150_000), Contexto("otro"), "y",
+                               siempre_pregunta=True, efecto="denegar")
+    assert dos["id"] == uno["id"]
+    assert len(almacen.concedidos()) == 1
+    # y del lado del si, igual
+    tres = almacen.conceder(acunar(99_999), Contexto("pedro"), "x")
+    cuatro = almacen.conceder(acunar(99_999), Contexto("pedro"), "y")
+    assert cuatro["id"] == tres["id"]
+    assert len(almacen.concedidos()) == 2
+
+
+def test_una_forma_explicita_mas_ancha_se_escribe_aunque_la_angosta_ya_cubra(home):
+    """El atajo de no-duplicar (`test_dos_reglas_iguales_no_se_acumulan`)
+    vale SOLO cuando el llamador no paso una `forma` explicita. Si la paso,
+    esta pidiendo una regla distinta de la que ya cubre la accion -- Pedro
+    tiene un permiso para escribir bajo /a/b y contesta otra solicitud con
+    una forma explicita mas ancha, {"raiz": "/a"} -- y devolver la regla
+    vieja descartaria ese ensanchamiento en silencio (R1: la UI diria
+    "aprobada para siempre" mientras lo escrito sigue siendo /a/b).
+    """
+    angosta = almacen.conceder(
+        Accion("archivo", "escribir", {"ruta": "/a/b/x.txt"}),
+        Contexto("pedro"), "x", forma={"raiz": "/a/b"})
+
+    # esta accion ya esta cubierta por la angosta: sin el arreglo, el atajo
+    # de no-duplicar devolveria "angosta" y la forma pedida se perderia
+    cubierta_por_la_angosta = Accion("archivo", "escribir",
+                                     {"ruta": "/a/b/y.txt"})
+    ancha = almacen.conceder(cubierta_por_la_angosta, Contexto("pedro"), "y",
+                             forma={"raiz": "/a"})
+    assert ancha["id"] != angosta["id"]
+    assert ancha["forma"] == {"raiz": "/a"}
+    assert len(almacen.concedidos()) == 2
+
+    # y una accion que SOLO la ancha cubre queda cubierta
+    solo_la_ancha = Accion("archivo", "escribir", {"ruta": "/a/c/z.txt"})
+    assert almacen.regla_que_cubre(solo_la_ancha, "permitir") is not None
+
+
+def test_un_no_permanente_tapa_lo_que_despues_pasa_a_ser_directo(home):
+    """El caso que fija DONDE va el corte.
+
+    Acunar 150 monedas esta sobre el techo: pregunta. Pedro contesta que
+    nunca mas. Despues sube el techo a 200 monedas, y eso convierte la misma
+    accion en NIVEL_DIRECTO.
+
+    Si el corte del no viviera donde vive el del si -- despues de
+    `clasificar` y bajo `if not v.siempre_pregunta` -- subir el techo
+    anularia en silencio el no permanente de Pedro. Va antes de clasificar
+    justamente para que no pueda pasar.
+    """
+    r = motor.evaluar(acunar(150_000), Contexto("pedro"))
+    assert r.estado == motor.ESTADO_PENDIENTE
+    motor.responder(r.solicitud["id"], "no_siempre")
+
+    almacen.poner_techo("plata_mm", 200_000)
+    assert acciones.clasificar(acunar(150_000),
+                               almacen.techos()).nivel == NIVEL_DIRECTO
+
+    r2 = motor.evaluar(acunar(150_000), Contexto("pedro"))
+    assert r2.estado == motor.ESTADO_NEGADO
+    assert "regla permanente" in r2.motivo
+
+
+def test_un_no_permanente_no_crea_solicitud(home):
+    """La regla filtra en el productor: el item no llega a existir.
+
+    Es tambien la razon por la que la pantalla de reglas deja de ser un lujo
+    y pasa a ser requisito: una regla de negar demasiado ancha no deja
+    rastro en ninguna bandeja, y el unico lugar donde Pedro puede enterarse
+    es la lista de reglas y el registro.
+    """
+    r = motor.evaluar(acunar(150_000), Contexto("pedro"))
+    motor.responder(r.solicitud["id"], "no_siempre")
+    antes = len(almacen.solicitudes())
+
+    r2 = motor.evaluar(acunar(150_000), Contexto("otro_chat"))
+    assert r2.estado == motor.ESTADO_NEGADO
+    assert len(almacen.solicitudes()) == antes
+
+
+def test_revocar_el_no_devuelve_la_pregunta_y_no_el_si_viejo(home):
+    """La otra mitad de D3, del lado del motor.
+
+    El "si viejo" tiene que existir de verdad para que el test pueda
+    atrapar una regresion del barrido de la regla contraria: si
+    `anotar_regla` dejara de barrer el "si" al escribir el "no", revocar
+    el "no" dejaria ese "si" vivo y la reevaluacion volveria PERMITIDO en
+    vez de PENDIENTE.
+    """
+    r0 = motor.evaluar(npm_test(), Contexto("chat", chat="c1"))
+    si_viejo = almacen.conceder(npm_test(), Contexto("pedro"), "y")
+
+    salida = motor.responder(r0.solicitud["id"], "no_siempre")
+    assert almacen.regla_que_cubre(npm_test(), "permitir") is None
+
+    almacen.revocar(salida["permiso"]["id"])
+
+    r2 = motor.evaluar(npm_test(), Contexto("chat", chat="c1"))
+    assert r2.estado == motor.ESTADO_PENDIENTE
+
+
+def test_no_siempre_deja_la_solicitud_negada(home):
+    r = motor.evaluar(acunar(150_000), Contexto("pedro"))
+    salida = motor.responder(r.solicitud["id"], "no_siempre")
+    assert salida["solicitud"]["estado"] == almacen.ESTADO_NEGADA
+    assert salida["ejecucion"] is None
+    assert salida["permiso"]["efecto"] == "denegar"
+
+
+def test_no_siempre_con_forma_rechaza_antes_de_tocar_la_solicitud(home):
+    """R2: una validacion de ENTRADA no puede correr despues de haber
+    mutado estado. `no_siempre` con `forma_permanente` tiene que
+    rechazarse ANTES de llamar a `almacen.responder` -- si se rechazara
+    recien en `anotar_regla`, la solicitud ya habria quedado negada, sin
+    regla y sin linea en el registro (ni el `anotar` del final de
+    `motor.responder` llega a correr).
+    """
+    r = motor.evaluar(acunar(150_000), Contexto("pedro"))
+    with pytest.raises(ErrorPermisos):
+        motor.responder(r.solicitud["id"], "no_siempre",
+                        forma_permanente={"familia": "plata"})
+    abierta = almacen.obtener(r.solicitud["id"])
+    assert abierta["estado"] in almacen.ESTADOS_ABIERTOS
+
+
+def test_la_regla_de_no_escrita_mientras_la_solicitud_esperaba_bloquea_el_si(home):
+    """El agujero de la ventana: la solicitud nacio antes que la regla.
+
+    Si la solicitud ya estaba abierta cuando Pedro escribio el "nunca mas"
+    para esa misma forma, la pared de forma (corte 2 de `evaluar`) sigue
+    mostrando esa solicitud vieja -- `evaluar` no se vuelve a llamar para
+    algo que ya existe, asi que el corte 4 (la regla permanente de no)
+    nunca se corre para ella. Sin este chequeo en `responder`, un "si"
+    sobre ese item viejo ejecutaria la accion a pesar del no permanente.
+    """
+    hechos = []
+    motor.registrar_ejecutor(
+        "plata", "acunar", lambda a: hechos.append(a) or {"ok": True})
+
+    r = motor.evaluar(acunar(150_000), Contexto("pedro"))
+    assert r.estado == motor.ESTADO_PENDIENTE
+
+    almacen.anotar_regla(acunar(150_000), Contexto("pedro"), "x",
+                         siempre_pregunta=True, efecto="denegar")
+
+    with pytest.raises(ErrorPermisos):
+        motor.responder(r.solicitud["id"], "si")
+    assert hechos == []
+    assert almacen.obtener(r.solicitud["id"])["estado"] == \
+        almacen.ESTADO_PENDIENTE
+
+
+def test_sin_regla_de_no_el_si_sigue_funcionando(home):
+    """El caso feliz: sin regla de por medio, un "si" sobre una solicitud
+    abierta sigue haciendo lo que siempre hizo."""
+    hechos = []
+    motor.registrar_ejecutor(
+        "plata", "acunar", lambda a: hechos.append(a) or {"ok": True})
+
+    r = motor.evaluar(acunar(150_000), Contexto("pedro"))
+    salida = motor.responder(r.solicitud["id"], "si")
+    assert hechos
+    assert salida["ejecucion"]["ejecutada"] is True
+
+
 # --------------------------------------------------------------------------
 # 5.6 -- cuando no hay nadie a quien preguntar
 # --------------------------------------------------------------------------
@@ -410,6 +701,30 @@ def test_la_rutina_retoma_en_su_proxima_corrida(home):
                                    corrida="c3"))
     assert r3.estado == motor.ESTADO_ESTACIONADA
     assert r3.solicitud["id"] != r.solicitud["id"]
+
+
+def test_una_aprobada_sin_ejecutar_sobrevive_a_la_regla(home):
+    """D4: el corte va DESPUES del consumo de aprobadas. Pedro aprobo esa
+    solicitud concreta antes; la regla gobierna lo que venga.
+
+    `desatendido` no es un parametro de `Contexto`: es una propiedad
+    derivada de `origen not in ORIGENES_ATENDIDOS` (`acciones.py:108-110`,
+    y los atendidos son "chat" y "pedro"). El molde de un contexto de
+    rutina es el de `test_lo_estacionado_termina_la_corrida`. Y la segunda
+    corrida lleva OTRO id a proposito: es lo que hace de verdad la rutina
+    -- "la retoma en su proxima corrida" -- y ademas evita la pared de
+    corrida, que es un corte anterior y taparia lo que este test mide.
+    """
+    ctx = Contexto("rutina", departamento="dep:atlas", corrida="corr-1")
+    r = motor.evaluar(acunar(150_000), ctx)
+    assert r.estado == motor.ESTADO_ESTACIONADA
+    motor.responder(r.solicitud["id"], "si")
+    almacen.anotar_regla(acunar(150_000), Contexto("pedro"), "x",
+                         siempre_pregunta=True, efecto="denegar")
+
+    proxima = Contexto("rutina", departamento="dep:atlas", corrida="corr-2")
+    r2 = motor.evaluar(acunar(150_000), proxima)
+    assert r2.estado == motor.ESTADO_PERMITIDO
 
 
 # --------------------------------------------------------------------------

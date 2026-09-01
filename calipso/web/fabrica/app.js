@@ -533,10 +533,12 @@ cajaPermisos?.addEventListener("click", async evento => {
       alert(detalle);
     } else if (accion === "responder") {
       const etiqueta = {si: "aprobada una vez", si_siempre: "aprobada para siempre",
-                        no: "rechazada"}[boton.dataset.respuesta] || "contestada";
+                        no: "rechazada",
+                        no_siempre: "rechazada para siempre"}[boton.dataset.respuesta]
+        || "contestada";
       avisarEnPermisos(`listo: la solicitud quedo ${etiqueta}`);
     } else {
-      avisarEnPermisos("listo: se revoco el permiso");
+      avisarEnPermisos("listo: se revoco la regla permanente");
     }
   } finally {
     for (const b of botones) b.disabled = false;
