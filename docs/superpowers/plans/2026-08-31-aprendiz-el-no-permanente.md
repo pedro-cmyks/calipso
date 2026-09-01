@@ -455,15 +455,25 @@ def test_no_siempre_deja_la_solicitud_negada(home):
 
 def test_una_aprobada_sin_ejecutar_sobrevive_a_la_regla(home):
     """D4: el corte va DESPUES del consumo de aprobadas. Pedro aprobo esa
-    solicitud concreta antes; la regla gobierna lo que venga."""
-    ctx = Contexto("pedro", desatendido=True)
+    solicitud concreta antes; la regla gobierna lo que venga.
+
+    `desatendido` no es un parametro de `Contexto`: es una propiedad
+    derivada de `origen not in ORIGENES_ATENDIDOS` (`acciones.py:108-110`,
+    y los atendidos son "chat" y "pedro"). El molde de un contexto de
+    rutina es el de `test_lo_estacionado_termina_la_corrida`. Y la segunda
+    corrida lleva OTRO id a proposito: es lo que hace de verdad la rutina
+    -- "la retoma en su proxima corrida" -- y ademas evita la pared de
+    corrida, que es un corte anterior y taparia lo que este test mide.
+    """
+    ctx = Contexto("rutina", departamento="dep:atlas", corrida="corr-1")
     r = motor.evaluar(acunar(150_000), ctx)
     assert r.estado == motor.ESTADO_ESTACIONADA
     motor.responder(r.solicitud["id"], "si")
     almacen.anotar_regla(acunar(150_000), Contexto("pedro"), "x",
                          siempre_pregunta=True, efecto="denegar")
 
-    r2 = motor.evaluar(acunar(150_000), ctx)
+    proxima = Contexto("rutina", departamento="dep:atlas", corrida="corr-2")
+    r2 = motor.evaluar(acunar(150_000), proxima)
     assert r2.estado == motor.ESTADO_PERMITIDO
 ```
 
@@ -776,41 +786,109 @@ git commit -m "feat(fabrica): el boton de no permanente, y la pantalla dice de q
 
 ---
 
-### Task 5: La verificacion que el repo indica, y la suite entera
+### Task 5: Que tocar permisos dispare los tests de permisos
 
 **Files:**
-- Modify: `calipso/verification.py:57-59` (la rama de permisos, si hace falta)
-- Test: la suite completa
+- Modify: `calipso/tools/commands.py:170-176` (agregar `test_permisos` al lado
+  de `test_inbox`)
+- Modify: `calipso/verification.py:102-110` (una rama propia para permisos)
+- Test: `test_verification.py`, `test_commands.py`
 
 **Interfaces:**
-- Consumes: todo lo anterior.
+- Consumes: nada. Es independiente de las cuatro tareas anteriores y se puede
+  hacer antes o despues; va al final porque su test es la suite entera.
 - Produces: nada.
 
-- [ ] **Step 1: Verificar que tocar permisos dispara sus tests**
+**Verificado, no supuesto:** hoy `verification.py` nombra `permisos/motor.py`
+una sola vez, y es dentro de la rama del INBOX (`:103`), que corre `test_inbox`.
+O sea: tocar el motor de permisos NO corre `test_permisos.py`, y tocar
+`calipso/permisos/almacen.py` no corre nada mas que `py_compile_core`. Es
+exactamente el agujero que la rama de `test_memoria_ambito` (`:81-85`) y la de
+`test_contrato_departamentos` (`:89-95`) documentan haber tapado en su momento:
+la verificacion que el repo indica daba verde sin correr una sola assertion
+sobre lo que se acababa de cambiar. Este plan agrega el corte permanente que
+niega acciones antes de que nazca la solicitud; dejarlo sin esa red seria
+agregar la funcion mas silenciosa del motor a la parte del motor que la
+verificacion no mira.
 
-`verification.py` mapea rutas a comandos. Comprobar que tocar
-`calipso/permisos/almacen.py` y `calipso/permisos/motor.py` dispara
-`test_permisos`; si no hay una rama que los tome, agregarla siguiendo el molde
-de la rama de `inbox` (`verification.py:102-110`), con su comentario diciendo
-por que.
+- [ ] **Step 1: Escribir el test que falla**
 
-Run: `.venv/bin/python -m pytest test_verification.py -q`
+En `test_verification.py`:
 
-- [ ] **Step 2: Correr la suite entera de python**
+```python
+def test_tocar_permisos_corre_los_tests_de_permisos():
+    """El motor de permisos aparecia solo dentro de la rama del inbox, asi
+    que tocarlo corria test_inbox y no test_permisos; y el almacen no
+    disparaba nada. Un corte que NIEGA antes de crear la solicitud es lo
+    mas silencioso que hay en el motor: sin esta red, romperlo da verde."""
+    for ruta in ("calipso/permisos/almacen.py", "calipso/permisos/motor.py",
+                 "calipso/permisos/acciones.py"):
+        plan = verification.recommend(files=[{"path": ruta}])
+        ids = [c["command_id"] for c in plan["commands"]]
+        assert "test_permisos" in ids, ruta
+```
+
+- [ ] **Step 2: Correr el test para verificar que falla**
+
+Run: `.venv/bin/python -m pytest test_verification.py -q -k permisos`
+Expected: FAIL con `assert 'test_permisos' in ['py_compile_core']`
+
+- [ ] **Step 3: El comando en el allowlist**
+
+En `calipso/tools/commands.py`, junto a `test_inbox` (`:170-176`):
+
+```python
+    "test_permisos": {
+        "title": "Probar el motor de permisos",
+        "description": "Ejecuta test_permisos.py y test_permisos_server.py.",
+        "args": ["{python}", "-m", "pytest", "-q",
+                 "test_permisos.py", "test_permisos_server.py"],
+        "timeout": 120,
+    },
+```
+
+- [ ] **Step 4: La rama en el recomendador**
+
+En `calipso/verification.py`, antes de la rama del inbox (`:102`):
+
+```python
+        if "permisos" in lower:
+            types.add("permisos")
+            # el motor de permisos aparecia SOLO dentro de la rama del
+            # inbox, que corre test_inbox: tocar `almacen.py` no disparaba
+            # nada y tocar `motor.py` corria los tests del agregador, no los
+            # del motor. El corte del no permanente niega antes de crear la
+            # solicitud -- no deja item en ninguna bandeja -- asi que es
+            # justo lo que un verde sin assertions no atraparia.
+            _add(plan, "test_permisos", f"{path} toca el motor de permisos")
+```
+
+La rama del inbox se deja como esta: `permisos/motor.py` tiene que seguir
+disparando `test_inbox` tambien, porque ahi vive el adaptador
+(`descriptor()`/`como_items()`) que la Tarea 3 cambia. Las dos ramas son
+verdaderas al mismo tiempo y `_add` ya deduplica por `command_id`.
+
+- [ ] **Step 5: Correr los tests**
+
+Run: `.venv/bin/python -m pytest test_verification.py test_commands.py -q`
+Expected: PASS
+
+- [ ] **Step 6: La suite entera**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: PASS, sin ningun test nuevo saltado.
+Expected: PASS, sin ningun test nuevo saltado. `test_fabrica_js.py` tiene un
+piso de 90 tests de cliente: este plan agrega, nunca resta.
 
-- [ ] **Step 3: Verificar a mano que no quedo ningun emoji ni tilde en el codigo nuevo**
+- [ ] **Step 7: Verificar que el codigo nuevo es solo ascii**
 
-Run: `git diff main --stat && git diff main | grep -nP '[^\x00-\x7F]' || echo "solo ascii"`
-Expected: `solo ascii`, o unicamente lineas que ya existian.
+Run: `git diff main | grep -nP '^\+.*[^\x00-\x7F]' || echo "solo ascii"`
+Expected: `solo ascii`. Sin emojis y sin tildes en lo agregado.
 
-- [ ] **Step 4: Commit si hubo cambios**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add calipso/verification.py
-git commit -m "chore(verificacion): tocar el motor de permisos dispara sus tests"
+git add calipso/tools/commands.py calipso/verification.py test_verification.py
+git commit -m "fix(verificacion): tocar permisos corria los tests del inbox, no los del motor"
 ```
 
 ---
@@ -850,6 +928,16 @@ comodidad: ninguna de las tres puede hoy.
   renovacion deja armado para siempre el breaker del cierre: solo
   `atender_carta` alimenta `cartas_atendidas()`. Es una decision de la economia,
   no de la maquinaria de reglas.
+
+**La otra mitad de la regla 1 del spec queda para el plan 2 de la cinta.** La
+regla dice: *"Toda respuesta se guarda con su alcance declarado... es un campo
+del item, y el origen declara que alcances acepta cada verbo."* La segunda
+mitad es la Tarea 3. La primera -- que el despacho del inbox mande el alcance
+junto con el verbo -- es del plan de la cinta parte 2, que es el que enciende
+los cuatro botones que hoy salen `disabled` y todavia no tiene listener en
+`app.js`. Cuando se escriba, los `data-*` de `inbox.js` (`data-verbo`,
+`data-id`, `data-origen`) necesitan uno mas: `data-alcance`. Este plan no lo
+agrega porque agregarlo sin el despacho seria dejar un atributo que nadie lee.
 
 **No se construye el agregador generico de reglas** (`inbox.juntar_reglas`, un
 GET propio, revocar ruteado por prefijo de id). Por D1 las reglas de negar de
