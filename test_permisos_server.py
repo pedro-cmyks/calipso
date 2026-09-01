@@ -20,7 +20,9 @@ from calipso.economia import departamentos as deps
 from calipso.economia import tipos as t
 from calipso.economia.kernel import Kernel
 from calipso.economia.libro import Libro
+from calipso.permisos import almacen as permisos_almacen
 from calipso.permisos import motor as permisos_motor
+from calipso.permisos.acciones import Accion, Contexto
 
 
 @pytest.fixture
@@ -133,6 +135,64 @@ def test_la_plata_no_admite_permiso_permanente(cliente):
     assert r.status_code == 400
     assert "pregunta siempre" in r.json()["detail"]
     assert cliente.get("/api/permisos").json()["concedidos"] == []
+
+
+# --------------------------------------------------------------------------
+# La cuarta salida, por HTTP
+# --------------------------------------------------------------------------
+
+def test_no_siempre_niega_la_solicitud_y_escribe_la_regla(cliente):
+    antes = len(acunaciones(cliente.home))
+    acunar(cliente, 500_000)
+    sol = cliente.get("/api/permisos").json()["pendientes"][0]
+
+    r = cliente.post(f"/api/permisos/solicitudes/{sol['id']}/responder",
+                     json={"respuesta": "no_siempre"})
+    assert r.status_code == 200, r.text
+    assert r.json()["solicitud"]["estado"] == "negada"
+    assert r.json()["ejecucion"] is None
+    regla = r.json()["permiso"]
+    assert regla["efecto"] == "denegar"
+    assert len(acunaciones(cliente.home)) == antes
+
+    v = cliente.get("/api/permisos").json()
+    assert [c["id"] for c in v["concedidos"]] == [regla["id"]]
+    assert v["pendientes"] == []
+
+    # y la misma acunacion ya no deja prompt: el motor la niega antes de
+    # crear la solicitud, asi que el endpoint corta con 403 y no con 409
+    r2 = acunar(cliente, 500_000)
+    assert r2.status_code == 403, r2.text
+    assert regla["id"] in r2.json()["detail"]
+    assert cliente.get("/api/permisos").json()["pendientes"] == []
+    assert len(acunaciones(cliente.home)) == antes
+
+
+def test_un_si_sobre_una_solicitud_tapada_por_un_no_da_400(cliente):
+    """La ventana: la solicitud nacio ANTES que la regla.
+
+    La regla se escribe fuera del endpoint a proposito y no se puede hacer
+    de otra forma: dos solicitudes abiertas con la misma forma no existen
+    (la pared de 5.6.4 devuelve la primera), y contestar `no_siempre` a la
+    unica que hay la deja negada. La ventana solo se arma con una regla
+    escrita mientras el item viejo sigue abierto.
+    """
+    antes = len(acunaciones(cliente.home))
+    acunar(cliente, 500_000)
+    sol = cliente.get("/api/permisos").json()["pendientes"][0]
+
+    regla = permisos_almacen.anotar_regla(
+        Accion.de_dict(sol["accion"]), Contexto("pedro"), sol["texto"],
+        siempre_pregunta=True, efecto="denegar")
+
+    r = cliente.post(f"/api/permisos/solicitudes/{sol['id']}/responder",
+                     json={"respuesta": "si"})
+    assert r.status_code == 400, r.text
+    assert regla["id"] in r.json()["detail"]
+    assert len(acunaciones(cliente.home)) == antes
+    # la solicitud queda como estaba: sin contestar, no negada de prepo
+    assert cliente.get("/api/permisos").json()["pendientes"][0]["id"] \
+        == sol["id"]
 
 
 def test_el_techo_se_mueve_por_la_api(cliente):

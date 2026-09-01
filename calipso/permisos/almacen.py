@@ -229,18 +229,36 @@ def anotar_regla(a: Accion, ctx: Contexto, texto: str,
     siempre es lo irreversible, y un no permanente sobre eso falla hacia el
     lado conservador.
 
+    Por la MISMA razon, un si tampoco se escribe cuando ya hay una regla de
+    negar que cubre la accion. Esa comprobacion esta DUPLICADA con la de
+    `almacen.responder` a proposito, igual que la de arriba: alla cierra la
+    ventana del item que ya estaba abierto, y aca cierra a cualquier
+    llamador que escriba sin pasar por una solicitud -- `conceder` directo
+    sobre una accion tapada por un "no" borraba ese "no" en el barrido, en
+    silencio, y `evaluar` volvia a permitir.
+
     `forma` permite escribir una forma MAS ANCHA que la de la accion
     -- "escribir bajo ~/Downloads" en vez de ese archivo suelto -- pero solo
     cuando esa forma efectivamente tapa la accion que se esta contestando:
-    nadie escribe una regla que no cubre lo que tiene delante. Vale para los
-    dos signos, y para el no importa mas: una regla de negar demasiado ancha
-    es un bloqueo silencioso, porque el motor niega antes de crear la
-    solicitud y no aparece nada en ninguna bandeja.
+    nadie escribe una regla que no cubre lo que tiene delante. Y solo para
+    el SI: `cubre` comprueba que la regla TAPA la accion y jamas que no la
+    excede, asi que del lado del no ensanchar es el radio de explosion. Una
+    regla de negar se escribe con la forma EXACTA de lo que Pedro tenia
+    delante; una mas ancha es un bloqueo que no deja item en ninguna
+    bandeja, porque el motor niega antes de crear la solicitud.
+
+    Escribir dos veces la misma regla es un no-op, no un error: se devuelve
+    la que ya estaba. Pedro puede contestar dos items distintos que caen
+    bajo la misma regla y ninguna de las dos respuestas esta mal; lo que no
+    puede quedar son dos tarjetas indistinguibles en la pantalla de las
+    cuales revocar una no cambia nada.
 
     Y escribir una regla BORRA la contraria que cubra esta misma accion, en
     la misma escritura. Si no, revocar el "no" devolveria en silencio el
     "si" viejo en vez de devolver la pregunta, que es exactamente la trampa
-    que la regla 3 del spec quiere evitar.
+    que la regla 3 del spec quiere evitar. Cada barrida deja su linea en el
+    registro por lo mismo que la deja `revocar`: es una regla que dejo de
+    valer sin que nadie la revocara.
     """
     if efecto not in EFECTOS:
         raise ErrorPermisos(f"efecto invalido: {efecto!r} (son {EFECTOS})")
@@ -248,6 +266,10 @@ def anotar_regla(a: Accion, ctx: Contexto, texto: str,
         raise ErrorPermisos(
             "esta operacion pregunta siempre (5.4): no admite permiso "
             "permanente")
+    if forma and efecto == "denegar":
+        raise ErrorPermisos(
+            "una regla de negar se escribe con la forma exacta de la accion: "
+            "no admite una forma mas ancha")
     regla = {"id": _id("per"), "ts": _ahora(),
              "familia": a.familia, "operacion": a.operacion,
              "forma": dict(forma) if forma else dict(a.forma),
@@ -259,11 +281,36 @@ def anotar_regla(a: Accion, ctx: Contexto, texto: str,
     contraria = "denegar" if efecto == "permitir" else "permitir"
     with candado(ruta_permisos()):
         d = config()
-        d["concedidos"] = [r for r in d["concedidos"]
-                           if not (r.get("efecto", "permitir") == contraria
-                                   and cubre(r, a))]
-        d["concedidos"].append(regla)
+        # ANTES del barrido, no despues: el barrido se lleva justo las
+        # reglas que estas dos comprobaciones tienen que encontrar
+        if efecto == "permitir":
+            ya_no = next((r for r in d["concedidos"]
+                          if r.get("efecto", "permitir") == "denegar"
+                          and cubre(r, a)), None)
+            if ya_no is not None:
+                raise ErrorPermisos(
+                    f"hay una regla permanente de no ({ya_no['id']}) que "
+                    "cubre esta accion: revocala si en realidad querias "
+                    "decir que si")
+        igual = next((r for r in d["concedidos"]
+                      if r.get("efecto", "permitir") == efecto
+                      and cubre(r, a)), None)
+        if igual is not None:
+            return dict(igual)
+        quedan, barridas = [], []
+        for r in d["concedidos"]:
+            if r.get("efecto", "permitir") == contraria and cubre(r, a):
+                barridas.append(r)
+            else:
+                quedan.append(r)
+        d["concedidos"] = quedan + [regla]
         _guardar(ruta_permisos(), d)
+        for vieja in barridas:
+            anotar({"evento": "barrida", "permiso": vieja.get("id"),
+                    "efecto": vieja.get("efecto", "permitir"),
+                    "por": regla["id"], "familia": vieja.get("familia"),
+                    "operacion": vieja.get("operacion"),
+                    "forma": vieja.get("forma")})
     return regla
 
 

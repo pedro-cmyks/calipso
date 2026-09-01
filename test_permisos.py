@@ -360,6 +360,73 @@ def test_revocar_una_regla_deja_linea_en_el_registro(home):
     assert lineas[0]["efecto"] == "denegar"
 
 
+def test_el_barrido_de_la_contraria_deja_linea_en_el_registro(home):
+    # el barrido borra una regla del disco sin que Pedro la revoque. Es el
+    # mismo agujero que la revocacion: sin la linea no queda en ningun lado
+    # cuando esa regla dejo de valer, y el rastro de 5.4 se corta justo en
+    # el evento que cambia lo que pasa la proxima vez.
+    si_viejo = almacen.conceder(acunar(99_999), Contexto("pedro"), "x")
+    no = almacen.anotar_regla(acunar(99_999), Contexto("pedro"), "y",
+                              efecto="denegar")
+    lineas = [l for l in almacen.registro(50) if l.get("evento") == "barrida"]
+    assert len(lineas) == 1
+    assert lineas[0]["permiso"] == si_viejo["id"]
+    assert lineas[0]["efecto"] == "permitir"
+    assert lineas[0]["por"] == no["id"]
+    assert lineas[0]["familia"] == "plata"
+    assert lineas[0]["forma"] == si_viejo["forma"]
+
+
+def test_conceder_directo_no_puede_pisar_una_regla_de_no(home):
+    # la guarda del si sobre lo tapado por un no vivia solo en
+    # `almacen.responder`: llamar a `conceder` directo borraba el no en
+    # silencio y `evaluar` volvia a permitir.
+    no = almacen.anotar_regla(acunar(150_000), Contexto("pedro"), "x",
+                              siempre_pregunta=True, efecto="denegar")
+    with pytest.raises(ErrorPermisos) as exc:
+        almacen.conceder(acunar(150_000), Contexto("pedro"), "y")
+    assert no["id"] in str(exc.value)
+    # y el no sigue en pie: la comprobacion corre ANTES del barrido, asi
+    # que no se borra a si misma la regla que tenia que encontrar
+    assert almacen.regla_que_cubre(acunar(150_000), "denegar") is not None
+    assert almacen.regla_que_cubre(acunar(150_000), "permitir") is None
+    assert motor.evaluar(acunar(150_000), Contexto("pedro")).estado \
+        == motor.ESTADO_NEGADO
+
+
+def test_una_regla_de_negar_no_acepta_una_forma_a_mano(home):
+    # ensanchar un si es su funcion; ensanchar un no es el radio de
+    # explosion, y no deja item en ninguna bandeja donde verlo
+    a = Accion("archivo", "escribir", {"ruta": "/tmp/bandeja/uno.txt"})
+    with pytest.raises(ErrorPermisos):
+        almacen.anotar_regla(a, Contexto("pedro"), "x", forma={"raiz": "/"},
+                             efecto="denegar")
+    assert almacen.concedidos() == []
+    # el mismo ensanchamiento del lado del si se sigue aceptando
+    ancho = almacen.anotar_regla(a, Contexto("pedro"), "x",
+                                 forma={"raiz": "/tmp/bandeja"},
+                                 efecto="permitir")
+    assert ancho["forma"] == {"raiz": "/tmp/bandeja"}
+
+
+def test_dos_reglas_iguales_no_se_acumulan(home):
+    # dos solicitudes distintas pueden caer bajo la misma regla, y
+    # contestar las dos no esta mal: la segunda escritura es un no-op, no
+    # un error. Dos tarjetas identicas en la pantalla, con una sola que
+    # cambia algo al revocarla, es la misma trampa de la regla 3 del spec.
+    uno = almacen.anotar_regla(acunar(150_000), Contexto("pedro"), "x",
+                               siempre_pregunta=True, efecto="denegar")
+    dos = almacen.anotar_regla(acunar(150_000), Contexto("otro"), "y",
+                               siempre_pregunta=True, efecto="denegar")
+    assert dos["id"] == uno["id"]
+    assert len(almacen.concedidos()) == 1
+    # y del lado del si, igual
+    tres = almacen.conceder(acunar(99_999), Contexto("pedro"), "x")
+    cuatro = almacen.conceder(acunar(99_999), Contexto("pedro"), "y")
+    assert cuatro["id"] == tres["id"]
+    assert len(almacen.concedidos()) == 2
+
+
 def test_un_no_permanente_tapa_lo_que_despues_pasa_a_ser_directo(home):
     """El caso que fija DONDE va el corte.
 
