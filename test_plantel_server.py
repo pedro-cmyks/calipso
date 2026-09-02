@@ -729,3 +729,46 @@ def test_la_bandeja_no_pliega_el_libro_si_no_hay_preseed_que_mirar(
     r3 = contratar(s, "proponer", None, "otra", ficha=FICHA)
     assert r3["propuesta"]
     assert pagador.lecturas == 1
+
+
+def test_la_ruta_local_del_chat_ejecuta_en_ollama_no_en_claude(monkeypatch):
+    """La fuga central: la ruta 'local' corria `claude -p`, mandando el dato
+    a Anthropic bajo la etiqueta 'local'. Tiene que transmitir desde el
+    Ollama que ya corre."""
+    llamado = {}
+
+    def ollama_espia(url, payload, usage=None):
+        llamado["url"] = url
+        llamado["messages"] = payload.get("messages")
+        yield "respuesta de ollama"
+
+    def subprocess_prohibido(*a, **k):
+        raise AssertionError("la ruta local NO puede llamar a subprocess (claude)")
+
+    monkeypatch.setattr(srv.dispatch, "_ollama_chat_chunks", ollama_espia)
+    monkeypatch.setattr(srv, "_http_up", lambda url, timeout=1.5: True)
+    monkeypatch.setattr(srv.subprocess, "run", subprocess_prohibido)
+
+    gen, modelo = srv._chunks_for("local", "SOY EL SISTEMA", "hola", {},
+                                  chat_id=None)
+    salida = "".join(gen)
+    assert "respuesta de ollama" in salida
+    assert modelo == srv.dispatch.CONFIG["local"]["model"]
+    # el system viaja: el bug viejo lo tiraba
+    assert any(m.get("role") == "system" and "SOY EL SISTEMA" in m.get("content", "")
+               for m in llamado["messages"])
+
+
+def test_la_ruta_local_con_ollama_caido_falla_cerrado_y_no_llama_claude(monkeypatch):
+    """Fallo cerrado: si Ollama no responde, la ruta local NO degrada a
+    claude. Da un mensaje claro y no ejecuta nada remoto."""
+    def subprocess_prohibido(*a, **k):
+        raise AssertionError("Ollama caido no puede caer a claude")
+
+    monkeypatch.setattr(srv, "_http_up", lambda url, timeout=1.5: False)
+    monkeypatch.setattr(srv.subprocess, "run", subprocess_prohibido)
+
+    gen, modelo = srv._chunks_for("local", "sys", "hola", {}, chat_id=None)
+    salida = "".join(gen)
+    assert "no" in salida.lower() and "local" in salida.lower()
+    assert modelo != "claude"

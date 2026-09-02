@@ -2002,21 +2002,31 @@ def _chunks_for(route: str, system: str, user_msg: str, usage: dict,
         headers = {"Authorization": f"Bearer {cfg['api_key']}"}
         return dispatch._sse_text_chunks(cfg["base_url"], payload, headers, usage), mdl
 
-    # local no disponible (sin Ollama) → suscripción claude
-    exe = shutil.which("claude")
-
-    def _local_via_sub():
-        if not exe:
-            yield "[Calipso] ruta local no disponible y claude no encontrado."
-            return
-        env = {**os.environ}
-        env.pop("ANTHROPIC_API_KEY", None)
-        env.pop("ANTHROPIC_AUTH_TOKEN", None)
-        result = subprocess.run([exe, "-p", user_msg], capture_output=True,
-                                text=True, timeout=300, env=env)
-        yield result.stdout or result.stderr or "[sin respuesta]"
-
-    return _local_via_sub(), "claude"
+    # LA RUTA LOCAL ES LOCAL: transmite desde el Ollama que ya corre, con el
+    # mismo `messages` que la rama api de arriba. El bug viejo corria
+    # `claude -p` -- mandaba el dato privado a Anthropic bajo la etiqueta
+    # 'local', tiraba el system y no pasaba el modelo. Ver la fuga central en
+    # el spec del 2026-09-02.
+    cfg = dispatch.CONFIG["local"]
+    mdl = model or cfg["model"]
+    # OJO: `base_url` es http://localhost:11434/api/generate, que SOLO acepta
+    # POST -- un GET (que es lo que hace `_http_up`) da 405 y diria "caido"
+    # aunque Ollama este vivo. Se prueba /api/tags, que si responde a GET.
+    salud_ollama = cfg["base_url"].replace("/api/generate", "/api/tags")
+    if not _http_up(salud_ollama):
+        # FALLO CERRADO: lo unico que llega aca con Ollama caido es el
+        # fallback de ranking vacio (todo lo demas tambien esta caido), asi
+        # que degradar a claude no protege a nadie y rompe la promesa de que
+        # lo privado no sale de la maquina. Se para y se dice.
+        def _local_caido():
+            yield ("[Calipso] no puedo contestar esto con el modelo local: "
+                   "Ollama no esta disponible. No lo mando a la nube.")
+        return _local_caido(), mdl
+    messages = [{"role": "system", "content": system}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": user_msg})
+    payload = {"model": mdl, "messages": messages, "stream": True}
+    return dispatch._ollama_chat_chunks(cfg["base_url"], payload, usage), mdl
 
 def _subscription_invocation(client: str, system: str, user_msg: str,
                              model: str | None = None,
