@@ -349,20 +349,18 @@ Expected: FAIL (hoy el privado orquesta)
 
 - [ ] **Step 3: El corte**
 
-Al principio de `_should_orchestrate`, despues del `if directives.get("force_team")`:
+Como PRIMERA linea del cuerpo de `_should_orchestrate`, antes de todo -- incluido
+el `if directives.get("force_team")`:
 
 ```python
     if features.get("private"):
         # un prompt privado tiene un solo camino -- local o fallo cerrado --
         # y la orquestacion lo repartiria a backends que no son private_ok.
-        # El filtro de privacidad no puede tener una puerta de atras.
+        # Va ANTES que `force_team`: un `/team` explicito sobre un prompt
+        # privado tambien tiene que respetar la privacidad. El filtro no
+        # puede tener una puerta de atras.
         return False
 ```
-
-**Ojo con el orden:** va despues de `force_team` a proposito? No. Un `/team`
-explicito sobre un prompt privado tambien tiene que respetar la privacidad, asi
-que este corte va **antes** que `force_team`. Ponelo como la primera linea del
-cuerpo.
 
 - [ ] **Step 4: Correr los tests**
 
