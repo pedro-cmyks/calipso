@@ -1943,6 +1943,27 @@ def _goal_response(goal: dict) -> str:
     )
 
 
+_SISTEMA_NUBE_MINIMO = (
+    "Sos Calipso, el asistente de Pedro. Responde el mensaje del usuario de "
+    "forma util y concisa. El mensaje puede contener marcadores como [ID_1], "
+    "[SALUD_1], [CONTACTO_1], [LUGAR_1]: son datos personales tapados por "
+    "privacidad. Tratalos como referencias opacas, no intentes adivinar su "
+    "valor real, y usalos tal cual en tu respuesta cuando necesites referirte "
+    "a ellos."
+)
+
+
+def _sistema_del_turno(chat_msg: str, runtime: str, features: dict,
+                       a_la_nube_tapado: bool) -> str:
+    """El system del turno. Si el turno va a la nube tapado (/nube), NO se
+    arma el contexto completo (recuerdos, economia, catastro) porque llevaria
+    datos sensibles sin tapar a la nube: se usa un system minimo. Si no, el
+    contexto de siempre."""
+    if a_la_nube_tapado:
+        return _SISTEMA_NUBE_MINIMO
+    return _build_context(chat_msg, runtime, features)
+
+
 def _build_context(user_msg: str, runtime: str, features: dict | None = None) -> str:
     """Contexto ordenado para caché (estable -> volátil) y presupuestado.
 
@@ -2520,14 +2541,20 @@ async def ws_chat(ws: WebSocket) -> None:
             # 1.5b) dev loop: si el mensaje pide editar un archivo conocido,
             #         lanzar borrador en background y notificar como evento "proposal"
             _edit_target = _extract_edit_target(chat_msg, features)
-            if _edit_target:
+            # en /nube no se lanza el borrador: corre `claude -p` con el
+            # mensaje crudo (chat_msg), sin pasar por la compuerta de
+            # redaccion -- un canal lateral a la nube que se salteo.
+            if _edit_target and not directives.get("nube"):
                 asyncio.ensure_future(_run_chat_draft(
                     ws, chat_msg, _edit_target, f"{agente_id}:borrador",
                     departamento))
 
             # 1.5) navegación web si la tarea lo pide (grounding + preview)
             web_material = None
-            if features.get("needs_web") or directives.get("force_web"):
+            # en /nube se saltea: `calipso_web.research` manda el mensaje
+            # crudo (chat_msg) a DuckDuckGo, otro canal lateral a la nube.
+            if (features.get("needs_web") or directives.get("force_web")) \
+                    and not directives.get("nube"):
                 await ws.send_json({"type": "web", "action": "search",
                                     "query": chat_msg[:140]})
                 web_material = await asyncio.to_thread(
@@ -2542,9 +2569,18 @@ async def ws_chat(ws: WebSocket) -> None:
             runtime = _harness_context(verdict, route, model, note)
             # `_build_context` arma el brief de economia bajo el candado del
             # libro (flock bloqueante); en un hilo, igual que `_ficha_y_cuenta`.
-            system = await asyncio.to_thread(_build_context, chat_msg, runtime, features)
-            # vision: describir imágenes antes de inyectar contexto de adjuntos
-            if attachments.has_images(str(ROOT), attachment_ids):
+            # si el turno va a la nube tapado (/nube y la ruta no quedo en
+            # local), el system tiene que ser minimo: `_build_context` trae
+            # recuerdos y contexto personal sin tapar, y saldria crudo.
+            a_la_nube_tapado = bool(directives.get("nube")) and route != "local"
+            system = await asyncio.to_thread(
+                _sistema_del_turno, chat_msg, runtime, features, a_la_nube_tapado)
+            # vision: describir imágenes antes de inyectar contexto de adjuntos.
+            # en /nube se saltea: `vision_describe` puede mandar la imagen mas
+            # el mensaje crudo (chat_msg) a Anthropic -- ante la duda (no hay
+            # certeza de un camino local sin fuga), saltear es lo seguro.
+            if attachments.has_images(str(ROOT), attachment_ids) \
+                    and not directives.get("nube"):
                 vision_text = await asyncio.to_thread(
                     attachments.vision_describe, str(ROOT), attachment_ids, chat_msg)
                 if vision_text:
@@ -2557,9 +2593,13 @@ async def ws_chat(ws: WebSocket) -> None:
                             "instala 'ollama pull moondream' o configura ANTHROPIC_API_KEY.]"
                         )
             attachment_context = attachments.context_block(str(ROOT), attachment_ids)
-            if attachment_context:
+            # en /nube-a-la-nube estos bloques no se agregan: son crudos (no
+            # pasan por la compuerta de redaccion) y podrian llevar datos
+            # sensibles. `web_material` ya queda en None en /nube (canal de
+            # web salteado mas arriba), asi que no hace falta gatearlo aca.
+            if attachment_context and not a_la_nube_tapado:
                 system += "\n\n" + attachment_context
-            if bloque_dep:
+            if bloque_dep and not a_la_nube_tapado:
                 system += "\n\n" + bloque_dep
             if web_material and (web_material["results"] or web_material["pages"]):
                 system += "\n\n" + calipso_web.context_block(web_material)
@@ -2572,10 +2612,11 @@ async def ws_chat(ws: WebSocket) -> None:
                     runtime = _harness_context(
                         verdict, "orchestrator", model,
                         f"equipo dinamico sobre ruta base {route}")
-                    system = await asyncio.to_thread(_build_context, chat_msg, runtime, features)
-                    if attachment_context:
+                    system = await asyncio.to_thread(
+                        _sistema_del_turno, chat_msg, runtime, features, a_la_nube_tapado)
+                    if attachment_context and not a_la_nube_tapado:
                         system += "\n\n" + attachment_context
-                    if bloque_dep:
+                    if bloque_dep and not a_la_nube_tapado:
                         system += "\n\n" + bloque_dep
                     if web_material and (web_material["results"] or web_material["pages"]):
                         system += "\n\n" + calipso_web.context_block(web_material)
@@ -2644,10 +2685,17 @@ async def ws_chat(ws: WebSocket) -> None:
                                 runtime = _harness_context(
                                     verdict, "subscription", model,
                                     f"fallback de suscripcion a {alternate}")
-                                system = await asyncio.to_thread(_build_context, chat_msg, runtime, features)
-                                if attachment_context:
+                                # este fallback manda `mensaje_saliente` (ya
+                                # tapado si /nube) a otra suscripcion: sigue
+                                # siendo un envio a la nube, mismo criterio.
+                                a_la_nube_tapado = (bool(directives.get("nube"))
+                                                     and used_route != "local")
+                                system = await asyncio.to_thread(
+                                    _sistema_del_turno, chat_msg, runtime, features,
+                                    a_la_nube_tapado)
+                                if attachment_context and not a_la_nube_tapado:
                                     system += "\n\n" + attachment_context
-                                if bloque_dep:
+                                if bloque_dep and not a_la_nube_tapado:
                                     system += "\n\n" + bloque_dep
                                 full, queued = await _run_subscription_text_live(
                                     ws, inbox, alternate, system, mensaje_saliente, None,
@@ -2687,10 +2735,18 @@ async def ws_chat(ws: WebSocket) -> None:
                         used_route, usage = "local", {}
                         model = _route_model_name("local")
                         runtime = _harness_context(verdict, "local", model, f"ruta {route} fallo; fallback local")
-                        system = await asyncio.to_thread(_build_context, chat_msg, runtime, features)
-                        if attachment_context:
+                        # este ultimo fallback ya corre en local (chat_msg
+                        # crudo, chat_id sin tapar mas abajo): used_route
+                        # acaba de quedar "local", asi que el criterio da
+                        # False y el contexto completo de siempre aplica.
+                        a_la_nube_tapado = (bool(directives.get("nube"))
+                                             and used_route != "local")
+                        system = await asyncio.to_thread(
+                            _sistema_del_turno, chat_msg, runtime, features,
+                            a_la_nube_tapado)
+                        if attachment_context and not a_la_nube_tapado:
                             system += "\n\n" + attachment_context
-                        if bloque_dep:
+                        if bloque_dep and not a_la_nube_tapado:
                             system += "\n\n" + bloque_dep
                         gen, model = _chunks_for("local", system, chat_msg, usage, chat_id=chat_id)
                         while True:
