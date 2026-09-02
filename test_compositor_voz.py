@@ -48,9 +48,11 @@ def test_los_mas_recientes_primero():
 
 def test_recencia_real_entre_chats():
     # el orden real es por ts, no por posicion del chat en el dict: aca el
-    # chat "viejo" aparece antes en el dict pero su mensaje es mas antiguo.
+    # chat "nuevo" aparece PRIMERO en el dict pero es "viejo" el que tiene el
+    # mensaje mas antiguo -- si el codigo usara reversed() (orden estructural)
+    # daria el chat "viejo" primero, mal; por ts da "nuevo" primero, bien.
     data = {"active": None, "chats": {
-        "viejo": {"messages": [{"role": "user", "text": "mensaje viejo largo de verdad", "ts": "2026-01-01T10:00:00"}]},
-        "nuevo": {"messages": [{"role": "user", "text": "mensaje nuevo largo de verdad", "ts": "2026-09-01T10:00:00"}]}}}
+        "nuevo": {"messages": [{"role": "user", "text": "mensaje nuevo largo de verdad", "ts": "2026-09-01T10:00:00"}]},
+        "viejo": {"messages": [{"role": "user", "text": "mensaje viejo largo de verdad", "ts": "2026-01-01T10:00:00"}]}}}
     ej = ejemplos_de_voz(data)
     assert ej[0] == "mensaje nuevo largo de verdad"
