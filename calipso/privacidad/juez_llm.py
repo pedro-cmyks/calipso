@@ -67,10 +67,18 @@ def juzgar_llm(texto: str, base_url: str | None = None,
     try:
         data = dispatch._http_post_json(base_url or cfg["base_url"], payload)
         obj = json.loads(data.get("response", ""))
-    except (OSError, ValueError, json.JSONDecodeError):
+        crudos = obj.get("tramos", []) if isinstance(obj, dict) else []
+        tramos = [{"texto": str(t["texto"]), "tipo": str(t.get("tipo", ""))}
+                  for t in crudos
+                  if isinstance(t, dict) and str(t.get("texto", "")).strip()]
+    except Exception:
+        # Fallo cerrado ante CUALQUIER respuesta no confiable, no solo
+        # OSError/ValueError/JSONDecodeError: tambien una forma inesperada
+        # como `data` no-dict (AttributeError en .get) o `"tramos": null`
+        # (json.loads lo vuelve None, y "for t in None" es TypeError). El
+        # parseo entero vive adentro del try justamente para que cualquier
+        # tropiezo ahi caiga en el mismo ok=False -- la funcion no tiene
+        # otro efecto que su valor de retorno, asi que atrapar amplio no
+        # oculta nada, es el contrato del modulo.
         return {"tramos": [], "ok": False}
-    crudos = obj.get("tramos", []) if isinstance(obj, dict) else []
-    tramos = [{"texto": str(t["texto"]), "tipo": str(t.get("tipo", ""))}
-              for t in crudos
-              if isinstance(t, dict) and str(t.get("texto", "")).strip()]
     return {"tramos": tramos, "ok": True}

@@ -40,3 +40,18 @@ def test_respuesta_no_json_da_ok_false(monkeypatch):
                         lambda url, payload: {"response": "no soy json {{"})
     r = juez_llm.juzgar_llm("cualquier cosa")
     assert r["ok"] is False
+
+
+def test_tramos_null_da_ok_false(monkeypatch):
+    monkeypatch.setattr(juez_llm.dispatch, "_http_post_json",
+                        lambda url, payload: {"response": '{"tramos": null}'})
+    r = juez_llm.juzgar_llm("cualquier cosa")
+    assert r["ok"] is False
+    assert r["tramos"] == []
+
+
+def test_respuesta_no_dict_da_ok_false(monkeypatch):
+    monkeypatch.setattr(juez_llm.dispatch, "_http_post_json",
+                        lambda url, payload: ["no", "es", "dict"])
+    r = juez_llm.juzgar_llm("cualquier cosa")
+    assert r["ok"] is False
