@@ -137,7 +137,11 @@ Reemplazar el bloque desde el comentario `# local no disponible (sin Ollama)` ha
     # el spec del 2026-09-02.
     cfg = dispatch.CONFIG["local"]
     mdl = model or cfg["model"]
-    if not _http_up(cfg["base_url"]):
+    # OJO: `base_url` es http://localhost:11434/api/generate, que SOLO acepta
+    # POST -- un GET (que es lo que hace `_http_up`) da 405 y diria "caido"
+    # aunque Ollama este vivo. Se prueba /api/tags, que si responde a GET.
+    salud_ollama = cfg["base_url"].replace("/api/generate", "/api/tags")
+    if not _http_up(salud_ollama):
         # FALLO CERRADO: lo unico que llega aca con Ollama caido es el
         # fallback de ranking vacio (todo lo demas tambien esta caido), asi
         # que degradar a claude no protege a nadie y rompe la promesa de que
@@ -153,10 +157,12 @@ Reemplazar el bloque desde el comentario `# local no disponible (sin Ollama)` ha
     return dispatch._ollama_chat_chunks(cfg["base_url"], payload, usage), mdl
 ```
 
-**Verifica antes de escribir** que `dispatch._ollama_chat_chunks` acepta ese
-payload (modelo, messages, stream) y esa firma `(url, payload, usage)`. Si la
-url que espera es distinta de `base_url` (por ejemplo un endpoint `/api/chat`),
-usa la que el generador espera -- el brief no adivina el sufijo exacto.
+**Verificado:** `dispatch._ollama_chat_chunks(url, payload, usage)` hace
+`url.replace("/api/generate", "/api/chat")` internamente, asi que se le pasa
+`cfg["base_url"]` (que ES `.../api/generate`) tal cual y el generador lo cambia
+a `/api/chat`. NO le pases `salud_ollama` -- esa es solo para el probe. El
+payload es `{"model", "messages", "stream": True}`, mismo `messages` que la
+rama api de arriba.
 
 - [ ] **Step 4: Correr los tests**
 
@@ -215,9 +221,16 @@ En `server.py:1435` y `:1782`, reemplazar `local_up = False  # sin Ollama` por:
     # la salud REAL de Ollama, no una constante: el chat ya puede ejecutar
     # local (ver la ruta local de `_chunks_for`), asi que apagarlo a mano
     # dejaba muerta la unica boca que mantiene lo privado en la maquina.
-    local_up = (_http_up_cached if use_cache else _http_up)(
-        dispatch.CONFIG["local"]["base_url"])
+    # Se prueba /api/tags y NO base_url: base_url es /api/generate, que solo
+    # acepta POST -- un GET da 405 y diria "caido" con Ollama vivo.
+    _salud_ollama = dispatch.CONFIG["local"]["base_url"].replace(
+        "/api/generate", "/api/tags")
+    local_up = (_http_up_cached if use_cache else _http_up)(_salud_ollama)
 ```
+
+**Verificado con un GET real:** `http://localhost:11434/api/generate` da 405 a
+GET; `/api/tags` da 200. Sin este cambio, `local_up` seria siempre False y todo
+el arreglo no serviria de nada.
 
 **Ojo:** el de `:1782` puede estar en una funcion sin el parametro `use_cache`.
 Verifica el contexto de cada uno y usa el probe que corresponda a cada sitio
