@@ -1651,11 +1651,14 @@ async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
                             features: dict, base_system: str,
                             verdict: dict,
                             approval_required: bool = False,
-                            departamento: str | None = None) -> tuple[str, dict, str | None]:
+                            departamento: str | None = None,
+                            allow_paid: bool = False) -> tuple[str, dict, str | None]:
+    # allow_paid simetrico al filtro de _decide (Task 3): sin gesto explicito
+    # de Pedro (force_route=="api"), el equipo dinamico no cae en API paga.
     plan_obj = await asyncio.to_thread(_plan_dynamic_team, chat_msg, features)
     team = orchestrator.build_team(
         plan_obj, _backend_availability(), project_root=str(ROOT),
-        session=sessions.active())
+        session=sessions.active(), allow_paid=allow_paid)
     agents = team.get("agents", [])
     if not agents:
         raise RuntimeError("no hay agentes disponibles para el equipo dinamico")
@@ -1694,7 +1697,7 @@ async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
             f"{chat_msg}\n\nAjuste de Pedro al plan: {decision}", features)
         team = orchestrator.build_team(
             plan_obj, _backend_availability(), project_root=str(ROOT),
-            session=sessions.active())
+            session=sessions.active(), allow_paid=allow_paid)
         agents = team.get("agents", []) or agents
 
     await ws.send_json({"type": "plan", "action": "approved",
@@ -2525,7 +2528,8 @@ async def ws_chat(ws: WebSocket) -> None:
                     full, agent_team, queued = await _run_dynamic_team(
                         ws, inbox, chat_msg, features, system, verdict,
                         approval_required=bool(directives.get("force_team")),
-                        departamento=departamento)
+                        departamento=departamento,
+                        allow_paid=(directives.get("force_route") == "api"))
                     if queued:
                         pending = queued
                     used_route = "orchestrator"

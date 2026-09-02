@@ -21,6 +21,19 @@ def fake_planner(_prompt):
     ], "synthesis": "junta plan, codigo y resumen"}
 
 
+def test_pick_model_no_elige_api_sin_allow_paid():
+    """La API paga no entra al equipo dinamico salvo gesto explicito.
+    Simetrico al filtro de _decide (Task 3): sin allow_paid, route==api
+    se cae; con allow_paid, puede ganar. Usa el catalogo real (ALL): el
+    unico backend de tier "apex" es api:claude-fable-5 (route=="api")."""
+    # sin permiso: nunca devuelve un candidato de API, aunque puntue mas alto
+    picked = orch.pick_model("apex", "code", ALL, allow_paid=False)
+    assert picked is None or picked[1].get("route") != "api"
+    # con permiso: el api vuelve a ser elegible (unico backend de tier apex)
+    picked2 = orch.pick_model("apex", "code", ALL, allow_paid=True)
+    assert picked2 is not None and picked2[1].get("route") == "api"
+
+
 def main() -> int:
     fails = []
 

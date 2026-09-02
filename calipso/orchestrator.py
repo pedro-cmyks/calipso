@@ -71,11 +71,15 @@ def plan(request: str, llm_json) -> dict:
 
 
 def pick_model(tier: str, task_type: str, available: dict,
-               project_root: str | None = None):
+               project_root: str | None = None, allow_paid: bool = False):
     """El mejor modelo DISPONIBLE para ese tier+tarea (prefiere el tier pedido).
 
     Si resource_dispatcher está activo, filtra modelos locales sin RAM suficiente
     antes de elegir.
+
+    `allow_paid` (default False) es simetrico al filtro de `_decide` (Task 3):
+    sin gesto explicito de Pedro, un backend `route=="api"` no entra al pool de
+    candidatos aunque puntue mas alto. Con `allow_paid=True` vuelve a competir.
     """
     if _rd is not None:
         try:
@@ -94,6 +98,12 @@ def pick_model(tier: str, task_type: str, available: dict,
 
     backends = capabilities.load_backends(project_root)
     cands = [(k, m) for k, m in backends.items() if available.get(k)]
+    if not allow_paid:
+        # La API paga no entra al equipo sin gesto explicito de Pedro
+        # (misma regla que el filtro de _decide). Si esto deja el pool
+        # vacio, pick_model devuelve None y el agente se salta -- fallo
+        # cerrado honesto, no un gasto silencioso.
+        cands = [(k, m) for k, m in cands if m.get("route") != "api"]
     if not cands:
         return None
     exact = [(k, m) for k, m in cands if m.get("tier") == tier]
@@ -105,14 +115,19 @@ def pick_model(tier: str, task_type: str, available: dict,
 
 
 def build_team(plan_obj: dict, available: dict, project_root: str | None = None,
-               session: dict | None = None) -> dict:
-    """Convierte el plan en un equipo concreto: cada agente con su MODELO real."""
+               session: dict | None = None, allow_paid: bool = False) -> dict:
+    """Convierte el plan en un equipo concreto: cada agente con su MODELO real.
+
+    `allow_paid` se propaga a `pick_model`: sin gesto explicito de Pedro
+    (force_route=="api"), ningun agente del equipo cae en un backend de API paga.
+    """
     import random
     from calipso.capabilities import PERSONA_POOL
     used_personas: set[str] = set()
     agents = []
     for a in plan_obj.get("agents", []):
-        picked = pick_model(a["tier"], a["type"], available, project_root)
+        picked = pick_model(a["tier"], a["type"], available, project_root,
+                            allow_paid=allow_paid)
         if not picked:
             continue
         key, m = picked
