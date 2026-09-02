@@ -772,3 +772,16 @@ def test_la_ruta_local_con_ollama_caido_falla_cerrado_y_no_llama_claude(monkeypa
     salida = "".join(gen)
     assert "no" in salida.lower() and "local" in salida.lower()
     assert modelo != "claude"
+
+
+def test_local_up_refleja_la_salud_real_de_ollama(monkeypatch):
+    """Estaba hardcodeado en False 'sin Ollama', pero Ollama corre. Con la
+    salud real, un Ollama vivo se ve vivo y el scorer puede elegir local."""
+    monkeypatch.setattr(srv, "_http_up", lambda url, timeout=1.5: True)
+    monkeypatch.setattr(srv, "_http_up_cached", lambda url: True)
+    h = srv._connector_health(use_cache=False)
+    assert h["local"]["ready"] is True
+
+    monkeypatch.setattr(srv, "_http_up", lambda url, timeout=1.5: False)
+    h2 = srv._connector_health(use_cache=False)
+    assert h2["local"]["ready"] is False

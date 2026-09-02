@@ -1432,7 +1432,14 @@ def _connector_health(use_cache: bool = True) -> dict:
     cfg = calipso_config.load_config()
     api_health_url = cfg["api"]["base_url"].replace("/v1/chat/completions", "/health")
     api_up = _http_up_cached(api_health_url) if use_cache else _http_up(api_health_url)
-    local_up = False  # sin Ollama
+    # la salud REAL de Ollama, no una constante: el chat ya puede ejecutar
+    # local (ver la ruta local de `_chunks_for`), asi que apagarlo a mano
+    # dejaba muerta la unica boca que mantiene lo privado en la maquina.
+    # Se prueba /api/tags y NO base_url: base_url es /api/generate, que solo
+    # acepta POST -- un GET da 405 y diria "caido" con Ollama vivo.
+    _salud_ollama = dispatch.CONFIG["local"]["base_url"].replace(
+        "/api/generate", "/api/tags")
+    local_up = (_http_up_cached if use_cache else _http_up)(_salud_ollama)
     sub = {
         "claude": _probe_cached("claude") if use_cache else _subscription_probe("claude"),
         "codex": _probe_cached("codex") if use_cache else _subscription_probe("codex"),
@@ -1779,7 +1786,16 @@ def _harness_context(verdict: dict, used_route: str, model: str, note: str | Non
     cfg = calipso_config.load_config()
     probes = {"claude": _probe_cached("claude"), "codex": _probe_cached("codex")}
     api_up = _http_up_cached(cfg["api"]["base_url"].replace("/v1/chat/completions", "/health"))
-    local_up = False  # sin Ollama
+    # la salud REAL de Ollama, no una constante: el chat ya puede ejecutar
+    # local (ver la ruta local de `_chunks_for`), asi que apagarlo a mano
+    # dejaba muerta la unica boca que mantiene lo privado en la maquina.
+    # Se prueba /api/tags y NO base_url: base_url es /api/generate, que solo
+    # acepta POST -- un GET da 405 y diria "caido" con Ollama vivo.
+    # Esta funcion no tiene `use_cache` (a diferencia de _connector_health):
+    # sigue el mismo patron que `api_up` arriba y usa siempre el cache.
+    _salud_ollama = dispatch.CONFIG["local"]["base_url"].replace(
+        "/api/generate", "/api/tags")
+    local_up = _http_up_cached(_salud_ollama)
     return "\n".join([
         "=== Estado real de Calipso ===",
         f"Ruta decidida: {verdict.get('route')}",
