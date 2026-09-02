@@ -21,9 +21,9 @@ _PEM = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[^\n]*")
 # Cadena de conexion con credencial embebida: esquema://usuario:clave@host
 _CONN = re.compile(r"\b[a-z][a-z0-9+.\-]*://[^\s:@/]+:[^\s:@/]+@[^\s]+")
 # Tokens largos, mezclados y de alta entropia: probable secreto sin pista lexica.
-# Se suma "$" al set porque es comun en passwords y sin el se parte el token
-# en fragmentos menores a 20 caracteres (ver banco de test, caso sin pista).
-_TOKEN = re.compile(r"[A-Za-z0-9_\-/+.=$]{20,}")
+# Sin simbolos humanos como "$": esta capa es de FORMATO MAQUINA (base64/base64url/
+# hex/base32). Una password humana con simbolos es dominio del juez LLM.
+_TOKEN = re.compile(r"[A-Za-z0-9_\-/+.=]{20,}")
 
 
 def _entropia(s: str) -> float:
@@ -51,6 +51,8 @@ def detectar_secretos(texto: str) -> list[dict]:
     for tok in _TOKEN.findall(texto):
         if "@" in tok:
             continue  # los mails los marca el juez LLM como 'contacto', no aca
-        if _entropia(tok) >= 3.6 and re.search(r"[a-z]", tok) and re.search(r"[0-9]", tok):
+        clases = (bool(re.search(r"[a-z]", tok)) + bool(re.search(r"[A-Z]", tok))
+                  + bool(re.search(r"[0-9]", tok)))
+        if _entropia(tok) >= 3.6 and clases >= 2:
             agregar(tok)
     return tramos

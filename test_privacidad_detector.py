@@ -17,7 +17,8 @@ def test_agarra_las_otras_clases_de_secreto():
     assert detectar_secretos("ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8")   # prefijo github
     assert detectar_secretos("-----BEGIN OPENSSH PRIVATE KEY----- b3BlbnNz")  # PEM
     assert detectar_secretos("postgres://calipso:Sup3rS3cret@db.interno:5432/prod")  # conn
-    assert detectar_secretos("la clave es xK9$mR2vLp8qWz4T3nB7")             # entropia, sin pista
+    # base32 TOTP: solo mayusculas + digitos, sin pista lexica -- entropia + 2 clases
+    assert detectar_secretos("mi codigo 2fa es GVXW4LN7ARQK3ZJT6YHD2MPSFB5UECIO")
 
 
 def test_todos_son_tipo_credencial():
@@ -31,3 +32,8 @@ def test_no_se_dispara_en_texto_inocente():
     assert detectar_secretos("el producto SKU-4472-B no carga") == []
     assert detectar_secretos("quiero una contrasena mas segura en general") == []
     assert detectar_secretos("me explicas la diferencia entre lista y tupla?") == []
+
+
+def test_no_marca_comprobante_pegado_con_dolar():
+    # un comprobante pegado sin espacios, con "$" en el medio, no es credencial
+    assert detectar_secretos("mi orden OrdenN123456789$45990pesosARS total") == []
