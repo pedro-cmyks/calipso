@@ -785,3 +785,27 @@ def test_local_up_refleja_la_salud_real_de_ollama(monkeypatch):
     monkeypatch.setattr(srv, "_http_up", lambda url, timeout=1.5: False)
     h2 = srv._connector_health(use_cache=False)
     assert h2["local"]["ready"] is False
+
+
+def test_la_api_paga_no_gana_sin_gesto_explicito(monkeypatch):
+    """El freno de API forzada solo vivia en el CLI muerto. En el chat vivo,
+    si las suscripciones caen y el proxy esta arriba, la API paga ganaba en
+    silencio."""
+    # un ranking donde la API queda primera (suscripciones no disponibles)
+    ranking = [{"key": "api:deepseek-chat", "route": "api", "client": None,
+                "model": "deepseek-chat", "persona": "Confucio", "tier": "mid",
+                "score": 0.5}]
+    monkeypatch.setattr(srv.capabilities, "choose", lambda *a, **k: list(ranking))
+    verdict, *_ = srv._decide("analiza esto")
+    assert verdict["route"] != "api"
+
+
+def test_la_api_paga_si_gana_cuando_pedro_la_fuerza(monkeypatch):
+    """Con /api, Pedro forzo el gesto explicito y ahi si la API puede ganar."""
+    ranking = [{"key": "api:deepseek-chat", "route": "api", "client": None,
+                "model": "deepseek-chat", "persona": "Confucio", "tier": "mid",
+                "score": 0.5}]
+    monkeypatch.setattr(srv.capabilities, "choose", lambda *a, **k: list(ranking))
+    # con /api la directiva arma force_route == "api"
+    verdict, *_ = srv._decide("/api analiza esto")
+    assert verdict["route"] == "api"

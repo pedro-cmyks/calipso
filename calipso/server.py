@@ -1489,6 +1489,12 @@ def _decide(user_msg: str,
                                  _backend_quota_low(), project_root=str(ROOT))
     if d.get("force_route"):
         ranked = [r for r in ranked if r["route"] == d["force_route"]] or ranked
+    # No escalar a API paga en silencio: un veredicto de API solo vale si
+    # Pedro lo forzo. El freno viejo (`api_only_when_forced`) solo vivia en
+    # el CLI muerto `dispatch.py` y nunca corria en el chat, asi que si las
+    # suscripciones caian y el proxy pago estaba arriba, la API ganaba sola.
+    if d.get("force_route") != "api":
+        ranked = [r for r in ranked if r["route"] != "api"]
     if d.get("force_model"):
         fm = d["force_model"].lower()
         forced = [r for r in ranked if fm in (
