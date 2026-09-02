@@ -57,6 +57,7 @@ import dispatch  # noqa: E402
 from calipso import capabilities  # noqa: E402
 from calipso import attachments  # noqa: E402
 from calipso import chats  # noqa: E402
+from calipso.compositor import redactor as compositor_redactor  # noqa: E402
 from calipso import config as calipso_config  # noqa: E402
 from calipso import browser as calipso_browser  # noqa: E402
 from calipso import catastro  # noqa: E402
@@ -2349,6 +2350,13 @@ def _next_or_stop(gen, sentinel):
         return sentinel
 
 
+# /redacta guarda el ultimo pedido por chat, a nivel de modulo (no de la
+# conexion de websocket): asi /otra puede pedir "otra version" aunque el
+# gesto llegue en una vuelta distinta del loop. Mismo patron que
+# `conversacion._por_chat`.
+_ultimo_pedido: dict[str, str] = {}
+
+
 @app.websocket("/ws/chat")
 async def ws_chat(ws: WebSocket) -> None:
     if not _valid(ws.cookies.get(COOKIE)):
@@ -2457,6 +2465,72 @@ async def ws_chat(ws: WebSocket) -> None:
                 await ws.send_json({"type": "done"})
                 continue
             chat_msg = directives["clean"]
+
+            # /redacta y /otra: Calipso REDACTA, no responde -- el turno no
+            # es una respuesta de la conversacion, es un borrador aparte que
+            # Pedro copia. Se desvia ANTES del ruteo normal, y corre SIEMPRE
+            # en local (MVP Fase 1: el borrador nunca sale a la nube).
+            if directives.get("redacta") or directives.get("otra"):
+                if directives.get("redacta"):
+                    # quirk de `parse_directives`: si el mensaje es SOLO el
+                    # slash, `clean` cae al fallback y queda "/redacta" (no
+                    # ""). Sin pedido de verdad no hay nada que guardar ni
+                    # que redactar.
+                    crudo = chat_msg.strip()
+                    pedido = crudo if crudo and crudo != "/redacta" else ""
+                    if pedido:
+                        _ultimo_pedido[chat_id] = pedido
+                else:
+                    pedido = _ultimo_pedido.get(chat_id) or ""
+                if not pedido:
+                    aviso = ("pega el hilo o deci que queres decir"
+                              if directives.get("redacta") else
+                              "deci /redacta primero")
+                    await ws.send_json({"type": "error", "text": aviso})
+                    await ws.send_json({"type": "done"})
+                    continue
+                system_b, user_b = compositor_redactor.preparar_borrador(
+                    pedido, chats._load())
+                await ws.send_json({"type": "borrador", "action": "inicio"})
+                usage_b: dict = {}
+                emisor_b = Emisor(ws)
+                # `chat_id=None`: el borrador no arrastra el historial de la
+                # conversacion (es un texto aparte, no una respuesta en ella)
+                # -- mismo motivo por el que, mas abajo, no se guarda con
+                # `chats.append` como turno de "assistant".
+                gen_b, model_b = _chunks_for(
+                    "local", system_b, user_b, usage_b,
+                    _route_model_name("local"), chat_id=None)
+                while True:
+                    if not inbox.empty():  # steering: barge-in del borrador
+                        steer = inbox.get_nowait()
+                        try:
+                            gen_b.close()
+                        except Exception:
+                            pass
+                        await ws.send_json({"type": "steered"})
+                        if steer and steer.strip() and steer.strip() != "/stop":
+                            pending = steer
+                        break
+                    chunk_b = await asyncio.to_thread(_next_or_stop, gen_b, sentinel)
+                    if chunk_b is sentinel:
+                        break
+                    await emisor_b.chunk(chunk_b)
+                await emisor_b.cerrar()
+                # cost/done como un turno local normal -- pero SIN cobrarle
+                # nada a ningun departamento: local ya es gratis (Fase 1;
+                # ver `_cobrar_turno`), asi que no hace falta tocar el libro
+                # de la economia para este borrador.
+                entry_b = costs.log_usage(
+                    "local", model_b, usage_b.get("prompt_tokens", 0),
+                    usage_b.get("completion_tokens", 0))
+                await ws.send_json({
+                    "type": "cost", "model": model_b, "route": "local",
+                    "tokens": entry_b["prompt_tokens"] + entry_b["completion_tokens"],
+                    "cost_usd": entry_b["cost_usd"]})
+                await ws.send_json({"type": "done"})
+                continue
+
             # quien paga y que sabe Calipso del departamento son dos
             # preguntas distintas con dos fuentes distintas: ver
             # `_ficha_y_cuenta`. Va en un hilo porque derivar la ficha toma el

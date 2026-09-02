@@ -3,6 +3,8 @@ llama a ningun modelo, solo construye (system, user). Quien lo corre es el
 chat (con el modelo local por default).
 """
 
+from calipso.compositor import voz
+
 _BASE = """\
 Sos el compositor de voz de Calipso. Tu tarea NO es responderle a Pedro: es
 escribir un texto COMO LO ESCRIBIRIA PEDRO, para que el lo mande como suyo.
@@ -38,3 +40,10 @@ def construir_prompt(pedido: str, ejemplos: list[str]) -> tuple[str, str]:
     else:
         system = _BASE + _SIN_EJEMPLOS
     return system, pedido
+
+
+def preparar_borrador(pedido: str, chats_data: dict) -> tuple[str, str]:
+    """Junta los ejemplos de voz de Pedro y arma el (system, user) para el
+    borrador. La cara testeable de lo que hace el chat en /redacta."""
+    ejemplos = voz.ejemplos_de_voz(chats_data)
+    return construir_prompt(pedido, ejemplos)
