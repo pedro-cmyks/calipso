@@ -27,10 +27,12 @@ def test_accion_nube_con_route_ya_forzada_respeta_api():
     assert r["mensaje"] == dec["texto"]
 
 
-def test_accion_nube_con_route_local_pero_force_route_no_sube():
+def test_accion_nube_con_route_local_forzada_no_sube_y_queda_local():
     # Pedro forzo /local a proposito: no lo pisa aunque el juez diga nube.
-    dec = {"accion": "nube", "texto": "hola", "tapados": [], "motivo": ""}
+    # nube_local tiene que dar True (el turno SE QUEDA local) para que el
+    # corte de orquestacion en ws_chat lo saltee -- si no, un equipo dinamico
+    # podria mandar el dato humano a la nube por otro camino (la fuga real).
+    dec = {"accion": "nube", "texto": "hola [CONTACTO_1], dato tapado",
+           "tapados": [{"marcador": "[CONTACTO_1]", "tipo": "contacto"}], "motivo": ""}
     r = nube.ruteo_para_nube(dec, "local", "local")
-    assert r["route"] == "local"
-    assert r["nube_local"] is False
-    assert r["mensaje"] == dec["texto"]
+    assert r == {"route": "local", "nube_local": True, "mensaje": dec["texto"]}
