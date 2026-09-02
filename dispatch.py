@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
 """
-dispatch.py — Orquestador multi-modelo en terminal.
+dispatch.py — CLI de terminal, standalone. El chat vivo NO pasa por aca: su
+ruteo real vive en `capabilities.choose` (ver calipso/server.py). Este archivo
+solo lo usan invocaciones manuales por terminal y algunos tests/experimentos
+que reusan sus utilidades (CONFIG, extract_features, los helpers HTTP/SSE).
 
-Tres "bocas":
+Dos bocas reales:
   1. SUSCRIPCIÓN  -> lanza el CLI oficial (claude / codex) como subproceso.
                      Usa tu cuota Pro/Max o ChatGPT. NO gasta API.
   2. API          -> habla con un proxy LiteLLM local que unifica
                      Anthropic + OpenAI + DeepSeek bajo un endpoint OpenAI.
-  3. LOCAL        -> Ollama, para tareas triviales / privadas.
 
-Routing HÍBRIDO:
+No hay boca LOCAL viva en este CLI: `run_local` no habla con Ollama, solo
+redirige a SUSCRIPCIÓN (ver su docstring). Y `decide_by_model` no es un
+clasificador: es un stub que siempre devuelve suscripcion, sin llamar a
+ningun modelo.
+
+Routing:
   - Primero intenta decidir por REGLAS (flags + palabras clave).
-  - Si las reglas no dan veredicto claro, pregunta a un modelo
-    clasificador LOCAL (Ollama) que devuelve JSON.
+  - Si las reglas no dan veredicto claro, cae al stub `decide_by_model`
+    (suscripcion por defecto; no hay clasificador real).
 
 Uso:
   python dispatch.py "refactoriza este módulo y agrega tests"
@@ -78,10 +85,6 @@ CONFIG = {
 
 if dispatch_config:
     CONFIG = dispatch_config()
-
-# Ruta a la que caemos si el clasificador local falla. "local" para no escalar
-# a una API de pago por accidente (privacidad/coste).
-SAFE_FALLBACK = "subscription"
 
 # Log de decisiones (JSONL). Sirve para afinar luego los regex con datos reales.
 # Se puede desactivar con --no-log o DISPATCH_NO_LOG=1.
@@ -197,14 +200,17 @@ def extract_features(prompt: str) -> dict:
 def decide_by_rules(prompt: str) -> dict | None:
     """Devuelve un veredicto {ruta, cliente} o None si no está claro.
 
-    PRECEDENCIA (el orden importa):
-      1. Código pesado      -> suscripción (gana siempre, aunque sea largo).
-      2. Trivial / privado  -> local (la privacidad/coste mandan; el tamaño NO
-                               lo manda a suscripción, antes era un bug).
-      3. Razonamiento barato-> API.
-      4. Solo-tamaño        -> suscripción (prompt muy largo sin otra señal:
+    PRECEDENCIA REAL (el orden de los `if`; no hay boca local en este CLI,
+    todo lo que "gana" aca termina en suscripcion o api):
+      1. Privado/sensible   -> suscripción (no hay local; ver el `why`).
+      2. Código pesado      -> suscripción (tarea de código pesada).
+      3. Trivial            -> suscripción (no hay Ollama local que la tome).
+      4. Razonamiento barato-> API, salvo que la politica fuerce suscripcion
+                               primero (subscription_first).
+      5. Solo-tamaño        -> suscripción (prompt muy largo sin otra señal:
                                necesita contexto grande).
-      5. Nada claro         -> None (pasa al clasificador).
+      6. Nada claro         -> None (pasa a `decide_by_model`, que es un stub
+                               y tambien devuelve suscripcion).
     """
     p = prompt.strip()
     long_prompt = len(p) > 800
@@ -214,7 +220,8 @@ def decide_by_rules(prompt: str) -> dict | None:
 
     if PRIVATE.search(p):
         return {"route": "subscription", "client": sub_client,
-                "why": "datos privados/sensibles; suscripcion local sin API"}
+                "why": "datos privados/sensibles; no hay boca local en este "
+                       "CLI, va a suscripcion (no a la API paga)"}
 
     if CODE_HEAVY.search(p):
         return {"route": "subscription", "client": sub_client,
@@ -235,13 +242,16 @@ def decide_by_rules(prompt: str) -> dict | None:
         return {"route": "subscription", "client": sub_client,
                 "why": "prompt largo sin señal clara; necesita contexto grande"}
 
-    return None  # -> pasa al clasificador
+    return None  # -> pasa a decide_by_model (stub, no hay clasificador real)
 
 
 # ----------------------------------------------------------------------------
-# CAPA 2: CLASIFICADOR LOCAL  (solo si las reglas no decidieron)
+# CAPA 2: STUB  (solo si las reglas no decidieron; no llama a ningun modelo)
 # ----------------------------------------------------------------------------
 
+# Prompt de sistema para un clasificador que nunca se cablea: CLASSIFIER_SYSTEM
+# no lo lee nadie hoy (decide_by_model no lo usa, es un stub). Queda como
+# especificacion para cuando/si se implemente un clasificador de verdad.
 CLASSIFIER_SYSTEM = (
     "Eres un enrutador. Clasifica la PETICIÓN del usuario en UNA ruta. "
     "Responde SOLO con JSON, sin texto extra, sin markdown.\n"
@@ -254,6 +264,11 @@ CLASSIFIER_SYSTEM = (
 
 
 def decide_by_model(prompt: str) -> dict:
+    """Stub: no llama a ningun modelo, siempre devuelve suscripcion.
+
+    'prompt' no se usa; queda en la firma para cuando (si) se cablee un
+    clasificador real.
+    """
     routing = (load_config() if load_config else {}).get("routing", {})
     sub_client = routing.get("subscription_client", "claude")
     return {"route": "subscription", "client": sub_client, "source": "rules",
