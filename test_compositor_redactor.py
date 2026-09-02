@@ -19,6 +19,18 @@ def test_sin_ejemplos_igual_arma_prompt():
     assert "sin ejemplos" in system.lower() or "no hay ejemplos" in system.lower()
 
 
+def test_el_system_pide_neutro_y_no_inventar_acento():
+    # Pedro es de Medellin, no argentino: el compositor debe EMPEZAR neutro y
+    # no inventar un acento que los ejemplos no muestren (el 7b tendia a inventar
+    # 'chido'/casual argentino sobre un corpus de puras ordenes).
+    con, _ = construir_prompt("respondele", ["hola, di solo LINUX OK"])
+    sin, _ = construir_prompt("respondele", [])
+    for system in (con, sin):
+        s = system.lower()
+        assert "neutro" in s                       # arranca neutro
+        assert "acento" in s or "regionalism" in s  # advierte no inventar acento
+
+
 def test_preparar_borrador_junta_ejemplos_y_pedido():
     data = {"active": None, "chats": {"c0": {"messages": [
         {"role": "user", "text": "che todo piola por aca"},
