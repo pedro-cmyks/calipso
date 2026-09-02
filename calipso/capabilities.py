@@ -200,7 +200,7 @@ def parse_directives(message: str) -> dict:
     """Extrae slash-commands y palabras de intensidad. Devuelve overrides + msg limpio."""
     out = {"clean": message, "effort": None, "force_model": None,
            "force_route": None, "help": False, "force_web": False,
-           "force_team": False}
+           "force_team": False, "nube": False}
     low = message.lower()
     tokens = message.split()
     keep = []
@@ -212,6 +212,8 @@ def parse_directives(message: str) -> dict:
             out["force_web"] = True
         elif tl in ("/plan", "/team", "/equipo"):
             out["force_team"] = True
+        elif tl == "/nube":
+            out["nube"] = True
         elif tl in ("/fast",):
             out["effort"] = EFFORT["fast"]
         elif tl in ("/think",):

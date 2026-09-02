@@ -53,6 +53,12 @@ def main() -> int:
     check("palabra 'rápido' -> effort fast", d2["effort"] == cap.EFFORT["fast"])
     d3 = cap.parse_directives("/model opus piensa")
     check("/model captura el modelo", d3["force_model"] == "opus")
+    d4 = cap.parse_directives("/nube mi numero es 3865-4421, buscame vuelos")
+    check("parse /nube -> nube True", d4["nube"] is True)
+    check("parse /nube limpia el slash", "/nube" not in d4["clean"])
+    check("parse /nube conserva el resto", "buscame vuelos" in d4["clean"])
+    d5 = cap.parse_directives("hola que tal")
+    check("sin /nube -> nube False", d5["nube"] is False)
 
     # discovery
     reg = dict(cap.REGISTRY)
