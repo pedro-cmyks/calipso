@@ -168,6 +168,24 @@ cerrado -- y ni la longitud ni la complejidad lo sacan de ahi.
   suscripcion en `_cobrar_turno` -- se elimina porque ya no hay una ruta que sea
   local en un libro y suscripcion en el otro.
 
+## 7b. Fase 1 -- el CLI muerto deja de mentir
+
+`dispatch.py` tiene su propio ruteo (`decide_by_rules`, `route`,
+`decide_by_model`) que **el chat no usa** -- solo lo alcanza el entrypoint
+`python dispatch.py "..."`. Pero su docstring promete "lo privado -> local" y su
+rama PRIVATE se justifica con `why: "suscripcion local sin API"`, que es falso:
+suscripcion manda a la nube. Un comentario falso sobre privacidad es peligroso
+aunque el camino este frio, porque el proximo que lo lea le va a creer. La Fase 1
+corrige esos comentarios y la docstring del modulo para que describan lo que el
+codigo hace hoy (todo va a suscripcion; el clasificador es un stub; no hay boca
+local viva en ese CLI), o borra el codigo muerto. `SAFE_FALLBACK` -- definido,
+sin usar, y con el valor contrario a su comentario -- se elimina o se cablea.
+
+Es limpieza, no seguridad: el CLI muerto no fuga porque nadie lo llama. Pero
+entra en la Fase 1 porque es el mismo defecto -- una promesa de ruteo que el
+codigo no cumple -- y arreglarlo mientras el tema esta fresco cuesta menos que
+dejarlo para que muerda a otro.
+
 ## 8. Fase 2 -- juzgar que es privado
 
 Hoy `private` es un booleano de una regex debil (`privado|confidencial|secreto|
