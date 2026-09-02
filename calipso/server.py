@@ -5410,10 +5410,17 @@ except Exception:  # sin pulso el mapa sigue mostrando la foto
 def _pensar_local(prompt: str) -> str:
     """El escalon barato de verdad.
 
-    OJO: NO se usa `_chunks_for("local", ...)`. En este server la ruta
-    "local" no es Ollama — `_local_via_sub` ejecuta `claude -p`, o sea que
-    decidir consumiria una unidad de suscripcion por tic y por departamento,
-    y "decidir es gratis" seria falso.
+    OJO: NO se usa `_chunks_for("local", ...)`. Esa es la ruta "local" del
+    chat, un generador que transmite por WebSocket; este helper es sincrono
+    (el tic de decision del jefe necesita un string entero, no un stream),
+    asi que habla con Ollama directo por `dispatch.CONFIG["local"]`. Desde
+    la Fase 1 del ruteo, la ruta "local" del chat TAMBIEN corre Ollama (o
+    falla cerrado): las dos son gratis. Antes no -- la ruta "local"
+    ejecutaba `claude -p` (el viejo `_local_via_sub`, ya borrado) y decidir
+    por ahi habria costado una unidad de suscripcion por tic y por
+    departamento. La razon de mantenerlos separados hoy es la forma de la
+    llamada (sincrona vs stream), no el costo, y "decidir es gratis" pasa a
+    ser verdad por los dos lados.
 
     Y ojo con la trampa gemela, al reves: la ENTRADA de config
     `dispatch.CONFIG["local"]` si es Ollama (mismo host que el clasificador,
