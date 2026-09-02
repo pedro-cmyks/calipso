@@ -20,6 +20,11 @@ _JWT = re.compile(r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]{6,}")
 _PEM = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[^\n]*")
 # Cadena de conexion con credencial embebida: esquema://usuario:clave@host
 _CONN = re.compile(r"\b[a-z][a-z0-9+.\-]*://[^\s:@/]+:[^\s:@/]+@[^\s]+")
+# hash o secreto hexadecimal (128 bits o mas): 32+ chars hex seguidos.
+_HEX = re.compile(r"\b[0-9a-fA-F]{32,}\b")
+# secreto base32 (TOTP/2FA): mayusculas y digitos 2-7. Exige al menos un
+# digito [2-7] en el match para no marcar palabras/acronimos en mayusculas.
+_BASE32 = re.compile(r"\b[A-Z2-7]{16,}\b")
 # Tokens largos, mezclados y de alta entropia: probable secreto sin pista lexica.
 # Sin simbolos humanos como "$": esta capa es de FORMATO MAQUINA (base64/base64url/
 # hex/base32). Una password humana con simbolos es dominio del juez LLM.
@@ -48,11 +53,16 @@ def detectar_secretos(texto: str) -> list[dict]:
     for rx in (_PREFIJOS, _JWT, _PEM, _CONN):
         for m in rx.finditer(texto):
             agregar(m.group(0))
+    for m in _HEX.finditer(texto):
+        agregar(m.group(0))
+    for m in _BASE32.finditer(texto):
+        if re.search(r"[2-7]", m.group(0)):
+            agregar(m.group(0))
     for tok in _TOKEN.findall(texto):
         if "@" in tok:
             continue  # los mails los marca el juez LLM como 'contacto', no aca
         clases = (bool(re.search(r"[a-z]", tok)) + bool(re.search(r"[A-Z]", tok))
                   + bool(re.search(r"[0-9]", tok)))
-        if _entropia(tok) >= 3.6 and clases >= 2:
+        if _entropia(tok) >= 4.2 and clases >= 2:
             agregar(tok)
     return tramos

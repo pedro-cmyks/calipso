@@ -32,6 +32,8 @@ def test_no_se_dispara_en_texto_inocente():
     assert detectar_secretos("el producto SKU-4472-B no carga") == []
     assert detectar_secretos("quiero una contrasena mas segura en general") == []
     assert detectar_secretos("me explicas la diferencia entre lista y tupla?") == []
+    assert detectar_secretos("el metodo getUserByIdAndReturnToken devuelve null") == []
+    assert detectar_secretos("la REUNION2026CONFIRMADA quedo para el jueves") == []
 
 
 def test_no_marca_comprobante_pegado_con_dolar():
