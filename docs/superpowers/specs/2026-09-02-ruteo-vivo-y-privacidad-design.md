@@ -88,8 +88,10 @@ fases con un orden que no es negociable:
   la Fase 1 este cerrada** -- porque redactar mal y despues fugar es peor que
   fallar cerrado.
 
-La Fase 2 no se escribe en detalle de implementacion hasta que la Fase 1
-aterrice; este documento fija su diseño y su criterio de medicion.
+La Fase 1 aterrizo en `main` el 2026-09-02 (las tres reglas se cumplen). La
+apuesta de la Fase 2 se midio ese mismo dia (seccion 10) y forzo un juez de dos
+capas (seccion 8). Con eso, la Fase 2 ya se puede escribir en detalle de
+implementacion; este documento fija su diseño y el resultado de su medicion.
 
 ## 3. Fase 1 -- la ruta local ejecuta en Ollama
 
@@ -186,32 +188,51 @@ entra en la Fase 1 porque es el mismo defecto -- una promesa de ruteo que el
 codigo no cumple -- y arreglarlo mientras el tema esta fresco cuesta menos que
 dejarlo para que muerda a otro.
 
-## 8. Fase 2 -- juzgar que es privado
+## 8. Fase 2 -- juzgar que es privado (un juez de DOS capas)
 
 Hoy `private` es un booleano de una regex debil (`privado|confidencial|secreto|
 contrasena|password|personal|sensible|no comparta`). No agarra DNI, cedula,
 pasaporte, tarjeta, cuenta bancaria, telefono, direccion, email, historia
 clinica, diagnostico, salario, token, clave SSH, ni un adjunto con cualquiera de
-esas cosas. La Fase 2 lo reemplaza por un **juez de privacidad** que decide dos
-cosas:
+esas cosas. La Fase 2 lo reemplaza por un **juez de privacidad** cuya salida no
+es un `bool`: es una lista de tramos, cada uno con su tipo (identidad,
+credencial, salud, ubicacion, financiero, contacto) y su **texto literal**
+(subcadenas, no offsets: un modelo de 7b no cuenta caracteres de forma
+confiable, pero el texto lo sabe copiar; las posiciones las deriva el harness
+buscando la subcadena, y redactar es reemplazar por un marcador).
 
-1. **Que trozos del prompt (y del adjunto) son sensibles**, no solo si el prompt
-   entero lo es. La salida no es un `bool`: es una lista de tramos, cada uno con
-   su tipo (identidad, credencial, salud, ubicacion, financiero, contacto) y sus
-   posiciones.
-2. **Que nivel de manejo pide** cada tramo: los que nunca pueden salir de la
-   maquina (credenciales, claves) y los que pueden salir tapados.
+**Por que dos capas, y no un solo juez LLM.** Esto se midio antes de disenarlo
+(seccion 10). El modelo local de 7b resulto **excelente con datos en lenguaje
+humano** -- 100% de recall en salud, identidad, ubicacion, financiero y contacto,
+incluido lo que ninguna lista de palabras agarra ("mi numero es 3865-4421" no
+dice "privado" y es un telefono; "sertralina 50mg" no dice "salud"). Pero es
+**ciego a los blobs de maquina**: dejo pasar un JWT de forma consistente y una
+API key `rk_live_...` dentro de un `.env`. Un juez solo-LLM promete proteger
+credenciales y no las protege. Por eso el juez son dos detectores co-iguales,
+cada uno tapando el punto ciego del otro:
 
-**Quien juzga.** El modelo local (`CONFIG["local"]`, Ollama), no la nube -- seria
-absurdo mandar el dato afuera para preguntar si el dato puede ir afuera. Un
-prompt con un modelo local caido cae al fallo cerrado de la Fase 1, igual que
-cualquier otro privado sin local.
+1. **Detector determinista de secretos** -- la capa de credenciales. Reglas
+   fijas: prefijos conocidos (`ghp_`, `rk_live_`, `sk-`, `AKIA`, `AIza`, ...),
+   estructura de JWT (`eyJ....eyJ....`), cabecera PEM (`-----BEGIN ... PRIVATE
+   KEY-----`), cadena de conexion (`user:pass@host`), y tokens de alta entropia.
+   Medido: cierra exactamente los huecos que el LLM dejo, con **cero falsos
+   positivos** sobre los negativos del banco. Es barato, no gasta una llamada, y
+   estructuralmente le gana a cualquier LLM en un blob opaco. Deja de ser el
+   "piso barato opcional" que decia el borrador: es la autoridad para la clase
+   credencial.
+2. **El juez LLM local** (`CONFIG["local"]`, Ollama, `qwen2.5:7b`) -- la capa de
+   lenguaje humano. Marca lo que los regex no pueden: nombres, direcciones,
+   telefonos, condiciones de salud, DNI en contexto. Corre a temperatura 0.
 
-**Esto NO es la regex de hoy con mas palabras.** La regex se conserva como un
-piso barato -- un primer filtro rapido -- pero el juez es el que decide el
-manejo. La distincion importa porque el juez tiene que atrapar lo que ninguna
-lista de palabras atrapa: "mi numero es 3865-..." no dice "privado" y es un
-telefono.
+La union de las dos marcas es la lista de tramos sensibles. Ninguno de los dos
+alcanza solo: el detector no entiende "me diagnosticaron lupus" y el LLM no
+reconoce un JWT.
+
+**Quien juzga corre LOCAL, sin excepcion.** Las dos capas viven en la maquina --
+seria absurdo mandar el dato afuera para preguntar si el dato puede ir afuera. Un
+prompt privado con Ollama caido cae al fallo cerrado de la Fase 1 (el detector
+determinista puede seguir corriendo sin Ollama, pero la capa humana no; ante la
+duda, fallo cerrado).
 
 ## 9. Fase 2 -- redactar y reponer
 
@@ -222,13 +243,18 @@ utiles juntos, y repartir entre Anthropic y OpenAI es exponerse en dos lados en
 vez de uno. La version que **si** protege es partir en la **frontera de la
 maquina**:
 
-1. El juez (seccion 8) marca los tramos sensibles.
-2. Los tramos que **nunca salen** (credenciales, claves): si el prompt los
-   necesita para responder, cae al fallo cerrado -- eso se contesta local o no
-   se contesta.
-3. Los tramos que **pueden salir tapados**: se reemplazan por marcadores
-   estables (`[PERSONA_1]`, `[TELEFONO_1]`, ...) antes de mandar a la nube. La
-   nube razona sobre el texto tapado.
+1. El juez de dos capas (seccion 8) marca los tramos sensibles.
+2. **Una credencial marcada -- por cualquiera de las dos capas -- hace fallar
+   cerrado el prompt entero. Sin condicion.** No se redacta, no se manda tapada:
+   una clave casi nunca ayuda a la nube a responder, y el riesgo de que se filtre
+   es maximo. La regla mas limpia es "credenciales nunca salen, ni tapadas": el
+   prompt con una clave se contesta local, o no se contesta. (Decision de Pedro,
+   2026-09-02: es mas fuerte que el borrador, que solo fallaba cerrado si la
+   credencial "se necesitaba para responder" -- distincion fragil y peligrosa.)
+3. Los tramos de **lenguaje humano** (nombre, direccion, telefono, condicion de
+   salud, DNI): se reemplazan por marcadores estables (`[PERSONA_1]`,
+   `[TELEFONO_1]`, ...) antes de mandar a la nube. La nube razona sobre el texto
+   tapado.
 4. La respuesta vuelve, y Calipso **repone los valores reales localmente** antes
    de mostrarla. Lo sensible nunca estuvo en el trafico de salida.
 
@@ -245,37 +271,59 @@ tapar, Calipso muestra **que** se tapo y **que** viajo, antes de mandar. El
 usuario ve la version redactada real, no una casilla de "acepto". Es informacion
 verificable, no un boton.
 
-## 10. Fase 2 -- la apuesta que hay que medir
+## 10. Fase 2 -- la apuesta, ya medida (2026-09-02)
 
 Que un modelo local de 7b sepa marcar los tramos sensibles de un texto libre
-**no esta probado**, y este proyecto ya aprendio a no construir sobre una
-apuesta sin medirla. Antes de cablear la redaccion al camino vivo:
+**no estaba probado**, y este proyecto ya aprendio a no construir sobre una
+apuesta sin medirla. Se midio antes de disenar nada, con
+`experimentos/juez_privacidad.py`: un banco de 53 prompts sinteticos hechos a
+mano (55 tramos sensibles con su verdad conocida, mas negativos), corrido a
+temperatura 0, contrato = subcadenas tipadas. El criterio duro: **ningun falso
+negativo sobre credenciales y salud** -- si el juez deja pasar una clave sin
+tapar, la redaccion es peor que el fallo cerrado, porque promete proteger y no
+protege.
 
-- Un banco de prompts sinteticos con datos sensibles conocidos (posiciones
-  marcadas a mano), y una medicion de cuantos tramos el juez local **agarra**
-  (no dejar pasar un dato es lo que importa) y cuantos **inventa** (tapar de mas
-  arruina la respuesta). Es el mismo metodo del experimento de la carta: barato,
-  local, corrido varias veces porque el modelo no es determinista.
-- El criterio duro: **ningun falso negativo sobre credenciales y salud** es
-  aceptable -- si el juez deja pasar una clave sin tapar, la redaccion es peor
-  que el fallo cerrado, porque promete proteger y no protege. Si el 7b no llega
-  a ese piso, la Fase 2 usa un modelo local mas grande o se queda en el fallo
-  cerrado de la Fase 1 hasta que exista uno que llegue.
+El resultado, que es lo que forzo el diseno de dos capas de la seccion 8:
 
-Un resultado negativo de esta medicion es un resultado util: dice que la
-redaccion todavia no se puede confiar, y Calipso se queda con la seguridad
-completa de la Fase 1, que ya cumple las tres reglas.
+- **`qwen2.5:7b` solo: NO PASA, por poco.** 100% de recall en lenguaje humano
+  (salud, identidad, ubicacion, financiero, contacto), pero 89.7% en credencial:
+  dejo pasar un JWT (consistente) y una API key `rk_live_` en un `.env`.
+- **`qwen2.5:3b`: NO PASA feo** (se come claves SSH, cadenas de conexion y datos
+  de salud). Achicar el modelo empeora.
+- **Modelo mas grande no entra en la Ally** (11.9 GB que ve el SO de ~16
+  fisicos; el 7b es el techo local, ver seccion 12.2). Un juez remoto esta
+  prohibido por invariante.
+- **Hibrido (detector determinista + 7b): PASA.** Credencial 39/39, salud 36/36,
+  cero falsos negativos, y cero falsos positivos nuevos sobre los negativos. El
+  detector cerro exactamente los dos huecos del LLM. Latencia del LLM ~3.7s por
+  llamada.
+
+**La regla que queda, no una medicion de una vez:** cualquier cambio al juez
+(otro modelo, otro prompt, otra regla del detector) se re-mide contra el mismo
+banco antes de confiarlo, y el piso sigue siendo cero FN en credencial y salud.
+El banco crece cuando aparece una clase de dato que no cubria.
+
+**Los limites honestos del PASA**, que van tambien en la UI: es un PASA sobre
+ESTE banco a corridas cortas y temperatura 0, no una garantia general -- el
+modelo no es determinista y un usuario redacta un secreto de mil formas que el
+banco no agota. El detector determinista medido es minimo (5 senales); en
+produccion necesita mas cobertura de prefijos y tuning de entropia. Por eso la
+credencial va a **fallo cerrado** (seccion 9): ante la clase mas peligrosa, no se
+apuesta a la deteccion, se corta.
 
 ## 11. Invariantes que no se tocan
 
 - **El jefe de un departamento no se toca.** Ya usa `CONFIG["local"]` (Ollama) y
   ya tiene su `num_ctx`. Esto arregla el chat.
 - **Ningun dato marcado privado sale de la maquina sin tapar.** Es la regla que
-  todo el spec sirve. En la Fase 1 significa local-o-nada; en la Fase 2, ademas,
-  tapado-o-nada.
+  todo el spec sirve. En la Fase 1 significa local-o-nada; en la Fase 2, para el
+  lenguaje humano, tapado-o-nada.
+- **Una credencial detectada hace fallar cerrado; nunca se redacta ni se manda
+  tapada.** Es la clase mas peligrosa y la que el LLM peor detecta: ante ella no
+  se apuesta a la redaccion, se corta. Local o nada.
 - **Ninguna ruta a API paga se toma sin gesto explicito de Pedro.**
-- **El juez de privacidad corre local.** Preguntar si un dato puede salir nunca
-  puede ser una razon para que el dato salga.
+- **El juez de privacidad corre local, las dos capas.** Preguntar si un dato
+  puede salir nunca puede ser una razon para que el dato salga.
 - **Los tres libros dicen la verdad.** El modelo que la UI reporta es el que
   contesto; el costo que registra es el que se gasto.
 
@@ -286,9 +334,10 @@ completa de la Fase 1, que ya cumple las tres reglas.
    lo incluye para adjuntos de texto; imagenes (OCR) queda para despues y se
    dice.
 2. **El costo de latencia del juez.** Correr el juez local antes de cada prompt
-   privado suma una llamada a Ollama. Para el chat interactivo puede notarse. La
-   medicion de la seccion 10 tiene que reportar cuanto tarda, no solo cuanto
-   acierta.
+   privado suma una llamada a Ollama. Medido: ~3.7s de media (p95 ~7s) con el
+   7b. En el chat interactivo se nota; el detector determinista, en cambio, es
+   instantaneo. El plan decide si el LLM corre siempre o solo cuando el prompt
+   ya se marco privado por otra senal.
 3. **La estabilidad de los marcadores entre turnos.** Si `[PERSONA_1]` es Pedro
    en un turno y otra persona en el siguiente, la nube pierde el hilo. La Fase 2
    fija los marcadores por conversacion, no por turno; el detalle es de plan.
@@ -316,8 +365,18 @@ completa de la Fase 1, que ya cumple las tres reglas.
 contesta local; con Ollama apagado, falla cerrado. Ninguno de los dos toca la
 nube. Verificado mirando el trafico o el subproceso, no la pantalla.
 
-**Fase 2, la medicion de la seccion 10**, antes de cablear nada: el juez local
-sobre el banco sintetico, con el piso de cero falsos negativos en credenciales y
-salud. Y despues, con la redaccion puesta: un prompt con un dato sensible viaja
-**tapado** -- verificado leyendo lo que sale, no lo que se muestra -- y vuelve
-repuesto.
+**Fase 2, la medicion de la seccion 10** (ya hecha, 2026-09-02): el juez de dos
+capas sobre el banco sintetico paso el piso de cero falsos negativos en
+credencial y salud (el 7b solo no; el hibrido si). La regla queda: cualquier
+cambio al juez se re-mide contra el banco antes de confiarlo.
+
+**Fase 2, con la redaccion puesta:**
+
+- Un prompt con un dato de lenguaje humano (nombre, telefono, condicion de salud)
+  viaja **tapado** -- verificado leyendo lo que SALE por la red, no lo que se
+  muestra -- y vuelve repuesto localmente.
+- Un prompt que contiene una **credencial** (detectada por el detector o el LLM)
+  **falla cerrado**: no viaja, ni tapado. Se contesta local o no se contesta.
+- Con el modelo local caido, un prompt privado falla cerrado como en la Fase 1.
+- Los marcadores son estables dentro de una conversacion (`[PERSONA_1]` es la
+  misma persona en todos los turnos).
