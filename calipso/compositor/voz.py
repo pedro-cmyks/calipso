@@ -22,17 +22,24 @@ def _es_util(texto: str) -> bool:
 
 def ejemplos_de_voz(chats_data: dict, n: int = 6) -> list[str]:
     """Hasta `n` mensajes reales de Pedro (role=="user") como ejemplos de su
-    voz: los mas recientes primero, sin duplicados, sin triviales ni ordenes."""
-    # recorrer todos los chats juntando los mensajes de Pedro en orden.
-    mensajes: list[str] = []
+    voz: los mas recientes primero por su `ts` real (no por posicion en el
+    dict de chats), sin duplicados, sin triviales ni ordenes."""
+    # recorrer todos los chats juntando (ts, texto) de los mensajes de Pedro.
+    # un mensaje sin ts (dato viejo) usa "" y por eso queda al final al
+    # ordenar descendente.
+    mensajes: list[tuple[str, str]] = []
     for chat in (chats_data or {}).get("chats", {}).values():
         for m in chat.get("messages", []):
             if m.get("role") == "user" and _es_util(m.get("text", "")):
-                mensajes.append(m["text"].strip())
-    # los mas recientes primero, sin duplicados, tope n.
+                mensajes.append((m.get("ts", ""), m["text"].strip()))
+    # orden por recencia real (ts descendente); sort es estable, asi que los
+    # empates (por ejemplo varios sin ts) mantienen su orden de aparicion.
+    mensajes.sort(key=lambda par: par[0], reverse=True)
+    # sin duplicados -- se queda con el primero, que es el mas reciente --
+    # y tope n.
     vistos: set[str] = set()
     ej: list[str] = []
-    for texto in reversed(mensajes):
+    for _, texto in mensajes:
         if texto not in vistos:
             vistos.add(texto)
             ej.append(texto)
