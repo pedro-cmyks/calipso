@@ -2477,7 +2477,7 @@ async def ws_chat(ws: WebSocket) -> None:
                     # ""). Sin pedido de verdad no hay nada que guardar ni
                     # que redactar.
                     crudo = chat_msg.strip()
-                    pedido = crudo if crudo and crudo != "/redacta" else ""
+                    pedido = crudo if crudo and crudo.lower() != "/redacta" else ""
                     if pedido:
                         _ultimo_pedido[chat_id] = pedido
                 else:
@@ -2498,24 +2498,34 @@ async def ws_chat(ws: WebSocket) -> None:
                 # conversacion (es un texto aparte, no una respuesta en ella)
                 # -- mismo motivo por el que, mas abajo, no se guarda con
                 # `chats.append` como turno de "assistant".
-                gen_b, model_b = _chunks_for(
-                    "local", system_b, user_b, usage_b,
-                    _route_model_name("local"), chat_id=None)
-                while True:
-                    if not inbox.empty():  # steering: barge-in del borrador
-                        steer = inbox.get_nowait()
-                        try:
-                            gen_b.close()
-                        except Exception:
-                            pass
-                        await ws.send_json({"type": "steered"})
-                        if steer and steer.strip() and steer.strip() != "/stop":
-                            pending = steer
-                        break
-                    chunk_b = await asyncio.to_thread(_next_or_stop, gen_b, sentinel)
-                    if chunk_b is sentinel:
-                        break
-                    await emisor_b.chunk(chunk_b)
+                # el borrador es local-only (Fase 1): si Ollama tose a mitad
+                # de camino, se avisa con "error" y se corta el turno -- NO
+                # se degrada a la nube (ver comentario de la compuerta de
+                # privacidad mas abajo).
+                try:
+                    gen_b, model_b = _chunks_for(
+                        "local", system_b, user_b, usage_b,
+                        _route_model_name("local"), chat_id=None)
+                    while True:
+                        if not inbox.empty():  # steering: barge-in del borrador
+                            steer = inbox.get_nowait()
+                            try:
+                                gen_b.close()
+                            except Exception:
+                                pass
+                            await ws.send_json({"type": "steered"})
+                            if steer and steer.strip() and steer.strip() != "/stop":
+                                pending = steer
+                            break
+                        chunk_b = await asyncio.to_thread(_next_or_stop, gen_b, sentinel)
+                        if chunk_b is sentinel:
+                            break
+                        await emisor_b.chunk(chunk_b)
+                except Exception as e:
+                    await ws.send_json({"type": "error",
+                                        "text": f"no pude armar el borrador: {e}"})
+                    await ws.send_json({"type": "done"})
+                    continue
                 await emisor_b.cerrar()
                 # cost/done como un turno local normal -- pero SIN cobrarle
                 # nada a ningun departamento: local ya es gratis (Fase 1;
