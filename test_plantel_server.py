@@ -821,3 +821,18 @@ def test_un_prompt_privado_no_dispara_orquestacion():
     features2 = {"type": "code", "complexity": 4, "private": False}
     assert srv._should_orchestrate(features2, {}, "un mensaje largo y complejo "
                                    "con muchas palabras para pasar el umbral") is True
+
+
+def test_un_team_forzado_sobre_un_prompt_privado_no_orquesta():
+    """El corte de privacidad va ANTES que `force_team`: un `/team` o `/plan`
+    explicito sobre un prompt privado tampoco puede orquestar, porque la
+    orquestacion repartiria a backends que no son private_ok. Este test fija
+    ese ORDEN -- se pondria rojo si alguien moviera el corte despues de
+    `force_team`, el reorden exacto que abriria la puerta de atras."""
+    features = {"type": "code", "complexity": 4, "private": True}
+    assert srv._should_orchestrate(
+        features, {"force_team": True}, "hace esto") is False
+    # sin privado, `force_team` si orquesta (el corte no rompe el /team normal)
+    features2 = {"type": "code", "complexity": 4, "private": False}
+    assert srv._should_orchestrate(
+        features2, {"force_team": True}, "hace esto") is True
