@@ -18,7 +18,7 @@ _HUMANOS = ("identidad", "salud", "ubicacion", "financiero", "contacto")
 def juzgar(texto: str) -> dict:
     """Veredicto de privacidad de `texto`.
     {"tramos": [...lenguaje humano a redactar...], "fallo_cerrado": bool,
-     "motivo": "credencial" | "juez_local_caido" | ""}."""
+     "motivo": "credencial" | "juez_local_caido" | "tipo_desconocido" | ""}."""
     if detector.detectar_secretos(texto):
         return {"tramos": [], "fallo_cerrado": True, "motivo": "credencial"}
 
@@ -29,5 +29,14 @@ def juzgar(texto: str) -> dict:
     if any(t["tipo"] == "credencial" for t in r["tramos"]):
         return {"tramos": [], "fallo_cerrado": True, "motivo": "credencial"}
 
-    humanos = [t for t in r["tramos"] if t["tipo"] in _HUMANOS]
-    return {"tramos": humanos, "fallo_cerrado": False, "motivo": ""}
+    # Un tramo que el LLM marco como sensible con un tipo FUERA de las seis
+    # categorias conocidas (incluye tipo="") no se puede categorizar con
+    # seguridad: no sabemos si es credencial (nunca sale) o lenguaje humano
+    # (se tapa). El LLM lo marco como sensible, asi que NO se descarta en
+    # silencio -> fallo cerrado. La Fase 2 parte 2 puede agregar normalizacion
+    # de tipos (p.ej. "medicamento recetado" -> "salud") para recuperar el caso
+    # comun hacia redaccion; aca, sin cablear, el default seguro es cortar.
+    if any(t["tipo"] not in _HUMANOS for t in r["tramos"]):
+        return {"tramos": [], "fallo_cerrado": True, "motivo": "tipo_desconocido"}
+
+    return {"tramos": r["tramos"], "fallo_cerrado": False, "motivo": ""}

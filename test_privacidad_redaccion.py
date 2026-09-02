@@ -38,3 +38,13 @@ def test_redacta_los_tramos_largos_primero():
     tapado = redactar("firma Ana Gomez", tramos, mapa)
     assert "Ana" not in tapado
     assert tapado == "firma [ID_1]"
+
+
+def test_tramo_con_texto_vacio_no_corrompe_el_texto():
+    # un tramo con texto="" haria str.replace("", marcador), que inserta el
+    # marcador entre cada caracter. Se ignora, el resto se tapa normal.
+    mapa = MapaMarcadores()
+    tramos = [{"texto": "", "tipo": "salud"},
+              {"texto": "lupus", "tipo": "salud"}]
+    tapado = redactar("tengo lupus", tramos, mapa)
+    assert tapado == "tengo [SALUD_1]"

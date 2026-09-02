@@ -51,6 +51,8 @@ def redactar(texto: str, tramos: list[dict], mapa: MapaMarcadores) -> str:
     primero: si uno es subcadena de otro, taparlo despues dejaria un pedazo del
     corto suelto adentro del largo."""
     for t in sorted(tramos, key=lambda x: len(x["texto"]), reverse=True):
+        if not t["texto"]:
+            continue
         marcador = mapa.marcador_para(t["texto"], t["tipo"])
         texto = texto.replace(t["texto"], marcador)
     return texto

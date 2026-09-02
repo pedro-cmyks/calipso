@@ -22,6 +22,7 @@ def test_credencial_que_marca_el_llm_tambien_falla_cerrado(monkeypatch):
     v = juez.juzgar("mi pass es hunter2")
     assert v["fallo_cerrado"] is True
     assert v["motivo"] == "credencial"
+    assert v["tramos"] == []
 
 
 def test_llm_caido_falla_cerrado(monkeypatch):
@@ -29,6 +30,30 @@ def test_llm_caido_falla_cerrado(monkeypatch):
     v = juez.juzgar("cualquier cosa")
     assert v["fallo_cerrado"] is True
     assert v["motivo"] == "juez_local_caido"
+    assert v["tramos"] == []
+
+
+def test_tipo_desconocido_del_llm_falla_cerrado(monkeypatch):
+    # el LLM marco un tramo sensible pero con un tipo fuera de las seis
+    # categorias conocidas (ej: el 7b etiqueta salud como "medicamento
+    # recetado"): no sabemos si es credencial o lenguaje humano, asi que
+    # no se descarta en silencio -> fallo cerrado.
+    _mock(monkeypatch, [],
+          {"tramos": [{"texto": "sertralina 50mg", "tipo": "medicamento recetado"}],
+           "ok": True})
+    v = juez.juzgar("tomo sertralina 50mg")
+    assert v["fallo_cerrado"] is True
+    assert v["motivo"] == "tipo_desconocido"
+    assert v["tramos"] == []
+
+
+def test_tipo_vacio_del_llm_falla_cerrado(monkeypatch):
+    _mock(monkeypatch, [],
+          {"tramos": [{"texto": "sertralina 50mg", "tipo": ""}], "ok": True})
+    v = juez.juzgar("tomo sertralina 50mg")
+    assert v["fallo_cerrado"] is True
+    assert v["motivo"] == "tipo_desconocido"
+    assert v["tramos"] == []
 
 
 def test_lenguaje_humano_se_redacta_no_falla_cerrado(monkeypatch):
