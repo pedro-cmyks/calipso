@@ -27,3 +27,21 @@ def preparar_envio(texto: str, mapa: MapaMarcadores) -> dict:
     tapados = [{"marcador": mapa.marcador_para(t["texto"], t["tipo"]),
                 "tipo": t["tipo"]} for t in tramos]
     return {"accion": "nube", "texto": tapado, "tapados": tapados, "motivo": ""}
+
+
+def ruteo_para_nube(dec: dict, route: str, force_route) -> dict:
+    """Traduce la decision del juez (`dec`, de `preparar_envio`) al ruteo
+    concreto del turno. Pura: sin WebSocket, sin efectos de lado, testeable
+    a mano. Devuelve {"route": str, "nube_local": bool, "mensaje": str|None}:
+
+    - `dec["accion"] == "local"` (fallo cerrado): el turno se queda local Y
+      hay que saltear la orquestacion (`nube_local=True` es esa senal).
+    - `dec["accion"] == "nube"`: local es la ruta por defecto, asi que si la
+      ruta decidida es local y Pedro no forzo otra (`/api`/`/claude`/`/codex`),
+      `/nube` la sube a la nube gratis (subscription). Si Pedro ya forzo una
+      ruta, se respeta esa -- incluido `/local`, que gana aunque el juez diga
+      nube (gesto contradictorio de Pedro, pero explicito)."""
+    if dec["accion"] == "local":
+        return {"route": "local", "nube_local": True, "mensaje": None}
+    route_final = "subscription" if (route == "local" and not force_route) else route
+    return {"route": route_final, "nube_local": False, "mensaje": dec["texto"]}

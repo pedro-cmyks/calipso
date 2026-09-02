@@ -74,6 +74,8 @@ from calipso import inbox as _inbox  # noqa: E402
 from calipso import jobs  # noqa: E402
 from calipso import librarian  # noqa: E402
 from calipso import orchestrator  # noqa: E402
+from calipso.privacidad import conversacion, redaccion  # noqa: E402
+from calipso.privacidad import nube as privacidad_nube  # noqa: E402
 try:
     from calipso import resource_dispatcher as _rd  # noqa: E402
 except Exception:
@@ -2442,6 +2444,58 @@ async def ws_chat(ws: WebSocket) -> None:
                                                          departamento)
             route = verdict["route"]
             model = verdict.get("model")
+
+            # compuerta de privacidad: SOLO corre con el gesto explicito
+            # `/nube`. Sin el, el chat se comporta exactamente como antes de
+            # esta seccion -- `nube_local` arranca en False y `mensaje_saliente`
+            # / `chat_id_nube` valen lo mismo que `chat_msg` / `chat_id` de
+            # siempre, asi que ningun sitio de envio de abajo cambia de
+            # comportamiento si Pedro no pidio la nube.
+            nube_local = False
+            mapa = None
+            mensaje_saliente = chat_msg
+            chat_id_nube = chat_id
+            if directives.get("nube"):
+                mapa = conversacion.mapa_para(chat_id)
+                # el juez es una llamada bloqueante a Ollama: en un hilo,
+                # como el resto de las llamadas al modelo local del turno.
+                dec = await asyncio.to_thread(
+                    privacidad_nube.preparar_envio, chat_msg, mapa)
+                r = privacidad_nube.ruteo_para_nube(
+                    dec, route, directives.get("force_route"))
+                route = r["route"]
+                verdict["route"] = r["route"]
+                nube_local = r["nube_local"]
+                if nube_local:
+                    # fallo cerrado: una credencial (o un juez que no puede
+                    # categorizar con seguridad) nunca sale, ni tapada. El
+                    # modelo tambien se resetea a uno local de verdad -- el
+                    # veredicto original pudo haber elegido un modelo de
+                    # suscripcion/api que Ollama no tiene.
+                    model = _route_model_name("local")
+                    await ws.send_json({"type": "privacidad", "action": "local",
+                                        "motivo": dec["motivo"]})
+                else:
+                    await ws.send_json({"type": "privacidad", "action": "tapado",
+                                        "tapados": dec["tapados"],
+                                        "texto_tapado": dec["texto"]})
+                    if route != "local":
+                        # va a la nube tapado: sin historial (chat_id None)
+                        # para no filtrar un turno privado anterior de la
+                        # misma conversacion. Si Pedro forzo /local a la vez
+                        # que /nube, route se queda "local" (arriba) y esta
+                        # rama no corre: al modelo local le llega el texto
+                        # real, no marcadores que nadie va a reponer.
+                        mensaje_saliente = r["mensaje"]
+                        chat_id_nube = None
+                        if route == "subscription" and not verdict.get("client"):
+                            # la ruta local (la que /nube subio) no trae
+                            # cliente de suscripcion -- los modelos locales
+                            # no tienen uno. Resolver antes de llamar.
+                            verdict["client"] = (
+                                _best_subscription_client(None) or "claude")
+                            model = _route_model_name("subscription", verdict["client"])
+
             note = "; ".join(f"{r['persona']}={r['score']}" for r in ranked[:3]) or None
             await ws.send_json({"type": "meta", "route": verdict["route"],
                                 "used": route, "model": model,
@@ -2514,7 +2568,7 @@ async def ws_chat(ws: WebSocket) -> None:
             full = ""
             agent_team: dict | None = None
             try:
-                if _should_orchestrate(features, directives, chat_msg):
+                if _should_orchestrate(features, directives, chat_msg) and not nube_local:
                     runtime = _harness_context(
                         verdict, "orchestrator", model,
                         f"equipo dinamico sobre ruta base {route}")
@@ -2526,7 +2580,7 @@ async def ws_chat(ws: WebSocket) -> None:
                     if web_material and (web_material["results"] or web_material["pages"]):
                         system += "\n\n" + calipso_web.context_block(web_material)
                     full, agent_team, queued = await _run_dynamic_team(
-                        ws, inbox, chat_msg, features, system, verdict,
+                        ws, inbox, mensaje_saliente, features, system, verdict,
                         approval_required=bool(directives.get("force_team")),
                         departamento=departamento,
                         allow_paid=(directives.get("force_route") == "api"))
@@ -2534,19 +2588,23 @@ async def ws_chat(ws: WebSocket) -> None:
                         pending = queued
                     used_route = "orchestrator"
                     usage["completion_tokens"] = len(full.split())
+                    if mapa is not None:
+                        full = redaccion.reponer(full, mapa)
                     full = await emisor.chunk(full)
                 elif route == "subscription":
                     full, queued = await _run_subscription_text_live(
-                        ws, inbox, verdict["client"], system, chat_msg, model,
+                        ws, inbox, verdict["client"], system, mensaje_saliente, model,
                         label=f"{verdict.get('persona') or verdict['client']} via {verdict['client']}",
-                        chat_id=chat_id)
+                        chat_id=chat_id_nube)
                     if queued:
                         pending = queued
                     usage["completion_tokens"] = len(full.split())
+                    if mapa is not None:
+                        full = redaccion.reponer(full, mapa)
                     full = await emisor.chunk(full)
                 else:
-                    gen, model = _chunks_for(route, system, chat_msg, usage, model,
-                                             verdict.get("effort"), chat_id=chat_id)
+                    gen, model = _chunks_for(route, system, mensaje_saliente, usage, model,
+                                             verdict.get("effort"), chat_id=chat_id_nube)
                     while True:
                         if not inbox.empty():  # steering: barge-in mientras responde
                             steer = inbox.get_nowait()
@@ -2592,12 +2650,14 @@ async def ws_chat(ws: WebSocket) -> None:
                                 if bloque_dep:
                                     system += "\n\n" + bloque_dep
                                 full, queued = await _run_subscription_text_live(
-                                    ws, inbox, alternate, system, chat_msg, None,
+                                    ws, inbox, alternate, system, mensaje_saliente, None,
                                     label=f"fallback via {alternate}",
-                                    chat_id=chat_id)
+                                    chat_id=chat_id_nube)
                                 if queued:
                                     pending = queued
                                 usage["completion_tokens"] = len(full.split())
+                                if mapa is not None:
+                                    full = redaccion.reponer(full, mapa)
                                 full = await emisor.chunk(full)
                                 used_route = "subscription"
                                 route = "subscription"
