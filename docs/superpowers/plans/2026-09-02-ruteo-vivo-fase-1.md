@@ -58,6 +58,7 @@ Nueve hechos, cada uno leido del codigo esta sesion:
 |---|---|
 | `calipso/server.py` | `_chunks_for` local (T1), `local_up` (T2), `_decide` API (T3), `_should_orchestrate` (T4), `_cobrar_turno` (T5) |
 | `dispatch.py` | los comentarios falsos del CLI muerto (T6) |
+| `calipso/orchestrator.py` | `pick_model`/`build_team`: la API paga no entra al equipo sin gesto (T7) |
 | `test_plantel_server.py` (o el archivo de tests del server que corresponda) | los tests de cada tarea |
 
 ---
@@ -516,6 +517,148 @@ git commit -m "docs(dispatch): el CLI muerto deja de prometer privacidad que no 
 
 ---
 
+### Task 7: El equipo dinamico no paga API sin gesto
+
+**Files:**
+- Modify: `calipso/orchestrator.py`, `pick_model` (`:73`) y `build_team` (`:107`)
+- Modify: `calipso/server.py`, `_run_dynamic_team` (`:1650`) y su llamador (`~:2515`)
+- Test: `test_orchestrator.py`
+
+**Por que entra en la Fase 1 (hueco del spec, verificado en el codigo):**
+La seccion 5 del spec acota "no escalar a API paga en silencio" a `_decide`, y
+la Task 3 lo cerro ahi. Pero hay una SEGUNDA puerta: el equipo dinamico.
+`_should_orchestrate` dispara solo para un prompt no-privado code/complexity>=3
+(sin `/plan`; `approval_required = bool(force_team)`, o sea False sin gesto, o sea
+SILENCIOSO). `_run_dynamic_team` -> `orchestrator.build_team` -> `pick_model`
+puntua por `strengths - 0.1*cost` sobre `load_backends()`, **sin filtrar
+`route == "api"` y sin mirar gesto**. Con las suscripciones caidas y
+`ANTHROPIC_API_KEY` presente, un modelo apex de API gana la comparacion y
+`_run_backend_text` lo ejecuta: gasta plata sin gesto de Pedro. Eso viola la
+invariante de la linea 276 del spec ("Ninguna ruta a API paga se toma sin gesto
+explicito de Pedro"), que manda sobre el argumento acotado de la seccion 5.
+El arreglo es simetrico al de la Task 3: la API paga se cae salvo gesto
+explicito (`force_route == "api"`), tambien en la orquestacion.
+
+**Interfaces:**
+- Consumes: `directives` en el llamador de `_run_dynamic_team` (ya en scope; la
+  llamada ya usa `directives.get("force_team")`).
+- Produces: `pick_model(..., allow_paid=False)` no devuelve candidatos
+  `route == "api"` salvo `allow_paid=True`. `build_team(..., allow_paid=False)` y
+  `_run_dynamic_team(..., allow_paid=False)` lo propagan. El llamador pasa
+  `allow_paid=(directives.get("force_route") == "api")`.
+
+- [ ] **Step 1: Escribir el test que falla**
+
+Abri `test_orchestrator.py` y usa su fixture de backends (`load_backends` /
+`available`). El test fija que un backend `route=="api"` NO se elige salvo
+`allow_paid=True`. Adapta los nombres de modelo a los que el fixture ya expone;
+lo que fija es la regla, no un modelo concreto:
+
+```python
+def test_pick_model_no_elige_api_sin_allow_paid(monkeypatch):
+    """La API paga no entra al equipo dinamico salvo gesto explicito.
+    Simetrico al filtro de _decide (Task 3): sin allow_paid, route==api
+    se cae; con allow_paid, puede ganar."""
+    # backends: un apex de API y un local vivo, ambos disponibles
+    available = {"api:claude-fable-5": True, "local:qwen2.5:7b": True}
+    # sin permiso: nunca devuelve el api, aunque puntue mas alto
+    picked = orchestrator.pick_model("apex", "code", available, allow_paid=False)
+    assert picked is None or picked[1].get("route") != "api"
+    # con permiso: el api vuelve a ser elegible
+    picked2 = orchestrator.pick_model("apex", "code", available, allow_paid=True)
+    assert picked2 is not None
+    # (si el fixture real expone otros keys, adaptalos; la asercion es la regla)
+```
+
+Si `test_orchestrator.py` ya tiene un helper para poblar backends, usalo en vez
+de un dict a mano. Verifica los keys reales con
+`.venv/bin/python -c "import json,calipso.capabilities as c; print(list(c.load_backends('.').items()))"`
+(fuera de pytest esto NO importa el server, solo lee el catalogo -- es seguro).
+
+- [ ] **Step 2: Correr el test para verificar que falla**
+
+Run: `.venv/bin/python -m pytest test_orchestrator.py -q -k allow_paid`
+Expected: FAIL (hoy el api se elige sin permiso)
+
+- [ ] **Step 3: El filtro en `pick_model`**
+
+Firma nueva (agrega `allow_paid` al final, con default False para no romper a los
+otros llamadores -- `resource_dispatcher.resource_aware_pick_model` y los tests):
+
+```python
+def pick_model(tier: str, task_type: str, available: dict,
+               project_root: str | None = None, allow_paid: bool = False):
+```
+
+Justo despues de construir `cands` (la linea `cands = [(k, m) for k, m in backends.items() if available.get(k)]`), antes del `if not cands`:
+
+```python
+    if not allow_paid:
+        # La API paga no entra al equipo sin gesto explicito de Pedro
+        # (misma regla que el filtro de _decide). Si esto deja el pool
+        # vacio, pick_model devuelve None y el agente se salta -- fallo
+        # cerrado honesto, no un gasto silencioso.
+        cands = [(k, m) for k, m in cands if m.get("route") != "api"]
+```
+
+- [ ] **Step 4: Propagar `allow_paid` por `build_team`**
+
+Firma: agrega `allow_paid: bool = False`:
+
+```python
+def build_team(plan_obj: dict, available: dict, project_root: str | None = None,
+               session: dict | None = None, allow_paid: bool = False) -> dict:
+```
+
+Y en la llamada a `pick_model` dentro del loop:
+
+```python
+        picked = pick_model(a["tier"], a["type"], available, project_root,
+                            allow_paid=allow_paid)
+```
+
+- [ ] **Step 5: Propagar por `_run_dynamic_team` y el llamador**
+
+En `calipso/server.py`, `_run_dynamic_team` (`:1650`): agrega `allow_paid: bool = False`
+a la firma, y pasalo a las DOS llamadas a `orchestrator.build_team` (`:1656` y `:1695`):
+
+```python
+    team = orchestrator.build_team(
+        plan_obj, _backend_availability(), project_root=str(ROOT),
+        session=sessions.active(), allow_paid=allow_paid)
+```
+
+En el llamador (busca `await _run_dynamic_team(` alrededor de `:2515`), agrega el
+kwarg -- `directives` ya esta en scope ahi (la llamada ya usa
+`directives.get("force_team")`):
+
+```python
+                    full, agent_team, queued = await _run_dynamic_team(
+                        ws, inbox, chat_msg, features, system, verdict,
+                        approval_required=bool(directives.get("force_team")),
+                        departamento=departamento,
+                        allow_paid=(directives.get("force_route") == "api"))
+```
+
+VERIFICA que `directives` tenga `force_route` (parse_directives lo setea con
+`/api`, igual que en la Task 3). Si el nombre real de la clave difiere, usa el
+que `_decide` consulta para `force_route` -- el objetivo es: API paga en el
+equipo SOLO cuando Pedro la forzo.
+
+- [ ] **Step 6: Correr los tests**
+
+Run: `.venv/bin/python -m pytest test_orchestrator.py test_plantel_server.py -q`
+Expected: PASS (y ningun test previo de orchestrator roto por el default)
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add calipso/orchestrator.py calipso/server.py test_orchestrator.py
+git commit -m "fix(ruteo): el equipo dinamico no paga API sin gesto de Pedro"
+```
+
+---
+
 ## Lo que esta Fase NO hace
 
 - **El juez de privacidad y la redaccion** (Fase 2 del spec, secciones 8-10). Este plan cierra la fuga; la Fase 2 le agrega a un prompt privado la opcion de recibir ayuda de la nube con los datos tapados. No arranca hasta que la Fase 1 aterrice y hasta medir que un modelo local sabe marcar datos sensibles.
@@ -525,7 +668,7 @@ git commit -m "docs(dispatch): el CLI muerto deja de prometer privacidad que no 
 
 ## Nota de verificacion final
 
-Al terminar las seis tareas, la suite entera tiene que quedar verde, y un
+Al terminar las siete tareas, la suite entera tiene que quedar verde, y un
 chequeo que ningun test unitario hace: con el servidor levantado y Ollama vivo,
 un mensaje que dispare la regex de privacidad tiene que contestar **desde
 Ollama** -- verificado espiando el subproceso o el trafico, no la pantalla -- y
