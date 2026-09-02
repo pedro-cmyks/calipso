@@ -60,6 +60,15 @@ def main() -> int:
     d5 = cap.parse_directives("hola que tal")
     check("sin /nube -> nube False", d5["nube"] is False)
 
+    d6 = cap.parse_directives("/redacta respondele que si a este mensaje")
+    check("parse /redacta -> redacta True", d6["redacta"] is True)
+    check("parse /redacta limpia el slash", "/redacta" not in d6["clean"])
+    check("parse /redacta conserva el resto", "respondele" in d6["clean"])
+    check("sin /redacta -> redacta False", cap.parse_directives("hola")["redacta"] is False)
+    d7 = cap.parse_directives("/otra")
+    check("parse /otra -> otra True", d7["otra"] is True)
+    check("sin /otra -> otra False", cap.parse_directives("hola")["otra"] is False)
+
     # discovery
     reg = dict(cap.REGISTRY)
     key = cap.discover("api", "gpt-5.5", tier="frontier", registry=reg)
