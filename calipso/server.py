@@ -1532,6 +1532,13 @@ def _decide(user_msg: str,
 
 def _should_orchestrate(features: dict, directives: dict, message: str) -> bool:
     """Activa equipo dinamico solo cuando suma valor real."""
+    if features.get("private"):
+        # un prompt privado tiene un solo camino -- local o fallo cerrado --
+        # y la orquestacion lo repartiria a backends que no son private_ok.
+        # Va ANTES que `force_team`: un `/team` explicito sobre un prompt
+        # privado tambien tiene que respetar la privacidad. El filtro no
+        # puede tener una puerta de atras.
+        return False
     if directives.get("force_team"):
         return True  # /plan o /team: planning mode explícito
     if directives.get("effort") == capabilities.EFFORT["fast"]:

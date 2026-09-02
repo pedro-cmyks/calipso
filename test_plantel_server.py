@@ -809,3 +809,15 @@ def test_la_api_paga_si_gana_cuando_pedro_la_fuerza(monkeypatch):
     # con /api la directiva arma force_route == "api"
     verdict, *_ = srv._decide("/api analiza esto")
     assert verdict["route"] == "api"
+
+
+def test_un_prompt_privado_no_dispara_orquestacion():
+    """La orquestacion reparte a backends de suscripcion/API sin pasar por el
+    filtro `private_ok`. Un prompt privado no puede tomar ese camino."""
+    features = {"type": "code", "complexity": 4, "private": True}
+    assert srv._should_orchestrate(features, {}, "un mensaje largo y complejo "
+                                    "con muchas palabras para pasar el umbral") is False
+    # sin privado, el mismo prompt SI orquesta (no romper el caso normal)
+    features2 = {"type": "code", "complexity": 4, "private": False}
+    assert srv._should_orchestrate(features2, {}, "un mensaje largo y complejo "
+                                   "con muchas palabras para pasar el umbral") is True
