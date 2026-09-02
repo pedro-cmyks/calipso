@@ -114,34 +114,35 @@ def test_sin_departamento_no_se_toca_el_libro(economia):
     assert saldo(economia, "dep:atlas") == antes
 
 
-def test_la_ruta_local_consume_suscripcion_igual(economia):
-    # no hay Ollama: `_chunks_for` resuelve la ruta local con `_local_via_sub`,
-    # que corre `claude -p` — una unidad de suscripcion, no un modelo gratis.
+def test_un_turno_local_no_cobra_suscripcion_claude(economia):
+    """La local dejo de ser 'una suscripcion disfrazada': ahora es Ollama, y
+    Ollama no cobra. Cobrarla como claude debitaba una unidad de capacidad
+    que nunca se uso."""
     antes = saldo(economia, "dep:atlas")
-    # devuelve cero milimonedas, y ahora no sale NADA del saldo: la
-    # suscripcion es costo hundido (decision de Pedro del 2026-08-31), asi
-    # que la unidad se descuenta del pool de cristal en vez de comprarsela
-    # a direccion. Lo que se cobra se cuenta igual, en unidades.
-    assert srv._cobrar_turno("dep:atlas", "local", None, "qwen2.5:7b",
-                             {"prompt_tokens": 9_000_000}) == 0
+    cobrado = srv._cobrar_turno("dep:atlas", "local", "claude", "qwen2.5:7b",
+                                {"prompt_tokens": 9_000_000})
+    assert cobrado == 0
     p = pag.Pagador(economia)
     asientos = p.leer_kernel().libro.asientos()
-    assert cap.consumo_fabrica(asientos, "claude_max", [W]) == 1
-    assert saldo(economia, "dep:atlas") == antes
+    assert cap.consumo_fabrica(asientos, "claude_max", [W]) == 0
     assert p.leer_kernel().saldo(t.cuenta_cristal("claude_max", "fabrica"),
-                                 t.Divisa.CRISTAL) == -1
+                                 t.Divisa.CRISTAL) == 0
+    assert saldo(economia, "dep:atlas") == antes
     assert p.pendientes() == []
 
 
-def test_el_fallback_local_le_cobra_al_departamento_en_foco(economia):
+def test_el_fallback_local_tampoco_le_cobra_a_nadie(economia):
     """El fallback local es el camino comun de cualquier falla de ruta, y
-    llega con el `client` de la ruta que fallo. Corre `claude` igual, asi que
-    la unidad que consume es la de `claude`, no la del cliente del verdict."""
+    llega con el `client` de la ruta que fallo. Antes eso importaba porque
+    el fallback corria `claude -p` de verdad y se le cobraba esa unidad a
+    `claude`; ahora corre Ollama (Tarea 1) y ningun `client` de origen hace
+    que se le cobre nada a nadie."""
     srv._cobrar_turno("dep:atlas", "local", "codex", "qwen2.5:7b", {})
     p = pag.Pagador(economia)
     compras = [a for a in p.leer_kernel().libro.asientos()
                if (a.detalle or {}).get("suscripcion")]
-    assert [a.detalle["suscripcion"] for a in compras] == ["claude_max"]
+    assert compras == []
+    assert p.pendientes() == []
 
 
 def test_el_borrador_del_chat_cobra_su_unidad_de_suscripcion(economia,

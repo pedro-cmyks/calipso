@@ -5969,8 +5969,9 @@ def _cobrar_turno(cuenta: str, route: str, client: str | None,
     cargos_pendientes.jsonl y la operacion lo reintenta. Toma el candado del
     libro, asi que se llama SIEMPRE desde un hilo. Devuelve las milimonedas
     cobradas: la de API es la unica que se cobra en monedas; la suscripcion
-    -y la local, que es una suscripcion disfrazada- se cobran en unidades de
-    capacidad, asi que devuelven cero."""
+    se cobra en unidades de capacidad, asi que devuelve cero. La local corre
+    Ollama de verdad -gratis-, no una suscripcion disfrazada: no debita
+    ninguna unidad y tambien devuelve cero, sin tocar el libro."""
     if _EcoPagador is None or _mapa_ficha is None:
         return 0
     if not cuenta or cuenta == _mapa_ficha.CUENTA_PERSONAL:
@@ -5984,15 +5985,15 @@ def _cobrar_turno(cuenta: str, route: str, client: str | None,
             return pagador.cargar_api(ts, semana, cuenta, model or "",
                                       usage.get("prompt_tokens", 0),
                                       usage.get("completion_tokens", 0)) or 0
-        if route in ("subscription", "local"):
-            # `local` no es Ollama: `_chunks_for` la resuelve con
-            # `_local_via_sub`, que corre `claude -p`. Consume una unidad de
-            # suscripcion igual que la ruta de suscripcion, y siempre la de
-            # `claude`: el fallback local llega con el `client` de la ruta que
-            # fallo, que no es el backend que termino contestando.
-            cliente = "claude" if route == "local" else client
+        if route == "subscription":
             pagador.cargar_suscripcion(ts, semana, cuenta,
-                                       _eco_suscripcion(cliente))
+                                       _eco_suscripcion(client))
+        # `route == "local"` no cae en ninguna rama de arriba y a proposito:
+        # ahora corre Ollama de verdad (Tarea 1), y Ollama no cobra. Antes
+        # esta rama la trataba como una suscripcion de `claude` disfrazada
+        # -el fallback local corria `claude -p`- y le debitaba una unidad de
+        # capacidad que nunca se uso. El `return 0` de abajo alcanza: no hay
+        # nada que cobrarle al libro de suscripcion.
     except Exception as exc:
         # el cobro es contabilidad, no la conversacion: que falle no puede
         # dejar a Pedro sin respuesta
