@@ -38,3 +38,12 @@ def test_preparar_borrador_junta_ejemplos_y_pedido():
     system, user = preparar_borrador("decile que si", data)
     assert "che todo piola por aca" in system
     assert user == "decile que si"
+
+
+def test_preparar_borrador_prioriza_los_guardados():
+    data = {"active": None, "chats": {"c0": {"messages": [
+        {"role": "user", "text": "orden de chat cualquiera larga", "ts": "1"}]}}}
+    guardados = [{"texto": "Hola Ana, quedamos el jueves a las 10", "ts": "2026-09-03T10:00:00"}]
+    system, user = preparar_borrador("decile a luis que si", data, guardados)
+    assert "Hola Ana, quedamos el jueves a las 10" in system   # el /mia entro
+    assert user == "decile a luis que si"

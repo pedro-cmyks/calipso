@@ -49,8 +49,11 @@ def construir_prompt(pedido: str, ejemplos: list[str]) -> tuple[str, str]:
     return system, pedido
 
 
-def preparar_borrador(pedido: str, chats_data: dict) -> tuple[str, str]:
-    """Junta los ejemplos de voz de Pedro y arma el (system, user) para el
-    borrador. La cara testeable de lo que hace el chat en /redacta."""
-    ejemplos = voz.ejemplos_de_voz(chats_data)
+def preparar_borrador(pedido: str, chats_data: dict,
+                      guardados: list = ()) -> tuple[str, str]:
+    """Junta los ejemplos de voz de Pedro -- los que trajo con /mia
+    (`guardados`) primero, luego sus mensajes de chat -- y arma el (system,
+    user) para el borrador. La cara testeable de lo que hace el chat en
+    /redacta."""
+    ejemplos = voz.ejemplos_de_voz(chats_data, guardados)
     return construir_prompt(pedido, ejemplos)

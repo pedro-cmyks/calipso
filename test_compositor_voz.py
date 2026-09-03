@@ -56,3 +56,36 @@ def test_recencia_real_entre_chats():
         "viejo": {"messages": [{"role": "user", "text": "mensaje viejo largo de verdad", "ts": "2026-01-01T10:00:00"}]}}}
     ej = ejemplos_de_voz(data)
     assert ej[0] == "mensaje nuevo largo de verdad"
+
+
+def test_los_guardados_van_primero():
+    # con /mia guardados, esos ejemplos van ANTES que los mensajes de chat.
+    data = _chats([("user", "un mensaje de chat largo cualquiera")])
+    guardados = [{"texto": "Hola Ana, confirmo la reunion del jueves", "ts": "2026-09-03T10:00:00"}]
+    ej = ejemplos_de_voz(data, guardados)
+    assert ej[0] == "Hola Ana, confirmo la reunion del jueves"
+    assert "un mensaje de chat largo cualquiera" in ej   # rellena con el chat
+
+
+def test_guardados_llenos_desplazan_al_chat():
+    # con n o mas guardados, los mensajes de chat ya no entran.
+    data = _chats([("user", "orden vieja de chat que no deberia entrar")])
+    guardados = [{"texto": f"ejemplo real de voz numero {i} escrito por pedro", "ts": f"2026-09-03T10:0{i}:00"}
+                 for i in range(3)]
+    ej = ejemplos_de_voz(data, guardados, n=3)
+    assert len(ej) == 3
+    assert "orden vieja de chat que no deberia entrar" not in ej
+
+
+def test_guardados_ordenados_por_ts():
+    data = _chats()
+    guardados = [
+        {"texto": "el mas viejo de los guardados largo", "ts": "2026-01-01T10:00:00"},
+        {"texto": "el mas nuevo de los guardados largo", "ts": "2026-09-03T10:00:00"}]
+    ej = ejemplos_de_voz(data, guardados)
+    assert ej[0] == "el mas nuevo de los guardados largo"
+
+
+def test_sin_guardados_identico_a_hoy():
+    data = _chats([("user", "che como andas todo bien por aca")])
+    assert ejemplos_de_voz(data) == ejemplos_de_voz(data, [])

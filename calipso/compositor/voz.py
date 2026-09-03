@@ -20,25 +20,37 @@ def _es_util(texto: str) -> bool:
     return True
 
 
-def ejemplos_de_voz(chats_data: dict, n: int = 6) -> list[str]:
-    """Hasta `n` mensajes reales de Pedro (role=="user") como ejemplos de su
-    voz: los mas recientes primero por su `ts` real (no por posicion en el
-    dict de chats), sin duplicados, sin triviales ni ordenes."""
-    # recorrer todos los chats juntando (ts, texto) de los mensajes de Pedro.
-    # un mensaje sin ts (dato viejo) usa "" y por eso queda al final al
-    # ordenar descendente.
+def ejemplos_de_voz(chats_data: dict, guardados: list = (), n: int = 6) -> list[str]:
+    """Hasta `n` ejemplos de la voz de Pedro. Los `guardados` (lo que trajo
+    con /mia -- su voz de verdad) van PRIMERO, mas recientes por `ts`; el
+    resto se rellena con sus mensajes de chat (role=="user", recientes, sin
+    triviales ni ordenes). Sin duplicados. Sin `guardados` se comporta igual
+    que antes: solo mensajes de chat."""
+    ej: list[str] = []
+    vistos: set[str] = set()
+
+    # 1) los /mia primero, mas recientes por ts (sort estable: los empates
+    #    mantienen su orden de aparicion).
+    priori = sorted(
+        (g for g in (guardados or []) if _es_util(g.get("texto", ""))),
+        key=lambda g: g.get("ts", ""), reverse=True)
+    for g in priori:
+        t = g["texto"].strip()
+        if t not in vistos:
+            vistos.add(t)
+            ej.append(t)
+            if len(ej) >= n:
+                return ej
+
+    # 2) rellenar con los mensajes reales de Pedro de los chats, por recencia
+    #    real (ts descendente). un mensaje sin ts (dato viejo) usa "" y queda
+    #    al final.
     mensajes: list[tuple[str, str]] = []
     for chat in (chats_data or {}).get("chats", {}).values():
         for m in chat.get("messages", []):
             if m.get("role") == "user" and _es_util(m.get("text", "")):
                 mensajes.append((m.get("ts", ""), m["text"].strip()))
-    # orden por recencia real (ts descendente); sort es estable, asi que los
-    # empates (por ejemplo varios sin ts) mantienen su orden de aparicion.
     mensajes.sort(key=lambda par: par[0], reverse=True)
-    # sin duplicados -- se queda con el primero, que es el mas reciente --
-    # y tope n.
-    vistos: set[str] = set()
-    ej: list[str] = []
     for _, texto in mensajes:
         if texto not in vistos:
             vistos.add(texto)
