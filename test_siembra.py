@@ -95,3 +95,21 @@ def test_finanzas_no_lleva_rutina_ni_perillas_de_fabrica(home):
     siembra.sembrar_guiado(str(home), _config(), TS, W, ejecutar=True)
     cuentas = {r_.get("cuenta") for r_ in routines.load() if r_.get("kind") == "departamento"}
     assert "personal:finanzas" not in cuentas and "dep:finanzas" not in cuentas
+
+
+def test_config_repetida_no_deja_padron_a_medias(home):
+    # una config con un nombre repetido (el body guiado no deduplica) tiene
+    # que levantar ANTES de escribir el padron: si escribiera un
+    # departamentos.json a medias, la re-entrancia quedaria trabada para
+    # siempre. Validar-todo-antes-de-escribir (como api_eco_sembrar) lo cierra.
+    from calipso import siembra
+    from calipso.economia import departamentos as deps
+    cfg = _config()
+    cfg["departamentos"].append({"nombre": "taller", "zona": "fabrica"})
+    with pytest.raises(deps.ErrorDepartamento):
+        siembra.sembrar_guiado(str(home), cfg, TS, W, ejecutar=True)
+    # NO quedo un departamentos.json a medias
+    assert not (home / "economia" / "departamentos.json").exists()
+    # y la re-entrancia sigue viva: con una config valida, siembra bien
+    r = siembra.sembrar_guiado(str(home), _config(), TS, W, ejecutar=True)
+    assert r["ok"] is True and r["estado"]["sembrada"] is True

@@ -65,12 +65,27 @@ def sembrar_guiado(base, config: dict, ts: str, semana: str,
         # PASO 2 -- el padron (irreversible). Reusa el camino de `sembrar`.
         if not (p.ruta_registro.exists() and p.ruta_libro.exists()
                 and p.ruta_sus.exists()):
-            p.eco.mkdir(parents=True, exist_ok=True)
-            registro = deps.Registro(p.ruta_registro)
-            for d in config["departamentos"]:
-                registro.alta(deps.Departamento(**d))
+            # Construir y VALIDAR TODO antes de escribir una sola linea, igual
+            # que api_eco_sembrar: `Registro.alta` graba departamentos.json en
+            # cada llamada, asi que si un depto POSTERIOR al primero falla
+            # (zona invalida, nombre repetido, techo de pre-seed en un
+            # personal) quedaria un departamentos.json a medias -- y como la
+            # guarda de arriba pide los TRES archivos, una segunda corrida
+            # re-entra al padron, recarga el depto a medias y `alta` levanta
+            # "repetido": la re-entrancia se traba para siempre. Validar antes
+            # de escribir cierra ese hueco.
+            deps_objs = [deps.Departamento(**d) for d in config["departamentos"]]
+            nombres = [d.nombre for d in deps_objs]
+            if len(nombres) != len(set(nombres)):
+                raise deps.ErrorDepartamento(
+                    f"departamentos repetidos: {nombres}")
             sus = {n: cap.Suscripcion(nombre=n, **s)
                    for n, s in config["suscripciones"].items()}
+            # recien ahora, con todo validado, se escribe
+            p.eco.mkdir(parents=True, exist_ok=True)
+            registro = deps.Registro(p.ruta_registro)
+            for d in deps_objs:
+                registro.alta(d)
             import dataclasses
             p.ruta_sus.write_text(
                 json.dumps({n: dataclasses.asdict(s) for n, s in sus.items()},
