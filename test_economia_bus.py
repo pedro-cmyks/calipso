@@ -1081,3 +1081,40 @@ def test_el_vocabulario_del_libro_y_el_del_plantel_no_se_separan():
     from calipso.plantel import ficha as _ficha
     assert set(_ficha.PROMESAS) == bus_mod._PROMESAS
     assert set(_ficha.PLAZOS) == bus_mod._PLAZOS
+
+
+def test_vencida_true_cuando_paso_el_plazo():
+    from calipso.economia import bus as bus_mod
+    ops = ["2026-W30", "2026-W31", "2026-W32"]
+    datos = {"tipo": "trabajo", "semana_financiada": "2026-W30",
+             "criterio": {"gasto_max_mm": 100, "semanas_max": 1},
+             "forma": {"sobre": "x", "clave": "x", "promete": "medir", "tarda": "corto"}}
+    # W31 = 1 semana despues, semanas_max=1 -> vencida
+    assert bus_mod.vencida(datos, ops, "2026-W31") is True
+
+
+def test_vencida_false_si_todavia_no_paso():
+    from calipso.economia import bus as bus_mod
+    ops = ["2026-W30", "2026-W31"]
+    datos = {"tipo": "trabajo", "semana_financiada": "2026-W30",
+             "criterio": {"gasto_max_mm": 100, "semanas_max": 4},
+             "forma": {"sobre": "x", "clave": "x", "promete": "medir", "tarda": "medio"}}
+    assert bus_mod.vencida(datos, ops, "2026-W31") is False
+
+
+def test_vencida_false_para_preseed_sin_forma():
+    from calipso.economia import bus as bus_mod
+    ops = ["2026-W30", "2026-W31"]
+    datos = {"tipo": "preseed", "semana_financiada": "2026-W30",
+             "criterio": {"gasto_max_mm": 100}}   # sin semanas_max, sin forma
+    assert bus_mod.vencida(datos, ops, "2026-W31") is False
+
+
+def test_vencida_false_si_nunca_se_financio():
+    from calipso.economia import bus as bus_mod
+    ops = ["2026-W30", "2026-W31"]
+    datos = {"tipo": "trabajo",
+             "criterio": {"gasto_max_mm": 100, "semanas_max": 1},
+             "forma": {"sobre": "x", "clave": "x", "promete": "medir", "tarda": "corto"}}
+    # sin semana_financiada -> no fue elegida en la mesa -> no se juzga
+    assert bus_mod.vencida(datos, ops, "2026-W31") is False

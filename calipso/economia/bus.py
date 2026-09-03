@@ -728,6 +728,29 @@ def semanas_transcurridas(semanas_ops: list[str], desde: str,
         raise ErrorBus(f"semana no operativa: {desde!r} o {hasta!r}") from None
 
 
+def vencida(datos: dict, semanas_ops: list[str], semana: str) -> bool:
+    """True si `datos` es un TRABAJO con promesa cuyo plazo ya llego -- lo
+    que lo hace juzgable en el PvP. NO mira el estado actual: pregunta por
+    `semana_financiada` (que `datos` conserva aun liquidado), asi juzgar es
+    independiente de la liquidacion. El plazo es el `semanas_max` que el
+    propio trabajo lleva en su `criterio` (== ficha.SEMANAS_MAX[tarda] al
+    darse de alta), el mismo numero que usa `evaluar_y_liquidar_muertos`.
+    Un preseed no entra: no tiene `forma` ni `semanas_max`."""
+    if datos.get("tipo") != "trabajo":
+        return False
+    if not datos.get("forma"):
+        return False
+    fin = datos.get("semana_financiada")
+    smax = (datos.get("criterio") or {}).get("semanas_max")
+    if fin is None or smax is None:
+        return False
+    try:
+        return semanas_transcurridas(semanas_ops, fin, semana) >= smax
+    except ErrorBus:
+        # una semana fuera del calendario operativo no es juzgable todavia
+        return False
+
+
 def evaluar_y_liquidar_muertos(mercado: Mercado, bus: Bus, ts: str,
                                semana: str) -> list[str]:
     asientos = mercado.k.libro.asientos()
