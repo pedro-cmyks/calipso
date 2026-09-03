@@ -3873,6 +3873,7 @@ try:
                                           _ECO_SUS_POR_CLIENTE,
                                           _ERRORES_ECONOMICOS as
                                           _eco_errores_economicos)
+    from calipso import siembra as _siembra  # noqa: E402
 except Exception:  # economia no disponible: los endpoints responden inactivo
     _EcoPagador = None
     _eco_suscripcion = None
@@ -3884,6 +3885,7 @@ except Exception:  # economia no disponible: los endpoints responden inactivo
     _eco_deps = None
     _eco_tipos = None
     _eco_errores_economicos = None
+    _siembra = None
 
 _ECO_BASE = pathlib.Path(os.environ.get(
     "CALIPSO_HOME", os.path.expanduser("~/.calipso")))
@@ -4153,6 +4155,39 @@ class EcoSembrarSuscripcionBody(BaseModel):
 class EcoSembrarBody(BaseModel):
     departamentos: list[EcoSembrarDepartamentoBody]
     suscripciones: dict[str, EcoSembrarSuscripcionBody] = {}
+
+
+class EcoSembrarPerillasBody(BaseModel):
+    """Las perillas de fabrica que `sembrar_guiado` aplica a cada depto de
+    zona fabrica (paso 5). Mismos rangos que `EcoSembrarDepartamentoBody` y
+    `PerillasDepartamentoBody`: la puerta de rango vale aca tambien."""
+    model_config = ConfigDict(extra="forbid")
+
+    presupuesto_semanal_mm: int = Field(default=0, ge=0, le=_MAX_MM)
+    techo_preseed_mm: int = Field(default=0, ge=0, le=_MAX_MM)
+    techo_preseed_ciclo_mm: int = Field(default=0, ge=0, le=_MAX_MM)
+    techo_api_ciclo_mm: int = Field(default=0, ge=0, le=_MAX_MM)
+
+    sin_booleanos = field_validator("*", mode="before")(_no_booleano)
+
+
+class EcoSembrarGuiadoBody(BaseModel):
+    """El cuerpo del helper guiado de un solo tiro (`sembrar_guiado`):
+    junta lo que hoy son varias llamadas sueltas (sembrar, abrir semana,
+    acunar tesoro, poner perillas, agregar rutinas, poner modo vivo) en un
+    unico POST con preview/confirmacion -- ver `api_eco_sembrar_guiado`."""
+    model_config = ConfigDict(extra="forbid")
+
+    confirmacion: str = ""
+    departamentos: list[EcoSembrarDepartamentoBody]
+    suscripciones: dict[str, EcoSembrarSuscripcionBody] = {}
+    capital_tesoro_mm: int = Field(ge=0, le=_MAX_MM)
+    cuota_firmable_mpt: int = Field(gt=0, le=_MAX_MM)
+    reserva_personal_mpt: int = Field(default=0, ge=0, le=_MAX_MM)
+    rutina_interval_min: int = Field(default=60, ge=1)
+    perillas_fabrica: EcoSembrarPerillasBody
+
+    sin_booleanos = field_validator("*", mode="before")(_no_booleano)
 
 
 class EcoPersonalMovimientoBody(BaseModel):
@@ -4837,6 +4872,39 @@ def api_eco_sembrar(body: EcoSembrarBody) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     return {"ok": True, "departamentos": nombres,
             "suscripciones": list(suscripciones)}
+
+
+@app.post("/api/economia/sembrar-guiado")
+def api_eco_sembrar_guiado(body: EcoSembrarGuiadoBody) -> dict:
+    """Helper guiado de un solo tiro. Sin `confirmacion` -> PREVIEW (no
+    escribe). Con la frase exacta -> ejecuta los 7 pasos, re-entrante. La
+    siembra es un acto de Pedro; el preview es la red antes del acto
+    irreversible (el padron)."""
+    if _siembra is None:
+        raise HTTPException(status_code=400,
+                            detail="la economia no esta disponible")
+    ts, semana = _eco_ahora()
+    config = {
+        "departamentos": [d.model_dump() for d in body.departamentos],
+        "suscripciones": {n: s.model_dump()
+                          for n, s in body.suscripciones.items()},
+        "capital_tesoro_mm": body.capital_tesoro_mm,
+        "cuota_firmable_mpt": body.cuota_firmable_mpt,
+        "reserva_personal_mpt": body.reserva_personal_mpt,
+        "rutina_interval_min": body.rutina_interval_min,
+        "perillas_fabrica": body.perillas_fabrica.model_dump()}
+    ejecutar = body.confirmacion == _siembra.CONFIRMACION
+    if body.confirmacion and not ejecutar:
+        raise HTTPException(
+            status_code=400,
+            detail=f"para ejecutar, confirmacion debe ser exactamente "
+                   f"'{_siembra.CONFIRMACION}'")
+    try:
+        return _siembra.sembrar_guiado(str(_ECO_BASE), config, ts, semana,
+                                       ejecutar=ejecutar)
+    except (_eco_errores_economicos, _eco_deps.ErrorDepartamento,
+            _eco_cap.ErrorCapacidad, _eco_pt.ErrorPT, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
 @app.post("/api/economia/departamentos/{nombre}/perillas")
