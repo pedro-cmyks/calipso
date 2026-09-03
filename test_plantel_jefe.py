@@ -796,6 +796,48 @@ def test_una_reaccion_de_otra_semana_sigue_pesando(tmp_path, monkeypatch):
     assert "radar de precios" in visto["p"]
 
 
+def test_un_tema_vetado_con_no_mas_no_llega_al_bus(tmp_path, monkeypatch):
+    """El piso determinista del "no mas": si Pedro veto la CLAVE de un tema
+    en este departamento, la propuesta no llega al bus pase lo que pase con
+    el modelo -- ni reencuadrando la promesa (`medir` por `acelerar` aca)
+    la esquiva, porque la identidad sale solo del `sobre`."""
+    monkeypatch.setenv("CALIPSO_HOME", str(tmp_path))
+    reacciones.anotar(
+        "atlas", "no_mas",
+        {"sobre": "el radar de precios",
+         "clave": ficha.normalizar("el radar de precios"),
+         "promete": "medir", "tarda": "corto"},
+        "no mas", "p0")
+    # el modelo del jefe propone el MISMO tema, reencuadrado con otra
+    # promesa: misma clave -> vetada igual.
+    crudo = ("proponer\nsobre: el radar de precios\npromete: acelerar\n"
+             "tarda: corto\nporque: x")
+    ctx, contratos, _ = armar(tmp_path, crudo)
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["actuo"] is False
+    assert "vetast" in (out["freno"] + out["motivo"]).lower()
+    assert contratos == []
+
+
+def test_un_tema_no_vetado_si_llega(tmp_path, monkeypatch):
+    """El otro lado del piso: sin un `no_mas` sobre esa clave (aca hay uno,
+    pero sobre otra), la propuesta llega al bus como siempre."""
+    monkeypatch.setenv("CALIPSO_HOME", str(tmp_path))
+    reacciones.anotar(
+        "atlas", "no_mas",
+        {"sobre": "otro tema", "clave": ficha.normalizar("otro tema"),
+         "promete": "medir", "tarda": "corto"},
+        "no mas", "p0")
+    crudo = ("proponer\nsobre: el radar de precios\npromete: descartar\n"
+             "tarda: corto\nporque: no rindio")
+    ctx, contratos, _ = armar(tmp_path, crudo)
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["accion"] == "proponer" and out["actuo"] is True
+    assert contratos and contratos[0][0] == "proponer"
+
+
 # -- el segundo techo del pre-seed: el acumulado por CICLO -----------------
 
 def test_sin_techo_de_ciclo_el_jefe_no_pide(tmp_path):
