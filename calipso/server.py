@@ -4406,12 +4406,21 @@ def api_inbox() -> dict:
 
 def _anotar_reaccion(p0, id: str, reaccion: str, palabras: str) -> None:
     """Anota la reaccion de Pedro sobre una propuesta. Deriva depto y forma
-    del bus. No mueve plata ni toca el libro; su propio archivo, atomico."""
+    del bus. No mueve plata ni toca el libro; su propio archivo, atomico.
+
+    El bus guarda "departamento" con el prefijo de cuenta ("dep:atlas"),
+    pero la carta de ese departamento vive pelada de prefijo
+    (`leer_carta(cuenta.split(":", 1)[1])`, mas arriba en este archivo) y
+    `reacciones._slug` tiene que caer en el MISMO directorio que
+    `memory._slug` -- si se anota con el prefijo, la reaccion cae en
+    `memoria/departamento/dep-atlas/` y el jefe, que lee con el nombre
+    pelado, nunca la encuentra."""
     bus = _eco_bus.Bus(p0.ruta_bus)
     d = bus.datos(id)
     dep = d.get("departamento", "")
-    if dep:
-        _plantel_reacciones.anotar(dep, reaccion, d.get("forma"),
+    nombre = dep.split(":", 1)[1] if ":" in dep else dep
+    if nombre:
+        _plantel_reacciones.anotar(nombre, reaccion, d.get("forma"),
                                    palabras, id)
 
 
@@ -4454,6 +4463,13 @@ def api_eco_bus_financiar(id: str, body: MesaFinanciarBody) -> dict:
         raise
     except _eco_errores_economicos as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    except _plantel_reacciones.ErrorReacciones as exc:
+        # el financiar YA quedo asentado en el bus (la accion economica
+        # terminal): un registro de reacciones corrupto no lo revierte,
+        # pero tampoco puede quedar mudo -- falla cerrado con 400.
+        raise HTTPException(
+            status_code=400,
+            detail=f"no se pudo registrar la reaccion: {exc}") from None
     return {"ok": True}
 
 
@@ -4490,6 +4506,12 @@ def api_eco_bus_descartar(id: str, body: MesaDescartarBody) -> dict:
         raise
     except _eco_errores_economicos as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    except _plantel_reacciones.ErrorReacciones as exc:
+        # el descarte YA quedo asentado en el bus; el registro corrupto
+        # falla cerrado con 400, no se lo traga en silencio.
+        raise HTTPException(
+            status_code=400,
+            detail=f"no se pudo registrar la reaccion: {exc}") from None
     return {"ok": True}
 
 
@@ -4518,6 +4540,12 @@ def api_eco_bus_no_mas(id: str, body: MesaNoMasBody) -> dict:
         raise
     except _eco_errores_economicos as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    except _plantel_reacciones.ErrorReacciones as exc:
+        # el descarte YA quedo asentado en el bus; el registro corrupto
+        # falla cerrado con 400, no se lo traga en silencio.
+        raise HTTPException(
+            status_code=400,
+            detail=f"no se pudo registrar la reaccion: {exc}") from None
     return {"ok": True}
 
 
