@@ -4016,8 +4016,27 @@ class MesaFinanciarBody(BaseModel):
 
     cuenta: str
     mm: int = Field(gt=0, le=_MAX_MM)
+    # opcional: lo que Pedro dijo al financiar, para el registro de
+    # reacciones (calipso.plantel.reacciones). Sin palabras la propuesta
+    # se financia igual -- no es un requisito, es aprendizaje si esta.
+    palabras: str = ""
 
     sin_booleanos = field_validator("*", mode="before")(_no_booleano)
+
+
+class MesaDescartarBody(BaseModel):
+    """Body opcional de `descartar`: las palabras de Pedro, si las dejo.
+    `extra="forbid"` como el resto de los cuerpos de la mesa."""
+    model_config = ConfigDict(extra="forbid")
+
+    palabras: str = ""
+
+
+class MesaNoMasBody(BaseModel):
+    """Body opcional de `no-mas`, gemelo de `MesaDescartarBody`."""
+    model_config = ConfigDict(extra="forbid")
+
+    palabras: str = ""
 
 
 class EcoSembrarDepartamentoBody(BaseModel):
@@ -4385,6 +4404,17 @@ def api_inbox() -> dict:
             "fallaron": fallaron}
 
 
+def _anotar_reaccion(p0, id: str, reaccion: str, palabras: str) -> None:
+    """Anota la reaccion de Pedro sobre una propuesta. Deriva depto y forma
+    del bus. No mueve plata ni toca el libro; su propio archivo, atomico."""
+    bus = _eco_bus.Bus(p0.ruta_bus)
+    d = bus.datos(id)
+    dep = d.get("departamento", "")
+    if dep:
+        _plantel_reacciones.anotar(dep, reaccion, d.get("forma"),
+                                   palabras, id)
+
+
 @app.post("/api/economia/bus/{id}/financiar")
 def api_eco_bus_financiar(id: str, body: MesaFinanciarBody) -> dict:
     """Pedro dice que si.
@@ -4419,6 +4449,7 @@ def api_eco_bus_financiar(id: str, body: MesaFinanciarBody) -> dict:
                     status_code=400,
                     detail=f"la propuesta {id} ya no esta esperando plata")
             _eco_bus.financiar(m, bus, ts, semana, id, body.cuenta, body.mm)
+        _anotar_reaccion(p0, id, "financio", body.palabras)
     except HTTPException:
         raise
     except _eco_errores_economicos as exc:
@@ -4427,7 +4458,7 @@ def api_eco_bus_financiar(id: str, body: MesaFinanciarBody) -> dict:
 
 
 @app.post("/api/economia/bus/{id}/descartar")
-def api_eco_bus_descartar(id: str) -> dict:
+def api_eco_bus_descartar(id: str, body: MesaDescartarBody) -> dict:
     """Pedro dice que no. Sin esto el jefe se frena al llegar a su techo.
 
     Mismo corte que su gemelo `financiar`, y por la misma razon: `financiar`
@@ -4454,6 +4485,35 @@ def api_eco_bus_descartar(id: str) -> dict:
                     status_code=400,
                     detail=f"la propuesta {id} ya no se puede descartar")
             _eco_bus.descartar(bus, ts, semana, id)
+        _anotar_reaccion(p0, id, "descarto", body.palabras)
+    except HTTPException:
+        raise
+    except _eco_errores_economicos as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"ok": True}
+
+
+@app.post("/api/economia/bus/{id}/no-mas")
+def api_eco_bus_no_mas(id: str, body: MesaNoMasBody) -> dict:
+    """Pedro dice NO MAS: descarta esta propuesta Y veta el tema. El piso lo
+    lee el jefe (reacciones.esta_vetada) y no vuelve a proponer esa clave en
+    este departamento. Mismo corte que descartar contra el LIBRO."""
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
+    if not p0:
+        raise HTTPException(status_code=400, detail="la economia no esta activa")
+    ts, semana = _eco_ahora()
+    try:
+        with _eco_candado(p0.ruta_libro):
+            m = p0.mercado_fresco()
+            bus = _eco_bus.Bus(p0.ruta_bus)
+            if (bus.estado(id) != "alta"
+                    or _eco_bus.aportes(m.k.libro.asientos(), id)
+                    or _eco_bus.aporte_preseed(m.k.libro.asientos(), id)):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"la propuesta {id} ya no se puede descartar")
+            _eco_bus.descartar(bus, ts, semana, id)
+        _anotar_reaccion(p0, id, "no_mas", body.palabras)
     except HTTPException:
         raise
     except _eco_errores_economicos as exc:
@@ -5546,10 +5606,12 @@ try:
     from calipso.plantel import ilegibles as _plantel_ilegibles
     from calipso.plantel import interruptor as _plantel_it
     from calipso.plantel import jefe as _plantel_jefe
+    from calipso.plantel import reacciones as _plantel_reacciones  # noqa: E402
 except Exception:  # el plantel no esta disponible: el tablero responde inactivo
     _plantel_ficha = None
     _plantel_ilegibles = None
     _plantel_it = _plantel_jefe = None
+    _plantel_reacciones = None
 
 
 class PlantelModoBody(BaseModel):
