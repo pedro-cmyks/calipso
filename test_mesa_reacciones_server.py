@@ -82,6 +82,11 @@ def _sembrar_propuesta_alta(tmp_path, monkeypatch, id="p1",
     """
     monkeypatch.setattr(srv, "_ECO_BASE", tmp_path)
     monkeypatch.setattr(srv, "_eco_ahora", lambda: (TS, W))
+    # CALIPSO_HOME propio del test: `reacciones` escribe ahi (call-time), y
+    # sin aislar, el registro (o el corrupto de test_registro_corrupto) se
+    # cuela al home compartido de la suite y contamina los tests del jefe,
+    # que ahora leen ese home en `tic`.
+    monkeypatch.setenv("CALIPSO_HOME", str(tmp_path))
     eco = _economia_de_prueba(tmp_path)
     b = Bus(eco / "bus.jsonl")
     b.alta(TS, W, id, cuenta, "descartar el radar", 10_000, 10_000,
