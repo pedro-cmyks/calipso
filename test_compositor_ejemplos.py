@@ -65,3 +65,15 @@ def test_texto_del_gesto_vacio_cuando_solo_slash():
     assert ejemplos.texto_del_gesto("/mia") == ""
     assert ejemplos.texto_del_gesto("   ") == ""
     assert ejemplos.texto_del_gesto("") == ""
+
+
+def test_cargar_descarta_items_que_no_son_dict(home):
+    import json
+    from calipso.compositor import ejemplos
+    # un JSON valido pero mal formado a mano (lista de strings) no debe
+    # tumbar guardar/voz: cargar filtra lo que no sea dict.
+    (home / "voz_ejemplos.json").write_text(
+        json.dumps(["basura suelta", {"texto": "esto si sirve largo", "ts": "1"}]),
+        encoding="utf-8")
+    got = ejemplos.cargar()
+    assert got == [{"texto": "esto si sirve largo", "ts": "1"}]

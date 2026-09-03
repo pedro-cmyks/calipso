@@ -37,7 +37,11 @@ def cargar() -> list[dict]:
         data = json.loads(ruta.read_text(encoding="utf-8"))
     except Exception:
         return []
-    return data if isinstance(data, list) else []
+    if not isinstance(data, list):
+        return []
+    # defensa: si alguien edito el archivo a mano y metio algo que no es un
+    # dict, lo descartamos para no tumbar guardar/voz mas adelante.
+    return [e for e in data if isinstance(e, dict)]
 
 
 def guardar(texto: str) -> None:
