@@ -52,8 +52,20 @@ function alcanza(propuesta, departamentos, tesoro_mm) {
   return !dueno || dueno.disponible_mm >= propuesta.presupuesto_mm;
 }
 
+/** El historial de promesas del departamento, "3/5", al lado de su nombre.
+ *  `standing` puede faltar -una fila que vino de antes de esta tarea, o una
+ *  respuesta vieja del servidor- y ahi no se dibuja nada: mejor callarse
+ *  que mostrar un "undefined/undefined". */
+function textoDeStanding(standing) {
+  if (!standing || typeof standing.total !== "number") return "";
+  return ` <span class="standing">` +
+    `${escapar(String(standing.cumplidas))}/${escapar(String(standing.total))}` +
+    `</span>`;
+}
+
 function fila(propuesta, departamentos, tesoro_mm) {
   const dep = escapar(propuesta.departamento.replace(/^dep:/, ""));
+  const standing = textoDeStanding(propuesta.standing);
   const plata = escapar(monedas(propuesta.presupuesto_mm));
   const preseed = esPreseed(propuesta);
   // La etiqueta no sale del titulo -que lo escribe un modelo- sino del
@@ -70,7 +82,7 @@ function fila(propuesta, departamentos, tesoro_mm) {
     // significa nada.
     const cola = preseed ? "capital entregado" : `gastado ${gastado}`;
     return `<div class="propuesta financiada">` +
-      `<div class="cabeza">${sello}<b>${dep}</b> · ` +
+      `<div class="cabeza">${sello}<b>${dep}</b>${standing} · ` +
       `${escapar(propuesta.titulo)}</div>` +
       `<div class="datos">financiada · ${plata} · ${cola}</div>` +
       `</div>`;
@@ -94,7 +106,7 @@ function fila(propuesta, departamentos, tesoro_mm) {
   return `<div class="propuesta" ` +
     `data-presupuesto="${escapar(propuesta.presupuesto_mm)}"` +
     (preseed ? ` data-cuenta="tesoro"` : "") + `>` +
-    `<div class="cabeza">${sello}<b>${dep}</b> · ` +
+    `<div class="cabeza">${sello}<b>${dep}</b>${standing} · ` +
     `${escapar(propuesta.titulo)}</div>` +
     `<div class="datos">${preseed ? "pide" : "presupuesto"} ${plata}</div>` +
     aviso +
@@ -150,6 +162,50 @@ function bloqueVencidas(vencidas) {
     filas + `</details>`;
 }
 
+/** Una fila de "por juzgar": un trabajo que llego a su plazo (`bus.vencida`,
+ *  punto 5) y todavia no tiene veredicto. Juzgar es reputacion, no plata: a
+ *  diferencia de `fila()` no hay selector de cuenta ni monto, solo lo que
+ *  prometio -su `metrica`/`sobre`, la misma tabla que ya usa la fila
+ *  financiable- y los dos botones del veredicto. El campo de palabras es el
+ *  mismo patron que financiar/descartar/no-mas: opcional, y app.js lo lee
+ *  de la fila al postear.
+ */
+function filaPorJuzgar(item) {
+  const dep = escapar(String(item.departamento || "").replace(/^dep:/, ""));
+  const id = escapar(item.id);
+  const metrica = item.metrica || item.promete || "";
+  const sobre = item.sobre;
+  const tieneSobre = sobre !== undefined && sobre !== null && sobre !== "";
+  const promesa = metrica
+    ? `prometio ${escapar(metrica)}` +
+      (tieneSobre ? ` sobre ${escapar(String(sobre))}` : "")
+    : "sin metrica registrada";
+  return `<div class="juzgar-item">` +
+    `<div class="cabeza"><b>${dep}</b> · ${escapar(item.titulo || "")}</div>` +
+    `<div class="datos">${promesa}</div>` +
+    `<div class="palabras-campo">` +
+    `<input class="palabras" data-id="${id}" ` +
+    `placeholder="tus palabras (opcional)"></div>` +
+    `<div class="botones">` +
+    `<button data-accion="cumplio" data-id="${id}">cumplio</button>` +
+    `<button data-accion="no-cumplio" data-id="${id}">no cumplio</button>` +
+    `</div></div>`;
+}
+
+/** La seccion "por juzgar": a diferencia de la pila de vencidos (que es
+ *  para tirar), aca hay algo que decidir, asi que va destapada y arriba de
+ *  la mesa -no plegada en un `<details>`- para que Pedro no tenga que
+ *  buscarla. */
+function bloquePorJuzgar(por_juzgar) {
+  if (!por_juzgar || !por_juzgar.length) return "";
+  const filas = por_juzgar.map(filaPorJuzgar).join("");
+  return `<div class="por-juzgar">` +
+    `<div class="titulo">por juzgar</div>` +
+    `<div class="nota">Llegaron a su plazo: decidi si cumplieron lo que ` +
+    `prometieron. No mueve plata, solo el historial del departamento.</div>` +
+    filas + `</div>`;
+}
+
 export function hayQueAvisarDeLaSemana(datos) {
   return Boolean(datos && datos.activa && datos.semana_abierta === false);
 }
@@ -182,6 +238,11 @@ export function textoDeMesa(datos, filtro = null) {
   // ruido. `|| []` porque una respuesta vieja del servidor no la trae.
   const muertas = (datos.vencidas || []).filter(
     v => !filtro || v.departamento === filtro);
+  // mismo filtro que propuestas/vencidas: "por juzgar" tambien es del
+  // departamento que le toco, y `|| []` porque una respuesta vieja del
+  // servidor (de antes de esta tarea) no trae la clave.
+  const juzgar = bloquePorJuzgar((datos.por_juzgar || []).filter(
+    j => !filtro || j.departamento === filtro));
   const semana = hayQueAvisarDeLaSemana(datos)
     ? `<div class="aviso semana">La semana ${escapar(datos.semana)} no esta ` +
       `abierta: financiar va a fallar hasta que la abras.` +
@@ -203,10 +264,10 @@ export function textoDeMesa(datos, filtro = null) {
     // la pila se dibuja igual con la mesa vacia: es justo cuando pasa --
     // el pedido vencio y no quedo nada que decidir-- y si se fuera con las
     // propuestas volveria a no tener ninguna cara.
-    return semana + cabecera + `<div class="vacio">${vacio}</div>` +
+    return semana + cabecera + juzgar + `<div class="vacio">${vacio}</div>` +
            bloqueVencidas(muertas);
   }
-  return semana + cabecera +
+  return semana + cabecera + juzgar +
          props.map(p => fila(p, deps, datos.tesoro_mm)).join("") +
          bloqueVencidas(muertas);
 }
