@@ -495,3 +495,20 @@ def test_sin_reacciones_el_prompt_no_rompe():
     s = _situacion_minima()
     p = dec.prompt(s, 50, "", ())
     assert isinstance(p, str) and p
+
+
+def test_el_prompt_rinde_el_standing_de_promesas():
+    from calipso.plantel import decision as dec
+    s = _situacion_minima()
+    p = dec.prompt(s, 50, "", (), standing={"cumplidas": 3, "total": 5})
+    assert "promesas" in p.lower()
+    assert "3" in p and "5" in p
+
+
+def test_sin_standing_no_rompe_ni_muestra_renglon():
+    from calipso.plantel import decision as dec
+    s = _situacion_minima()
+    p1 = dec.prompt(s, 50, "", ())                                  # sin standing
+    p2 = dec.prompt(s, 50, "", (), standing={"cumplidas": 0, "total": 0})
+    assert isinstance(p1, str) and p1
+    assert "historial de promesas" not in p2.lower()               # total 0 -> se omite

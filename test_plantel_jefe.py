@@ -12,6 +12,7 @@ from calipso.plantel import ficha
 from calipso.plantel import ilegibles as ilg
 from calipso.plantel import interruptor as it
 from calipso.plantel import jefe as j
+from calipso.plantel import promesas
 from calipso.plantel import reacciones
 from calipso.plantel import situacion as sit
 
@@ -836,6 +837,31 @@ def test_un_tema_no_vetado_si_llega(tmp_path, monkeypatch):
     out = j.tic(ctx, "dep:atlas", W)
     assert out["accion"] == "proponer" and out["actuo"] is True
     assert contratos and contratos[0][0] == "proponer"
+
+
+def test_el_prompt_lleva_el_standing_de_promesas(tmp_path, monkeypatch):
+    """El jefe lee su propio historial de promesas (el PvP, Tarea 1) con el
+    mismo criterio que lee las reacciones: nombre PELADO del `dep:`, dentro
+    del mismo try de fallo cerrado. Aca se anotan dos veredictos -uno
+    cumplido, uno no- y se verifica que `dec.prompt` los reciba."""
+    monkeypatch.setenv("CALIPSO_HOME", str(tmp_path))
+    visto = {}
+    ctx, _contratos, _ = armar(tmp_path)
+    ctx.pensar = lambda p: visto.setdefault("p", p) or "nada\nx"
+    promesas.anotar("atlas", "atlas-1",
+                    {"sobre": "el radar de precios",
+                     "clave": ficha.normalizar("el radar de precios"),
+                     "promete": "medir", "tarda": "corto"},
+                    True, "cumplio a tiempo")
+    promesas.anotar("atlas", "atlas-2",
+                    {"sobre": "otro tema",
+                     "clave": ficha.normalizar("otro tema"),
+                     "promete": "medir", "tarda": "corto"},
+                    False, "no llego")
+    it.poner_modo(tmp_path, "vivo")
+    j.tic(ctx, "dep:atlas", W)
+    assert "historial de promesas" in visto["p"].lower()
+    assert "1" in visto["p"] and "2" in visto["p"]
 
 
 # -- el segundo techo del pre-seed: el acumulado por CICLO -----------------

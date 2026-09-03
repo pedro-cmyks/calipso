@@ -16,6 +16,7 @@ from typing import Any, Callable
 from . import decision as dec
 from . import ficha, ilegibles
 from . import interruptor as it
+from . import promesas
 from . import reacciones
 from . import situacion as sit
 
@@ -352,11 +353,13 @@ def tic(ctx: Contexto, cuenta: str, semana: str) -> dict:
                                           # levanta y el try lo convierte en
                                           # "no armo el prompt" -> el jefe no
                                           # propone este tic (lado seguro).
+        pvp = promesas.standing(nombre)   # fallo cerrado: corrupto -> el try
+                                          # lo vuelve "no armo el prompt"
         p = dec.prompt(s, sesgo, ctx.memoria.load_core(),
                        ctx.memoria.recent(limit=5),
                        carta=ctx.carta,
                        proyectos=dec.proyectos_de(ctx.proyectos, cuenta),
-                       reacciones=reacs)
+                       reacciones=reacs, standing=pvp)
     except Exception as exc:
         return salida(motivo=f"no armo el prompt: {exc}",
                       freno="fallo antes de pensar")
