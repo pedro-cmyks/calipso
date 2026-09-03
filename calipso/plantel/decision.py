@@ -76,7 +76,7 @@ def proyectos_de(proyectos, cuenta: str) -> list[dict]:
 def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
           recientes: "list[str] | tuple" = (), carta: dict | None = None,
           proyectos: "list[dict] | None" = None,
-          reacciones: list = ()) -> str:
+          reacciones: list = (), standing: dict | None = None) -> str:
     """Corto a proposito: corre seguido y en el escalon barato.
 
     `nucleo` es el markdown de la memoria del departamento. Sin el, el jefe
@@ -158,6 +158,15 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
     else:
         bloque_proyectos = "Proyectos a tu cargo: ninguno asignado.\n\n"
 
+    # El historial de promesas del departamento (el PvP): cuantas cumplio de
+    # las que Pedro juzgo. Es para que aprenda a prometer lo que puede
+    # cumplir. Se omite si todavia no se juzgo ninguna (total 0).
+    bloque_standing = ""
+    if standing and standing.get("total", 0) > 0:
+        bloque_standing = (f"Tu historial de promesas: cumpliste "
+                           f"{standing['cumplidas']} de {standing['total']} "
+                           "que Pedro juzgo.\n\n")
+
     # los objetos que este departamento ya nombro, para que COPIE en vez de
     # reinventar: sin esto "radar de precios" y "monitor de precios" son dos
     # familias, ocupan dos lugares en la mesa y un "nunca mas" sobre una no
@@ -188,6 +197,7 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
     return (
         bloque_carta +
         bloque_proyectos +
+        bloque_standing +
         aprendido +
         ultimas +
         catalogo +

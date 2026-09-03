@@ -4039,6 +4039,15 @@ class MesaNoMasBody(BaseModel):
     palabras: str = ""
 
 
+class MesaVeredictoBody(BaseModel):
+    """Body opcional de `cumplio`/`no-cumplio`: las palabras de Pedro al
+    juzgar si el trabajo cumplio lo que prometio. Mismo molde que
+    `MesaDescartarBody` y `MesaNoMasBody`."""
+    model_config = ConfigDict(extra="forbid")
+
+    palabras: str = ""
+
+
 class EcoSembrarDepartamentoBody(BaseModel):
     """La puerta de rango tambien vale ACA.
 
@@ -4230,6 +4239,21 @@ def api_eco_bus() -> dict:
             bus = _eco_bus.Bus(p0.ruta_bus)
             asientos = m.k.libro.asientos()
             ops_mesa = _eco_cap.semanas_operativas(asientos)
+
+            def _standing_de(dep_crudo: str) -> dict:
+                # el bus guarda el departamento CON el prefijo de cuenta
+                # ("dep:atlas"); promesas, como la carta y las reacciones,
+                # vive pelada de prefijo (mismo motivo que _anotar_reaccion).
+                # Degrada ante un registro corrupto: la mesa es lectura, no
+                # puede tumbarse por un promesas.json ilegible de UN
+                # departamento.
+                nombre = dep_crudo.split(":", 1)[1] if ":" in dep_crudo else dep_crudo
+                try:
+                    return (_plantel_promesas.standing(nombre) if nombre
+                            else {"cumplidas": 0, "total": 0})
+                except _plantel_promesas.ErrorPromesas:
+                    return {"cumplidas": 0, "total": 0}   # degrada, no 500
+
             propuestas = []
             vencidas = []
             for id_ in bus.ids():
@@ -4311,7 +4335,33 @@ def api_eco_bus() -> dict:
                 if f and _plantel_ficha is not None:
                     fila["metrica"] = _plantel_ficha.METRICA.get(
                         f.get("promete"), "")
+                fila["standing"] = _standing_de(d.get("departamento", ""))
                 propuestas.append(fila)
+            # el PvP: los trabajos que ya llegaron a su plazo y todavia no
+            # tienen veredicto. Recorre TODOS los ids del bus -- no solo
+            # `alta`/`financiada` como el filtro de arriba -- porque un
+            # trabajo liquidado o muerto sigue siendo juzgable (bus.vencida
+            # mira `semana_financiada`, que `datos` conserva aun asi).
+            por_juzgar = []
+            for id_ in bus.ids():
+                d = bus.datos(id_)
+                if not _eco_bus.vencida(d, ops_mesa, semana):
+                    continue
+                dep_crudo = d.get("departamento", "")
+                nombre = dep_crudo.split(":", 1)[1] if ":" in dep_crudo else dep_crudo
+                try:
+                    if not nombre or _plantel_promesas.juzgada(nombre, id_):
+                        continue
+                except _plantel_promesas.ErrorPromesas:
+                    continue   # registro corrupto: la mesa degrada, no 500
+                f = d.get("forma") or {}
+                por_juzgar.append({
+                    "id": id_, "departamento": dep_crudo,
+                    "titulo": d.get("titulo", ""),
+                    "promete": f.get("promete", ""),
+                    "metrica": (_plantel_ficha.METRICA.get(f.get("promete"), "")
+                                if _plantel_ficha is not None else ""),
+                    "sobre": f.get("sobre", "")})
             deps_fabrica = [
                 {"cuenta": f"dep:{x.nombre}", "nombre": x.nombre,
                  "zona": x.zona,
@@ -4337,7 +4387,7 @@ def api_eco_bus() -> dict:
     return {"activa": True, "semana": semana, "semana_abierta": abierta,
             "propuestas": propuestas, "vencidas": vencidas,
             "departamentos": deps_fabrica, "tesoro_mm": tesoro,
-            "ilegibles": ilegibles}
+            "ilegibles": ilegibles, "por_juzgar": por_juzgar}
 
 
 @app.get("/api/inbox")
@@ -4547,6 +4597,53 @@ def api_eco_bus_no_mas(id: str, body: MesaNoMasBody) -> dict:
             status_code=400,
             detail=f"no se pudo registrar la reaccion: {exc}") from None
     return {"ok": True}
+
+
+def _juzgar(id: str, cumplio: bool, palabras: str) -> dict:
+    """Pedro juzga si un trabajo cumplio su promesa. Reputacion, no plata:
+    no toca el bus ni el libro. Falla 400 si el trabajo no esta vencido o ya
+    fue juzgado. El nombre del depto va pelado del prefijo dep: (mismo motivo
+    que _anotar_reaccion)."""
+    p0 = _EcoPagador.desde_entorno(_ECO_BASE) if _EcoPagador else None
+    if not p0:
+        raise HTTPException(status_code=400, detail="la economia no esta activa")
+    _, semana = _eco_ahora()
+    try:
+        with _eco_candado(p0.ruta_libro):
+            m = p0.mercado_fresco()
+            bus = _eco_bus.Bus(p0.ruta_bus)
+            d = bus.datos(id)
+            ops = _eco_cap.semanas_operativas(m.k.libro.asientos())
+            dep = d.get("departamento", "")
+            nombre = dep.split(":", 1)[1] if ":" in dep else dep
+            if not nombre or not _eco_bus.vencida(d, ops, semana):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"la propuesta {id} no esta lista para juzgar")
+            if _plantel_promesas.juzgada(nombre, id):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"la propuesta {id} ya fue juzgada")
+        _plantel_promesas.anotar(nombre, id, d.get("forma"), cumplio, palabras)
+    except HTTPException:
+        raise
+    except _eco_errores_economicos as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except _plantel_promesas.ErrorPromesas as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"no se pudo registrar el veredicto: {exc}") from None
+    return {"ok": True}
+
+
+@app.post("/api/economia/bus/{id}/cumplio")
+def api_eco_bus_cumplio(id: str, body: MesaVeredictoBody) -> dict:
+    return _juzgar(id, True, body.palabras)
+
+
+@app.post("/api/economia/bus/{id}/no-cumplio")
+def api_eco_bus_no_cumplio(id: str, body: MesaVeredictoBody) -> dict:
+    return _juzgar(id, False, body.palabras)
 
 
 @app.post("/api/economia/cola/{item_id}/atender")
@@ -5634,11 +5731,13 @@ try:
     from calipso.plantel import ilegibles as _plantel_ilegibles
     from calipso.plantel import interruptor as _plantel_it
     from calipso.plantel import jefe as _plantel_jefe
+    from calipso.plantel import promesas as _plantel_promesas  # noqa: E402
     from calipso.plantel import reacciones as _plantel_reacciones  # noqa: E402
 except Exception:  # el plantel no esta disponible: el tablero responde inactivo
     _plantel_ficha = None
     _plantel_ilegibles = None
     _plantel_it = _plantel_jefe = None
+    _plantel_promesas = None
     _plantel_reacciones = None
 
 

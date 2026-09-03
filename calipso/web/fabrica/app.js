@@ -306,6 +306,16 @@ async function accionDeMesa(boton) {
       r = await fetch(`/api/economia/bus/${encodeURIComponent(id)}/no-mas`, {
         method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify({palabras})});
+    } else if (accion === "cumplio" || accion === "no-cumplio") {
+      // el PvP: juzgar si un trabajo vencido cumplio lo que prometio. La
+      // fila no es ".propuesta" -es ".juzgar-item", la de bloquePorJuzgar
+      // en mesa.js- pero el campo de palabras es el mismo patron que
+      // financiar/descartar/no-mas: opcional, y viaja con el veredicto.
+      const palabras = boton.closest(".juzgar-item")?.querySelector(
+        "input.palabras, textarea.palabras")?.value || "";
+      r = await fetch(`/api/economia/bus/${encodeURIComponent(id)}/${accion}`, {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({palabras})});
     } else {
       return;
     }

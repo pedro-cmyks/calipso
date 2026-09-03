@@ -313,3 +313,58 @@ test("el titulo de un vencido pasa por escapar()", () => {
   assert.ok(!html.includes("<img"), "inyecto marcado crudo");
   assert.match(html, /&lt;img/);
 });
+
+// -- el PvP: "por juzgar" + el standing por fila ---------------------------
+// El mismo mecanismo del jefe (T4) pero del lado de Pedro: los trabajos que
+// llegaron a su plazo y todavia no tienen veredicto se juzgan aca
+// (cumplio/no cumplio), y el standing de cada departamento -su historial de
+// promesas cumplidas- viaja al lado de cada propuesta en la mesa.
+
+test("la mesa muestra por juzgar y el standing", () => {
+  const conStanding = {...P1, standing: {cumplidas: 3, total: 5}};
+  const html = textoDeMesa(datos([conStanding], {
+    por_juzgar: [{id: "pj1", departamento: "dep:atlas",
+                  titulo: "radar de precios", promete: "ingresos",
+                  metrica: "ingresos generados", sobre: 10000}]}));
+  assert.match(html, /por juzgar/i);
+  assert.match(html, /data-accion="cumplio" data-id="pj1"/);
+  assert.match(html, /data-accion="no-cumplio" data-id="pj1"/);
+  assert.match(html, /3\/5/);
+});
+
+test("por juzgar trae un campo de palabras, igual que las otras acciones",
+     () => {
+  const html = textoDeMesa(datos([P1], {
+    por_juzgar: [{id: "pj1", departamento: "dep:atlas",
+                  titulo: "radar de precios", promete: "ingresos",
+                  metrica: "ingresos generados", sobre: 10000}]}));
+  assert.match(html, /class="[^"]*palabras/);
+});
+
+test("sin por_juzgar no aparece la seccion", () => {
+  const html = textoDeMesa(datos([P1]));
+  assert.ok(!/por juzgar/i.test(html), html);
+  // y una respuesta vieja del servidor, sin la clave, tampoco revienta
+  assert.doesNotThrow(() => textoDeMesa(datos([P1])));
+});
+
+test("standing ausente en una propuesta vieja no rompe la mesa", () => {
+  // el bus es append-only y una fila de antes de esta tarea no trae
+  // `standing`: la mesa tiene que seguir dibujando esa fila, no reventar.
+  assert.doesNotThrow(() => textoDeMesa(datos([P1])));
+  const html = textoDeMesa(datos([P1]));
+  assert.ok(!html.includes("undefined"), html);
+});
+
+test("por juzgar respeta el filtro del mapa, igual que las propuestas y " +
+     "los vencidos", () => {
+  const juzgar = [
+    {id: "pj1", departamento: "dep:atlas", titulo: "radar de precios",
+     promete: "ingresos", metrica: "ingresos generados", sobre: 10000},
+    {id: "pj2", departamento: "dep:mercado", titulo: "otra cosa",
+     promete: "ingresos", metrica: "ingresos generados", sobre: 5000},
+  ];
+  const html = textoDeMesa(datos([P1], {por_juzgar: juzgar}), "dep:atlas");
+  assert.match(html, /data-id="pj1"/);
+  assert.ok(!html.includes("pj2"), "se colo un trabajo de otro departamento");
+});

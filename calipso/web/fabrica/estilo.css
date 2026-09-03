@@ -484,6 +484,37 @@ html, body {
 .mesa .vencida .cabeza { flex: 1 1 auto; }
 .mesa .vencida .datos { color: var(--tenue); }
 
+/* "Por juzgar": el PvP visto de este lado. A diferencia de .vencidas -una
+   pila para tirar, plegada y en --tenue- aca hay algo que decidir, asi que
+   va destapada y en --acento: es la contraparte de .vencidas pero con la
+   urgencia invertida. */
+.mesa .por-juzgar {
+  border: 1px solid var(--acento); border-radius: 6px; padding: 8px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.mesa .por-juzgar > .titulo {
+  color: var(--acento); font-size: 11px; text-transform: uppercase;
+  letter-spacing: .4px; font-weight: 600;
+}
+.mesa .por-juzgar > .nota { font-size: 11px; line-height: 1.4; color: var(--tenue); }
+.mesa .juzgar-item {
+  border: 1px solid var(--linea); border-radius: 6px; padding: 8px;
+  background: var(--panel); display: flex; flex-direction: column; gap: 6px;
+}
+.mesa .juzgar-item .datos { color: var(--tenue); font-size: 12px; }
+.mesa .juzgar-item .palabras-campo input.palabras {
+  width: 100%; box-sizing: border-box; min-height: 32px; font: inherit;
+  padding: 6px 8px; border: 1px solid var(--linea); border-radius: 4px;
+  background: var(--fondo); color: var(--texto);
+}
+.mesa .juzgar-item .botones { display: flex; gap: 6px; }
+.mesa .juzgar-item .botones button {
+  flex: 1; cursor: pointer; min-height: 40px; padding: 0 14px;
+}
+/* El historial de promesas del departamento, al lado de su nombre en cada
+   fila de la mesa (no solo en "por juzgar"): "3/5" cumplidas de juzgadas. */
+.mesa .standing { color: var(--tenue); font-size: 12px; font-weight: normal; }
+
 /* La primera sub-pestana de la mesa: "Todo", las cuatro bandejas juntas.
    inbox.js emite .fila/.etiqueta/.titulo/.acciones/.nota sin saber que
    .titulo YA es global (linea 37: la usan los encabezados de panel, en
