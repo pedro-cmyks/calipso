@@ -58,6 +58,7 @@ from calipso import capabilities  # noqa: E402
 from calipso import attachments  # noqa: E402
 from calipso import chats  # noqa: E402
 from calipso.compositor import redactor as compositor_redactor  # noqa: E402
+from calipso.compositor import ejemplos as compositor_ejemplos  # noqa: E402
 from calipso import config as calipso_config  # noqa: E402
 from calipso import browser as calipso_browser  # noqa: E402
 from calipso import catastro  # noqa: E402
@@ -2466,6 +2467,24 @@ async def ws_chat(ws: WebSocket) -> None:
                 continue
             chat_msg = directives["clean"]
 
+            # /mia: Pedro trae de vuelta su version FINAL editada de un
+            # borrador. Calipso la GUARDA como ejemplo fuerte de su voz y no
+            # hace nada mas: no responde, no rutea, no cobra, no toca historial
+            # ni memoria. Asi el compositor aprende su voz real de lo que el
+            # corrige (ver calipso/compositor/ejemplos.py y voz.ejemplos_de_voz).
+            if directives.get("mia"):
+                texto_mia = compositor_ejemplos.texto_del_gesto(chat_msg)
+                if not texto_mia:
+                    await ws.send_json({"type": "error",
+                                        "text": "pega tu version despues de /mia"})
+                    await ws.send_json({"type": "done"})
+                    continue
+                compositor_ejemplos.guardar(texto_mia)
+                await ws.send_json({"type": "chunk",
+                                    "text": "guardado como ejemplo de tu voz"})
+                await ws.send_json({"type": "done"})
+                continue
+
             # /redacta y /otra: Calipso REDACTA, no responde -- el turno no
             # es una respuesta de la conversacion, es un borrador aparte que
             # Pedro copia. Se desvia ANTES del ruteo normal, y corre SIEMPRE
@@ -2490,7 +2509,7 @@ async def ws_chat(ws: WebSocket) -> None:
                     await ws.send_json({"type": "done"})
                     continue
                 system_b, user_b = compositor_redactor.preparar_borrador(
-                    pedido, chats._load())
+                    pedido, chats._load(), compositor_ejemplos.cargar())
                 await ws.send_json({"type": "borrador", "action": "inicio"})
                 usage_b: dict = {}
                 emisor_b = Emisor(ws)
