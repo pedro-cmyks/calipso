@@ -148,3 +148,18 @@ def test_financiar_con_palabras_anota_financio(cliente, tmp_path,
     assert r.status_code == 200
     assert reacciones.leer(dep)[-1]["reaccion"] == "financio"
     assert reacciones.leer(dep)[-1]["palabras"] == "esto si"
+
+
+def test_registro_corrupto_da_400_no_500(cliente, tmp_path, monkeypatch):
+    # el spec pide que un registro de reacciones corrupto FALLE CERRADO y se
+    # surfacee como 400 (no un 500 mudo): reacciones.anotar levanta
+    # ErrorReacciones y el endpoint lo captura. Sin este test, un reorden de
+    # los except o un _plantel_reacciones None podria regresar a 500 sin que
+    # nada lo agarre.
+    id_, dep, _ = _sembrar_propuesta_alta(tmp_path, monkeypatch)
+    ruta = _ruta_reacciones("atlas")
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_text("{no es json", encoding="utf-8")
+    r = cliente.post(f"/api/economia/bus/{id_}/descartar",
+                     json={"palabras": "otro angulo"})
+    assert r.status_code == 400
