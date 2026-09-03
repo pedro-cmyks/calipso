@@ -35,8 +35,12 @@ def _home() -> pathlib.Path:
 
 def _slug(nombre: str) -> str:
     # identico a calipso.memory._slug: la carta y las reacciones tienen que
-    # caer en el MISMO directorio del departamento.
-    return re.sub(r"[^a-z0-9]+", "-", str(nombre).lower()).strip("-")[:80] or "root"
+    # caer en el MISMO directorio del departamento. memory._slug recibe un
+    # pathlib.Path y hace str(path); replicar ese str(Path(...)) deja la
+    # equivalencia byte-a-byte para cualquier entrada, no solo los nombres
+    # de un solo token.
+    return re.sub(r"[^a-z0-9]+", "-",
+                  str(pathlib.Path(nombre)).lower()).strip("-")[:80] or "root"
 
 
 def _ruta(nombre: str) -> pathlib.Path:
