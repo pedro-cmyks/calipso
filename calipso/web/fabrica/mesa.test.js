@@ -30,6 +30,15 @@ test("una propuesta trae su departamento, su titulo y sus dos botones", () => {
   assert.match(html, /data-id="p1"/);
 });
 
+test("la fila de la mesa tiene campo de palabras y boton no mas", () => {
+  // mismo entry point que el resto de este archivo (textoDeMesa): no hay
+  // ningun export separado que arme una sola fila, asi que se prueba por
+  // donde ya se prueba todo lo demas de la fila.
+  const html = textoDeMesa(datos([P1]));
+  assert.match(html, /data-accion="no-mas" data-id="p1"/);
+  assert.match(html, /class="[^"]*palabras/);
+});
+
 test("el titulo se escapa: lo escribe un modelo, no es de confianza", () => {
   const malo = {...P1, titulo: '<img src=x onerror="alert(1)">'};
   const html = textoDeMesa(datos([malo]));

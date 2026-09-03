@@ -289,12 +289,23 @@ async function accionDeMesa(boton) {
       // cualquier billetera de departamento), asi que su fila no dibuja
       // selector y trae la cuenta puesta.
       const cuenta = fila?.dataset.cuenta || (sel ? sel.value : "");
+      const palabras = fila?.querySelector(
+        "input.palabras, textarea.palabras")?.value || "";
       r = await fetch(`/api/economia/bus/${encodeURIComponent(id)}/financiar`, {
         method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({cuenta, mm})});
+        body: JSON.stringify({cuenta, mm, palabras})});
     } else if (accion === "descartar") {
-      r = await fetch(`/api/economia/bus/${encodeURIComponent(id)}/descartar`,
-                      {method: "POST"});
+      const palabras = boton.closest(".propuesta")?.querySelector(
+        "input.palabras, textarea.palabras")?.value || "";
+      r = await fetch(`/api/economia/bus/${encodeURIComponent(id)}/descartar`, {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({palabras})});
+    } else if (accion === "no-mas") {
+      const palabras = boton.closest(".propuesta")?.querySelector(
+        "input.palabras, textarea.palabras")?.value || "";
+      r = await fetch(`/api/economia/bus/${encodeURIComponent(id)}/no-mas`, {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({palabras})});
     } else {
       return;
     }
