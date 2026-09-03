@@ -16,6 +16,7 @@ from typing import Any, Callable
 from . import decision as dec
 from . import ficha, ilegibles
 from . import interruptor as it
+from . import reacciones
 from . import situacion as sit
 
 TECHO_PROPUESTAS = 3   # propuestas propias sin financiar, antes de frenar
@@ -341,10 +342,21 @@ def tic(ctx: Contexto, cuenta: str, semana: str) -> dict:
     # `situacion` fallan, no es culpa del modelo, y asi tampoco queda un
     # agente abierto en el pulso sin nadie que lo cierre
     try:
+        # el nombre pelado del prefijo `dep:`, IGUAL que la carta
+        # (`ctx.carta` se arma con este mismo criterio en server.py) y que
+        # `_anotar_reaccion`: si se lee con el prefijo, `reacciones.leer`
+        # cae en un directorio que la mesa nunca escribe y el jefe ve una
+        # lista vacia para siempre.
+        nombre = cuenta.split(":", 1)[1] if ":" in cuenta else cuenta
+        reacs = reacciones.leer(nombre)   # fallo cerrado: si esta corrupto,
+                                          # levanta y el try lo convierte en
+                                          # "no armo el prompt" -> el jefe no
+                                          # propone este tic (lado seguro).
         p = dec.prompt(s, sesgo, ctx.memoria.load_core(),
                        ctx.memoria.recent(limit=5),
                        carta=ctx.carta,
-                       proyectos=dec.proyectos_de(ctx.proyectos, cuenta))
+                       proyectos=dec.proyectos_de(ctx.proyectos, cuenta),
+                       reacciones=reacs)
     except Exception as exc:
         return salida(motivo=f"no armo el prompt: {exc}",
                       freno="fallo antes de pensar")
