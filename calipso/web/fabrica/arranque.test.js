@@ -479,7 +479,9 @@ test("un clic en financiar arma el POST con la cuenta del selector y el " +
     selsPedidos.push(sel);
     return {value: "dep:atlas"};
   };
-  const fila = {dataset: {presupuesto: "10000"}};
+  // sin querySelector la fila no tiene de donde leer las palabras: null
+  // es la misma respuesta que un DOM real da cuando el campo no esta.
+  const fila = {dataset: {presupuesto: "10000"}, querySelector: () => null};
   const boton = {
     dataset: {accion: "financiar", id: "p1"},
     disabled: false,
@@ -498,8 +500,10 @@ test("un clic en financiar arma el POST con la cuenta del selector y el " +
     .find(p => p.url.includes("/financiar"));
   assert.ok(pedido, "el clic no armo ningun POST a /financiar");
   assert.equal(pedido.opciones.method, "POST");
+  // palabras vacio: la fila de mentira no tiene el campo, como una fila
+  // real sin nada escrito
   assert.deepEqual(JSON.parse(pedido.opciones.body),
-                   {cuenta: "dep:atlas", mm: 10000});
+                   {cuenta: "dep:atlas", mm: 10000, palabras: ""});
   assert.ok(selsPedidos.includes('select.paga[data-id="p1"]'),
             "no se pidio el selector de la propuesta p1");
 });

@@ -232,7 +232,8 @@ def test_financiar_una_propuesta_que_no_existe_es_400(cliente):
 def test_descartar_libera_el_lugar(cliente):
     c, base = cliente
     _propuesta(base)
-    r = c.post("/api/economia/bus/p1/descartar", params={"token": srv.TOKEN})
+    r = c.post("/api/economia/bus/p1/descartar", params={"token": srv.TOKEN},
+               json={})
     assert r.status_code == 200, r.text
     d = c.get("/api/economia/bus", params={"token": srv.TOKEN}).json()
     assert d["propuestas"] == []
@@ -243,7 +244,8 @@ def test_no_se_descarta_una_ya_financiada(cliente):
     _propuesta(base)
     c.post("/api/economia/bus/p1/financiar", params={"token": srv.TOKEN},
            json={"cuenta": "dep:atlas", "mm": 10_000})
-    r = c.post("/api/economia/bus/p1/descartar", params={"token": srv.TOKEN})
+    r = c.post("/api/economia/bus/p1/descartar", params={"token": srv.TOKEN},
+               json={})
     assert r.status_code == 400
 
 
@@ -260,7 +262,8 @@ def test_no_se_descarta_una_alta_con_aporte_ya_en_el_libro(cliente):
     k = Kernel(Libro(base / "economia" / "libro.jsonl"))
     k.transferir(TS, W, "dep:atlas", cuenta_trabajo("p1"), 10_000,
                  motivo="financiacion")
-    r = c.post("/api/economia/bus/p1/descartar", params={"token": srv.TOKEN})
+    r = c.post("/api/economia/bus/p1/descartar", params={"token": srv.TOKEN},
+               json={})
     assert r.status_code == 400
     assert "ya no se puede descartar" in r.json()["detail"]
     d = c.get("/api/economia/bus", params={"token": srv.TOKEN}).json()
@@ -637,7 +640,7 @@ def test_un_preseed_vencido_no_queda_huerfano_sin_tacho(cliente, monkeypatch):
 
     # y el tacho funciona: es el mismo `descartar` de siempre, lo unico que
     # faltaba era que el id llegara a una pantalla
-    r = c.post("/api/economia/bus/ps1/descartar", params=tok)
+    r = c.post("/api/economia/bus/ps1/descartar", params=tok, json={})
     assert r.status_code == 200, r.text
     assert Bus(base / "economia" / "bus.jsonl").estado("ps1") == "descartada"
 

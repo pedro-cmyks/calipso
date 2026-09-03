@@ -16,6 +16,7 @@ from typing import Any, Callable
 from . import decision as dec
 from . import ficha, ilegibles
 from . import interruptor as it
+from . import reacciones
 from . import situacion as sit
 
 TECHO_PROPUESTAS = 3   # propuestas propias sin financiar, antes de frenar
@@ -341,10 +342,21 @@ def tic(ctx: Contexto, cuenta: str, semana: str) -> dict:
     # `situacion` fallan, no es culpa del modelo, y asi tampoco queda un
     # agente abierto en el pulso sin nadie que lo cierre
     try:
+        # el nombre pelado del prefijo `dep:`, IGUAL que la carta
+        # (`ctx.carta` se arma con este mismo criterio en server.py) y que
+        # `_anotar_reaccion`: si se lee con el prefijo, `reacciones.leer`
+        # cae en un directorio que la mesa nunca escribe y el jefe ve una
+        # lista vacia para siempre.
+        nombre = cuenta.split(":", 1)[1] if ":" in cuenta else cuenta
+        reacs = reacciones.leer(nombre)   # fallo cerrado: si esta corrupto,
+                                          # levanta y el try lo convierte en
+                                          # "no armo el prompt" -> el jefe no
+                                          # propone este tic (lado seguro).
         p = dec.prompt(s, sesgo, ctx.memoria.load_core(),
                        ctx.memoria.recent(limit=5),
                        carta=ctx.carta,
-                       proyectos=dec.proyectos_de(ctx.proyectos, cuenta))
+                       proyectos=dec.proyectos_de(ctx.proyectos, cuenta),
+                       reacciones=reacs)
     except Exception as exc:
         return salida(motivo=f"no armo el prompt: {exc}",
                       freno="fallo antes de pensar")
@@ -427,6 +439,20 @@ def tic(ctx: Contexto, cuenta: str, semana: str) -> dict:
                 motivo = f"{motivo} (no pudo anotar en su memoria: {exc})"
             return salida(accion, ref, motivo, False,
                           "ficha ilegible: no se entendio que proponia")
+
+        # EL PISO DEL "NO MAS". Determinista: si Pedro veto esta clave en
+        # este departamento, la propuesta no llega al bus, pase lo que pase
+        # con el modelo. Reencuadrar la promesa o el plazo no lo esquiva
+        # porque la clave sale solo del `sobre`. Va aca, con la ficha ya
+        # legible y ANTES de `_puede`/`contratar`, por el mismo motivo que
+        # la valvula de la ilegible: `contratar` de produccion no tiene
+        # guarda de accion y escribiria en el bus.
+        if f is not None and reacciones.esta_vetada(reacs, f["clave"]):
+            ctx.publicar("razonando",
+                         texto=f"vetado: {f['sobre']} -- Pedro dijo no mas")
+            return salida(accion=accion, ref=ref,
+                          motivo="eso lo vetaste, proba otra cosa",
+                          actuo=False, freno="vetado con no mas")
 
         permiso, freno = _puede(estado, s, accion, ref)
         resultado = None

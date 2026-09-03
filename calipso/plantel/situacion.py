@@ -90,7 +90,7 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
     # `financiada` es un trabajo vivo. `bus.activas()` devuelve SOLO las
     # financiadas, asi que iterar por ahi dejaria al jefe sin ver ninguna
     # propuesta — y `comentar` sin nada sobre lo que opinar.
-    trabajos, propias, ajenas, descartadas = [], [], [], []
+    trabajos, propias, ajenas = [], [], []
     preseed_pendiente = 0
     # ternas (ts, sobre, clave) crudas; el orden y el deduplicado se
     # resuelven DESPUES del bucle, sobre el `ts` del alta. No se puede
@@ -110,17 +110,13 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
             catalogo.append((datos.get("ts", ""), forma["sobre"],
                              forma["clave"]))
         if estado == "descartada":
-            # el "no" de Pedro, de ESTA semana. Descartar libera el cupo
-            # (para eso existe: sin eso el jefe se frena al llegar a su
-            # techo), pero sin esto el "no" no se pegaba a nada: la
-            # propuesta desaparecia de la situacion y el mismo pedido volvia
-            # al tic siguiente -- a 200 tics por semana, 200 veces. Lo unico
-            # que lo separaba de repetir era la buena voluntad de un modelo
-            # de 3b leyendo "no repitas lo mismo".
-            if mio and datos.get("semana_descartada") == semana:
-                descartadas.append({"id": id_,
-                                    "titulo": datos.get("titulo", ""),
-                                    "forma": datos.get("forma")})
+            # descartar libera el cupo (para eso existe: sin eso el jefe se
+            # frena al llegar a su techo). El "no" de Pedro ya no se pega
+            # aca: lo anota la mesa en el registro durable de
+            # `calipso/plantel/reacciones.py`, que el jefe lee aparte
+            # (`decision.prompt(..., reacciones=...)`) y que -a diferencia
+            # de esta lista, que se armaba de nuevo en cada tic y solo para
+            # la semana en curso- no se evapora al cambiar de semana.
             continue
         if estado not in ("alta", "financiada"):
             continue                       # muerta, cerrada o liquidada
@@ -212,16 +208,6 @@ def situacion(kernel, registro, bus, cola, suscripciones, semana: str,
         # invisible. `None`/0 mientras todavia no salga ninguna.
         "preseed_libera_mm": libera_mm,
         "preseed_libera_al_salir": sale_de_ventana,
-        # lo que Pedro descarto esta semana. NO cuenta contra ningun techo
-        # y no frena nada: alimenta solo el renglon del prompt que arma
-        # `decision.py`. Descartar LIBERA el cupo a proposito -- es la
-        # salida cuando la bandeja de tres esta llena -- asi que el "no" no
-        # puede ser un freno de cupo sin romper eso. El freno que falta es
-        # de identidad ("esto ya lo rechazaste"), es una regla aparte, y
-        # todavia no se puede escribir: necesita que la propuesta tenga una
-        # forma comparable, y hoy lo unico que la identifica es un titulo
-        # de prosa libre cortado a 120 caracteres.
-        "descartadas_semana": descartadas,
         "gasto_api_ciclo_mm": mercado_mod.gasto_api_ciclo(
             asientos, cuenta, semanas_ciclo) if semanas_ciclo else 0,
         "salidas_semana_mm": salidas_de(asientos, cuenta, [semana]),

@@ -83,6 +83,14 @@ function fila(propuesta, departamentos, tesoro_mm) {
   // ancho angosto de escritorio (donde antes "descartar" se caia a una
   // segunda linea desprolija) y el dedo en el telefono (que necesita los
   // 40px de alto) quedan resueltos con el MISMO marcado.
+  // Campo opcional para las palabras de Pedro: lo lee app.js al reaccionar
+  // (descartar/no-mas/financiar) y viaja con la reaccion al registro; vacio
+  // no rompe nada, solo se pierde el motivo. Va en su propia fila, igual
+  // que "pagar" y "botones", por la misma razon que el comentario de mas
+  // arriba: cada bloque su fila, nada que se parta solo.
+  const palabras = `<div class="palabras-campo">` +
+    `<textarea class="palabras" data-id="${escapar(propuesta.id)}" ` +
+    `placeholder="tus palabras (opcional)"></textarea></div>`;
   return `<div class="propuesta" ` +
     `data-presupuesto="${escapar(propuesta.presupuesto_mm)}"` +
     (preseed ? ` data-cuenta="tesoro"` : "") + `>` +
@@ -93,11 +101,14 @@ function fila(propuesta, departamentos, tesoro_mm) {
     `<div class="acciones">` +
     (preseed ? pagaElTesoro()
              : `<div class="pagar">paga ${selector(propuesta, departamentos)}</div>`) +
+    palabras +
     `<div class="botones">` +
     `<button data-accion="financiar" data-id="${escapar(propuesta.id)}">` +
     `financiar</button>` +
     `<button data-accion="descartar" data-id="${escapar(propuesta.id)}">` +
-    `descartar</button></div></div></div>`;
+    `descartar</button>` +
+    `<button data-accion="no-mas" data-id="${escapar(propuesta.id)}">` +
+    `no mas</button></div></div></div>`;
 }
 
 /** La pila de pedidos de pre-seed vencidos, que NO es una fila de la mesa.

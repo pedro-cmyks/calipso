@@ -12,6 +12,7 @@ from calipso.plantel import ficha
 from calipso.plantel import ilegibles as ilg
 from calipso.plantel import interruptor as it
 from calipso.plantel import jefe as j
+from calipso.plantel import reacciones
 from calipso.plantel import situacion as sit
 
 TS = "2026-08-26T10:00:00"
@@ -754,47 +755,87 @@ def test_los_pedidos_en_pie_cuentan_contra_el_techo_de_la_ronda(tmp_path):
     assert contratos == []
 
 
-def test_lo_que_pedro_descarto_esta_semana_le_llega_al_jefe(tmp_path):
+def test_lo_que_pedro_descarto_le_llega_al_jefe(tmp_path, monkeypatch):
     """Descartar libera el cupo A PROPOSITO (spec seccion 8: con la bandeja
     llena el jefe queda frenado, y la salida que le da la mesa de Pedro
     tiene que devolverle el lugar), asi que el "no" NO puede ser un freno
-    sin romper eso. Lo que si faltaba: que el "no" llegue. `situacion`
-    cortaba en `estado not in ("alta", "financiada")`, o sea que una
-    propuesta descartada desaparecia por completo -- el jefe la volvia a
-    proponer al tic siguiente y lo unico que lo separaba de repetir era un
-    modelo de 3b leyendo "no repitas lo mismo"."""
-    from calipso.economia import bus as bus_mod
-
-    ctx, _contratos, _ = armar(tmp_path, "proponer\notra idea")
-    ctx.bus.alta(TS, W, "p0", "dep:atlas", "radar de precios", 1_000, 2_000,
-                {"gasto_max_mm": 5_000})
-    bus_mod.descartar(ctx.bus, TS, W, "p0")
-
-    s = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
-                     ctx.suscripciones, W, "dep:atlas")
-    # el cupo vuelve (eso no se toca) y ademas queda el rastro
-    assert s["propuestas_propias"] == []
-    assert [d["id"] for d in s["descartadas_semana"]] == ["p0"]
-    assert s["descartadas_semana"][0]["titulo"] == "radar de precios"
-    # y el prompt se lo dice al modelo con todas las letras
-    texto = dec.prompt(s, 50)
-    assert "Pedro DESCARTO esta semana" in texto
-    assert "radar de precios" in texto
+    sin romper eso. Lo que si faltaba: que el "no" llegue -- y ahora llega
+    por el registro durable (`reacciones.anotar`, que escribe la mesa) y no
+    por `situacion`: `jefe.tic` lo lee con el nombre PELADO del `dep:` (el
+    mismo criterio que la carta) y se lo pasa a `dec.prompt`."""
+    monkeypatch.setenv("CALIPSO_HOME", str(tmp_path))
+    visto = {}
+    ctx, _contratos, _ = armar(tmp_path)
+    ctx.pensar = lambda p: visto.setdefault("p", p) or "nada\nx"
+    reacciones.anotar("atlas", "descarto",
+                      {"sobre": "radar de precios", "clave": "radar+precios",
+                       "promete": "medir", "tarda": "corto"},
+                      "muy caro", "p0")
+    it.poner_modo(tmp_path, "vivo")
+    j.tic(ctx, "dep:atlas", W)
+    assert "Pedro reacciono" in visto["p"]
+    assert "radar de precios" in visto["p"]
 
 
-def test_una_descartada_de_otra_semana_ya_no_pesa(tmp_path):
-    """El "no" es de la semana en que se dijo: `descartar` es terminal, y
-    arrastrar la lista para siempre convertiria el rastro en una lapida."""
-    from calipso.economia import bus as bus_mod
+def test_una_reaccion_de_otra_semana_sigue_pesando(tmp_path, monkeypatch):
+    """A diferencia del viejo `descartadas_semana` (que se armaba de nuevo
+    en cada tic y solo con lo de la semana en curso), el registro durable
+    NO se evapora al cambiar de semana: una reaccion anotada en W35 le
+    sigue llegando al jefe en W36."""
+    monkeypatch.setenv("CALIPSO_HOME", str(tmp_path))
+    visto = {}
+    ctx, _contratos, _ = armar(tmp_path)
+    ctx.pensar = lambda p: visto.setdefault("p", p) or "nada\nx"
+    reacciones.anotar("atlas", "descarto",
+                      {"sobre": "radar de precios", "clave": "radar+precios",
+                       "promete": "medir", "tarda": "corto"},
+                      "muy caro", "p0")
+    it.poner_modo(tmp_path, "vivo")
+    j.tic(ctx, "dep:atlas", "2026-W36")
+    assert "Pedro reacciono" in visto["p"]
+    assert "radar de precios" in visto["p"]
 
-    ctx, _contratos, _ = armar(tmp_path, "proponer\notra idea")
-    ctx.bus.alta(TS, W, "p0", "dep:atlas", "radar de precios", 1_000, 2_000,
-                {"gasto_max_mm": 5_000})
-    bus_mod.descartar(ctx.bus, TS, W, "p0")
-    s = sit.situacion(ctx.kernel, ctx.registro, ctx.bus, ctx.cola,
-                     ctx.suscripciones, "2026-W36", "dep:atlas")
-    assert s["descartadas_semana"] == []
-    assert "Pedro DESCARTO" not in dec.prompt(s, 50)
+
+def test_un_tema_vetado_con_no_mas_no_llega_al_bus(tmp_path, monkeypatch):
+    """El piso determinista del "no mas": si Pedro veto la CLAVE de un tema
+    en este departamento, la propuesta no llega al bus pase lo que pase con
+    el modelo -- ni reencuadrando la promesa (`medir` por `acelerar` aca)
+    la esquiva, porque la identidad sale solo del `sobre`."""
+    monkeypatch.setenv("CALIPSO_HOME", str(tmp_path))
+    reacciones.anotar(
+        "atlas", "no_mas",
+        {"sobre": "el radar de precios",
+         "clave": ficha.normalizar("el radar de precios"),
+         "promete": "medir", "tarda": "corto"},
+        "no mas", "p0")
+    # el modelo del jefe propone el MISMO tema, reencuadrado con otra
+    # promesa: misma clave -> vetada igual.
+    crudo = ("proponer\nsobre: el radar de precios\npromete: acelerar\n"
+             "tarda: corto\nporque: x")
+    ctx, contratos, _ = armar(tmp_path, crudo)
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["actuo"] is False
+    assert "vetast" in (out["freno"] + out["motivo"]).lower()
+    assert contratos == []
+
+
+def test_un_tema_no_vetado_si_llega(tmp_path, monkeypatch):
+    """El otro lado del piso: sin un `no_mas` sobre esa clave (aca hay uno,
+    pero sobre otra), la propuesta llega al bus como siempre."""
+    monkeypatch.setenv("CALIPSO_HOME", str(tmp_path))
+    reacciones.anotar(
+        "atlas", "no_mas",
+        {"sobre": "otro tema", "clave": ficha.normalizar("otro tema"),
+         "promete": "medir", "tarda": "corto"},
+        "no mas", "p0")
+    crudo = ("proponer\nsobre: el radar de precios\npromete: descartar\n"
+             "tarda: corto\nporque: no rindio")
+    ctx, contratos, _ = armar(tmp_path, crudo)
+    it.poner_modo(tmp_path, "vivo")
+    out = j.tic(ctx, "dep:atlas", W)
+    assert out["accion"] == "proponer" and out["actuo"] is True
+    assert contratos and contratos[0][0] == "proponer"
 
 
 # -- el segundo techo del pre-seed: el acumulado por CICLO -----------------

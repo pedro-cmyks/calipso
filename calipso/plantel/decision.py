@@ -75,7 +75,8 @@ def proyectos_de(proyectos, cuenta: str) -> list[dict]:
 
 def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
           recientes: "list[str] | tuple" = (), carta: dict | None = None,
-          proyectos: "list[dict] | None" = None) -> str:
+          proyectos: "list[dict] | None" = None,
+          reacciones: list = ()) -> str:
     """Corto a proposito: corre seguido y en el escalon barato.
 
     `nucleo` es el markdown de la memoria del departamento. Sin el, el jefe
@@ -95,15 +96,21 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
     ajenas = "\n".join(
         f"  - {p['id']}: {_como_se_ve(p)} (de {p['dueno']})"
         for p in s["propuestas_ajenas"]) or "  (ninguna)"
-    # el "no" de Pedro, dicho con todas las letras -- y es lo UNICO que
-    # hay. No existe ningun freno mecanico: `jefe._puede` no nombra
-    # `descartadas_semana` por ningun lado, y una descartada ni siquiera
-    # gasta cupo del techo de tres, porque `situacion` hace `continue`
-    # antes de construir `propuestas_propias`. Lo unico que separa al jefe
-    # de volver a proponer lo mismo es que un modelo de 3b lea este renglon
-    # y le haga caso.
-    rechazadas = "\n".join(f"  - {_como_se_ve(p)}"
-                           for p in s.get("descartadas_semana", []))
+    # Las reacciones DURABLES de Pedro (descarto / no mas / financio), su
+    # VOZ y no una conclusion del jefe (por eso viven afuera del core, como
+    # la carta). Reemplaza al viejo `descartadas_semana`, que se evaporaba
+    # cada semana. Un `no_mas` ademas lo frena el piso determinista (ver
+    # jefe): mostrarlo aca es para que no gaste turnos.
+    def _linea_reaccion(r):
+        f = r.get("forma") or {}
+        sobre = f.get("sobre", "(sin tema)")
+        pal = f" ({r['palabras']})" if r.get("palabras") else ""
+        if r.get("reaccion") == "no_mas":
+            return f"  - NO MAS: {sobre}{pal}"
+        if r.get("reaccion") == "financio":
+            return f"  - financio: {sobre}{pal}"
+        return f"  - descarto: {sobre}{pal} -- proba otro angulo o soltalo"
+    rechazadas = "\n".join(_linea_reaccion(r) for r in reacciones)
     cap = s.get("capacidad")
     precio = (f"{cap['precio_mm']} mm por unidad de {cap['nombre']} "
               f"(lista {cap['precio_base_mm']})") if cap else "sin capacidad"
@@ -196,8 +203,8 @@ def prompt(situacion: dict, sesgo_pct: int, nucleo: str = "",
         f"Tus trabajos vivos:\n{trabajos}\n"
         f"Propuestas tuyas todavia sin financiar:\n{propias}\n"
         f"Propuestas de otros departamentos:\n{ajenas}\n"
-        + (f"Pedro DESCARTO esta semana (no las vuelvas a proponer):\n"
-           f"{rechazadas}\n" if rechazadas else "") +
+        + (f"Pedro reacciono asi a tus propuestas (su voz, no tu "
+           f"conclusion):\n{rechazadas}\n" if rechazadas else "") +
         f"Compuertas tuyas esperando la firma de Pedro: "
         f"{s['compuertas_pendientes']}.\n\n"
         f"Ahora inclinate a {inclinacion}.\n\n"

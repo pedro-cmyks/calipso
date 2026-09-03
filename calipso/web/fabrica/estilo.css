@@ -237,6 +237,11 @@ html, body {
 .mesa .acciones .botones button { flex: 1; }
 .mesa .acciones button { cursor: pointer; min-height: 40px; padding: 0 14px; }
 .mesa .acciones select { min-height: 40px; }
+.mesa .acciones .palabras-campo textarea.palabras {
+  width: 100%; box-sizing: border-box; min-height: 32px; resize: vertical;
+  font: inherit; padding: 6px 8px; border: 1px solid var(--linea);
+  border-radius: 4px; background: var(--fondo); color: var(--texto);
+}
 .mesa .vacio { color: var(--tenue); padding: 8px; }
 .mesa .filtro {
   display: flex; align-items: center; justify-content: space-between;

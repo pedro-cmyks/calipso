@@ -259,9 +259,10 @@ def test_un_superindice_no_es_un_monto():
 
 def _situacion_minima() -> dict:
     """Lo minimo que `prompt` indexa con corchetes. Las claves que lee con
-    `.get()` -propuestas_propias, descartadas_semana, catalogo- se omiten a
-    proposito: asi los tests que no hablan de ellas ejercitan el camino de
-    una situacion que no las trae."""
+    `.get()` -propuestas_propias, catalogo- se omiten a proposito: asi los
+    tests que no hablan de ellas ejercitan el camino de una situacion que
+    no las trae. `reacciones` ya no es una clave de la situacion: es un
+    parametro aparte de `prompt`, y por default viene vacio."""
     return {"nombre": "atlas", "disponible_mm": 400_000, "saldo_mm": 400_000,
             "presupuesto_semanal_mm": 25_000, "salidas_semana_mm": 7_000,
             "compuertas_pendientes": 2, "trabajos": [],
@@ -474,3 +475,23 @@ def test_sin_los_parametros_nuevos_el_prompt_sigue_saliendo():
     """Los doce tests viejos del prompt llaman sin carta y sin proyectos.
     Los defaults tienen que dejarlos pasar."""
     assert dec.prompt(_situacion_minima(), 50)
+
+
+def test_el_prompt_rinde_las_reacciones_de_pedro():
+    from calipso.plantel import decision as dec
+    s = _situacion_minima()
+    reacs = [
+        {"reaccion": "no_mas", "forma": {"sobre": "el radar de precios", "clave": "precios+radar"}, "palabras": "no mas", "propuesta_id": "a"},
+        {"reaccion": "descarto", "forma": {"sobre": "un dashboard", "clave": "dashboard"}, "palabras": "otro angulo", "propuesta_id": "b"},
+    ]
+    p = dec.prompt(s, 50, "", (), reacciones=reacs)
+    assert "Pedro reacciono" in p
+    assert "el radar de precios" in p and "NO MAS" in p
+    assert "un dashboard" in p and "otro angulo" in p
+
+
+def test_sin_reacciones_el_prompt_no_rompe():
+    from calipso.plantel import decision as dec
+    s = _situacion_minima()
+    p = dec.prompt(s, 50, "", ())
+    assert isinstance(p, str) and p
