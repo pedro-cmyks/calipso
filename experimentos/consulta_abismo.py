@@ -217,9 +217,12 @@ def main():
     rut = total_ruteo / total_leg if total_leg else 0
     lineas.append(f"- ruteo correcto: {total_ruteo}/{total_leg} ({rut:.0%}) -> "
                   f"{'PASA' if rut >= 0.9 else 'NO PASA'} (piso 90%).")
-    lineas.append(f"- latencia por llamada: mediana "
-                  f"{statistics.median(latencias):.0f} ms, "
-                  f"max {max(latencias)} ms.")
+    if latencias:
+        lineas.append(f"- latencia por llamada: mediana "
+                      f"{statistics.median(latencias):.0f} ms, "
+                      f"max {max(latencias)} ms.")
+    else:
+        lineas.append("- latencia por llamada: sin llamadas.")
     reporte = "\n".join(lineas) + "\n"
     print("\n" + reporte, flush=True)
     out = pathlib.Path(__file__).parent / "consulta_abismo_resultados.md"
