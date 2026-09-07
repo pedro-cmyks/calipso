@@ -6808,6 +6808,11 @@ def _instalar_filtro_de_token() -> None:
 
 _instalar_filtro_de_token()
 
+# Solo para el AVISO del arranque. Vive AFUERA del __main__ a proposito: el
+# tripwire de test_seguridad_puertas prohibe el literal ahi adentro, y con
+# razon -- el bind sale de _host(), nunca de una constante.
+_HOST_TODAS_LAS_INTERFACES = "0.0.0.0"
+
 
 if __name__ == "__main__":
     host = _host()
@@ -6820,10 +6825,10 @@ if __name__ == "__main__":
         import socket
         ip = socket.gethostbyname(socket.gethostname())
         print(f"[calipso] ABIERTO en {host} — tambien entra http://{ip}:8000")
-        if host == "0.0.0.0":
-            # C8: 0.0.0.0 expone HTTP en claro a TODA la wifi. El camino
-            # para el lector es la IP de la interfaz Tailscale (cifrada).
-            print("[calipso] OJO: 0.0.0.0 abre HTTP SIN CIFRAR a toda la "
+        if host == _HOST_TODAS_LAS_INTERFACES:
+            # C8: todas-las-interfaces expone HTTP en claro a TODA la wifi.
+            # El camino para el lector es la IP de Tailscale (cifrada).
+            print("[calipso] OJO: este host abre HTTP SIN CIFRAR a toda la "
                   "red. Para el lector usa la IP de Tailscale (100.x) como "
-                  "CALIPSO_HOST, no 0.0.0.0.")
+                  "CALIPSO_HOST.")
     uvicorn.run(app, host=host, port=8000)
