@@ -264,7 +264,8 @@ def _es_loopback(host: str | None) -> bool:
     """La propia maquina. Incluye "testclient" (el host sintetico del
     TestClient de Starlette) para que la suite ejercite los flujos locales;
     ese valor no puede llegar por red real (no es una IP)."""
-    return (host or "") in ("127.0.0.1", "::1", "localhost", "testclient")
+    return (host or "") in ("127.0.0.1", "::1", "::ffff:127.0.0.1",
+                            "localhost", "testclient")
 
 
 # --- freno de fuerza bruta del login (revision de seguridad 2026-09-07, C3)
@@ -294,9 +295,21 @@ def _login_espera(clave: str, max_fallos: int) -> float:
 
 
 def _login_fallo(clave: str) -> None:
+    """Registra el fallo y PODA lo viejo: toda entrada (el balde global "*"
+    incluido) cuyo ultimo fallo sea mas viejo que el tope de castigo se
+    olvida. Sin esto el balde era un trinquete monotono -- los typos de
+    semanas se acumulaban hasta que cada fallo bloqueaba a todos por 15
+    minutos, y un host hostil podia sostener ese lockout con un fallo cada
+    tanto (DoS del login, lo cazo la ronda adversaria). Con la poda, el
+    freno castiga rachas, no historia."""
     with _login_lock:
+        ahora = _login_reloj()
+        viejas = [k for k, (_, ultimo) in _login_fallos.items()
+                  if ahora - ultimo > _LOGIN_BACKOFF_TOPE]
+        for k in viejas:
+            del _login_fallos[k]
         fallos = _login_fallos.get(clave, [0, 0.0])[0]
-        _login_fallos[clave] = [fallos + 1, _login_reloj()]
+        _login_fallos[clave] = [fallos + 1, ahora]
 
 
 def _login_exito(clave: str) -> None:
@@ -373,11 +386,15 @@ async def auth_guard(request: Request, call_next):
         # maquina no es una via de entrada. Un dispositivo remoto entra por
         # /login (TOTP) y cookie -- y con la capa de sesion, por identidad
         # de aparato.
+        # (los websockets NO pasan por este middleware http: ws_chat y
+        # ws_mapa autentican su propio handshake por cookie y jamas
+        # aceptaron ?token= -- no agregar "/ws" aca creyendo que protege)
         if not _es_loopback(request.client.host if request.client else ""):
-            if path.startswith("/api") or path.startswith("/ws"):
-                return JSONResponse(
-                    {"detail": "token por URL solo desde la propia maquina"},
-                    status_code=401)
+            if path.startswith("/api"):
+                # mismo detail que un token invalido: distinguirlos era un
+                # oraculo remoto de validez del token
+                return JSONResponse({"detail": "no autorizado"},
+                                    status_code=401)
             return RedirectResponse(url="/login", status_code=303)
         if path.startswith("/api") or request.method != "GET":
             resp = await call_next(request)
@@ -6808,12 +6825,6 @@ def _instalar_filtro_de_token() -> None:
 
 _instalar_filtro_de_token()
 
-# Solo para el AVISO del arranque. Vive AFUERA del __main__ a proposito: el
-# tripwire de test_seguridad_puertas prohibe el literal ahi adentro, y con
-# razon -- el bind sale de _host(), nunca de una constante.
-_HOST_TODAS_LAS_INTERFACES = "0.0.0.0"
-
-
 if __name__ == "__main__":
     host = _host()
     print(f"[calipso] sirviendo {ROOT}")
@@ -6825,10 +6836,19 @@ if __name__ == "__main__":
         import socket
         ip = socket.gethostbyname(socket.gethostname())
         print(f"[calipso] ABIERTO en {host} — tambien entra http://{ip}:8000")
-        if host == _HOST_TODAS_LAS_INTERFACES:
-            # C8: todas-las-interfaces expone HTTP en claro a TODA la wifi.
-            # El camino para el lector es la IP de Tailscale (cifrada).
-            print("[calipso] OJO: este host abre HTTP SIN CIFRAR a toda la "
-                  "red. Para el lector usa la IP de Tailscale (100.x) como "
-                  "CALIPSO_HOST.")
+        # C8: criterio invertido (ronda adversaria) -- el aviso duro salta
+        # para TODO host que no sea loopback ni la red de Tailscale
+        # (100.64.0.0/10, el camino bendecido del lector), no solo para el
+        # literal todas-las-interfaces ("::" y una IP de LAN pelada exponen
+        # lo mismo).
+        import ipaddress
+        try:
+            en_tailscale = ipaddress.ip_address(host) in (
+                ipaddress.ip_network("100.64.0.0/10"))
+        except ValueError:
+            en_tailscale = False
+        if not en_tailscale:
+            print("[calipso] OJO: este host abre HTTP SIN CIFRAR fuera de "
+                  "la maquina. Para el lector usa la IP de Tailscale "
+                  "(100.x) como CALIPSO_HOST.")
     uvicorn.run(app, host=host, port=8000)

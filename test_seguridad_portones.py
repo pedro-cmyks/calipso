@@ -1,7 +1,8 @@
-"""Revision de seguridad 2026-09-07, punto 3a: los portones de la puerta de
-red que bloqueaban abrir CALIPSO_HOST -- C3 (freno de fuerza bruta en
-/login), C7/S3 (CALIPSO_NO_TOTP solo desde loopback) y C8 (?token= solo
-desde la propia maquina)."""
+"""Revision de seguridad 2026-09-07, punto 3a: tres de los portones que
+bloquean abrir CALIPSO_HOST -- C3 (freno de fuerza bruta en /login), C7/S3
+(CALIPSO_NO_TOTP solo desde loopback) y C8 (?token= solo desde la propia
+maquina). OJO: abrir el host sigue bloqueado por lo que falta del punto 3
+(capa de sesion + identidad de aparato, ver la adenda 3a del informe)."""
 import asyncio
 
 import httpx
@@ -52,8 +53,27 @@ def test_castigo_con_tope(monkeypatch):
     monkeypatch.setattr(srv, "_login_reloj", lambda: t[0])
     for _ in range(30):
         srv._login_fallo("h")
+    # 900 LITERAL: el numero ES el contrato (mismo criterio que 2.0/4.0);
+    # bajar el tope debilita el freno y tiene que romper este test
     assert (srv._login_espera("h", srv._LOGIN_MAX_FALLOS_HOST)
-            == pytest.approx(srv._LOGIN_BACKOFF_TOPE))
+            == pytest.approx(900.0))
+    assert srv._LOGIN_MAX_FALLOS_GLOBAL == 20
+
+
+def test_la_poda_olvida_rachas_viejas(monkeypatch):
+    # El balde global no es un trinquete: un fallo mas viejo que el tope
+    # de castigo se olvida al registrar el siguiente (los typos de semanas
+    # no se acumulan, y el lockout sostenido exige fallar DENTRO de la
+    # ventana).
+    t = [1000.0]
+    monkeypatch.setattr(srv, "_login_reloj", lambda: t[0])
+    for _ in range(25):
+        srv._login_fallo("*")
+    t[0] += srv._LOGIN_BACKOFF_TOPE + 1
+    srv._login_fallo("otro-host")  # cualquier fallo poda lo vencido
+    with srv._login_lock:
+        assert "*" not in srv._login_fallos
+        assert srv._login_fallos["otro-host"][0] == 1
 
 
 def test_exito_limpia_el_host_pero_no_el_balde_global(monkeypatch):
@@ -71,6 +91,7 @@ def test_exito_limpia_el_host_pero_no_el_balde_global(monkeypatch):
 def test_el_endpoint_devuelve_429_tras_cinco_fallos(monkeypatch):
     monkeypatch.setattr(srv, "_TOTP_DISABLED", False)
     monkeypatch.setattr(srv, "_verify_totp", lambda code: False)
+    monkeypatch.setattr(srv, "_login_reloj", lambda: 1000.0)  # sin flakiness
     c = TestClient(app=srv.app)
     for _ in range(5):
         r = c.post("/login", data={"code": "000000"})
@@ -81,6 +102,21 @@ def test_el_endpoint_devuelve_429_tras_cinco_fallos(monkeypatch):
     # y el 429 NO consume el codigo: no siguio contando fallos
     with srv._login_lock:
         assert srv._login_fallos["testclient"][0] == 5
+
+
+def test_login_exitoso_planta_cookie_y_limpia_el_host(monkeypatch):
+    monkeypatch.setattr(srv, "_TOTP_DISABLED", False)
+    monkeypatch.setattr(srv, "_verify_totp", lambda code: code == "123456")
+    monkeypatch.setattr(srv, "_login_reloj", lambda: 1000.0)
+    c = TestClient(app=srv.app)
+    for _ in range(4):
+        assert c.post("/login", data={"code": "000000"}).status_code == 401
+    r = c.post("/login", data={"code": "123456"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert srv.COOKIE in r.cookies
+    with srv._login_lock:
+        assert "testclient" not in srv._login_fallos  # el host se limpia
+        assert srv._login_fallos["*"][0] == 4         # el balde global no
 
 
 def test_el_balde_global_frena_hosts_nuevos(monkeypatch):
@@ -108,6 +144,36 @@ def test_el_anuncio_de_totp_desactivado_no_se_muestra_a_remotos(monkeypatch):
     monkeypatch.setattr(srv, "_TOTP_DISABLED", True)
     assert "desactivado" in srv._login_mode_html("127.0.0.1")
     assert "desactivado" not in srv._login_mode_html("10.0.0.9")
+
+
+def _postear_login_como(ip: str, code: str) -> httpx.Response:
+    transporte = httpx.ASGITransport(app=srv.app, client=(ip, 4321))
+
+    async def _ir():
+        async with httpx.AsyncClient(transport=transporte,
+                                     base_url="http://calipso") as c:
+            return await c.post("/login", data={"code": code})
+
+    return asyncio.run(_ir())
+
+
+def test_no_totp_no_vale_desde_afuera(monkeypatch):
+    # El canario de C7: revertir el bypass a `if _TOTP_DISABLED or ...`
+    # tiene que romper ESTE test, no solo los helpers.
+    monkeypatch.setattr(srv, "_TOTP_DISABLED", True)
+    monkeypatch.setattr(srv, "_verify_totp", lambda code: False)
+    monkeypatch.setattr(srv, "_login_reloj", lambda: 1000.0)
+    assert _postear_login_como("192.168.1.66", "000000").status_code == 401
+    assert _postear_login_como("127.0.0.1", "000000").status_code == 303
+
+
+def test_el_balde_global_frena_por_el_endpoint(monkeypatch):
+    monkeypatch.setattr(srv, "_TOTP_DISABLED", False)
+    monkeypatch.setattr(srv, "_verify_totp", lambda code: False)
+    monkeypatch.setattr(srv, "_login_reloj", lambda: 1000.0)
+    with srv._login_lock:
+        srv._login_fallos["*"] = [srv._LOGIN_MAX_FALLOS_GLOBAL, 1000.0]
+    assert _postear_login_como("10.9.8.7", "000000").status_code == 429
 
 
 # --- C8: ?token= solo desde la propia maquina --------------------------------

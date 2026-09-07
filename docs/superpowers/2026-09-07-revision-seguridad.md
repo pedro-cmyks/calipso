@@ -85,6 +85,14 @@ Queda abierto y pasa a la lista del punto 3, dicho sin vueltas:
 - **El shell Tauri** (`src-tauri/src/lib.rs:118`) todavia navega su webview interno con `?token=` — es Rust, no lo cubre esta rama; el filtro de logs ya lo enmascara del lado del server.
 - **Friccion de primer uso**: sin cookie y sin TOTP configurado, `/setup` esta detras del guard (huevo y gallina). Solo muerde en una instalacion desde cero; anotado para resolver con la capa de sesion.
 
+## Adenda tras el fix del punto 3a (mismo dia)
+
+Hecho -- TRES portones, no el punto 3 entero: **C3** (freno de fuerza bruta en /login: backoff exponencial por host desde el 5to fallo, balde global desde el 20mo, y PODA con decaimiento -- sin ella el balde era un trinquete que convertia el freno en palanca de DoS del login, lo cazo la ronda adversaria); **C7/S3** (CALIPSO_NO_TOTP solo vale desde loopback y no se anuncia a remotos; con canario de endpoint); **C8 parcial** (?token= como credencial solo desde la propia maquina -- un remoto entra por /login+TOTP y cookie; mismo detail en ambos 401 para no dar oraculo de validez; aviso duro de arranque para todo host que no sea loopback ni Tailscale 100.64/10). Los websockets no pasan por el middleware http: autentican su handshake por cookie, documentado en el guard.
+
+**Abrir CALIPSO_HOST SIGUE BLOQUEADO.** Lo que falta del punto 3, en orden: la **capa de sesion + identidad de dispositivo** (cookie que no sea el token, vencimiento, revocacion por aparato -- el diseno D3 de agosto; es trabajo arquitectonico con brainstorm propio), el cierre de la **escalada PUT /api/file + commands/run** (motor de permisos sobre escrituras al repo de Calipso), **raices explicitas** del catastro, el **accept-once** de ?token=, el shell **Tauri** (Rust) y el huevo-gallina de **/setup**. El "bindear SOLO la IP de Tailscale" es operacional: no hay codigo que lo fuerce, solo el aviso.
+
+**Ripple documental:** el BRIEF del lector (calipso-lector) daba "?token=" como via valida de su plugin -- con C8 eso NO entra desde el tailnet. El camino del lector pasa a ser: cookie (hoy vale el token, ganada por /login+TOTP) y, cuando exista, identidad de aparato. Actualizado en el BRIEF con fecha.
+
 ## Orden de remediacion recomendado
 
 1. **Ya, en cualquier momento (no depende de nada):** C1 (helper git blindado — es chico y es RCE hoy), C5 (esc() en los sumideros), C6 (backup sin secretos + zip 0600).
