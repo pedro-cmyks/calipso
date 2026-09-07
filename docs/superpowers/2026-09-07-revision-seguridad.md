@@ -62,6 +62,17 @@ Sin TLS ni TrustedHost (`calipso/server.py:6605,139-155`). Atenuante fuerte que 
 - **Traversal en id de sesion** (`PUT /api/session/active`) y **attachment_ids sin sanitizar** en el ws (bajas): normalizar/validar los ids contra su directorio.
 - **Llamada de suscripcion sin timeout** (baja): timeout=None en el camino bloqueante del chat.
 
+## Adenda tras el fix del punto 1 (mismo dia)
+
+La revision adversaria del fix (tres lentes, con verificacion EMPIRICA en repos de prueba) encontro y se cerro en la misma rama:
+
+- **C1 tenia dos caminos mas alla de su letra:** el ejecutor de contribucion (`/api/github/contribute/run`) corria git/gh sobre ROOT sin escudo (un `git checkout -b` dispara fsmonitor — verificado), y `github.git_runner` habia quedado sin blindar. Ahora hay UN helper compartido (`github.env_git_blindado`) que usan los dos runners y el ejecutor.
+- **El escudo de `-c` NO tapa los drivers de diff por archivo** (`.gitattributes` + `[diff "x"] command=...` ejecuta en `git diff` A TRAVES de las tres banderas — verificado). Cerrado con `--no-ext-diff --no-textconv` en `/api/git/diff` y en las entradas git_diff del allowlist. **OJO: `catastro._git` conserva el hueco en teoria pero catastro nunca corre diff; si algun dia lo corre, llevar las banderas.**
+- **C5 tenia un anillo mas:** `addDetail` (detalle de jobs/agentes) metia titulo y stderr por innerHTML sin esc() — y el stderr de un job puede citar nombres de archivo del repo hostil. Cerrado, con tripwire automatizado en `test_seguridad_git_blindado.py`.
+- Los canarios REALES quedaron en la suite (repo hostil con fsmonitor y con diff driver, con control positivo): un refactor que pierda el escudo rompe tests, no solo una promesa.
+- **Deferido con nombre:** los CLIs de suscripcion (claude/codex) se spawnean con cwd=ROOT y corren git por dentro en cada turno — la misma clase de C1 fuera de su letra. No se toco (el camino del chat merece su propio ciclo de test); pasa al punto 2 de la lista. Nota: ese CLI es un agente con ejecucion de comandos POR DISENO, asi que el escudo de env ahi mitiga solo los git implicitos.
+- Regresiones: NINGUNA verificada (A/B byte-identico de status/diff con y sin escudo; el ~/.gitconfig de Pedro solo tiene user.name/email; gh sin credential helper de git).
+
 ## Orden de remediacion recomendado
 
 1. **Ya, en cualquier momento (no depende de nada):** C1 (helper git blindado — es chico y es RCE hoy), C5 (esc() en los sumideros), C6 (backup sin secretos + zip 0600).

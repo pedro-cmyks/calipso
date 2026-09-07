@@ -1381,7 +1381,7 @@ async function loadRoutines() {
   const backups = data.backups || [];
   if (backups.length) {
     const h = document.createElement("div"); h.className = "hint";
-    h.textContent = `Backups: ${backups.length} (ultimo ${esc(backups[0].modified)})`;
+    h.textContent = `Backups: ${backups.length} (ultimo ${backups[0].modified})`;
     box.appendChild(h);
   }
   box.querySelectorAll("button[data-rt]").forEach(btn => {
@@ -1900,7 +1900,7 @@ function addDetail(key, title, body) {
   const d = document.createElement("details");
   d.className = "msg detail";
   d.open = false;
-  d.innerHTML = `<summary>${title}</summary><pre>${body || ""}</pre>`;
+  d.innerHTML = `<summary>${esc(title)}</summary><pre>${esc(body || "")}</pre>`;
   messages.appendChild(d); messages.scrollTop = messages.scrollHeight;
   if (key) {
     processEls.set(key, d);

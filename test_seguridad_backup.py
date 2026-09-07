@@ -38,6 +38,18 @@ def test_backup_sin_secretos_ni_logs_y_0600(tmp_path, monkeypatch):
     assert modo == 0o600
 
 
+def test_logs_anidado_si_se_respalda(tmp_path, monkeypatch):
+    # La exclusion de logs/ es de la RAIZ (ahi vive el access log con el
+    # token); un logs/ dentro de un proyecto es una carpeta comun.
+    monkeypatch.setattr(backup, "CALIPSO_HOME", tmp_path)
+    d = tmp_path / "projects" / "x" / "logs"
+    d.mkdir(parents=True)
+    (d / "run.log").write_text("normal", encoding="utf-8")
+    r = backup.create_backup(stamp="logsanidado")
+    with zipfile.ZipFile(r["path"]) as zf:
+        assert "projects/x/logs/run.log" in zf.namelist()
+
+
 def test_un_token_anidado_si_se_respalda(tmp_path, monkeypatch):
     # La exclusion es de la RAIZ del home: un archivo que se llame "token"
     # dentro de un proyecto es un archivo comun.

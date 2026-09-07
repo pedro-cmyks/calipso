@@ -35,16 +35,16 @@ def _which_gh() -> str | None:
     return None
 
 
-def default_runner(cwd: str | None = None, timeout: int = 15) -> Runner:
-    """Runner real que ejecuta `gh` (primer arg) buscandolo en PATH."""
-    exe = _which_gh()
-
-    # gh corre git por dentro en el cwd que le den (que puede ser un repo
-    # ajeno del catastro). GIT_CONFIG_COUNT inyecta config con la maxima
-    # precedencia -- equivalente a -c, y lo hereda el git que gh spawnee --
-    # para anular core.fsmonitor/diff.external/pager del .git/config del
-    # repo. Mismo escudo que server._git/catastro._git (revision de
-    # seguridad 2026-09-07, C1).
+def env_git_blindado() -> dict:
+    """El escudo por entorno contra el .git/config de un repo ajeno, para
+    TODO proceso que corra git (directo o por dentro, como gh) sobre un cwd
+    conmutable. GIT_CONFIG_COUNT inyecta config con la maxima precedencia
+    -- equivalente a -c, pisa el config LOCAL del repo, y lo hereda
+    cualquier git hijo -- para anular core.fsmonitor/diff.external/pager.
+    Verificado empiricamente en la revision de seguridad 2026-09-07 (C1):
+    sin esto, `git checkout -b` o un `git status` interno de gh ejecutan el
+    comando que el repo declare. Un solo helper para que los runners no
+    vuelvan a divergir."""
     env = os.environ.copy()
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_SYSTEM"] = os.devnull
@@ -54,6 +54,13 @@ def default_runner(cwd: str | None = None, timeout: int = 15) -> Runner:
         env[f"GIT_CONFIG_KEY_{i}"] = k
         env[f"GIT_CONFIG_VALUE_{i}"] = v
     env["GIT_CONFIG_COUNT"] = "3"
+    return env
+
+
+def default_runner(cwd: str | None = None, timeout: int = 15) -> Runner:
+    """Runner real que ejecuta `gh` (primer arg) buscandolo en PATH."""
+    exe = _which_gh()
+    env = env_git_blindado()
 
     def run(args: list[str]) -> tuple[int, str, str]:
         if not exe:
@@ -72,13 +79,15 @@ def default_runner(cwd: str | None = None, timeout: int = 15) -> Runner:
 
 def git_runner(cwd: str | None = None, timeout: int = 10) -> Runner:
     exe = shutil.which("git.exe") or shutil.which("git")
+    env = env_git_blindado()
 
     def run(args: list[str]) -> tuple[int, str, str]:
         if not exe:
             return (127, "", "git no esta en PATH")
         try:
             proc = subprocess.run(
-                [exe, *args], cwd=cwd, text=True, capture_output=True,
+                [exe, *args], cwd=cwd, env=env, text=True,
+                capture_output=True,
                 encoding="utf-8", errors="replace", timeout=timeout)
             return (proc.returncode, proc.stdout or "", proc.stderr or "")
         except Exception as e:  # pragma: no cover
