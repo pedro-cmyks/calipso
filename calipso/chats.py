@@ -46,6 +46,12 @@ def list_chats() -> list[dict]:
     ]
 
 
+def todos() -> list[dict]:
+    """Todos los chats completos (con mensajes). Para la fuente `chats` del
+    abismo: la busqueda lexica necesita el texto, no el conteo de list_chats."""
+    return list(_load()["chats"].values())
+
+
 def get(chat_id: str | None) -> dict | None:
     if not chat_id:
         return None
