@@ -88,6 +88,10 @@ def install(plugin_name: str) -> dict:
     env = {**os.environ}
     env.pop("ANTHROPIC_API_KEY", None)
     env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    # el CLI no necesita las credenciales del servidor ni de litellm
+    # (revision de seguridad 2026-09-07, punto 2)
+    env.pop("CALIPSO_TOKEN", None)
+    env.pop("LITELLM_MASTER_KEY", None)
     try:
         result = subprocess.run(
             [exe, "-p", f"/plugin {plugin_name}"],

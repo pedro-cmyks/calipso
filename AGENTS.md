@@ -278,12 +278,16 @@ del incremento actual.
 python calipso/server.py
 ```
 
-Abrir:
+Abrir (SIN token en la URL -- revision de seguridad 2026-09-07: con
+?token= la credencial quedaba en historial del navegador y logs):
 
 ```text
-http://localhost:8000/?token=<TOKEN>
-http://192.168.1.10:8000/?token=<TOKEN>
+http://localhost:8000/
 ```
+
+La primera vez en un navegador se entra por /login con el codigo TOTP y la
+cookie queda. El ?token= sigue existiendo SOLO como recuperacion manual
+(p.ej. TOTP roto), a sabiendas de que deja rastro.
 
 Luego, para TOTP:
 

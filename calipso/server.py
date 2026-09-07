@@ -30,6 +30,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import os
 import pathlib
 import re
@@ -96,6 +97,14 @@ from calipso.memory import Memory, leer_carta  # noqa: E402
 # RaÃƒÂ­z del proyecto que Calipso muestra/edita. Por defecto, el cwd.
 ROOT = pathlib.Path(os.environ.get("CALIPSO_ROOT", os.getcwd())).resolve()
 WEB = pathlib.Path(__file__).parent / "web"
+
+# El arranque no pasa por _switch_project, asi que su techo (no abrir el
+# home entero) se replica aca: `python calipso/server.py` corrido desde ~
+# dejaba ROOT=home con todo lo que eso abre por /api/file (revision de
+# seguridad 2026-09-07, ronda del punto 2). Se degrada al repo de Calipso.
+if ROOT == pathlib.Path.home().resolve():
+    ROOT = pathlib.Path(__file__).resolve().parent.parent
+    print(f"[calipso] CALIPSO_ROOT era el home entero: degradado a {ROOT}")
 
 # Carpetas que no tiene sentido mostrar en el ÃƒÂ¡rbol.
 IGNORE_DIRS = {
@@ -362,11 +371,30 @@ def setup_page() -> HTMLResponse:
     return HTMLResponse(html)
 
 
+# Defensa en profundidad de _safe (revision de seguridad 2026-09-07, C2):
+# aunque ROOT quedara siendo ancestro de estas carpetas (una raiz de catastro
+# rara, un symlink), las credenciales de Pedro y el estado de Calipso no se
+# sirven por /api/file. Espeja las carpetas de calipso/permisos/acciones.py.
+_VEDADAS_RELATIVAS_AL_HOME = (
+    (".ssh",), (".gnupg",), (".aws",), (".calipso",),
+    (".config", "gh"), (".claude",),
+)
+
+
 def _safe(rel: str) -> pathlib.Path:
-    """Resuelve 'rel' dentro de ROOT o lanza 400 si se sale (path-traversal)."""
+    """Resuelve 'rel' dentro de ROOT o lanza 400 si se sale (path-traversal).
+    Y las carpetas vedadas del home no se sirven nunca, este donde este ROOT."""
     p = (ROOT / rel).resolve()
     if p != ROOT and ROOT not in p.parents:
         raise HTTPException(status_code=400, detail="ruta fuera del proyecto")
+    home = pathlib.Path.home().resolve()
+    vedadas = [home.joinpath(*partes) for partes in _VEDADAS_RELATIVAS_AL_HOME]
+    # el estado real de Calipso, este donde este (CALIPSO_HOME puede apuntar
+    # fuera de ~/.calipso)
+    vedadas.append(_home_calipso().resolve())
+    for v in vedadas:
+        if p == v or v in p.parents:
+            raise HTTPException(status_code=400, detail="ruta vedada")
     return p
 
 
@@ -1064,6 +1092,27 @@ def _switch_project(path: str) -> None:
     p = pathlib.Path(os.path.expandvars(os.path.expanduser(path))).resolve()
     if not p.exists() or not p.is_dir():
         raise HTTPException(status_code=400, detail="la ruta no existe o no es carpeta")
+    # El techo de verdad (revision de seguridad 2026-09-07, C2): con la raiz
+    # por defecto del catastro (el home entero), este era el agujero -- abrir
+    # "~" o "~/.calipso" como proyecto dejaba /api/file leer la llave SSH o
+    # el token y escribir ~/.ssh/authorized_keys. Ni el home, ni el estado de
+    # Calipso, ni las carpetas ocultas del home son proyectos.
+    home = pathlib.Path.home().resolve()
+    ch = _home_calipso().resolve()
+    if p == home:
+        raise HTTPException(status_code=400,
+                            detail="el home entero no se abre como proyecto")
+    if p == ch or ch in p.parents:
+        raise HTTPException(status_code=400,
+                            detail="el estado de Calipso no es un proyecto")
+    try:
+        rel = p.relative_to(home)
+        if rel.parts and rel.parts[0].startswith("."):
+            raise HTTPException(
+                status_code=400,
+                detail="las carpetas ocultas del home no se abren como proyecto")
+    except ValueError:
+        pass  # fuera del home: lo decide el techo del catastro
     if not catastro.dentro_de_alguna_raiz(p):
         raise HTTPException(
             status_code=400,
@@ -1309,17 +1358,20 @@ def _subscription_probe(client: str | None) -> dict:
     exe = _subscription_command(client)
     if not exe:
         return {"installed": False, "ready": False, "error": "no esta en PATH"}
+    # cwd=ROOT es conmutable a un repo ajeno: escudo git tambien aca
+    # (revision de seguridad 2026-09-07, ronda del punto 2)
+    env_probe = calipso_github.env_git_blindado(anular_global=False)
     try:
         result = subprocess.run(
             [exe, "--version"], cwd=str(ROOT), text=True, capture_output=True,
-            encoding="utf-8", errors="replace", timeout=5)
+            encoding="utf-8", errors="replace", timeout=5, env=env_probe)
         executable = result.returncode == 0
         authenticated = None
         if client == "claude" and executable:
             auth = subprocess.run(
                 [exe, "auth", "status"], cwd=str(ROOT), text=True,
                 capture_output=True, encoding="utf-8", errors="replace",
-                timeout=5)
+                timeout=5, env=env_probe)
             try:
                 authenticated = json.loads(auth.stdout).get("loggedIn", False)
             except Exception:
@@ -1328,7 +1380,7 @@ def _subscription_probe(client: str | None) -> dict:
             auth = subprocess.run(
                 [exe, "login", "status"], cwd=str(ROOT), text=True,
                 capture_output=True, encoding="utf-8", errors="replace",
-                timeout=5)
+                timeout=5, env=env_probe)
             auth_text = (auth.stdout or "") + (auth.stderr or "")
             authenticated = auth.returncode == 0 and "Logged in" in auth_text
         ready = executable and (authenticated is not False)
@@ -2164,10 +2216,20 @@ def _subscription_invocation(client: str, system: str, user_msg: str,
         ]
         if model and model.startswith("gpt"):  # elige el modelo de Codex
             cmd[1:1] = ["-m", model]  # tras 'exec'... insertamos antes de exec
-    env = os.environ.copy()
-    if client == "claude":
-        env.pop("ANTHROPIC_API_KEY", None)
-        env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    # Entorno saneado y blindado (revision de seguridad 2026-09-07, punto 2):
+    # el CLI corre con cwd=ROOT (un repo conmutable) y ejecuta git por dentro
+    # -- el escudo por env (GIT_CONFIG_COUNT) anula el core.fsmonitor del
+    # repo, misma clase que C1. Y las credenciales que el CLI no necesita no
+    # viajan: CALIPSO_TOKEN es del servidor, LITELLM_MASTER_KEY de la ruta
+    # api, y las claves Anthropic no le sirven a ninguno de los dos clientes
+    # de suscripcion (el patron de saneo ya existia en memory.reflect).
+    # anular_global=False: el CLI agente commitea legitimamente y su
+    # identidad (user.name/email) vive SOLO en el ~/.gitconfig de Pedro.
+    env = calipso_github.env_git_blindado(anular_global=False)
+    env.pop("CALIPSO_TOKEN", None)
+    env.pop("LITELLM_MASTER_KEY", None)
+    env.pop("ANTHROPIC_API_KEY", None)
+    env.pop("ANTHROPIC_AUTH_TOKEN", None)
     return cmd, env, temp_names, output_name
 
 
@@ -6612,10 +6674,62 @@ if WEB.exists():
     app.mount("/static", StaticFiles(directory=str(WEB)), name="static")
 
 
+def _enmascarar_token(texto: str) -> str:
+    limpio = re.sub(r"token=[^&\s\"']+", "token=***", texto)
+    if TOKEN:
+        limpio = limpio.replace(TOKEN, "***")
+    return limpio
+
+
+class _FiltroToken(logging.Filter):
+    """Enmascara la credencial en los logs de uvicorn (revision de seguridad
+    2026-09-07, C4): el access log por default escribe la request CON query
+    string, y auth_guard acepta ?token= -- cada GET con token era una copia
+    de la credencial en disco/scrollback.
+
+    El access log de uvicorn emite (client, metodo, full_path, http_ver,
+    status) como 5-tupla en record.args y su AccessFormatter la DESEMPACA:
+    aplanar args rompia el formatter y perdia justo las lineas enmascaradas
+    (lo cazo la ronda adversaria) -- por eso aca se enmascara ADENTRO de la
+    tupla y solo se aplana en records sin args de acceso."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if (isinstance(args, tuple) and len(args) == 5
+                and isinstance(args[2], str)):
+            limpio = _enmascarar_token(args[2])
+            if limpio != args[2]:
+                record.args = (args[0], args[1], limpio, args[3], args[4])
+            return True
+        msg = record.getMessage()
+        limpio = _enmascarar_token(msg)
+        if limpio != msg:
+            record.msg = limpio
+            record.args = ()
+        return True
+
+
+def _instalar_filtro_de_token() -> None:
+    """Idempotente, y se llama AL IMPORTAR el modulo (abajo): el shell de
+    escritorio arranca el server via `uvicorn calipso.server:app` (import,
+    no __main__), y un filtro instalado solo en __main__ lo dejaba sin
+    cubrir -- lo cazo la ronda adversaria. Los filtros de logger sobreviven
+    al dictConfig de uvicorn (borra handlers, no filters)."""
+    for nombre in ("uvicorn.access", "uvicorn.error", "uvicorn"):
+        logger = logging.getLogger(nombre)
+        if not any(isinstance(f, _FiltroToken) for f in logger.filters):
+            logger.addFilter(_FiltroToken())
+
+
+_instalar_filtro_de_token()
+
+
 if __name__ == "__main__":
     host = _host()
     print(f"[calipso] sirviendo {ROOT}")
-    print(f"[calipso] token de acceso: {TOKEN}")
+    # El token NO se imprime (quedaba en scrollback/journal): esta en el
+    # archivo, que ya vive en 0600.
+    print(f"[calipso] token de acceso: en {_TOKEN_FILE}")
     print(f"[calipso] local:  http://127.0.0.1:8000")
     if host != "127.0.0.1":
         import socket

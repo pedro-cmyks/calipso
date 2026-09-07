@@ -249,6 +249,10 @@ class Memory:
             env = {**os.environ}
             env.pop("ANTHROPIC_API_KEY", None)
             env.pop("ANTHROPIC_AUTH_TOKEN", None)
+            # el CLI no necesita las credenciales del servidor ni de litellm
+            # (revision de seguridad 2026-09-07, punto 2)
+            env.pop("CALIPSO_TOKEN", None)
+            env.pop("LITELLM_MASTER_KEY", None)
             result = subprocess.run(
                 [exe, "-p", prompt],
                 capture_output=True, text=True, timeout=120, env=env

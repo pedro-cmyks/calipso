@@ -73,6 +73,18 @@ La revision adversaria del fix (tres lentes, con verificacion EMPIRICA en repos 
 - **Deferido con nombre:** los CLIs de suscripcion (claude/codex) se spawnean con cwd=ROOT y corren git por dentro en cada turno — la misma clase de C1 fuera de su letra. No se toco (el camino del chat merece su propio ciclo de test); pasa al punto 2 de la lista. Nota: ese CLI es un agente con ejecucion de comandos POR DISENO, asi que el escudo de env ahi mitiga solo los git implicitos.
 - Regresiones: NINGUNA verificada (A/B byte-identico de status/diff con y sin escudo; el ~/.gitconfig de Pedro solo tiene user.name/email; gh sin credential helper de git).
 
+## Adenda tras el fix del punto 2 (mismo dia)
+
+Hecho: el techo real de `_switch_project` (ni el home, ni `~/.calipso`, ni ocultas del home; las cuatro puertas confluyen ahi y el arranque replica el guard), la denylist de `_safe` (mas amplia que la pedida, e incluye el CALIPSO_HOME real este donde este), el filtro de token en los logs de uvicorn (instalado AL IMPORTAR — el shell de escritorio no pasa por `__main__` — y enmascarando DENTRO de la 5-tupla del access log: aplanarla rompia el formatter, lo cazo la ronda adversaria con repro), banner y lanzador sin token, y el entorno de los CLIs saneado (sin CALIPSO_TOKEN/LITELLM/claves Anthropic) con el escudo git SIN anular el gitconfig global de Pedro (ahi vive su user.name: anularlo rompia los commits legitimos del agente). Tambien reflect/plugins/probe. Cierre operacional: token ROTADO y server.log viejo purgado (las 38 copias).
+
+Queda abierto y pasa a la lista del punto 3, dicho sin vueltas:
+
+- **La escalada token->ser-Pedro sigue viva por otra puerta:** abrir el propio repo de calipso como proyecto (carpeta normal: pasa el techo), `PUT /api/file` sobre un test del allowlist (sin motor de permisos) y `POST /api/commands/run ui_syntax` lo ejecuta como Pedro. El techo de C2 esta bien; la afirmacion "escalada cerrada" era de mas. Arreglo de fondo: motor de permisos sobre las escrituras via API al repo de Calipso, o verificacion del runner. Va con la capa de sesion.
+- **Raices de proyectos explicitas** (la mejora estructural del informe) siguen pendientes: hoy la raiz por defecto del catastro es el home entero.
+- **`?token=` sigue siendo credencial aceptada** (las URLs viejas del historial mueren con la rotacion, no con el codigo). La mejora anotada: aceptarlo UNA vez, plantar cookie y redirigir sin query — va con la capa de sesion del punto 3.
+- **El shell Tauri** (`src-tauri/src/lib.rs:118`) todavia navega su webview interno con `?token=` — es Rust, no lo cubre esta rama; el filtro de logs ya lo enmascara del lado del server.
+- **Friccion de primer uso**: sin cookie y sin TOTP configurado, `/setup` esta detras del guard (huevo y gallina). Solo muerde en una instalacion desde cero; anotado para resolver con la capa de sesion.
+
 ## Orden de remediacion recomendado
 
 1. **Ya, en cualquier momento (no depende de nada):** C1 (helper git blindado — es chico y es RCE hoy), C5 (esc() en los sumideros), C6 (backup sin secretos + zip 0600).
