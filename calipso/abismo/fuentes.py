@@ -6,6 +6,7 @@ obtener, brief): este modulo no importa calipso.server jamas.
 """
 from __future__ import annotations
 
+import pathlib
 import re
 
 from calipso import chats, chronology
@@ -103,3 +104,15 @@ def memoria(pregunta: str, mem, consolidado: str | None = None,
         bloques.append((f"libro personal (consolidado):\n{consolidado}",
                         anillos.HONDO))
     return bloques
+
+
+def proyecto(resto: str, obtener, brief) -> list[tuple[str, int]]:
+    """El detalle de un repo del catastro, sin mover ROOT (la logica de
+    api_catastro_detalle, con el brief inyectado). v1: el primer token es el
+    nombre; la pregunta extra se ignora y va el brief entero."""
+    nombre = resto.split()[0]
+    p = obtener(nombre)
+    if p is None:
+        raise ValueError(f"el proyecto {nombre!r} no esta en el catastro")
+    texto = brief(pathlib.Path(p["ruta"]))
+    return [(f"proyecto {nombre}:\n{texto}", anillos.ORILLA)]

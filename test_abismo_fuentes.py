@@ -1,8 +1,11 @@
 """Las fuentes del abismo devuelven sub-bloques (texto, anillo) -- spec 6-7."""
 import json
+import pathlib
 
 from calipso import chats
 from calipso.abismo import anillos, fuentes
+
+import pytest
 
 
 def _sembrar_chats(tmp_path, monkeypatch):
@@ -118,3 +121,16 @@ def test_memoria_consolidado_solo_en_zona_personal(tmp_path, monkeypatch):
 
 def test_extracto_sin_claves_devuelve_vacio():
     assert fuentes._extracto("linea uno\nlinea dos", "a el de") == ""
+
+
+def test_proyecto_devuelve_brief_en_la_orilla():
+    obtener = lambda nombre: ({"nombre": "calipso", "ruta": "/tmp/x"}
+                              if nombre == "calipso" else None)
+    brief = lambda raiz: f"brief de {raiz}"
+    bloques = fuentes.proyecto("calipso que rutas tiene", obtener, brief)
+    assert bloques == [("proyecto calipso:\nbrief de /tmp/x", anillos.ORILLA)]
+
+
+def test_proyecto_desconocido_levanta():
+    with pytest.raises(ValueError):
+        fuentes.proyecto("inexistente", lambda n: None, lambda r: "")
