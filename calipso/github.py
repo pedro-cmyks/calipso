@@ -17,6 +17,7 @@ El runner de `gh`/`git` se inyecta para poder probar sin red ni autenticacion.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -38,13 +39,29 @@ def default_runner(cwd: str | None = None, timeout: int = 15) -> Runner:
     """Runner real que ejecuta `gh` (primer arg) buscandolo en PATH."""
     exe = _which_gh()
 
+    # gh corre git por dentro en el cwd que le den (que puede ser un repo
+    # ajeno del catastro). GIT_CONFIG_COUNT inyecta config con la maxima
+    # precedencia -- equivalente a -c, y lo hereda el git que gh spawnee --
+    # para anular core.fsmonitor/diff.external/pager del .git/config del
+    # repo. Mismo escudo que server._git/catastro._git (revision de
+    # seguridad 2026-09-07, C1).
+    env = os.environ.copy()
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_SYSTEM"] = os.devnull
+    for i, (k, v) in enumerate((("core.fsmonitor", ""),
+                                ("diff.external", ""),
+                                ("core.pager", "cat"))):
+        env[f"GIT_CONFIG_KEY_{i}"] = k
+        env[f"GIT_CONFIG_VALUE_{i}"] = v
+    env["GIT_CONFIG_COUNT"] = "3"
+
     def run(args: list[str]) -> tuple[int, str, str]:
         if not exe:
             return (127, "", "gh no esta en PATH")
         try:
             proc = subprocess.run(
                 [exe, *args[1:]] if args and args[0] == "gh" else [exe, *args],
-                cwd=cwd, text=True, capture_output=True,
+                cwd=cwd, env=env, text=True, capture_output=True,
                 encoding="utf-8", errors="replace", timeout=timeout)
             return (proc.returncode, proc.stdout or "", proc.stderr or "")
         except Exception as e:  # pragma: no cover - depende del entorno

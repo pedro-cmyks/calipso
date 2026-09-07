@@ -1,0 +1,59 @@
+"""Revision de seguridad 2026-09-07, C6: el backup no respalda la credencial
+del servidor (se regenera), no arrastra logs, nace 0600, y el motor de
+permisos trata backups/ entero como credencial (los zips viejos la traen
+adentro)."""
+import stat
+import zipfile
+
+from calipso import backup
+from calipso.permisos import acciones
+
+
+def _sembrar_home(tmp_path):
+    (tmp_path / "token").write_text("secreto", encoding="utf-8")
+    (tmp_path / "totp_secret").write_text("semilla", encoding="utf-8")
+    (tmp_path / "chats.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "server.log").write_text("GET /?token=secreto",
+                                                  encoding="utf-8")
+    (tmp_path / "global" / "core").mkdir(parents=True)
+    (tmp_path / "global" / "core" / "perfil.md").write_text("- hecho\n",
+                                                            encoding="utf-8")
+
+
+def test_backup_sin_secretos_ni_logs_y_0600(tmp_path, monkeypatch):
+    monkeypatch.setattr(backup, "CALIPSO_HOME", tmp_path)
+    _sembrar_home(tmp_path)
+    r = backup.create_backup(stamp="test")
+    assert r["ok"]
+    with zipfile.ZipFile(r["path"]) as zf:
+        nombres = set(zf.namelist())
+    assert "chats.json" in nombres
+    assert "global/core/perfil.md" in nombres
+    assert "token" not in nombres
+    assert "totp_secret" not in nombres
+    assert not any(n.startswith("logs/") for n in nombres)
+    modo = stat.S_IMODE((tmp_path / "backups" /
+                         "calipso-backup-test.zip").stat().st_mode)
+    assert modo == 0o600
+
+
+def test_un_token_anidado_si_se_respalda(tmp_path, monkeypatch):
+    # La exclusion es de la RAIZ del home: un archivo que se llame "token"
+    # dentro de un proyecto es un archivo comun.
+    monkeypatch.setattr(backup, "CALIPSO_HOME", tmp_path)
+    (tmp_path / "projects").mkdir()
+    (tmp_path / "projects" / "token").write_text("no es LA credencial",
+                                                 encoding="utf-8")
+    r = backup.create_backup(stamp="anidado")
+    with zipfile.ZipFile(r["path"]) as zf:
+        assert "projects/token" in zf.namelist()
+
+
+def test_backups_es_credencial_del_servidor(tmp_path, monkeypatch):
+    monkeypatch.setenv("CALIPSO_HOME", str(tmp_path))
+    assert acciones.es_credencial_del_servidor(tmp_path / "token")
+    assert acciones.es_credencial_del_servidor(tmp_path / "backups")
+    assert acciones.es_credencial_del_servidor(
+        tmp_path / "backups" / "calipso-backup-x.zip")
+    assert not acciones.es_credencial_del_servidor(tmp_path / "chats.json")

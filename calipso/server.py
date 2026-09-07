@@ -842,8 +842,19 @@ def api_discard_proposal(change_id: str) -> dict:
 # --------------------------------------------------------------------------
 
 def _git(args: list[str]) -> subprocess.CompletedProcess[str]:
+    """git blindado, el mismo escudo de catastro._git y tools/commands: un
+    .git/config ajeno puede traer core.fsmonitor="comando; false" y ese
+    comando corre en un `git status` comun (verificado con repo de prueba,
+    ver catastro.py). ROOT es conmutable a cualquier repo del catastro via
+    /api/project/open, asi que este helper corre git sobre repos que Pedro
+    no escribio -- y la UI dispara /api/git/status sola al abrir. Revision
+    de seguridad 2026-09-07, C1."""
+    env = os.environ.copy()
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
     return subprocess.run(
-        ["git", *args], cwd=str(ROOT), text=True, capture_output=True,
+        ["git", "-c", "core.fsmonitor=", "-c", "diff.external=",
+         "-c", "core.pager=cat", *args],
+        cwd=str(ROOT), env=env, text=True, capture_output=True,
         encoding="utf-8", errors="replace", timeout=10)
 
 
