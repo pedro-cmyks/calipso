@@ -13,11 +13,13 @@ Items: 28 (18 positivos, 10 negativos).
 ## Observaciones
 
 Escritas mirando el cache crudo (`/tmp/abismo_cache_full.jsonl`, 168 lineas), no
-solo las tasas. A temp 0 el resultado es completamente determinista por item:
+solo las tasas. A temp 0 el VEREDICTO es completamente determinista por item:
 ninguno de los 18 positivos tuvo mezcla de corridas (todas 6/6 legibles, o
 todas 6/6 sin marca, salvo un item que salio 6/6 ilegible). Las 6 corridas por
-item no midieron variabilidad del modelo -- midieron 18 items distintos, cada
-uno con un veredicto binario. La tabla completa:
+item no midieron variabilidad del veredicto -- midieron 18 items distintos,
+cada uno con un veredicto binario. (El TEXTO, en cambio, no siempre es
+identico corrida a corrida -- ver la nota debajo de la tabla). La tabla
+completa:
 
 - LEGIBLE (6/6): mem-libro; cha-agosto, cha-receta, cha-link, cha-nombre;
   pro-commit, pro-rama.
@@ -26,31 +28,51 @@ uno con un veredicto binario. La tabla completa:
   pro-detalle, pro-brief, pro-cual.
 - ILEGIBLE (6/6, unico caso): mem-medico.
 
+**Nota sobre el texto (no el veredicto):** en 6 de los 28 items -- `mem-rutina`,
+`pro-detalle`, `pro-commit`, `pro-cual`, `neg-general`, `neg-opinion` -- la
+PRIMERA llamada (corrida 0) sale con una redaccion distinta a las otras cinco,
+que entre si son identicas palabra por palabra. En los seis casos el veredicto
+(legible/ilegible/sin-marca, y para `pro-commit` tambien la fuente y el resto
+de la marca) no cambia: solo cambia como el modelo narra la misma decision. El
+patron ("la primera corrida diverge, el resto es identico") es consistente con
+un efecto de arranque en frio de Ollama (carga/calienta el modelo en la
+primera llamada de la sesion de medicion) y no con temperatura -- pero es un
+dato relevante para la decision de cablear: un turno real en produccion hace
+UNA sola llamada, siempre en frio como la corrida 0. Si ese arranque en frio
+tambien afecta la PROBABILIDAD de emitir la marca (no solo la redaccion) en
+llamadas reales espaciadas, este banco no lo mide -- mide 168 llamadas
+consecutivas al mismo proceso de Ollama ya caliente para las corridas 1-5.
+
 ### El fallo dominante no es de formato, es de confabulacion
 
 De los 18 positivos, 11 no llegaron a una marca legible; de esos, los 10 que
 no emiten marca alguna (todos menos `mem-medico`, que se trata aparte abajo)
 comparten el mismo patron: el 7b no se abstiene ni pregunta -- inventa un
 hecho especifico y lo entrega con el mismo tono de certeza que si lo tuviera
-en el contexto. Ejemplos textuales (salida completa, identica en las 6
-corridas por ser temp 0):
+en el contexto. Ejemplos textuales (salida completa; sustancialmente
+identica en las 6 corridas -- dos de las citas de abajo, marcadas, vienen de
+la corrida 0 porque ese item es de los que divergen en redaccion entre la
+primera llamada y las otras cinco; ver la nota sobre esto mas abajo):
 
-- `mem-rutina` ("que hacia yo los domingos a la manana?"): *"Segun mis
-  registros, solias ir al parque para hacer ejercicio y leer periodicos los
-  domingos por la manana."* -- "segun mis registros" es la formula que mas se
-  repite; el modelo la usa para dar peso a un dato que no existe en ningun
-  lado.
+- `mem-rutina` ("que hacia yo los domingos a la manana?"), corrida 0: *"Segun
+  mis registros, solias ir al parque para hacer ejercicio y leer periodicos
+  los domingos por la manana."* -- "segun mis registros" es la formula que
+  mas se repite; el modelo la usa para dar peso a un dato que no existe en
+  ningun lado.
 - `mem-fecha` ("en que mes me mude de casa?"): *"Segun mi cronologia,
   cambiaste de casa en junio."* -- mes inventado, presentado como si viniera
   de una fuente real ("mi cronologia").
 - `mem-pref` ("que estilo de musica te dije que no soporto?"): *"Te dije que
   no soportas el metal."* -- genero inventado sin ninguna cobertura en el
   system.
-- `pro-detalle` ("dame el detalle del proyecto calipso-lector"): *"El proyecto
-  calipso-lector es un repositorio que contiene el codigo para desarrollar una
-  aplicacion de lectura personalizada... busqueda avanzada, marcadores
-  personales y resaltados."* -- descripcion coherente y especifica, pero sin
-  relacion con el proyecto real (la skin del e-reader Musnap Neo C).
+- `pro-detalle` ("dame el detalle del proyecto calipso-lector"), corrida 0:
+  *"El proyecto calipso-lector es un repositorio que contiene el codigo para
+  desarrollar una aplicacion de lectura personalizada... busqueda avanzada,
+  marcadores personales y resaltados."* -- descripcion coherente y
+  especifica, pero sin relacion con el proyecto real (la skin del e-reader
+  Musnap Neo C). Las corridas 1-5 inventan otra lista de caracteristicas
+  ("personalizacion de fuente y tamaño", "resumen automatico de capitulos"),
+  igual de plausible y de falsa.
 - `pro-brief` ("que hay adentro del repo atlas?"): *"El repositorio Atlas
   contenia... analisis de datos geograficos y la creacion de mapas
   interactivos."* -- inventa un dominio entero (GIS) para un proyecto que es
