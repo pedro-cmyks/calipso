@@ -60,20 +60,28 @@ def test_castigo_con_tope(monkeypatch):
     assert srv._LOGIN_MAX_FALLOS_GLOBAL == 20
 
 
-def test_la_poda_olvida_rachas_viejas(monkeypatch):
-    # El balde global no es un trinquete: un fallo mas viejo que el tope
-    # de castigo se olvida al registrar el siguiente (los typos de semanas
-    # no se acumulan, y el lockout sostenido exige fallar DENTRO de la
-    # ventana).
+def test_el_decaimiento_evapora_typos_pero_no_regala_rafagas(monkeypatch):
+    # Las dos propiedades del decaimiento, juntas porque juntas son el
+    # contrato: (a) la historia inocente se evapora sola -- 3 typos de hace
+    # semanas mueren; (b) el atacante que pausa 901s ve su contador bajar
+    # UNO, no reiniciarse (la poda que borraba la entrada entera le
+    # regalaba una rafaga fresca: ~13x mas intentos/dia, simulado en la
+    # verificacion adversaria).
     t = [1000.0]
     monkeypatch.setattr(srv, "_login_reloj", lambda: t[0])
+    for _ in range(3):
+        srv._login_fallo("inocente")
     for _ in range(25):
         srv._login_fallo("*")
-    t[0] += srv._LOGIN_BACKOFF_TOPE + 1
-    srv._login_fallo("otro-host")  # cualquier fallo poda lo vencido
+    t[0] += 4 * srv._LOGIN_BACKOFF_TOPE + 1
+    srv._login_fallo("otro-host")
     with srv._login_lock:
-        assert "*" not in srv._login_fallos
+        assert "inocente" not in srv._login_fallos      # 3 - 4 ventanas: muerto
+        assert srv._login_fallos["*"][0] == 25 - 4      # decae, no resetea
         assert srv._login_fallos["otro-host"][0] == 1
+    # y el que decayo sigue frenado si aun supera el umbral
+    espera = srv._login_espera("*", srv._LOGIN_MAX_FALLOS_GLOBAL)
+    assert espera > 0
 
 
 def test_exito_limpia_el_host_pero_no_el_balde_global(monkeypatch):

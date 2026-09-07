@@ -295,19 +295,32 @@ def _login_espera(clave: str, max_fallos: int) -> float:
 
 
 def _login_fallo(clave: str) -> None:
-    """Registra el fallo y PODA lo viejo: toda entrada (el balde global "*"
-    incluido) cuyo ultimo fallo sea mas viejo que el tope de castigo se
-    olvida. Sin esto el balde era un trinquete monotono -- los typos de
-    semanas se acumulaban hasta que cada fallo bloqueaba a todos por 15
-    minutos, y un host hostil podia sostener ese lockout con un fallo cada
-    tanto (DoS del login, lo cazo la ronda adversaria). Con la poda, el
-    freno castiga rachas, no historia."""
+    """Registra el fallo y DECAE lo viejo: por cada ventana completa de
+    calma (el tope de castigo, 900s) el contador baja UNO, y la entrada
+    recien muere al llegar a cero. Dos disenos anteriores fallaron y los
+    dos los cazo la verificacion adversaria: el trinquete monotono (nunca
+    olvidaba: los typos de semanas escalaban a lockouts de 15 minutos para
+    todos, y un host hostil sostenia ese DoS con un fallo cada tanto) y la
+    poda que BORRABA la entrada entera (regalaba una rafaga fresca de
+    intentos a un atacante que pausara 901s: de ~96 a ~1300 intentos/dia,
+    simulado). El decaimiento conserva ambas propiedades: la historia
+    inocente se evapora sola y el atacante pausado ve su contador bajar de
+    a uno por ventana, no reiniciarse."""
     with _login_lock:
         ahora = _login_reloj()
-        viejas = [k for k, (_, ultimo) in _login_fallos.items()
-                  if ahora - ultimo > _LOGIN_BACKOFF_TOPE]
-        for k in viejas:
-            del _login_fallos[k]
+        for k in list(_login_fallos):
+            fallos, ultimo = _login_fallos[k]
+            ventanas = int((ahora - ultimo) // _LOGIN_BACKOFF_TOPE)
+            if ventanas <= 0:
+                continue
+            fallos -= ventanas
+            if fallos <= 0:
+                del _login_fallos[k]
+            else:
+                # el resto de la ventana en curso se conserva: adelantar
+                # `ultimo` solo lo decaido evita descontar dos veces
+                _login_fallos[k] = [
+                    fallos, ultimo + ventanas * _LOGIN_BACKOFF_TOPE]
         fallos = _login_fallos.get(clave, [0, 0.0])[0]
         _login_fallos[clave] = [fallos + 1, ahora]
 
@@ -6851,4 +6864,8 @@ if __name__ == "__main__":
             print("[calipso] OJO: este host abre HTTP SIN CIFRAR fuera de "
                   "la maquina. Para el lector usa la IP de Tailscale "
                   "(100.x) como CALIPSO_HOST.")
-    uvicorn.run(app, host=host, port=8000)
+    # proxy_headers=False: Calipso no corre detras de ningun proxy, y el
+    # default de uvicorn (confiar X-Forwarded-For desde loopback) dejaba
+    # que un proceso local forjara request.client.host -- la clave del
+    # freno de login (verificacion adversaria del 3a).
+    uvicorn.run(app, host=host, port=8000, proxy_headers=False)
