@@ -30,6 +30,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import os
 import pathlib
 import re
@@ -362,11 +363,27 @@ def setup_page() -> HTMLResponse:
     return HTMLResponse(html)
 
 
+# Defensa en profundidad de _safe (revision de seguridad 2026-09-07, C2):
+# aunque ROOT quedara siendo ancestro de estas carpetas (una raiz de catastro
+# rara, un symlink), las credenciales de Pedro y el estado de Calipso no se
+# sirven por /api/file. Espeja las carpetas de calipso/permisos/acciones.py.
+_VEDADAS_RELATIVAS_AL_HOME = (
+    (".ssh",), (".gnupg",), (".aws",), (".calipso",),
+    (".config", "gh"), (".claude",),
+)
+
+
 def _safe(rel: str) -> pathlib.Path:
-    """Resuelve 'rel' dentro de ROOT o lanza 400 si se sale (path-traversal)."""
+    """Resuelve 'rel' dentro de ROOT o lanza 400 si se sale (path-traversal).
+    Y las carpetas vedadas del home no se sirven nunca, este donde este ROOT."""
     p = (ROOT / rel).resolve()
     if p != ROOT and ROOT not in p.parents:
         raise HTTPException(status_code=400, detail="ruta fuera del proyecto")
+    home = pathlib.Path.home().resolve()
+    for partes in _VEDADAS_RELATIVAS_AL_HOME:
+        v = home.joinpath(*partes)
+        if p == v or v in p.parents:
+            raise HTTPException(status_code=400, detail="ruta vedada")
     return p
 
 
@@ -1064,6 +1081,27 @@ def _switch_project(path: str) -> None:
     p = pathlib.Path(os.path.expandvars(os.path.expanduser(path))).resolve()
     if not p.exists() or not p.is_dir():
         raise HTTPException(status_code=400, detail="la ruta no existe o no es carpeta")
+    # El techo de verdad (revision de seguridad 2026-09-07, C2): con la raiz
+    # por defecto del catastro (el home entero), este era el agujero -- abrir
+    # "~" o "~/.calipso" como proyecto dejaba /api/file leer la llave SSH o
+    # el token y escribir ~/.ssh/authorized_keys. Ni el home, ni el estado de
+    # Calipso, ni las carpetas ocultas del home son proyectos.
+    home = pathlib.Path.home().resolve()
+    ch = _home_calipso().resolve()
+    if p == home:
+        raise HTTPException(status_code=400,
+                            detail="el home entero no se abre como proyecto")
+    if p == ch or ch in p.parents:
+        raise HTTPException(status_code=400,
+                            detail="el estado de Calipso no es un proyecto")
+    try:
+        rel = p.relative_to(home)
+        if rel.parts and rel.parts[0].startswith("."):
+            raise HTTPException(
+                status_code=400,
+                detail="las carpetas ocultas del home no se abren como proyecto")
+    except ValueError:
+        pass  # fuera del home: lo decide el techo del catastro
     if not catastro.dentro_de_alguna_raiz(p):
         raise HTTPException(
             status_code=400,
@@ -2164,10 +2202,18 @@ def _subscription_invocation(client: str, system: str, user_msg: str,
         ]
         if model and model.startswith("gpt"):  # elige el modelo de Codex
             cmd[1:1] = ["-m", model]  # tras 'exec'... insertamos antes de exec
-    env = os.environ.copy()
-    if client == "claude":
-        env.pop("ANTHROPIC_API_KEY", None)
-        env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    # Entorno saneado y blindado (revision de seguridad 2026-09-07, punto 2):
+    # el CLI corre con cwd=ROOT (un repo conmutable) y ejecuta git por dentro
+    # -- el escudo por env (GIT_CONFIG_COUNT) anula el core.fsmonitor del
+    # repo, misma clase que C1. Y las credenciales que el CLI no necesita no
+    # viajan: CALIPSO_TOKEN es del servidor, LITELLM_MASTER_KEY de la ruta
+    # api, y las claves Anthropic no le sirven a ninguno de los dos clientes
+    # de suscripcion (el patron de saneo ya existia en memory.reflect).
+    env = calipso_github.env_git_blindado()
+    env.pop("CALIPSO_TOKEN", None)
+    env.pop("LITELLM_MASTER_KEY", None)
+    env.pop("ANTHROPIC_API_KEY", None)
+    env.pop("ANTHROPIC_AUTH_TOKEN", None)
     return cmd, env, temp_names, output_name
 
 
@@ -6612,10 +6658,36 @@ if WEB.exists():
     app.mount("/static", StaticFiles(directory=str(WEB)), name="static")
 
 
+class _FiltroToken(logging.Filter):
+    """Enmascara la credencial en los logs de uvicorn (revision de seguridad
+    2026-09-07, C4): el access log por default escribe la request CON query
+    string, y auth_guard acepta ?token= -- cada GET con token era una copia
+    de la credencial en disco/scrollback. Filtra el patron token=... y el
+    valor literal del TOKEN por si aparece por otro camino."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        limpio = re.sub(r"token=[^&\s\"']+", "token=***", msg)
+        if TOKEN:
+            limpio = limpio.replace(TOKEN, "***")
+        if limpio != msg:
+            record.msg = limpio
+            record.args = ()
+        return True
+
+
+def _instalar_filtro_de_token() -> None:
+    for nombre in ("uvicorn.access", "uvicorn.error", "uvicorn"):
+        logging.getLogger(nombre).addFilter(_FiltroToken())
+
+
 if __name__ == "__main__":
     host = _host()
+    _instalar_filtro_de_token()
     print(f"[calipso] sirviendo {ROOT}")
-    print(f"[calipso] token de acceso: {TOKEN}")
+    # El token NO se imprime (quedaba en scrollback/journal): esta en el
+    # archivo, que ya vive en 0600.
+    print(f"[calipso] token de acceso: en {_TOKEN_FILE}")
     print(f"[calipso] local:  http://127.0.0.1:8000")
     if host != "127.0.0.1":
         import socket

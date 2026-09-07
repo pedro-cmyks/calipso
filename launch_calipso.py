@@ -6,7 +6,12 @@ Uso:
   python launch_calipso.py
 
 Este archivo existe para que Calipso se sienta como aplicacion: si el servidor
-no esta prendido, lo prende; espera a que responda; abre la URL con token.
+no esta prendido, lo prende; espera a que responda; abre la URL.
+
+La URL va SIN token (revision de seguridad 2026-09-07, C4): con ?token= la
+credencial quedaba en el historial del navegador (que con sync viaja a la
+nube), en el argv de xdg-open visible en /proc, y en el access log. La
+primera vez en un navegador se entra por /login con TOTP y la cookie dura.
 """
 from __future__ import annotations
 
@@ -20,7 +25,6 @@ import urllib.request
 import webbrowser
 
 ROOT = pathlib.Path(__file__).resolve().parent
-TOKEN_FILE = pathlib.Path.home() / ".calipso" / "token"
 HOST = os.environ.get("CALIPSO_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CALIPSO_PORT", "8000"))
 
@@ -31,12 +35,6 @@ def _port_open(host: str, port: int) -> bool:
             return True
     except OSError:
         return False
-
-
-def _token() -> str:
-    if TOKEN_FILE.exists():
-        return TOKEN_FILE.read_text(encoding="utf-8").strip()
-    return ""
 
 
 def _wait_ready(url: str, seconds: int = 45) -> bool:
@@ -52,12 +50,10 @@ def _wait_ready(url: str, seconds: int = 45) -> bool:
 
 def main() -> int:
     url = f"http://{HOST}:{PORT}/"
-    token = _token()
-    open_url = url + (f"?token={token}" if token else "")
 
     if _port_open(HOST, PORT):
         print(f"[calipso] Ya esta prendido: {url}")
-        webbrowser.open(open_url)
+        webbrowser.open(url)
         return 0
 
     env = dict(os.environ)
@@ -68,15 +64,12 @@ def main() -> int:
         cwd=str(ROOT),
         env=env,
     )
-    ready_url = open_url or url
-    if not _wait_ready(ready_url):
+    if not _wait_ready(url):
         print("[calipso] No alcanzo a arrancar. Revisa la ventana de consola.")
         return 1
 
-    token = _token()
-    open_url = url + (f"?token={token}" if token else "")
     print(f"[calipso] Listo: {url}")
-    webbrowser.open(open_url)
+    webbrowser.open(url)
     print("[calipso] Deja esta ventana abierta mientras uses Calipso.")
     try:
         return proc.wait()
