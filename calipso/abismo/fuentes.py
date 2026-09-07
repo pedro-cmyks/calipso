@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pathlib
 import re
+import sys
 
 from calipso import chats, chronology
 from calipso.abismo import anillos
@@ -37,8 +38,15 @@ def _rango(resto: str) -> tuple[str | None, str | None, str]:
 
 
 def _palabras(texto: str) -> set[str]:
-    """Claves de busqueda: palabras de 4+ letras, en minusculas."""
-    return set(re.findall(r"[0-9a-za-ÿ]{4,}", texto.lower()))
+    """Claves de busqueda: palabras de 4+ letras, en minusculas.
+
+    Clase solo-letras: a-z + acentuadas (à-öø-ÿ), sin el hueco ×/÷ (U+00D7,
+    U+00F7) y sin el bloque de puntuacion U+0080-U+00BF (¡ ¿ « » ° etc). La
+    version anterior, a-ÿ, colaba esa puntuacion como si fuera letra: una
+    palabra pegada a un "¿" de apertura (rutina en espanol) no matcheaba
+    nada -- "¿donde?" quedaba como {'¿donde'}, que no interseca {'donde'}.
+    """
+    return set(re.findall(r"[0-9a-zà-öø-ÿ]{4,}", texto.lower()))
 
 
 def chats_viejos(resto: str) -> list[tuple[str, int]]:
@@ -94,7 +102,10 @@ def memoria(pregunta: str, mem, consolidado: str | None = None,
         bloques.append((f"recuerdos:\n{lineas}", anillos.MEDIA_AGUA))
     if (core := _extracto(mem.load_core(), pregunta)):
         bloques.append((f"del core:\n{core}", anillos.HONDO))
-    crono = chronology.load(limit=200)
+    # spec seccion 7: "la cronologia entera"; el techo de ABISMO_BLOQUE_MAX
+    # acota el bloque resultante, no la lectura. chronology.load(limit=80)
+    # por defecto -- lo forzamos a leer todo sin tocar chronology.py.
+    crono = chronology.load(limit=sys.maxsize)
     lineas_crono = "\n".join(
         e["raw"] for e in crono["entries"]
         if _palabras(e.get("text", "")) & _palabras(pregunta))

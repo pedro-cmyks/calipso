@@ -1,4 +1,5 @@
 """Las fuentes del abismo devuelven sub-bloques (texto, anillo) -- spec 6-7."""
+import datetime
 import json
 import pathlib
 
@@ -59,6 +60,27 @@ def test_chats_viejos_ignora_gestos(tmp_path, monkeypatch):
     assert bloques == []  # los mensajes que empiezan con "/" no se pescan
 
 
+def test_palabras_ignora_el_signo_de_apertura():
+    # "¿donde?" pegado al signo no debe convertirse en una palabra distinta
+    # de "donde" -- el ¿ no es una letra.
+    assert "donde" in fuentes._palabras("¿donde estara?")
+
+
+def test_chats_viejos_encuentra_pregunta_con_signos(tmp_path, monkeypatch):
+    data = {"active": "c1", "chats": {
+        "c1": {"id": "c1", "title": "casa", "messages": [
+            {"role": "user", "text": "¿donde deje las llaves?", "meta": {},
+             "ts": "2026-08-05T10:00:00"},
+        ]},
+    }}
+    f = tmp_path / "chats.json"
+    f.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setattr(chats, "CHAT_FILE", f)
+    bloques = fuentes.chats_viejos("¿donde?")
+    textos = "\n".join(t for t, _ in bloques)
+    assert "llaves" in textos
+
+
 def test_rango_parsea_y_limpia():
     desde, hasta, palabras = fuentes._rango("libro desde:2026-08 hasta:2026-09 rosa")
     assert (desde, hasta) == ("2026-08", "2026-09")
@@ -117,6 +139,25 @@ def test_memoria_consolidado_solo_en_zona_personal(tmp_path, monkeypatch):
                           zona_chat="fabrica")
     assert any("neto: 100" in t and a == anillos.HONDO for t, a in con)
     assert not any("neto" in t for t, _ in sin)
+
+
+def test_memoria_lee_la_cronologia_entera(tmp_path, monkeypatch):
+    # spec seccion 7: "la cronologia entera". chronology.load() por defecto
+    # trae solo las ultimas 80 (200 en el bug reportado) -- sembramos 250
+    # entradas con la clave buscada en la mas VIEJA (la primera del archivo)
+    # para probar que ya no queda afuera del corte.
+    monkeypatch.setattr(chronology, "CALIPSO_HOME", tmp_path)
+    p = chronology.path()
+    dias = [datetime.date(2020, 1, 1) + datetime.timedelta(days=i)
+            for i in range(250)]
+    lineas = [f"- {d.isoformat()} | tema | evento numero {i}"
+              for i, d in enumerate(dias)]
+    lineas[0] = f"- {dias[0].isoformat()} | tema | trufa la mas vieja de todas"
+    p.write_text("\n".join(lineas) + "\n", encoding="utf-8")
+    mem = _FalsaMemoria([])
+    bloques = fuentes.memoria("trufa", mem)
+    hondos = [t for t, a in bloques if a == anillos.HONDO]
+    assert any("trufa" in t for t in hondos)
 
 
 def test_extracto_sin_claves_devuelve_vacio():
