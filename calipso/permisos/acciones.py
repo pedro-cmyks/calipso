@@ -200,9 +200,17 @@ def _dentro_de(hijo: pathlib.Path, padre: pathlib.Path) -> bool:
 
 
 def es_credencial_del_servidor(ruta) -> bool:
+    """Las rutas exactas del token/totp_secret Y todo backups/: un zip de
+    backup viejo contiene ambos secretos adentro, y matchear solo las rutas
+    exactas dejaba a un agente pedir POST /api/backup y leer el zip -- la
+    credencial por la puerta de al lado (revision de seguridad 2026-09-07,
+    C6). Los backups nuevos ya no llevan secretos, pero los viejos existen
+    y un agente no tiene por que leer backups jamas."""
     p = _resolver(ruta)
     home = _resolver(calipso_home())
-    return any(p == home / n for n in NOMBRES_CREDENCIAL_DEL_SERVIDOR)
+    if any(p == home / n for n in NOMBRES_CREDENCIAL_DEL_SERVIDOR):
+        return True
+    return _dentro_de(p, home / "backups")
 
 
 def es_credencial_de_pedro(ruta) -> bool:

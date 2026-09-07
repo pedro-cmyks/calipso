@@ -315,14 +315,14 @@ ALLOWLIST: dict[str, dict[str, Any]] = {
     "git_diff": {
         "title": "Git diff",
         "description": "Muestra los cambios sin stagear en el repositorio.",
-        "args": ["git", "diff"],
+        "args": ["git", "diff", "--no-ext-diff", "--no-textconv"],
         "timeout": 10,
         "scope": "project",
     },
     "git_diff_staged": {
         "title": "Git diff staged",
         "description": "Muestra los cambios ya en staging area (listos para commit).",
-        "args": ["git", "diff", "--staged"],
+        "args": ["git", "diff", "--no-ext-diff", "--no-textconv", "--staged"],
         "timeout": 10,
         "scope": "project",
     },

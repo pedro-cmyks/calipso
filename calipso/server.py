@@ -842,8 +842,19 @@ def api_discard_proposal(change_id: str) -> dict:
 # --------------------------------------------------------------------------
 
 def _git(args: list[str]) -> subprocess.CompletedProcess[str]:
+    """git blindado, el mismo escudo de catastro._git y tools/commands: un
+    .git/config ajeno puede traer core.fsmonitor="comando; false" y ese
+    comando corre en un `git status` comun (verificado con repo de prueba,
+    ver catastro.py). ROOT es conmutable a cualquier repo del catastro via
+    /api/project/open, asi que este helper corre git sobre repos que Pedro
+    no escribio -- y la UI dispara /api/git/status sola al abrir. Revision
+    de seguridad 2026-09-07, C1."""
+    env = os.environ.copy()
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
     return subprocess.run(
-        ["git", *args], cwd=str(ROOT), text=True, capture_output=True,
+        ["git", "-c", "core.fsmonitor=", "-c", "diff.external=",
+         "-c", "core.pager=cat", *args],
+        cwd=str(ROOT), env=env, text=True, capture_output=True,
         encoding="utf-8", errors="replace", timeout=10)
 
 
@@ -883,7 +894,11 @@ def api_git_status() -> dict:
 def api_git_diff(path: str | None = None) -> dict:
     if not _git_available():
         raise HTTPException(status_code=404, detail="git no disponible")
-    args = ["diff", "--"]
+    # --no-ext-diff --no-textconv: un repo ajeno puede declarar drivers de
+    # diff por archivo (.gitattributes + [diff "x"] command=...) que el
+    # escudo de -c NO tapa y que ejecutan comandos en un `git diff` --
+    # verificado empiricamente (revision de seguridad 2026-09-07).
+    args = ["diff", "--no-ext-diff", "--no-textconv", "--"]
     if path:
         _safe(path)
         args.append(path)
@@ -973,8 +988,12 @@ async def api_github_contribute_run(request: Request) -> dict:
         raise HTTPException(status_code=400, detail="ejecutable no permitido")
     run_cmd = [exe, *argv[1:]]
     try:
+        # env blindado: este ejecutor corre git/gh sobre ROOT (conmutable a
+        # un repo ajeno) y un `git checkout -b` dispara el core.fsmonitor
+        # del repo -- verificado (revision de seguridad 2026-09-07, C1).
         proc = subprocess.run(
-            run_cmd, cwd=str(ROOT), text=True, capture_output=True,
+            run_cmd, cwd=str(ROOT), env=calipso_github.env_git_blindado(),
+            text=True, capture_output=True,
             encoding="utf-8", errors="replace", timeout=120)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

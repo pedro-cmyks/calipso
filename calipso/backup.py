@@ -20,6 +20,17 @@ CALIPSO_HOME = pathlib.Path(os.environ.get(
 # Caches/artefactos que no tiene sentido respaldar (pesan y se regeneran).
 SKIP_DIRS = {"backups", "models", "model_cache", "__pycache__", ".cache"}
 
+# Directorios excluidos SOLO en la raiz del home: logs/ lleva el access log
+# que llego a contener el token (revision de seguridad 2026-09-07, C4/C6).
+# Un "logs" anidado en un proyecto es una carpeta comun y se respalda.
+SKIP_DIRS_RAIZ = {"logs"}
+
+# La credencial del servidor NO se respalda: se regenera. Un zip con el
+# token y la semilla TOTP adentro esquivaba el unico NUNCA del motor de
+# permisos (que matchea las rutas exactas, no el zip) y nacia 0644
+# (revision de seguridad 2026-09-07, C6). Solo aplica en la raiz del home.
+SKIP_FILES_RAIZ = {"token", "totp_secret"}
+
 
 def _backups_dir() -> pathlib.Path:
     d = CALIPSO_HOME / "backups"
@@ -33,12 +44,17 @@ def create_backup(stamp: str | None = None) -> dict:
     home.mkdir(parents=True, exist_ok=True)
     stamp = stamp or datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     out = _backups_dir() / f"calipso-backup-{stamp}.zip"
+    # 0600 desde el nacimiento (touch respeta el modo al crear y ZipFile
+    # "w" trunca sin tocarlo): sin ventana world-readable mientras se
+    # comprime un zip que lleva chats y memoria enteros.
+    out.touch(mode=0o600)
     count = 0
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
         for root, dirs, files in os.walk(home):
             rootp = pathlib.Path(root)
             # no descender en directorios excluidos
-            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS
+                       and not (rootp == home and d in SKIP_DIRS_RAIZ)]
             rel_root = rootp.relative_to(home)
             if any(part in SKIP_DIRS for part in rel_root.parts):
                 continue
@@ -46,11 +62,15 @@ def create_backup(stamp: str | None = None) -> dict:
                 fp = rootp / name
                 if fp == out:
                     continue
+                if rootp == home and name in SKIP_FILES_RAIZ:
+                    continue
                 try:
                     zf.write(fp, str(fp.relative_to(home)))
                     count += 1
                 except Exception:
                     continue
+    # 0600 como el token mismo: el zip lleva chats y memoria enteros.
+    out.chmod(0o600)
     return {
         "ok": True,
         "path": str(out),
