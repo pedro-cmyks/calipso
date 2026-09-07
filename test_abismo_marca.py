@@ -23,7 +23,7 @@ def test_sin_resto_es_ilegible():
 
 
 def test_tope_de_pregunta():
-    assert marca.parsear("memoria " + "x" * 152) is None       # cuerpo > 160
+    assert marca.parsear("memoria " + "x" * 153) is None       # cuerpo de 161 chars > 160
     assert marca.parsear("memoria " + "x" * 100) is not None
 
 

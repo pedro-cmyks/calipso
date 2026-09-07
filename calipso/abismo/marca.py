@@ -31,7 +31,7 @@ class Marca:
 def parsear(cuerpo: str) -> Marca | None:
     """El cuerpo es lo que va entre 'abismo:' y el cierre. None = ilegible."""
     cuerpo = cuerpo.strip()
-    if not cuerpo or len(cuerpo) >= MAX_PREGUNTA:
+    if not cuerpo or len(cuerpo) > MAX_PREGUNTA:
         return None
     partes = cuerpo.split(None, 1)
     fuente = partes[0].lower()
