@@ -43,11 +43,22 @@ NUM_CTX = 4096
 # El system del banco: representativo del turno real -- identidad minima +
 # el contrato REAL (la misma funcion que el 1b va a cablear) con nombres de
 # proyectos plausibles.
+#
+# ABISMO_CONTRATO_FILE permite medir una VARIANTE del bloque del contrato sin
+# tocar contrato.py: el archivo reemplaza SOLO el bloque (la identidad queda
+# fija), asi lo medido es exactamente lo que se puede aterrizar. Cada variante
+# usa su propio ABISMO_CACHE: la clave del cache es (item, corrida) y no sabe
+# de contratos -- mezclar caches entre variantes daria numeros falsos.
 PROYECTOS = ("calipso", "atlas", "calipso-lector")
+_CONTRATO_FILE = os.environ.get("ABISMO_CONTRATO_FILE", "")
+if _CONTRATO_FILE:
+    _BLOQUE = pathlib.Path(_CONTRATO_FILE).read_text(encoding="utf-8").strip()
+else:
+    _BLOQUE = contrato.bloque_contrato(PROYECTOS)
 SISTEMA = "\n".join([
     "Sos Calipso, el asistente personal de Pedro. Respondele en su idioma,",
     "directo y natural.",
-    contrato.bloque_contrato(PROYECTOS),
+    _BLOQUE,
 ])
 
 # --- EL BANCO. Hecho a mano. -------------------------------------------------
@@ -93,8 +104,12 @@ BANCO = [
      "mensaje": "que hay adentro del repo atlas? no me acuerdo de que iba"},
     {"id": "pro-rama", "tipo": "positivo", "fuente": "proyecto",
      "mensaje": "revisa si el proyecto calipso tiene cambios sin commitear"},
-    {"id": "pro-cual", "tipo": "positivo", "fuente": "proyecto",
-     "mensaje": "de mis proyectos, cual toque mas recientemente? fijate en el catastro"},
+    # pro-cual (v1) pedia un ranking entre proyectos que ninguna fuente sabe
+    # contestar y sin nombre para la marca: su 0/6 era diseno del item, no
+    # fallo del modelo (review final del 1a). Reemplazado por un item bien
+    # formado; id nuevo para que ningun cache viejo lo conteste.
+    {"id": "pro-ultimo", "tipo": "positivo", "fuente": "proyecto",
+     "mensaje": "que fue lo ultimo que se laburo en calipso-lector? perdi el hilo"},
     # -- negativos
     {"id": "neg-charla", "tipo": "negativo",
      "mensaje": "buen dia! como va todo?"},
@@ -116,6 +131,12 @@ BANCO = [
      "mensaje": "como se dice 'estanteria' en ingles?"},
     {"id": "neg-ahora", "tipo": "negativo",
      "mensaje": "resumime este parrafo: los patos migran en otono hacia el sur."},
+    # v2: las espurias del porton v1 descansaban en UN solo item (neg-codigo);
+    # dos negativos mas para que el techo de 1/6 no dependa de una sola forma.
+    {"id": "neg-codigo2", "tipo": "negativo",
+     "mensaje": "haceme un regex que matchee fechas en formato ISO"},
+    {"id": "neg-este-chat", "tipo": "negativo",
+     "mensaje": "esto que te acabo de escribir arriba, resumimelo en una linea"},
 ]
 
 # --- cache resumible (el molde de juez_privacidad.py:50-77) ------------------
@@ -165,6 +186,8 @@ def main():
     modelo = dispatch.CONFIG["local"]["model"]
     print(f"\n{'=' * 72}\nPORTON DEL ABISMO -- {modelo} (temp 0, {N} corridas x "
           f"{len(banco)} items)\n{'=' * 72}", flush=True)
+    print(f"contrato: {_CONTRATO_FILE or 'contrato.bloque_contrato (repo)'} "
+          f"({len(_BLOQUE)} chars)", flush=True)
 
     fuentes_pos = sorted({i["fuente"] for i in banco if i["tipo"] == "positivo"})
     stats = {f: {"corridas": 0, "legibles": 0, "ruteo_ok": 0, "ilegibles": 0}
@@ -199,6 +222,8 @@ def main():
 
     lineas = ["# Porton del abismo -- resultados", "",
               f"Modelo: {modelo}. N={N}, temp 0, num_ctx={NUM_CTX}.",
+              f"Contrato: {_CONTRATO_FILE or 'contrato.bloque_contrato (repo)'} "
+              f"({len(_BLOQUE)} chars).",
               f"Items: {len(banco)} ({sum(1 for i in banco if i['tipo'] == 'positivo')} "
               f"positivos, {neg_corridas // N if N else 0} negativos).", ""]
     total_leg = total_ruteo = 0
@@ -225,7 +250,9 @@ def main():
         lineas.append("- latencia por llamada: sin llamadas.")
     reporte = "\n".join(lineas) + "\n"
     print("\n" + reporte, flush=True)
-    out = pathlib.Path(__file__).parent / "consulta_abismo_resultados.md"
+    out = pathlib.Path(os.environ.get("ABISMO_RESULTADOS")
+                       or (pathlib.Path(__file__).parent
+                           / "consulta_abismo_resultados.md"))
     out.write_text(reporte, encoding="utf-8")
     print(f"reporte escrito en {out}", flush=True)
 
