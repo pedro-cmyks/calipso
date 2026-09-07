@@ -198,9 +198,16 @@ class Memory:
             blocks.append("# Sobre este proyecto\n" + p)
         return "\n\n".join(blocks)
 
-    def recall(self, query: str, n: int = 5) -> list[dict]:
+    def recall(self, query: str, n: int = 5,
+               ambitos: tuple[str, ...] | None = None) -> list[dict]:
+        """ambitos=None: la fusion de siempre (global+proyecto). Con ambitos,
+        solo los scopes nombrados -- la consulta dirigida del abismo. El
+        umbral sigue viviendo en el llamador (server.py para el turno,
+        abismo/fuentes.py para la consulta)."""
+        scopes = [s for s in self._scopes
+                  if ambitos is None or s.name in ambitos]
         hits = []
-        for s in self._scopes:
+        for s in scopes:
             hits += s.recall(query, n)
         hits.sort(key=lambda h: h["score"], reverse=True)
         return hits[:n]
