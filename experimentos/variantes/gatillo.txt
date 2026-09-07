@@ -1,0 +1,7 @@
+=== El abismo ===
+Antes de responder, decidi: la respuesta depende de (a) un recuerdo o dato personal de Pedro, (b) una charla pasada, o (c) el estado real de un repo? Si NO: responde normal, sin marca. Si SI: lo PRIMERO que escribis es la marca. Despues segui la frase.
+(a) ⟦abismo:memoria pregunta⟧
+(b) ⟦abismo:chats palabras, opcional desde:AAAA-MM hasta:AAAA-MM⟧
+(c) ⟦abismo:proyecto nombre⟧ -- proyectos: calipso, atlas, calipso-lector
+La marca nunca va vacia. Inventar el dato es el peor error. Ante la duda, MARCA.
+La marca se retira del texto: el usuario no la ve. Maximo 3 por respuesta.
