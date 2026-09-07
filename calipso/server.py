@@ -40,6 +40,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -259,6 +260,76 @@ def _qr_png_data_uri() -> str | None:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def _es_loopback(host: str | None) -> bool:
+    """La propia maquina. Incluye "testclient" (el host sintetico del
+    TestClient de Starlette) para que la suite ejercite los flujos locales;
+    ese valor no puede llegar por red real (no es una IP)."""
+    return (host or "") in ("127.0.0.1", "::1", "::ffff:127.0.0.1",
+                            "localhost", "testclient")
+
+
+# --- freno de fuerza bruta del login (revision de seguridad 2026-09-07, C3)
+# Sin esto, /login (la unica ruta sin guard) aceptaba intentos infinitos de
+# TOTP a velocidad de loopback: ~333k de esperanza para ganar EL token.
+# Backoff exponencial por host desde el 5to fallo, y un balde global ("*")
+# desde el 20mo para que varias IPs de una LAN no paralelicen el ataque.
+_LOGIN_MAX_FALLOS_HOST = 5
+_LOGIN_MAX_FALLOS_GLOBAL = 20
+_LOGIN_BACKOFF_BASE = 2.0    # segundos: 2, 4, 8, ... por fallo extra
+_LOGIN_BACKOFF_TOPE = 900.0  # 15 minutos
+_login_lock = threading.Lock()
+_login_fallos: dict[str, list] = {}  # clave -> [fallos, monotonic del ultimo]
+_login_reloj = time.monotonic        # inyectable en tests
+
+
+def _login_espera(clave: str, max_fallos: int) -> float:
+    """Segundos de castigo que le quedan a esta clave (0 = puede intentar)."""
+    with _login_lock:
+        reg = _login_fallos.get(clave)
+        if not reg or reg[0] < max_fallos:
+            return 0.0
+        fallos, ultimo = reg
+        castigo = min(_LOGIN_BACKOFF_TOPE,
+                      _LOGIN_BACKOFF_BASE * (2 ** (fallos - max_fallos)))
+        return max(0.0, castigo - (_login_reloj() - ultimo))
+
+
+def _login_fallo(clave: str) -> None:
+    """Registra el fallo y DECAE lo viejo: por cada ventana completa de
+    calma (el tope de castigo, 900s) el contador baja UNO, y la entrada
+    recien muere al llegar a cero. Dos disenos anteriores fallaron y los
+    dos los cazo la verificacion adversaria: el trinquete monotono (nunca
+    olvidaba: los typos de semanas escalaban a lockouts de 15 minutos para
+    todos, y un host hostil sostenia ese DoS con un fallo cada tanto) y la
+    poda que BORRABA la entrada entera (regalaba una rafaga fresca de
+    intentos a un atacante que pausara 901s: de ~96 a ~1300 intentos/dia,
+    simulado). El decaimiento conserva ambas propiedades: la historia
+    inocente se evapora sola y el atacante pausado ve su contador bajar de
+    a uno por ventana, no reiniciarse."""
+    with _login_lock:
+        ahora = _login_reloj()
+        for k in list(_login_fallos):
+            fallos, ultimo = _login_fallos[k]
+            ventanas = int((ahora - ultimo) // _LOGIN_BACKOFF_TOPE)
+            if ventanas <= 0:
+                continue
+            fallos -= ventanas
+            if fallos <= 0:
+                del _login_fallos[k]
+            else:
+                # el resto de la ventana en curso se conserva: adelantar
+                # `ultimo` solo lo decaido evita descontar dos veces
+                _login_fallos[k] = [
+                    fallos, ultimo + ventanas * _LOGIN_BACKOFF_TOPE]
+        fallos = _login_fallos.get(clave, [0, 0.0])[0]
+        _login_fallos[clave] = [fallos + 1, ahora]
+
+
+def _login_exito(clave: str) -> None:
+    with _login_lock:
+        _login_fallos.pop(clave, None)
+
+
 def _session_response(url: str = "/") -> RedirectResponse:
     resp = RedirectResponse(url=url, status_code=303)
     resp.set_cookie(COOKIE, TOKEN, httponly=True, samesite="lax",
@@ -323,6 +394,21 @@ async def auth_guard(request: Request, call_next):
     if _valid(request.cookies.get(COOKIE)):
         return await call_next(request)
     if _valid(request.query_params.get("token")):
+        # C8 (revision de seguridad 2026-09-07): la credencial por URL viaja
+        # en claro y queda en historial/logs; desde afuera de la propia
+        # maquina no es una via de entrada. Un dispositivo remoto entra por
+        # /login (TOTP) y cookie -- y con la capa de sesion, por identidad
+        # de aparato.
+        # (los websockets NO pasan por este middleware http: ws_chat y
+        # ws_mapa autentican su propio handshake por cookie y jamas
+        # aceptaron ?token= -- no agregar "/ws" aca creyendo que protege)
+        if not _es_loopback(request.client.host if request.client else ""):
+            if path.startswith("/api"):
+                # mismo detail que un token invalido: distinguirlos era un
+                # oraculo remoto de validez del token
+                return JSONResponse({"detail": "no autorizado"},
+                                    status_code=401)
+            return RedirectResponse(url="/login", status_code=303)
         if path.startswith("/api") or request.method != "GET":
             resp = await call_next(request)
             resp.set_cookie(COOKIE, TOKEN, httponly=True, samesite="lax",
@@ -334,27 +420,56 @@ async def auth_guard(request: Request, call_next):
     return RedirectResponse(url="/login", status_code=303)
 
 
-@app.get("/login")
-def login_page() -> HTMLResponse:
-    mode = ('<p style="color:#4ea1ff;font-size:13px">TOTP desactivado — ingresa cualquier codigo</p>'
-            if _TOTP_DISABLED else "<p>Codigo de autenticador</p>")
-    return HTMLResponse(LOGIN_HTML.replace("{error}", "").replace("{totp_mode}", mode))
-
-
 _TOTP_DISABLED = os.environ.get("CALIPSO_NO_TOTP", "").strip().lower() in ("1", "true", "yes")
+
+
+def _totp_bypass_permitido(host: str | None) -> bool:
+    """S3 (decidida en el spec de ojos-y-manos, implementada en la revision
+    de seguridad 2026-09-07, C7): CALIPSO_NO_TOTP es un interruptor de
+    desarrollo y SOLO vale desde la propia maquina. Un origen remoto exige
+    TOTP siempre, aunque la variable haya quedado puesta."""
+    return _TOTP_DISABLED and _es_loopback(host)
+
+
+def _login_mode_html(host: str | None) -> str:
+    if _totp_bypass_permitido(host):
+        return ('<p style="color:#4ea1ff;font-size:13px">TOTP desactivado '
+                '— ingresa cualquier codigo</p>')
+    return "<p>Codigo de autenticador</p>"
+
+
+@app.get("/login")
+def login_page(request: Request) -> HTMLResponse:
+    cliente = request.client.host if request.client else ""
+    return HTMLResponse(LOGIN_HTML.replace("{error}", "")
+                        .replace("{totp_mode}", _login_mode_html(cliente)))
 
 
 @app.post("/login")
 async def login_submit(request: Request):
+    cliente = request.client.host if request.client else ""
+    espera = max(_login_espera(cliente, _LOGIN_MAX_FALLOS_HOST),
+                 _login_espera("*", _LOGIN_MAX_FALLOS_GLOBAL))
+    if espera > 0:
+        error = (f'<p class="err">Demasiados intentos. '
+                 f'Espera {int(espera) + 1} segundos.</p>')
+        return HTMLResponse(LOGIN_HTML.replace("{error}", error)
+                            .replace("{totp_mode}", _login_mode_html(cliente)),
+                            status_code=429)
     body = (await request.body()).decode("utf-8", errors="ignore")
     data = urllib.parse.parse_qs(body)
     code = data.get("code", [""])[0]
-    if _TOTP_DISABLED or _verify_totp(code):
+    if _totp_bypass_permitido(cliente) or _verify_totp(code):
+        # el exito limpia el contador del host; el balde global queda (un
+        # acierto en medio de una lluvia de fallos no la amnistia)
+        _login_exito(cliente)
         return _session_response("/")
+    _login_fallo(cliente)
+    _login_fallo("*")
     error = '<p class="err">Codigo invalido. Revisa el autenticador y vuelve a intentar.</p>'
-    mode = ('<p style="color:#4ea1ff;font-size:13px">TOTP desactivado — ingresa cualquier codigo</p>'
-            if _TOTP_DISABLED else "<p>Codigo de autenticador</p>")
-    return HTMLResponse(LOGIN_HTML.replace("{error}", error).replace("{totp_mode}", mode), status_code=401)
+    return HTMLResponse(LOGIN_HTML.replace("{error}", error)
+                        .replace("{totp_mode}", _login_mode_html(cliente)),
+                        status_code=401)
 
 
 @app.get("/setup")
@@ -6723,7 +6838,6 @@ def _instalar_filtro_de_token() -> None:
 
 _instalar_filtro_de_token()
 
-
 if __name__ == "__main__":
     host = _host()
     print(f"[calipso] sirviendo {ROOT}")
@@ -6735,4 +6849,23 @@ if __name__ == "__main__":
         import socket
         ip = socket.gethostbyname(socket.gethostname())
         print(f"[calipso] ABIERTO en {host} — tambien entra http://{ip}:8000")
-    uvicorn.run(app, host=host, port=8000)
+        # C8: criterio invertido (ronda adversaria) -- el aviso duro salta
+        # para TODO host que no sea loopback ni la red de Tailscale
+        # (100.64.0.0/10, el camino bendecido del lector), no solo para el
+        # literal todas-las-interfaces ("::" y una IP de LAN pelada exponen
+        # lo mismo).
+        import ipaddress
+        try:
+            en_tailscale = ipaddress.ip_address(host) in (
+                ipaddress.ip_network("100.64.0.0/10"))
+        except ValueError:
+            en_tailscale = False
+        if not en_tailscale:
+            print("[calipso] OJO: este host abre HTTP SIN CIFRAR fuera de "
+                  "la maquina. Para el lector usa la IP de Tailscale "
+                  "(100.x) como CALIPSO_HOST.")
+    # proxy_headers=False: Calipso no corre detras de ningun proxy, y el
+    # default de uvicorn (confiar X-Forwarded-For desde loopback) dejaba
+    # que un proceso local forjara request.client.host -- la clave del
+    # freno de login (verificacion adversaria del 3a).
+    uvicorn.run(app, host=host, port=8000, proxy_headers=False)
