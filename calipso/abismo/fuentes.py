@@ -8,11 +8,15 @@ from __future__ import annotations
 
 import re
 
-from calipso import chats
+from calipso import chats, chronology
 from calipso.abismo import anillos
 
 CHATS_MAX_FRAGMENTOS = 8
 CHATS_FRAGMENTO_CHARS = 200
+
+RECALL_N = 12
+RECALL_TOP = 8
+RECALL_UMBRAL = 0.20
 
 _RANGO = re.compile(r"\b(desde|hasta):(\d{4}-\d{2})\b")
 
@@ -62,3 +66,40 @@ def chats_viejos(resto: str) -> list[tuple[str, int]]:
     hallados.sort(reverse=True)  # mas reciente primero
     return [(frag, anillos.MEDIA_AGUA)
             for _, frag in hallados[:CHATS_MAX_FRAGMENTOS]]
+
+
+def _extracto(texto: str, pregunta: str, max_lineas: int = 12) -> str:
+    """Lineas del texto que comparten alguna clave con la pregunta. La fuente
+    puede LEER el core entero (sin el truncado a 3000 del turno); lo que entra
+    al bloque son los renglones relevantes, no el archivo."""
+    claves = _palabras(pregunta)
+    if not claves:
+        return ""
+    lineas = [ln for ln in texto.splitlines()
+              if not ln.startswith("#") and (_palabras(ln) & claves)]
+    return "\n".join(lineas[:max_lineas])
+
+
+def memoria(pregunta: str, mem, consolidado: str | None = None,
+            zona_chat: str = "fabrica") -> list[tuple[str, int]]:
+    """Recall dirigido + extractos de core/cronologia. El consolidado del
+    libro personal conserva su frontera de zona (spec seccion 6 e invariante
+    del spec de proyectos): solo en chats de zona personal."""
+    bloques: list[tuple[str, int]] = []
+    hits = [h for h in mem.recall(pregunta, n=RECALL_N)
+            if h.get("score", 0) >= RECALL_UMBRAL][:RECALL_TOP]
+    if hits:
+        lineas = "\n".join(f"- {h['text']}" for h in hits)
+        bloques.append((f"recuerdos:\n{lineas}", anillos.MEDIA_AGUA))
+    if (core := _extracto(mem.load_core(), pregunta)):
+        bloques.append((f"del core:\n{core}", anillos.HONDO))
+    crono = chronology.load(limit=200)
+    lineas_crono = "\n".join(
+        e["raw"] for e in crono["entries"]
+        if _palabras(e.get("text", "")) & _palabras(pregunta))
+    if lineas_crono:
+        bloques.append((f"cronologia:\n{lineas_crono}", anillos.HONDO))
+    if consolidado and zona_chat == "personal":
+        bloques.append((f"libro personal (consolidado):\n{consolidado}",
+                        anillos.HONDO))
+    return bloques
