@@ -98,6 +98,14 @@ from calipso.memory import Memory, leer_carta  # noqa: E402
 ROOT = pathlib.Path(os.environ.get("CALIPSO_ROOT", os.getcwd())).resolve()
 WEB = pathlib.Path(__file__).parent / "web"
 
+# El arranque no pasa por _switch_project, asi que su techo (no abrir el
+# home entero) se replica aca: `python calipso/server.py` corrido desde ~
+# dejaba ROOT=home con todo lo que eso abre por /api/file (revision de
+# seguridad 2026-09-07, ronda del punto 2). Se degrada al repo de Calipso.
+if ROOT == pathlib.Path.home().resolve():
+    ROOT = pathlib.Path(__file__).resolve().parent.parent
+    print(f"[calipso] CALIPSO_ROOT era el home entero: degradado a {ROOT}")
+
 # Carpetas que no tiene sentido mostrar en el ÃƒÂ¡rbol.
 IGNORE_DIRS = {
     ".git", "node_modules", "__pycache__", ".venv", "venv", "env",
@@ -380,8 +388,11 @@ def _safe(rel: str) -> pathlib.Path:
     if p != ROOT and ROOT not in p.parents:
         raise HTTPException(status_code=400, detail="ruta fuera del proyecto")
     home = pathlib.Path.home().resolve()
-    for partes in _VEDADAS_RELATIVAS_AL_HOME:
-        v = home.joinpath(*partes)
+    vedadas = [home.joinpath(*partes) for partes in _VEDADAS_RELATIVAS_AL_HOME]
+    # el estado real de Calipso, este donde este (CALIPSO_HOME puede apuntar
+    # fuera de ~/.calipso)
+    vedadas.append(_home_calipso().resolve())
+    for v in vedadas:
         if p == v or v in p.parents:
             raise HTTPException(status_code=400, detail="ruta vedada")
     return p
@@ -1347,17 +1358,20 @@ def _subscription_probe(client: str | None) -> dict:
     exe = _subscription_command(client)
     if not exe:
         return {"installed": False, "ready": False, "error": "no esta en PATH"}
+    # cwd=ROOT es conmutable a un repo ajeno: escudo git tambien aca
+    # (revision de seguridad 2026-09-07, ronda del punto 2)
+    env_probe = calipso_github.env_git_blindado(anular_global=False)
     try:
         result = subprocess.run(
             [exe, "--version"], cwd=str(ROOT), text=True, capture_output=True,
-            encoding="utf-8", errors="replace", timeout=5)
+            encoding="utf-8", errors="replace", timeout=5, env=env_probe)
         executable = result.returncode == 0
         authenticated = None
         if client == "claude" and executable:
             auth = subprocess.run(
                 [exe, "auth", "status"], cwd=str(ROOT), text=True,
                 capture_output=True, encoding="utf-8", errors="replace",
-                timeout=5)
+                timeout=5, env=env_probe)
             try:
                 authenticated = json.loads(auth.stdout).get("loggedIn", False)
             except Exception:
@@ -1366,7 +1380,7 @@ def _subscription_probe(client: str | None) -> dict:
             auth = subprocess.run(
                 [exe, "login", "status"], cwd=str(ROOT), text=True,
                 capture_output=True, encoding="utf-8", errors="replace",
-                timeout=5)
+                timeout=5, env=env_probe)
             auth_text = (auth.stdout or "") + (auth.stderr or "")
             authenticated = auth.returncode == 0 and "Logged in" in auth_text
         ready = executable and (authenticated is not False)
@@ -2209,7 +2223,9 @@ def _subscription_invocation(client: str, system: str, user_msg: str,
     # viajan: CALIPSO_TOKEN es del servidor, LITELLM_MASTER_KEY de la ruta
     # api, y las claves Anthropic no le sirven a ninguno de los dos clientes
     # de suscripcion (el patron de saneo ya existia en memory.reflect).
-    env = calipso_github.env_git_blindado()
+    # anular_global=False: el CLI agente commitea legitimamente y su
+    # identidad (user.name/email) vive SOLO en el ~/.gitconfig de Pedro.
+    env = calipso_github.env_git_blindado(anular_global=False)
     env.pop("CALIPSO_TOKEN", None)
     env.pop("LITELLM_MASTER_KEY", None)
     env.pop("ANTHROPIC_API_KEY", None)
@@ -6658,18 +6674,35 @@ if WEB.exists():
     app.mount("/static", StaticFiles(directory=str(WEB)), name="static")
 
 
+def _enmascarar_token(texto: str) -> str:
+    limpio = re.sub(r"token=[^&\s\"']+", "token=***", texto)
+    if TOKEN:
+        limpio = limpio.replace(TOKEN, "***")
+    return limpio
+
+
 class _FiltroToken(logging.Filter):
     """Enmascara la credencial en los logs de uvicorn (revision de seguridad
     2026-09-07, C4): el access log por default escribe la request CON query
     string, y auth_guard acepta ?token= -- cada GET con token era una copia
-    de la credencial en disco/scrollback. Filtra el patron token=... y el
-    valor literal del TOKEN por si aparece por otro camino."""
+    de la credencial en disco/scrollback.
+
+    El access log de uvicorn emite (client, metodo, full_path, http_ver,
+    status) como 5-tupla en record.args y su AccessFormatter la DESEMPACA:
+    aplanar args rompia el formatter y perdia justo las lineas enmascaradas
+    (lo cazo la ronda adversaria) -- por eso aca se enmascara ADENTRO de la
+    tupla y solo se aplana en records sin args de acceso."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if (isinstance(args, tuple) and len(args) == 5
+                and isinstance(args[2], str)):
+            limpio = _enmascarar_token(args[2])
+            if limpio != args[2]:
+                record.args = (args[0], args[1], limpio, args[3], args[4])
+            return True
         msg = record.getMessage()
-        limpio = re.sub(r"token=[^&\s\"']+", "token=***", msg)
-        if TOKEN:
-            limpio = limpio.replace(TOKEN, "***")
+        limpio = _enmascarar_token(msg)
         if limpio != msg:
             record.msg = limpio
             record.args = ()
@@ -6677,13 +6710,22 @@ class _FiltroToken(logging.Filter):
 
 
 def _instalar_filtro_de_token() -> None:
+    """Idempotente, y se llama AL IMPORTAR el modulo (abajo): el shell de
+    escritorio arranca el server via `uvicorn calipso.server:app` (import,
+    no __main__), y un filtro instalado solo en __main__ lo dejaba sin
+    cubrir -- lo cazo la ronda adversaria. Los filtros de logger sobreviven
+    al dictConfig de uvicorn (borra handlers, no filters)."""
     for nombre in ("uvicorn.access", "uvicorn.error", "uvicorn"):
-        logging.getLogger(nombre).addFilter(_FiltroToken())
+        logger = logging.getLogger(nombre)
+        if not any(isinstance(f, _FiltroToken) for f in logger.filters):
+            logger.addFilter(_FiltroToken())
+
+
+_instalar_filtro_de_token()
 
 
 if __name__ == "__main__":
     host = _host()
-    _instalar_filtro_de_token()
     print(f"[calipso] sirviendo {ROOT}")
     # El token NO se imprime (quedaba en scrollback/journal): esta en el
     # archivo, que ya vive en 0600.

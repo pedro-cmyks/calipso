@@ -80,6 +80,42 @@ def test_safe_sigue_sirviendo_lo_normal(tmp_path, monkeypatch):
     assert srv._safe("a.txt") == tmp_path / "a.txt"
 
 
+# --- C2: caso positivo con el home controlado --------------------------------
+
+def test_proyecto_normal_del_home_se_abre_y_oculta_no(tmp_path, monkeypatch):
+    # El caso real mas comun: ~/miproyecto abre; ~/.oculta no. Home
+    # controlado para no depender del disco de Pedro.
+    _permitir_catastro(monkeypatch)
+    monkeypatch.setattr(srv.pathlib.Path, "home",
+                        classmethod(lambda cls: tmp_path))
+    normal = tmp_path / "miproyecto"
+    normal.mkdir()
+    oculta = tmp_path / ".oculta"
+    oculta.mkdir()
+    monkeypatch.setattr(srv, "Memory", lambda project_root=None: srv.mem)
+    monkeypatch.setattr(srv, "_remember_project", lambda p: None)
+    monkeypatch.setattr(srv.catastro, "marcar_visto", lambda p: None)
+    viejo = srv.ROOT
+    try:
+        srv._switch_project(str(normal))
+        assert srv.ROOT == normal
+    finally:
+        srv.ROOT = viejo
+    with pytest.raises(HTTPException):
+        srv._switch_project(str(oculta))
+
+
+def test_safe_veda_el_calipso_home_este_donde_este(tmp_path, monkeypatch):
+    estado = tmp_path / "estado-calipso"
+    estado.mkdir()
+    (estado / "token").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(srv, "_home_calipso", lambda: estado)
+    monkeypatch.setattr(srv, "ROOT", tmp_path)
+    with pytest.raises(HTTPException) as e:
+        srv._safe("estado-calipso/token")
+    assert e.value.status_code == 400
+
+
 # --- C4: el filtro de token en los logs -------------------------------------
 
 def _record(msg):
@@ -108,6 +144,31 @@ def test_filtro_deja_pasar_lineas_normales():
     assert rec.getMessage() == antes
 
 
+def test_filtro_con_el_formatter_real_de_uvicorn():
+    # La ronda adversaria cazo que aplanar args rompia el AccessFormatter
+    # (desempaca 5 args). Este test usa el formatter REAL del venv: la
+    # linea enmascarada tiene que formatear sin excepcion.
+    from uvicorn.logging import AccessFormatter
+    rec = logging.LogRecord(
+        name="uvicorn.access", level=logging.INFO, pathname="", lineno=0,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("127.0.0.1:1", "GET", "/?token=SECRETO123", "1.1", 200),
+        exc_info=None)
+    assert srv._FiltroToken().filter(rec) is True
+    linea = AccessFormatter('%(client_addr)s - "%(request_line)s" '
+                            '%(status_code)s').format(rec)
+    assert "SECRETO123" not in linea
+    assert "token=***" in linea
+
+
+def test_filtro_instalado_al_importar():
+    # El shell de escritorio arranca por `uvicorn calipso.server:app`
+    # (import, no __main__): el filtro tiene que estar puesto ya.
+    for nombre in ("uvicorn.access", "uvicorn.error"):
+        filtros = logging.getLogger(nombre).filters
+        assert any(isinstance(f, srv._FiltroToken) for f in filtros), nombre
+
+
 # --- punto 2: entorno saneado de los CLIs de suscripcion --------------------
 
 def test_env_de_suscripcion_sin_credenciales_y_con_escudo(monkeypatch):
@@ -121,7 +182,15 @@ def test_env_de_suscripcion_sin_credenciales_y_con_escudo(monkeypatch):
         for clave in ("CALIPSO_TOKEN", "LITELLM_MASTER_KEY",
                       "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
             assert clave not in env
-        assert env.get("GIT_CONFIG_COUNT") == "3"  # el escudo git de C1
+        # el escudo git de C1: la CONDUCTA (pares que anulan el config
+        # local del repo), no solo la constante
+        pares = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"]
+                 for i in range(int(env["GIT_CONFIG_COUNT"]))}
+        assert pares == {"core.fsmonitor": "", "diff.external": "",
+                         "core.pager": "cat"}
+        # y el ~/.gitconfig de Pedro queda EN PIE: ahi vive su user.name,
+        # que los commits legitimos del CLI agente necesitan
+        assert env.get("GIT_CONFIG_GLOBAL") != "/dev/null"
     finally:
         srv._cleanup_subscription_files(temps, out)
 

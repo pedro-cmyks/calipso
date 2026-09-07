@@ -35,7 +35,7 @@ def _which_gh() -> str | None:
     return None
 
 
-def env_git_blindado() -> dict:
+def env_git_blindado(anular_global: bool = True) -> dict:
     """El escudo por entorno contra el .git/config de un repo ajeno, para
     TODO proceso que corra git (directo o por dentro, como gh) sobre un cwd
     conmutable. GIT_CONFIG_COUNT inyecta config con la maxima precedencia
@@ -44,10 +44,16 @@ def env_git_blindado() -> dict:
     Verificado empiricamente en la revision de seguridad 2026-09-07 (C1):
     sin esto, `git checkout -b` o un `git status` interno de gh ejecutan el
     comando que el repo declare. Un solo helper para que los runners no
-    vuelvan a divergir."""
+    vuelvan a divergir.
+
+    `anular_global=False` deja el ~/.gitconfig de Pedro en pie (ahi viven
+    su user.name/user.email, el UNICO lugar): es lo que necesita un CLI
+    agente que commitea legitimamente. El trio de GIT_CONFIG_COUNT alcanza
+    para pisar el config LOCAL del repo hostil, que es el vector."""
     env = os.environ.copy()
-    env["GIT_CONFIG_GLOBAL"] = os.devnull
-    env["GIT_CONFIG_SYSTEM"] = os.devnull
+    if anular_global:
+        env["GIT_CONFIG_GLOBAL"] = os.devnull
+        env["GIT_CONFIG_SYSTEM"] = os.devnull
     for i, (k, v) in enumerate((("core.fsmonitor", ""),
                                 ("diff.external", ""),
                                 ("core.pager", "cat"))):
