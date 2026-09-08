@@ -365,8 +365,15 @@ def canjear(id_pedido: str) -> str | None:
     """Entrega el id de sesion EN CLARO, una sola vez, y quema el
     `id_pedido`. Aca nace el id: se guarda su sha256 y el que devuelve esta
     funcion es el unico ejemplar en claro que existe -- si el aparato lo
-    pierde, vuelve a golpear. Segundo canje, pedido desconocido o todavia
-    sin aprobar = None."""
+    pierde, vuelve a golpear. Segundo canje, pedido desconocido, todavia sin
+    aprobar, o una aprobacion que durmio hasta caducar = None.
+
+    Lo ultimo es el reloj: una aprobacion que nadie canjeo envejece igual
+    que una sesion entregada (invariante 5, dormida 30 dias o nacida hace
+    180 = muerta) y `listar` ya la muestra "caduca". Sin mirar la hora aca,
+    el almacen se contradecia: /fabrica la daba por muerta y el canje le
+    entregaba una credencial en claro, renovandole la `ultima_vez` de
+    yapa."""
     if not id_pedido:
         return None
     with candado(_ruta()):
@@ -374,7 +381,8 @@ def canjear(id_pedido: str) -> str | None:
         registro = _por_pedido(datos, id_pedido)
         if (registro is None
                 or registro.get("estado") != ESTADO_VIVA
-                or registro.get("hash_id")):
+                or registro.get("hash_id")
+                or _sesion_caduca(registro, _reloj())):
             return None
         id_en_claro = secrets.token_urlsafe(32)
         registro["hash_id"] = _hash(id_en_claro)

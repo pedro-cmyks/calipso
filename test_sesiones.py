@@ -166,6 +166,21 @@ def test_dormida_treinta_dias_muere_y_queda_revocada(ruta, reloj):
     assert sesiones.resolver(id_claro) is None      # sin marcha atras
 
 
+def test_un_aprobado_que_durmio_treinta_dias_ya_no_se_canjea(ruta, reloj):
+    # aprobado y nunca canjeado: el reloj lo mata igual que a una sesion ya
+    # entregada. /fabrica lo lista "caduca", asi que el almacen no puede
+    # entregar por atras una credencial de algo que la lista da por muerto
+    pedido = sesiones.golpear("Ally", "navegador")["id_pedido"]
+    sesiones.aprobar(pedido, "navegador")
+    antes = en_disco(ruta)[0]
+    reloj[0] += sesiones.SESION_SUENO_DIAS * DIA
+    assert [s["efectivo"] for s in sesiones.listar()] == ["caduca"]
+    assert sesiones.canjear(pedido) is None
+    # y el canje fallido no lo revivio: mismo registro, sin hash y con la
+    # `ultima_vez` de entonces
+    assert en_disco(ruta)[0] == antes
+
+
 def test_la_vida_maxima_de_ciento_ochenta_dias_no_la_estira_el_uso(ruta,
                                                                   reloj):
     id_claro = vivir()
