@@ -89,6 +89,8 @@ $ curl -s -b "calipso_token=$CALIPSO_TOKEN" http://127.0.0.1:8771/api/aparatos
                "estado": "viva", "efectivo": "viva"}]}
 ```
 
+**Nota posterior:** salida anterior al fix `4588965`; hoy la fila aprobada sale con `id_pedido` null.
+
 El golpe sugirio `lector` y Pedro dio `tablero`: manda Pedro. `hash_id` sigue en null hasta el canje
 (el hash nace ahi). En disco, `sesiones.json` guarda el `id_pedido` en claro -- es lo que dice el
 spec (seccion "el registro", `"id_pedido": token_urlsafe(32),  # el del golpe; se quema al canjear`);
