@@ -5,6 +5,7 @@ pescado no aparece en ningun envio; solo hondo sigue sin bloque; los tramos
 que vuelven a la nube son los crudos, no los repuestos; el bloque no se
 persiste; el done es uno solo."""
 import json
+import threading
 
 import calipso.server as srv
 from calipso import chats
@@ -13,6 +14,50 @@ from calipso.privacidad import juez
 from test_abismo_chat import chat, de_tipo, texto_visible  # noqa: F401
 from test_abismo_chat import _sembrar_chat_viejo
 from test_abismo_suscripcion import cli_falso  # noqa: F401
+
+
+def _lo_que_siga(ws, plazo):
+    """Lo que el server mande en los proximos `plazo` segundos, o nada.
+
+    En un hilo demonio con `join(plazo)` (el molde de `_cierre_del_ws`,
+    test_sesiones_server.py) porque `receive_json` del TestClient no acepta
+    timeout: esperar de frente un evento que NO tiene que llegar colgaria la
+    suite entera en vez de dejar pasar al test."""
+    extra: list[dict] = []
+
+    def _leer():
+        try:
+            while True:
+                extra.append(ws.receive_json())
+        except BaseException:
+            pass        # al salir del `with` el socket cierra y el hilo muere
+
+    hilo = threading.Thread(target=_leer, daemon=True)
+    hilo.start()
+    hilo.join(plazo)
+    return list(extra)
+
+
+def _turno_con_un_solo_done(chat, texto, plazo=0.5):
+    """`Harness.turno` mas la guarda del `done` unico (constraint global: un
+    solo `done` por turno).
+
+    Contar los `done` de lo que devuelve `Harness.turno` no prueba nada:
+    `recibir` corta en el primero (`hasta_dones=1`), asi que la lista jamas
+    puede traer dos y la cuenta solo podria "fallar" colgandose. Esto sigue
+    escuchando despues del `done` y cuenta sobre TODO lo que llego. El plazo
+    corto alcanza: el `done` es lo ultimo que manda el handler, un duplicado
+    saldria del mismo camino microsegundos despues, y el buffer del socket de
+    prueba no tiene tope, asi que nada se pierde si el drenaje arranca tarde
+    (el latido del chat, lo unico que despierta al handler ocioso, esta en 30
+    s y ademas no le manda nada al cliente)."""
+    with chat.cliente.websocket_connect("/ws/chat") as ws:
+        ws.send_text(chat.paquete(texto))
+        eventos = chat.recibir(ws, 1)
+        eventos.extend(_lo_que_siga(ws, plazo))
+    tipos = [e["type"] for e in eventos]
+    assert tipos.count("done") == 1, f"un done de mas al final del turno: {tipos}"
+    return eventos
 
 
 def _juez_que_tapa_nombres(monkeypatch, con_credencial=False):
@@ -38,9 +83,7 @@ def test_en_nube_el_bloque_viaja_tapado_con_el_mapa_del_mensaje_y_se_ve(chat, mo
     chats.append(chat.chat_id, "assistant", "hola Pedro")
     chat.modelo.guiones = [["Le dije a [ID_1] que ", "⟦abismo:chats libro⟧", " fin"],
                            ["y seguimos"]]
-    eventos = chat.turno("/nube /api que hablamos con Marta y Ana del libro")
-    tipos = [e["type"] for e in eventos]
-    assert tipos.count("done") == 1
+    eventos = _turno_con_un_solo_done(chat, "/nube /api que hablamos con Marta y Ana del libro")
     tapado = [e for e in eventos if e["type"] == "privacidad"][0]
     assert tapado["action"] == "tapado"
     assert tapado["texto_tapado"] == "que hablamos con [ID_1] y [ID_2] del libro"
@@ -80,7 +123,7 @@ def test_en_nube_una_credencial_en_lo_pescado_no_sale_y_la_nube_sigue_sin_bloque
     _juez_que_tapa_nombres(monkeypatch, con_credencial=True)
     _sembrar_chat_viejo(["el token del libro es ghp_abcdef no lo pierdas"])
     chat.modelo.guiones = [["Dejame ver ", "⟦abismo:chats libro⟧"], ["y sigo"]]
-    eventos = chat.turno("/nube /api que libro tenia token")
+    eventos = _turno_con_un_solo_done(chat, "/nube /api que libro tenia token")
     abismo = de_tipo(eventos, "abismo")
     assert [a["fase"] for a in abismo] == ["pondering", "fallo"]
     assert abismo[1]["motivo"] == "credencial"
@@ -111,7 +154,7 @@ def test_en_nube_solo_hondo_sigue_sin_bloque_y_sin_juez(chat, monkeypatch):
     monkeypatch.setattr(juez, "juzgar", juez_solo_del_mensaje)
     chat.memoria.core = "### perfil\n- Marta vive en Cordoba con Pedro\n"
     chat.modelo.guiones = [["a ⟦abismo:memoria donde vive Marta⟧"], ["b"]]
-    eventos = chat.turno("/nube /api donde vive")
+    eventos = _turno_con_un_solo_done(chat, "/nube /api donde vive")
     abismo = de_tipo(eventos, "abismo")
     assert [a["fase"] for a in abismo] == ["pondering", "fallo"]
     assert abismo[1]["motivo"] == "solo_hondo"
@@ -132,7 +175,7 @@ def test_en_nube_por_suscripcion_los_tramos_vuelven_crudos(chat, cli_falso, monk
     _sembrar_chat_viejo(["con Marta hablamos del libro de cocina"])
     cli_falso.guion([{"partes": ["Le dije a [ID_1] que ⟦abismo:chats libro⟧ nada"], "pausa": 0},
                      {"partes": ["y seguimos"], "pausa": 0}])
-    eventos = chat.turno("/nube /claude que hablamos con Marta del libro")
+    eventos = _turno_con_un_solo_done(chat, "/nube /claude que hablamos con Marta del libro")
     assert texto_visible(eventos) == "Le dije a Marta que y seguimos"
     llamadas = cli_falso.llamadas()
     assert len(llamadas) == 2
@@ -152,7 +195,7 @@ def test_en_nube_por_suscripcion_un_bloque_que_no_viaja_no_reinvoca(chat, cli_fa
     _juez_que_tapa_nombres(monkeypatch, con_credencial=True)
     _sembrar_chat_viejo(["el token del libro es ghp_abcdef"])
     cli_falso.guion([{"partes": ["Dejame ver ⟦abismo:chats libro⟧ y sigo sin el"], "pausa": 0}])
-    eventos = chat.turno("/nube /claude que libro tenia token")
+    eventos = _turno_con_un_solo_done(chat, "/nube /claude que libro tenia token")
     abismo = de_tipo(eventos, "abismo")
     assert [a["fase"] for a in abismo] == ["pondering", "fallo"]
     assert abismo[1]["motivo"] == "credencial"
