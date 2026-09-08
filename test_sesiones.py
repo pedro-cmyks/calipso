@@ -114,6 +114,7 @@ def test_rechazar_corta_el_golpe_y_no_revive(ruta, reloj):
     pedido = sesiones.golpear("Ally", "navegador")["id_pedido"]
     sesiones.rechazar(pedido)
     assert sesiones.estado(pedido) == "rechazada"
+    assert sesiones.listar()[0]["efectivo"] == "rechazada"
     assert sesiones.canjear(pedido) is None
     with pytest.raises(KeyError):
         sesiones.aprobar(pedido, "navegador")
@@ -281,6 +282,17 @@ def test_leer_un_archivo_ilegible_no_resuelve_nada_ni_lo_pisa(ruta, reloj,
     assert "ilegible" in capsys.readouterr().err
 
 
+def test_un_registro_con_estado_desconocido_se_lista_como_revocado(ruta,
+                                                                   reloj):
+    # un archivo editado a mano: `estado` y `resolver` ya no le dan nada a
+    # un registro asi, y la lista de /fabrica no puede sugerir lo contrario
+    ruta.write_text(json.dumps({"version": 1, "sesiones": [
+        {"hash_id": "abc", "id_pedido": None, "aparato": "raro",
+         "tipo": "navegador", "creada": "?", "ultima_vez": "?",
+         "estado": "inventado"}]}), encoding="utf-8")
+    assert sesiones.listar()[0]["efectivo"] == "revocada"
+
+
 def test_la_cache_se_recarga_cuando_el_archivo_cambia(ruta, reloj):
     id_claro = vivir()
     assert sesiones.resolver(id_claro) is not None
@@ -306,7 +318,8 @@ def test_los_alcances_son_la_tabla_del_spec():
     assert "/api/permisos/responder" in prefijos
     # el criterio fijo del spec: ver todo, firmar mesa y permisos, jamas
     # tocar la maquina
-    for vedada in ("/api/file", "/api/commands", "/api/config", "/api/project"):
+    for vedada in ("/api/file", "/api/commands", "/api/config",
+                   "/api/project"):
         assert not any(p.startswith(vedada) for p in prefijos)
 
 

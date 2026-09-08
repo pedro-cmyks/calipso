@@ -65,6 +65,8 @@ RENOVACION_HISTERESIS_S = 3600
 # `aparato` es input NO autenticado que termina en la UI de /fabrica.
 APARATO_MAX = 60
 
+_DIA_S = 86400
+
 # Reglas por tipo de aparato: `(prefijo, metodos)`, con "*" para "todos".
 # Fail-closed: lo que no matchea ninguna regla queda afuera. El criterio del
 # tablero es fijo -- ver todo, firmar mesa y permisos, jamas tocar la
@@ -170,7 +172,11 @@ def _leer() -> dict:
     """La lectura de los caminos calientes: sin candado y casi siempre sin
     tocar el disco (un `os.stat`). Un archivo ilegible se lee como vacio --
     ninguna sesion resuelve -- y se avisa una sola vez por version del
-    archivo, que es lo que evita que el aviso salga en cada request."""
+    archivo, que es lo que evita que el aviso salga en cada request.
+
+    El dict que devuelve es EL de la cache, compartido con la proxima
+    llamada: quien lo lea copia lo que se lleva. Mutar el almacen va
+    siempre por `_leer_para_mutar` adentro del candado."""
     p = _ruta()
     try:
         st = os.stat(p)
@@ -218,9 +224,10 @@ def _golpe_vencido(reg: dict, ahora: float) -> bool:
 def _sesion_caduca(reg: dict, ahora: float) -> bool:
     """Dormida SESION_SUENO_DIAS, o mas vieja que SESION_VIDA_MAX_DIAS. Las
     dos por separado: usarla todos los dias no estira la vida maxima."""
-    return (ahora - _epoch(reg.get("ultima_vez")) >= SESION_SUENO_DIAS * 86400
-            or ahora - _epoch(reg.get("creada")) >= SESION_VIDA_MAX_DIAS
-            * 86400)
+    return (ahora - _epoch(reg.get("ultima_vez"))
+            >= SESION_SUENO_DIAS * _DIA_S
+            or ahora - _epoch(reg.get("creada"))
+            >= SESION_VIDA_MAX_DIAS * _DIA_S)
 
 
 def _efectivo(reg: dict, ahora: float) -> str:
@@ -232,7 +239,12 @@ def _efectivo(reg: dict, ahora: float) -> str:
         return "caduca" if _golpe_vencido(reg, ahora) else ESTADO_GOLPEANDO
     if estado_guardado == ESTADO_VIVA:
         return "caduca" if _sesion_caduca(reg, ahora) else ESTADO_VIVA
-    return estado_guardado
+    if estado_guardado == ESTADO_RECHAZADA:
+        return ESTADO_RECHAZADA
+    # revocada, o un estado que no reconocemos (alguien edito el
+    # archivo a mano): ni `estado` ni `resolver` le dan nada a un
+    # registro asi, y la lista no puede sugerir lo contrario
+    return ESTADO_REVOCADA
 
 
 def _por_pedido(datos: dict, id_pedido: str) -> dict | None:
@@ -454,9 +466,7 @@ def resolver(id_en_claro: str | None) -> dict | None:
             return None
         fresco["ultima_vez"] = _iso(ahora)
         _escribir(datos)
-        salida = dict(fresco)
-    salida["renovada"] = True
-    return salida
+        return dict(fresco, renovada=True)
 
 
 def listar() -> list[dict]:
