@@ -172,6 +172,9 @@ def test_golpear_con_el_almacen_lleno_es_429():
     # el 429 del almacen lleno, no el del freno: el host que pide es otro y
     # no tiene ni un fallo. Dos 429 distintos que hay que poder distinguir.
     assert "golpes esperando" in r.json()["detail"]
+    # pero los dos dicen cuando volver: el aparato legitimo que llego con la
+    # sala llena reintenta solo, sin que el plugin del lector adivine.
+    assert r.headers["Retry-After"] == "60"
 
 
 # --- estado -----------------------------------------------------------------

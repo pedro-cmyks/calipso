@@ -943,7 +943,12 @@ async def aparatos_golpear(request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except sesiones.Lleno as exc:
-        raise HTTPException(status_code=429, detail=str(exc))
+        # el otro 429 de esta ruta (la sala de espera llena, no el freno) y
+        # lleva Retry-After igual: el aparato legitimo que llego tarde tiene
+        # que reintentar solo. 60s porque los golpes caducan a los 10 min,
+        # asi que la sala se vacia sola y sondear cada minuto la alcanza.
+        raise HTTPException(status_code=429, detail=str(exc),
+                            headers={"Retry-After": "60"})
 
 
 @app.post("/api/aparatos/estado")
