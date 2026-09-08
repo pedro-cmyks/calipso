@@ -889,13 +889,22 @@ async def _cuerpo_json(request: Request) -> dict:
     Y un cuerpo que pase el tope muere en 413 sin leerse entero. El guard
     ya rechazo el Content-Length declarado; aca cae el que vino chunked o
     mintio la cabecera. En las rutas sin credencial cuenta como fallo del
-    freno; en aprobar/rechazar (la Ally) no, que el freno es del alta."""
+    freno; en aprobar/rechazar (la Ally) no, que el freno es del alta.
+
+    Cualquier OTRA rotura de la lectura es un cuerpo vacio, no una
+    excepcion: leer por trozos agrego un modo de falla que `request.json()`
+    no tenia -el cliente que se corta a mitad del cuerpo levanta
+    `ClientDisconnect`-, y dejarlo subir como excepcion ASGI le regalaba al
+    martillador un intento que el freno no cuenta (el fallo lo cobra la ruta
+    DESPUES de este helper)."""
     try:
         crudo = await _leer_cuerpo_acotado(request)
     except HTTPException:
         if request.url.path in _APARATOS_EXENTAS:
             _aparatos_fallo(request.client.host if request.client else "")
         raise
+    except Exception:
+        return {}
     try:
         datos = json.loads(crudo)
     except ValueError:

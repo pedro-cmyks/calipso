@@ -322,6 +322,53 @@ def test_el_login_tambien_tiene_tope_de_cuerpo():
     assert r.status_code == 413, r.text
 
 
+def _postear_cortado(ip: str, ruta: str, trozo: bytes) -> list[dict]:
+    """Un cliente que manda medio cuerpo y se corta: el `http.disconnect`
+    llega a mitad de la lectura. Va por ASGI crudo porque httpx no sabe
+    cortar una conexion que no existe; lo que devuelve son los mensajes que
+    la app mando de vuelta."""
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": ruta,
+        "raw_path": ruta.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"calipso"),
+                    (b"content-type", b"application/json")],
+        "client": (ip, 4321),
+        "server": ("calipso", 80),
+    }
+    pendientes = [{"type": "http.request", "body": trozo, "more_body": True},
+                  {"type": "http.disconnect"}]
+    salida: list[dict] = []
+
+    async def _recibir():
+        return pendientes.pop(0) if pendientes else {"type": "http.disconnect"}
+
+    async def _enviar(mensaje):
+        salida.append(mensaje)
+
+    asyncio.run(srv.app(scope, _recibir, _enviar))
+    return salida
+
+
+def test_un_cuerpo_cortado_a_la_mitad_es_422_y_cuenta_fallo():
+    """El cliente que se va con el cuerpo a medio mandar. `request.stream()`
+    tira `ClientDisconnect`, que NO es la HTTPException del 413: si se le
+    escapa a `_cuerpo_json` sube como excepcion ASGI y ese intento no le
+    cuesta nada al martillador. Tiene que morir como cualquier cuerpo roto,
+    en el 422 de la validacion, y pesar como un golpe mas."""
+    salida = _postear_cortado(REMOTO, "/api/aparatos/golpear", b'{"apar')
+    inicio = next(m for m in salida if m["type"] == "http.response.start")
+    assert inicio["status"] == 422, salida
+    assert _fallos(f"aparatos:{REMOTO}") == 1
+    assert sesiones.listar() == []
+
+
 # --- aprobar y rechazar: solo desde la Ally (invariante 4) -------------------
 
 def test_aprobar_desde_una_sesion_navegador_remota_es_403():
