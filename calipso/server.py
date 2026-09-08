@@ -448,15 +448,24 @@ def _sin_credencial(path: str) -> Response:
 
 def _expirar_token_viajero(resp: Response, request: Request,
                            host: str) -> Response:
-    """La limpieza del punto 4 del guard, tambien cuando gana la SESION. Esas
-    cookies-token se plantaron con un anio de vida cuando el token si
-    viajaba; si el navegador remoto ademas trae una sesion viva, la rama del
-    token no llega a mirarlas nunca y el TOKEN seguiria saliendo a la red en
-    cada request hasta 2027 -- que es exactamente la poblacion que el punto 4
-    queria limpiar (el que entro por /login despues del upgrade). No abre
-    oraculo: se borra solo lo que el cliente YA tiene, y quien manda una
-    sesion viva ya entro."""
-    if not _es_loopback(host) and _valid(request.cookies.get(COOKIE)):
+    """La limpieza del punto 4 del guard: la cookie-token que un remoto
+    PRESENTA se expira, valga o no. Esas cookies se plantaron con un anio de
+    vida cuando el token si viajaba, y hay dos poblaciones que limpiar: el
+    navegador que trae la vieja y ninguna otra cosa (401), y el que ademas
+    trae una sesion viva porque entro por /login despues del upgrade -- la
+    rama del token no llega a mirarlo nunca y el TOKEN seguiria saliendo a
+    la red en cada request hasta 2027.
+
+    "Valga o no" es lo que importa, por dos razones. Rotar el token es paso
+    obligatorio del despliegue (spec, "Migracion y despliegue"), y despues
+    de rotar la cookie vieja ya no es valida: condicionar la limpieza a
+    `_valid` la dejaba viva un anio, justo en el orden que el spec manda. Y
+    condicionarla era un oraculo (C8): status y body son iguales para la
+    cookie valida y la invalida a proposito, pero el Set-Cookie solo para
+    la valida le decia a un remoto si un token fugado por otra via seguia
+    vigente. Borrando lo que el cliente presento, valga o no, solo aprende
+    que mando una cookie -- cosa que ya sabe."""
+    if not _es_loopback(host) and request.cookies.get(COOKIE) is not None:
         resp.delete_cookie(COOKIE)
     return resp
 
@@ -537,15 +546,12 @@ async def auth_guard(request: Request, call_next):
         # ws_mapa autentican su propio handshake -- no agregar "/ws" aca
         # creyendo que protege)
         if not _es_loopback(host):
-            resp = _sin_credencial(path)
-            if _valid(galleta_token):
-                # y ADEMAS la expira. Esa cookie se planto con un anio de
-                # vida cuando el token si viajaba: sin esto, cada request de
-                # esos navegadores seguiria mandandolo por la red hasta
-                # 2027. Nada de oraculo: se borra lo que el cliente YA
-                # tiene, y el `?token=` a secas no dispara la limpieza.
-                resp.delete_cookie(COOKIE)
-            return resp
+            # y ADEMAS expira la cookie-token si vino (el `?token=` a secas
+            # no dispara la limpieza: no hay nada que borrar). La misma
+            # respuesta, cabecera por cabecera, que la de la rama de abajo
+            # con una cookie-token invalida: ver `_expirar_token_viajero`
+            return _expirar_token_viajero(_sin_credencial(path), request,
+                                          host)
         if _valid(galleta_token):
             return await call_next(request)
         if path.startswith("/api") or request.method != "GET":
@@ -554,7 +560,11 @@ async def auth_guard(request: Request, call_next):
                             max_age=31_536_000)
             return resp
         return _session_response(path)
-    return _sin_credencial(path)
+    # sin credencial que valga desde aca. Si el remoto trajo una cookie-token
+    # que NO vale (la de antes de rotar el token), se expira igual que la
+    # valida de arriba: distinguirlas por el Set-Cookie era el oraculo de
+    # validez que C8 cerro, y sin esto las viejas vivian su anio entero
+    return _expirar_token_viajero(_sin_credencial(path), request, host)
 
 
 async def _ws_autorizado(ws: WebSocket) -> dict | bool | None:

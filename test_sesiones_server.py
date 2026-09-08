@@ -132,6 +132,13 @@ def _fallos(clave: str) -> int:
         return srv._login_fallos.get(clave, [0])[0]
 
 
+def _token_vencido(resp: httpx.Response) -> bool:
+    """La cookie del token, vaciada y con Max-Age=0, en el Set-Cookie."""
+    return any(g.startswith('calipso_token=""') and "Max-Age=0" in g
+               and "Path=/" in g
+               for g in resp.headers.get_list("set-cookie"))
+
+
 # --- golpear ----------------------------------------------------------------
 
 def test_golpear_remoto_estaciona_el_pedido_sin_credencial():
@@ -456,6 +463,58 @@ def test_la_cookie_token_remota_es_401_y_ademas_sale_vencida():
     assert "Path=/" in galleta
 
 
+def test_la_cookie_token_remota_invalida_muere_igual_que_la_valida():
+    """El canario de C8 en su version de la rama: un remoto con cookie-token
+    VALIDA recibia 401 + Set-Cookie vencida y con una INVALIDA el mismo 401
+    sin Set-Cookie. Status y body eran iguales a proposito; la cabecera era
+    el bit que sobraba, y con el se confirma desde afuera si un token
+    fugado por otra via sigue vigente. Se borra la cookie cuando el remoto
+    la PRESENTA, valga o no: solo aprende que mando una cookie.
+
+    Y es el mismo cambio que hace verdadera la nota de despliegue del spec:
+    tras rotar el token (paso obligatorio), las cookies-token viejas de un
+    anio ya no son validas, y sin esto no se limpiaban nunca."""
+    valida = _pedir(REMOTO, "GET", "/api/tree",
+                    cookies={srv.COOKIE: srv.TOKEN})
+    invalida = _pedir(REMOTO, "GET", "/api/tree",
+                      cookies={srv.COOKIE: "un-token-que-ya-roto"})
+    assert valida.status_code == invalida.status_code == 401
+    assert valida.json() == invalida.json()
+    assert _token_vencido(invalida), invalida.headers.get_list("set-cookie")
+    # cabecera por cabecera: ninguna diferencia que un remoto pueda leer
+    assert (valida.headers.get_list("set-cookie")
+            == invalida.headers.get_list("set-cookie"))
+    assert set(valida.headers) == set(invalida.headers)
+
+
+def test_la_cookie_token_remota_invalida_muere_tambien_con_una_sesion_viva():
+    """La poblacion real de la nota de despliegue: el navegador remoto que
+    entro por /login DESPUES de la rotacion todavia trae la cookie-token
+    vieja, que ya no vale. Tiene que morir en ese mismo request."""
+    r = _pedir(REMOTO, "GET", "/api/tree",
+               cookies={srv.COOKIE_SESION: _sesion("navegador"),
+                        srv.COOKIE: "el-token-de-antes-de-rotar"})
+    assert r.status_code == 200, r.text
+    assert _token_vencido(r), r.headers.get_list("set-cookie")
+
+
+def test_la_cookie_token_remota_invalida_muere_en_una_ruta_html():
+    r = _pedir(REMOTO, "GET", "/", cookies={srv.COOKIE: "cualquier-cosa"})
+    assert r.status_code == 303, r.text
+    assert r.headers["location"] == "/login"
+    assert _token_vencido(r), r.headers.get_list("set-cookie")
+
+
+def test_la_cookie_token_invalida_desde_loopback_no_se_toca():
+    """La limpieza es para el token que salio a la red. En loopback una
+    cookie-token vieja da la puerta cerrada de siempre, sin Set-Cookie: el
+    origen es lo que acota el punto 4, no el valor."""
+    r = _pedir("127.0.0.1", "GET", "/api/tree",
+               cookies={srv.COOKIE: "un-token-que-ya-roto"})
+    assert r.status_code == 401, r.text
+    assert "set-cookie" not in r.headers
+
+
 def test_la_cookie_token_remota_tambien_muere_en_una_ruta_html():
     r = _pedir(REMOTO, "GET", "/", cookies={srv.COOKIE: srv.TOKEN})
     assert r.status_code == 303, r.text
@@ -478,13 +537,6 @@ def test_la_cookie_token_sigue_entrando_desde_loopback():
                cookies={srv.COOKIE: srv.TOKEN})
     assert r.status_code == 200, r.text
     assert "set-cookie" not in r.headers
-
-
-def _token_vencido(resp: httpx.Response) -> bool:
-    """La cookie del token, vaciada y con Max-Age=0, en el Set-Cookie."""
-    return any(g.startswith('calipso_token=""') and "Max-Age=0" in g
-               and "Path=/" in g
-               for g in resp.headers.get_list("set-cookie"))
 
 
 def test_la_cookie_token_remota_muere_tambien_con_una_sesion_viva():
