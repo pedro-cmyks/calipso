@@ -110,6 +110,50 @@ test("un tipo sugerido que no existe no preselecciona nada", () => {
             "se preselecciono un tipo que la tabla no tiene");
 });
 
+// --- lo que Pedro ya eligio sobrevive al repintado ----------------------
+//
+// La lista se repinta cada 60 s, tras cada accion y al entrar a la pestana,
+// reconstruyendo el HTML entero. Sin `elegidos`, cada repintado volvia el
+// selector al tipo SUGERIDO: Pedro bajaba navegador -> lector, leia el
+// alcance, tardaba un minuto en tocar aprobar, y el POST aprobaba lo que
+// sugirio el aparato -- input NO autenticado fijando el alcance, justo lo
+// que el invariante 4 ("el TIPO lo fija Pedro al aprobar") prohibe.
+
+test("el tipo que Pedro ya eligio manda sobre el sugerido al repintar", () => {
+  const html = textoDeAparatos(datos([GOLPE]), null,
+                               new Map([["ped_ABC-123_xyz", "tablero"]]));
+  assert.match(html, /sugiere: lector/);   // la sugerencia sigue a la vista
+  assert.match(html, /<option value="tablero" selected>/);
+  assert.equal((html.match(/ selected>/g) || []).length, 1,
+               "quedo mas de un tipo preseleccionado");
+  // y el alcance en grande describe lo elegido, no lo sugerido
+  assert.match(html, /Ve toda la fabrica/);
+  assert.ok(!html.includes("Solo sus endpoints de lectura"),
+            "el cartel del alcance sigue describiendo la sugerencia");
+});
+
+test("la eleccion de otro golpe no se le pega a este", () => {
+  const html = textoDeAparatos(datos([GOLPE]), null,
+                               new Map([["ped_otro", "navegador"]]));
+  assert.match(html, /<option value="lector" selected>/);
+  assert.match(html, /Solo sus endpoints de lectura/);
+});
+
+test("una eleccion que la tabla no conoce no se disfraza de inofensiva", () => {
+  // el valor sale de un <select> del DOM de Pedro; si no es un tipo de la
+  // tabla, no se preselecciona nada y el cartel dice que no se conoce
+  const html = textoDeAparatos(datos([GOLPE]), null,
+                               new Map([["ped_ABC-123_xyz", "administrador"]]));
+  assert.ok(!html.includes(" selected>"),
+            "se preselecciono un tipo que la tabla no tiene");
+  assert.match(html, /no se conoce/i);
+});
+
+test("sin elegidos, la tarjeta sigue saliendo con la sugerencia", () => {
+  assert.equal(textoDeAparatos(datos([GOLPE])),
+               textoDeAparatos(datos([GOLPE]), null, new Map()));
+});
+
 test("el golpe trae aprobar y rechazar con el id_pedido, no el hash", () => {
   const html = textoDeAparatos(datos([GOLPE]));
   assert.match(

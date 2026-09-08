@@ -19,6 +19,10 @@
  *    fija es Pedro al aprobar. Por eso la tarjeta no muestra el tipo como un
  *    hecho sino como un selector, y arriba de todo el ALCANCE en palabras --
  *    "navegador" no dice nada, "todo: la PWA completa, como la Ally" si.
+ *    Y lo que Pedro ya eligio en ese selector manda sobre la sugerencia en
+ *    cada repintado (`elegidos`): la lista se reconstruye cada 60 s y tras
+ *    cada accion, y un repintado que devolviera el selector a la
+ *    sugerencia dejaria que el aparato fije el tipo si Pedro se demora.
  */
 import {escapar} from "./paneles.js";
 
@@ -69,15 +73,19 @@ function opcionesDeTipo(sugerido) {
 /** Un golpe vigente: lo unico de esta pantalla que espera un si o un no.
  *  El alcance sale en grande y app.js lo reescribe cuando cambia el
  *  selector -- un cartel que describa el tipo sugerido mientras el selector
- *  dice otro es peor que no tener cartel. */
-function tarjetaDeGolpe(golpe) {
+ *  dice otro es peor que no tener cartel. El selector y el cartel salen con
+ *  lo que Pedro ya eligio para este golpe si lo toco (`elegidos`), y con la
+ *  sugerencia si no; la linea "sugiere:" muestra la sugerencia siempre. */
+function tarjetaDeGolpe(golpe, elegidos) {
   const id = escapar(golpe.id_pedido);
+  const tipo = elegidos.has(golpe.id_pedido)
+    ? elegidos.get(golpe.id_pedido) : golpe.tipo;
   return `<div class="golpe">` +
     `<div class="nombre">${escapar(golpe.aparato)}</div>` +
     `<div class="sugerido">sugiere: ${escapar(golpe.tipo)}</div>` +
-    `<div class="alcance">${escapar(alcanceDe(golpe.tipo))}</div>` +
+    `<div class="alcance">${escapar(alcanceDe(tipo))}</div>` +
     `<label>que le doy<select data-tipo-de="${id}">` +
-    `${opcionesDeTipo(golpe.tipo)}</select></label>` +
+    `${opcionesDeTipo(tipo)}</select></label>` +
     `<div class="botones">` +
     `<button data-aparato="aprobar" data-id="${id}" type="button">` +
     `aprobar</button>` +
@@ -116,16 +124,19 @@ export function contadorDeAparatos(datos) {
 /**
  * `datos`: la respuesta de GET /api/aparatos -`{aparatos: [...]}` con el
  * estado `efectivo` ya derivado del reloj por el server-. `mensaje`: el
- * aviso pasajero de la ultima accion, o null.
+ * aviso pasajero de la ultima accion, o null. `elegidos`: Map id_pedido ->
+ * tipo con lo que dicen los selectores que YA estan en pantalla (app.js los
+ * lee justo antes de reemplazar el HTML); un Map y no un objeto para que un
+ * id_pedido llamado "constructor" o "__proto__" no encuentre nada raro.
  */
-export function textoDeAparatos(datos, mensaje = null) {
+export function textoDeAparatos(datos, mensaje = null, elegidos = new Map()) {
   const listo = mensaje
     ? `<div class="listo">${escapar(mensaje)}</div>` : "";
   const todos = datos?.aparatos || [];
   const golpes = todos.filter(a => a.efectivo === "golpeando");
   const resto = todos.filter(a => a.efectivo !== "golpeando");
   const bloqueGolpes = golpes.length
-    ? golpes.map(tarjetaDeGolpe).join("")
+    ? golpes.map(g => tarjetaDeGolpe(g, elegidos)).join("")
     : `<div class="vacio">Ningun aparato esta pidiendo entrar.</div>`;
   const bloqueLista = resto.length
     ? resto.map(filaDeAparato).join("")

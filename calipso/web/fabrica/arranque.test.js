@@ -611,6 +611,44 @@ test("revocar manda el hash por el path y no manda cuerpo", async () => {
   assert.equal(pedido.opciones.method, "POST");
 });
 
+// El repintado (cada 60 s, tras cada accion, al entrar a la pestana)
+// reconstruye el HTML de la caja entera. Lo que se fija aca es que ANTES de
+// reconstruirlo, pintarAparatos lea lo que dicen los selectores y se lo
+// pase al modulo puro. El DOM de mentira no reconstruye nada, asi que el
+// observable es el HTML generado: si el selector de ped_1 decia "tablero",
+// el HTML nuevo tiene que traer `tablero` seleccionado y no la sugerencia
+// del aparato ("lector", que es lo que contesta /api/aparatos aca). Sin
+// esto, rechazar OTRO golpe -o el intervalo de 60 s- le devolvia a este el
+// tipo que sugirio el aparato, y el POST de aprobar se lo llevaba.
+test("el repintado conserva el tipo que Pedro eligio en el selector",
+     async () => {
+  const caja = nav.nodos.get("aparatos");
+  // el selector que Pedro ya toco, tal como pintarAparatos lo busca
+  const selectTocado = {dataset: {tipoDe: "ped_1"}, value: "tablero"};
+  caja.querySelectorAll = sel =>
+    (sel === "select[data-tipo-de]" ? [selectTocado] : []);
+  try {
+    // el repintado lo dispara una accion sobre OTRA tarjeta: rechazar el
+    // golpe ped_2 (el finally del click repinta la caja entera)
+    const tarjeta = {querySelector: () => null, querySelectorAll: () => []};
+    const boton = {
+      dataset: {aparato: "rechazar", id: "ped_2"},
+      disabled: false,
+      closest(sel) { return sel === "button[data-aparato]" ? boton : tarjeta; },
+    };
+    for (const f of caja.oyentes.get("click") || []) f({target: boton});
+    for (let i = 0; i < 3; i++) await new Promise(r => setTimeout(r, 0));
+    assert.match(caja.innerHTML, /<option value="tablero" selected>/,
+                 "el repintado volvio el selector a la sugerencia del aparato");
+    assert.ok(!caja.innerHTML.includes('<option value="lector" selected>'),
+              "la sugerencia del aparato quedo seleccionada");
+    assert.match(caja.innerHTML, /Ve toda la fabrica/,
+                 "el alcance en grande volvio a describir la sugerencia");
+  } finally {
+    caja.querySelectorAll = () => [];
+  }
+});
+
 test("cambiar el tipo reescribe el alcance en grande", () => {
   const caja = nav.nodos.get("aparatos");
   const alcance = {textContent: "Solo sus endpoints de lectura (/api/lectura)"};

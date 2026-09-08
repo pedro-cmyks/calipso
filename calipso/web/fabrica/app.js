@@ -647,7 +647,20 @@ async function pintarAparatos() {
       return;
     }
     const datos = await r.json();
-    cajaAparatos.innerHTML = textoDeAparatos(datos, mensajeAparatos);
+    // Lo que Pedro ya eligio en cada selector, leido JUSTO antes de
+    // reemplazar el HTML (despues del await: pudo tocarlo mientras la
+    // lista venia). Sin esto, el repintado -cada 60 s, tras cada accion,
+    // al entrar a la pestana- devolvia cada selector al tipo que SUGIRIO
+    // el aparato, y el click de aprobar manda lo que el selector dice en
+    // ese momento: Pedro bajaba a lector, se demoraba leyendo el alcance,
+    // y el POST aprobaba la casa entera. La sugerencia es input no
+    // autenticado; el tipo lo fija Pedro (invariante 4), tambien contra el
+    // intervalo.
+    const elegidos = new Map();
+    for (const s of cajaAparatos.querySelectorAll("select[data-tipo-de]")) {
+      elegidos.set(s.dataset.tipoDe, s.value);
+    }
+    cajaAparatos.innerHTML = textoDeAparatos(datos, mensajeAparatos, elegidos);
     pintarBadge(badgeAparatos, contadorDeAparatos(datos));
   } catch (_) {
     sinLista("No se pudo leer la lista de aparatos.");
