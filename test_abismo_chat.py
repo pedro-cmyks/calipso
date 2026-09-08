@@ -506,6 +506,20 @@ def test_la_senal_del_abismo_se_publica_al_pulso(chat):
     _sembrar_chat_viejo(["un libro"])
     chat.modelo.guiones = [["a ⟦abismo:chats libro⟧"], ["b"]]
     chat.turno("libro", departamento="dep:atlas")
-    eventos = [e for e in chat.pulso.desde(0)[1] if e["evento"] == "abismo"]
+    cursor, flujo = chat.pulso.desde(0)
+    eventos = [e for e in flujo if e["evento"] == "abismo"]
     assert [(e["fase"], e["fuente"]) for e in eventos] == [("pondering", "chats"), ("pescado", "chats")]
     assert all(e["agente_id"].startswith("chat:") and e["departamento"] == "dep:atlas" for e in eventos)
+    # al pulso va el tamano, jamas el bloque (invariante 2): el flujo se
+    # replica a todo cliente del mapa
+    assert eventos[1]["tamano"] > 0
+    assert set(eventos[1]) == {"seq", "ts", "agente_id", "evento", "departamento",
+                               "trabajo", "rol", "modelo", "fase", "fuente", "tamano"}
+    # y el pondering del pulso tambien CIERRA cuando la pesca falla
+    # (invariante 4): el escritorio del mapa no se queda pescando para siempre
+    chat.modelo.guiones = [["a ⟦abismo:chats zzzz⟧"], ["b"]]
+    chat.modelo.llamadas.clear()      # el espia elige el guion por el indice global
+    chat.turno("otra vez", departamento="dep:atlas")
+    fallidos = [e for e in chat.pulso.desde(cursor)[1] if e["evento"] == "abismo"]
+    assert [(e["fase"], e.get("motivo")) for e in fallidos] == [
+        ("pondering", None), ("fallo", "vacio")]
