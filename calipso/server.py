@@ -471,7 +471,11 @@ async def auth_guard(request: Request, call_next):
         # la propia maquina.
         ses = await asyncio.to_thread(sesiones.resolver, galleta_sesion)
         if ses:
-            if not sesiones.permite(ses["tipo"], path, request.method):
+            # `.get` y no `ses["tipo"]`: el registro sale del disco, y
+            # `permite` es fail-closed hasta con un tipo que no es texto --
+            # un KeyError aca desarmaria justo esa defensa (500 en vez de
+            # 403) para un archivo editado a mano al que le falte el campo
+            if not sesiones.permite(ses.get("tipo"), path, request.method):
                 # el alcance aplica a TODA ruta, no solo a /api (invariante
                 # 3): el `tablero` que pide /fabrica/algo tambien rebota
                 return JSONResponse(

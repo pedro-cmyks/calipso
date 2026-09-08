@@ -530,3 +530,20 @@ def test_la_sesion_usada_a_diario_renueva_su_cookie(monkeypatch):
     assert "HttpOnly" in galleta
     assert "SameSite=lax" in galleta
     assert "Max-Age=2592000" in galleta
+
+
+def test_una_sesion_sin_tipo_en_el_disco_no_abre_nada():
+    """La cadena fail-closed llega hasta el guard: `sesiones.json` es un
+    archivo que se puede editar a mano, y un registro al que le falte el
+    `tipo` tiene que dar 403, no un 500."""
+    id_sesion = _sesion("navegador")
+    ruta = sesiones._ruta()
+    crudo = ruta.read_text(encoding="utf-8")
+    mutilado = crudo.replace('"tipo": "navegador"', '"tipo": null')
+    assert mutilado != crudo, "cambio el formato del almacen: revisar el test"
+    # la cache del almacen se invalida sola con el stat del archivo
+    ruta.write_text(mutilado, encoding="utf-8")
+    r = _pedir(REMOTO, "GET", "/api/aparatos",
+               cookies={srv.COOKIE_SESION: id_sesion})
+    assert r.status_code == 403, r.text
+    assert r.json() == {"detail": "fuera del alcance del aparato"}
