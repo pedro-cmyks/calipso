@@ -235,8 +235,9 @@ La autoridad es el spec de la capa de sesion,
   aparato), nace 0600, no se respalda y esta bajo el NUNCA del motor de permisos
   (`calipso/permisos/acciones.py`, `es_credencial_del_servidor`). Ilegible = se
   renombra y se avisa, jamas se pisa.
-- El servidor se ata a `0.0.0.0` para red local. Para remoto seguro usar Tailscale.
-  Nunca abrir el puerto a internet.
+- El servidor se ata a `127.0.0.1` por defecto (`_host()` en `calipso/server.py`;
+  el default se cerro el 2026-08-31). Abrirlo hay que pedirlo con `CALIPSO_HOST`,
+  y para remoto seguro solo a la IP de Tailscale. Nunca abrir el puerto a internet.
 
 ## Verificado
 
