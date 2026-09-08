@@ -3702,7 +3702,9 @@ def api_launch_checklist() -> dict:
         _launch_item(
             "totp", "Login TOTP", _TOTP_SECRET_FILE.exists(),
             "Autenticador configurado." if _TOTP_SECRET_FILE.exists()
-            else "Abre /setup para escanear el QR.",
+            # con el token en la URL y desde la propia maquina: mientras
+            # el secreto falte, /setup no se sirve de otra forma
+            else "Abre /setup?token=<el token> en la propia maquina.",
             "/setup"),
         _launch_item(
             "pwa", "PWA celular", manifest_ok,
