@@ -66,10 +66,13 @@ def test_en_nube_el_bloque_viaja_tapado_con_el_mapa_del_mensaje_y_se_ve(chat, mo
     assert [m["role"] for m in segunda["messages"]] == ["system", "user"]
     assert segunda["messages"][1]["content"].startswith("que hablamos con [ID_1] y [ID_2] del libro")
     assert "Venias diciendo: Le dije a [ID_1] que " in segunda["messages"][1]["content"]
-    # el bloque no se persiste ni se recuerda
+    # ni la marca ni el bloque se persisten, se recuerdan o se telemetrian
     crudo = (chat.tmp / "chats.json").read_text(encoding="utf-8")
     assert "Lo que subio" not in crudo and "cocina" not in chat.mensajes()[-1]["text"]
+    assert "⟦" not in crudo
     assert not any("Lo que subio" in r for r in chat.memoria.recordado)
+    tele = (chat.tmp / "telemetry.jsonl").read_text(encoding="utf-8")
+    assert "cocina" not in tele and "Ana" not in tele
     assert chat.telemetria("abismo")[0]["destino"] == "nube"
 
 
