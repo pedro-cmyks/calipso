@@ -218,3 +218,44 @@ def test_limpiar_marcas_saca_las_dos_gramaticas():
     assert srv._limpiar_marcas("a ⟦abismo:chats x⟧ b ⟦foco:atlas⟧ c") == "a  b  c"
     assert srv._limpiar_marcas("cortada ⟦abismo:chats x") == "cortada ⟦abismo:chats x"
     assert srv._limpiar_marcas("") == "" and srv._limpiar_marcas(None) == ""
+
+
+EMPALMES = ("⟦abismo:⟦abismo:chats x⟧chats y⟧",
+            "a ⟦abismo:chats ⟦foco:atlas⟧ libro⟧ b")
+
+
+def test_las_dos_rutas_de_retiro_juzgan_igual_el_empalme():
+    """Sacar una marca pega el texto de los dos costados, y ese empalme puede
+    armar una marca NUEVA y completa: el cuerpo de `PATRON` no admite
+    corchetes, asi que la de adentro tapaba a la de afuera y una de foco
+    partia el cuerpo del abismo en dos. Con estos dos textos las dos rutas de
+    retiro divergian -la tuberia del Emisor cortaba, `_limpiar_marcas` dejaba
+    la marca armada y la mandaba a disco-, justo lo que el mapa del filtro
+    (7.4) prohibe. Ninguna de las dos puede dejar una marca en pie."""
+    for texto in EMPALMES:
+        fo, ab = foco.Filtro(), filtro.FiltroAbismo()
+        visible = ab.comer(fo.comer(texto)) + ab.comer(fo.cerrar()) + ab.cerrar()
+        assert marca.encontrar(visible) == []
+        assert marca.encontrar(srv._limpiar_marcas(texto)) == []
+
+
+def test_limpiar_marcas_llega_al_punto_fijo_y_saca_foco_primero():
+    """Las dos rutas de retiro tienen que juzgar igual el mismo texto (mapa
+    del filtro 7.4). Con una sola pasada de `sub`, y con el abismo antes que
+    foco, quedaba una marca valida y COMPLETA en el texto que sale al panel
+    y al `jobs.event` del preview -o sea, en disco-. De ahi las dos cosas:
+    el orden de la tuberia del Emisor (foco primero, abismo despues) y el
+    punto fijo del retiro del abismo."""
+    anidada, tapada = EMPALMES
+    assert srv._limpiar_marcas(anidada) == ""
+    assert srv._limpiar_marcas(tapada) == "a  b"
+
+
+def test_retirar_con_aviso_llega_al_punto_fijo_y_cuenta_las_dos_vueltas(tmp_path, monkeypatch):
+    """El mismo empalme por la ruta de los agentes: con una sola pasada la
+    marca que quedo armada viajaba en el texto de la sintesis y ademas la
+    `cantidad` del aviso mentia (informaba 1)."""
+    monkeypatch.setattr(srv.telemetry, "LEDGER", tmp_path / "t.jsonl")
+    assert srv._retirar_con_aviso("⟦abismo:⟦abismo:chats x⟧chats y⟧", "agente") == ""
+    filas = [json.loads(l) for l in (tmp_path / "t.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(filas) == 1 and filas[0]["cantidad"] == 2

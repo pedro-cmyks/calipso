@@ -7127,6 +7127,38 @@ def _avisar_abismo(aviso: dict) -> None:
     telemetry.log_event("abismo", evento="retirada", **aviso)
 
 
+# la marca mas corta posible: abre, un char de cuerpo y cierra. Es lo que cada
+# vuelta de `_retirar_abismo` acorta como minimo, y de ahi sale su tope.
+_MARCA_MINIMA = len(abismo_filtro.ABRE) + 1 + len(abismo_marca.CIERRA)
+
+
+def _retirar_abismo(texto: str) -> tuple[str, int]:
+    """Saca las marcas del abismo hasta PUNTO FIJO y dice cuantas saco.
+
+    Una sola pasada de `sub` no alcanza: el cuerpo de `PATRON` no admite
+    corchetes, asi que sacar una marca puede ARMAR otra con el texto de los
+    dos costados -"⟦abismo:⟦abismo:chats x⟧chats y⟧" deja "⟦abismo:chats y⟧",
+    valida y completa- y esa quedaria en el texto que se manda al panel y al
+    `jobs.event` del preview, o sea en disco, contra la regla de que la marca
+    jamas se persiste. El filtro del stream llega al mismo lugar por otro
+    camino: se queda con la primera marca valida y descarta todo lo que venga
+    detras, empalme incluido. Aca no hay corte que descarte nada, asi que el
+    retiro tiene que insistir hasta que no quede ninguna.
+
+    El tope de vueltas es de seguridad y no de corte: cada vuelta que saca
+    algo acorta el texto en al menos una marca minima, asi que el punto fijo
+    entra siempre; el tope solo evita que un cambio futuro de la gramatica
+    -una que pudiera crecer- cuelgue el bucle."""
+    texto = texto or ""
+    total = 0
+    for _ in range(len(texto) // _MARCA_MINIMA + 1):
+        texto, n = abismo_marca.PATRON.subn("", texto)
+        if not n:
+            break
+        total += n
+    return texto, total
+
+
 def _retirar_con_aviso(texto: str, clase: str) -> str:
     """Retira las marcas del abismo de un texto que NO pasa por el filtro del
     Emisor -la sintesis de los agentes del orquestador, lo posterior a una
@@ -7134,10 +7166,10 @@ def _retirar_con_aviso(texto: str, clase: str) -> str:
     4: "se ignoran con aviso"): una fila por retiro, con la cantidad, sin
     el cuerpo. Solo la gramatica del abismo: la de foco la retira quien
     corresponda (el filtro de foco del Emisor, o `_limpiar_marcas`)."""
-    n = len(abismo_marca.PATRON.findall(texto or ""))
+    limpio, n = _retirar_abismo(texto)
     if n:
         _avisar_abismo({"clase": clase, "largo": 0, "cantidad": n})
-    return abismo_marca.PATRON.sub("", texto or "")
+    return limpio
 
 
 class Emisor:
@@ -7240,12 +7272,20 @@ def _limpiar_marcas(texto: str) -> str:
     las marcas completas. Una marca a medio llegar se limpia sola en el envio
     siguiente, porque el texto se relee desde cero.
 
-    Compone las dos gramaticas: la del abismo (`marca.PATRON`, la misma regex
-    del filtro y del banco) y la de foco. Es el retiro que cubre la ruta
-    orquestador (spec seccion 4: las marcas de los agentes se ignoran con
-    aviso) y el preview y los artefactos de la suscripcion."""
-    texto = abismo_marca.PATRON.sub("", texto or "")
-    return _mapa_foco.limpiar(texto) if _mapa_foco is not None else texto
+    Compone las dos gramaticas EN EL MISMO ORDEN que la tuberia de filtros del
+    Emisor -foco primero, abismo despues- y por la misma razon: una marca de
+    foco metida en el cuerpo del abismo lo parte en dos y tapa la marca
+    entera, asi que si el abismo va primero la ve el que limpia despues, no
+    el que limpia antes. Al reves las dos rutas juzgaban distinto el mismo
+    texto, y la del preview dejaba en disco la marca que la del stream
+    retiraba. El retiro del abismo va al final y hasta punto fijo
+    (`_retirar_abismo`) para que ningun empalme deje una marca armada.
+
+    Es el retiro que cubre la ruta orquestador (spec seccion 4: las marcas de
+    los agentes se ignoran con aviso) y el preview y los artefactos de la
+    suscripcion."""
+    texto = _mapa_foco.limpiar(texto) if _mapa_foco is not None else (texto or "")
+    return _retirar_abismo(texto)[0]
 
 
 def _ciudad_modelo() -> dict | None:
