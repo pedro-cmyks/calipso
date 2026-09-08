@@ -448,10 +448,12 @@ def test_el_navegador_es_el_unico_comodin(path, metodo):
     assert sesiones.permite("navegador", path, metodo) is True
 
 
-@pytest.mark.parametrize("tipo", ["impresora", "", None, "TABLERO", "*"])
+@pytest.mark.parametrize("tipo", ["impresora", "", None, "TABLERO", "*",
+                                  ["navegador"], {"tipo": "navegador"}])
 def test_un_tipo_que_no_esta_en_la_tabla_no_permite_nada(tipo):
     # fail-closed: el guard le pregunta a `permite` por el tipo que trae el
-    # registro, y un archivo editado a mano puede traer cualquier cosa
+    # registro en disco, y un archivo editado a mano puede traer cualquier
+    # cosa -- hasta algo que no es texto, que tampoco puede reventar
     assert sesiones.permite(tipo, "/fabrica", "GET") is False
 
 

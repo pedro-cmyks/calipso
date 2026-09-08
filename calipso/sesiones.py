@@ -297,15 +297,19 @@ def permite(tipo: str, path: str, metodo: str) -> bool:
 
     Fail-closed en las tres entradas -- tipo que no esta en la tabla, path
     que no matchea ningun prefijo, metodo que la regla no lista -- porque
-    es la unica funcion que separa a un aparato remoto del resto de la
-    casa, y lo que todavia no se penso tiene que quedar afuera solo.
+    es lo unico que separa a un aparato remoto YA AUTENTICADO del resto de
+    la casa, y lo que todavia no se penso tiene que quedar afuera solo.
 
     Se prueban TODAS las reglas y no la primera que matchea el prefijo: el
     tablero VE `/api/permisos` con GET y FIRMA `/api/permisos/solicitudes/`
     con POST, dos reglas que se pisan, y el orden de la tabla no puede
     decidir cual gana.
     """
-    reglas = ALCANCES.get(tipo)
+    # el `tipo` sale del registro en disco, o sea de un archivo que alguien
+    # pudo editar a mano: uno que ni siquiera es texto es un tipo
+    # desconocido como cualquier otro, no un 500 en el guard. El `metodo`
+    # no necesita el mismo cuidado -- lo pone el framework, no el disco.
+    reglas = ALCANCES.get(tipo) if isinstance(tipo, str) else None
     if not reglas:
         return False
     # el path vacio no matchea ningun prefijo y el verbo vacio no esta en
