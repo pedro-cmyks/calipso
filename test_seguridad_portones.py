@@ -210,8 +210,12 @@ def test_token_por_url_no_entra_desde_afuera():
     assert r.headers["location"] == "/login"
 
 
-def test_cookie_si_entra_desde_afuera():
-    # La cookie (ganada por /login con TOTP) es la via remota legitima.
+def test_la_cookie_token_ya_no_entra_desde_afuera():
+    # Este test afirmaba lo contrario: cuando se escribio C8, la cookie del
+    # token era la via remota legitima y solo el `?token=` de la URL se habia
+    # cerrado. La capa de sesion cierra la otra mitad (invariante 2): el
+    # token identifica a la MAQUINA de Pedro, asi que vale solo desde ella;
+    # un aparato remoto entra con `calipso_sesion` (ver test_sesiones_server).
     transporte = httpx.ASGITransport(app=srv.app, client=("192.168.1.66", 4321))
 
     async def _ir():
@@ -220,4 +224,4 @@ def test_cookie_si_entra_desde_afuera():
                                      cookies={srv.COOKIE: srv.TOKEN}) as c:
             return await c.get("/api/project")
 
-    assert asyncio.run(_ir()).status_code == 200
+    assert asyncio.run(_ir()).status_code == 401

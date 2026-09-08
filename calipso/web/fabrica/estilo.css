@@ -273,7 +273,10 @@ html, body {
    Pedro). Local a #panel-mesa, no toca la grilla de #app ni el #pestanas
    del telefono. */
 #submesa {
-  display: flex; gap: 6px; padding: 6px 8px;
+  /* `flex-wrap` desde la quinta sub-pestana ("Aparatos"): en el telefono
+     las cinco no entran en un renglon y sin envolver la ultima se sale del
+     panel en vez de bajar. */
+  display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 8px;
   border-bottom: 1px solid var(--linea);
 }
 #submesa button {
@@ -468,6 +471,52 @@ html, body {
 .permisos-panel button[type="submit"] {
   background: var(--linea); color: var(--texto); border: 0; border-radius: 4px;
   padding: 8px 12px; cursor: pointer; min-height: 40px;
+}
+
+/* La quinta sub-pestana: "Aparatos", quien entra a Calipso desde afuera.
+   Mismo molde que .permisos-panel -- lo unico propio es el ALCANCE, que va
+   en grande y en --acento porque es lo que Pedro tiene que leer antes de
+   aprobar: el nombre del tipo ("navegador") no dice que abre, la frase si. */
+.aparatos-panel { padding: 8px; display: flex; flex-direction: column; gap: 10px; }
+.aparatos-panel .subtitulo {
+  color: var(--tenue); font-size: 11px; letter-spacing: .4px;
+  text-transform: uppercase;
+}
+.aparatos-panel .vacio, .aparatos-panel .nota { color: var(--tenue); font-size: 12px; }
+.aparatos-panel .listo {
+  color: var(--acento); font-size: 12px; padding: 7px 8px;
+  border: 1px solid var(--linea); border-radius: 4px; background: var(--panel);
+}
+.aparatos-panel .golpe, .aparatos-panel .aparato {
+  border: 1px solid var(--linea); border-radius: 6px; padding: 8px;
+  background: var(--panel); display: flex; flex-direction: column; gap: 4px;
+}
+/* El golpe caduca en minutos y es lo unico de esta pantalla que espera un si
+   o un no: se distingue del resto de la lista con el borde de acento, como
+   .por-juzgar en la mesa. */
+.aparatos-panel .golpe { border-color: var(--acento); }
+.aparatos-panel .nombre { font-size: 13px; font-weight: 600; }
+.aparatos-panel .sugerido { color: var(--tenue); font-size: 12px; }
+.aparatos-panel .alcance {
+  color: var(--acento); font-size: 13px; line-height: 1.35;
+}
+.aparatos-panel label {
+  display: flex; flex-direction: column; gap: 3px; font-size: 12px;
+  color: var(--tenue);
+}
+.aparatos-panel select {
+  background: var(--fondo); color: var(--texto); border: 1px solid var(--linea);
+  border-radius: 4px; padding: 7px 9px; min-height: 36px; font-size: 16px;
+}
+.aparatos-panel .fila {
+  display: flex; justify-content: space-between; gap: 8px; font-size: 12px;
+}
+.aparatos-panel .fila span:first-child { color: var(--tenue); }
+.aparatos-panel .etiqueta { color: var(--tenue); text-transform: uppercase; font-size: 11px; }
+.aparatos-panel .botones { display: flex; gap: 6px; flex-wrap: wrap; }
+.aparatos-panel .botones button { flex: 1 1 90px; min-height: 40px; cursor: pointer; }
+.aparatos-panel .aparato button {
+  align-self: flex-start; min-height: 32px; cursor: pointer;
 }
 
 /* La pila de pedidos de pre-seed vencidos. NO se lee como una fila de la

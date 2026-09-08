@@ -1,5 +1,6 @@
 """Tests del endpoint del mapa (patron TestClient + cookie del repo)."""
 import json
+import re
 import pytest
 from fastapi.testclient import TestClient
 
@@ -165,3 +166,30 @@ def test_la_mesa_y_el_plantel_tienen_su_div_en_el_html():
     html = (srv.WEB / "fabrica" / "index.html").read_text(encoding="utf-8")
     assert 'id="mesa"' in html, "index.html de la fabrica no tiene #mesa"
     assert 'id="plantel"' in html, "index.html de la fabrica no tiene #plantel"
+
+
+def test_cada_badge_de_la_submesa_cuelga_de_su_propia_sub_pestana():
+    """Un badge dice "hay algo esperandote ACA". Prendido al lado de una
+    bandeja que no lo contiene miente: Pedro abre esa, la encuentra vacia y
+    lo que esperaba se vence mientras busca donde no es (un golpe de aparato
+    dura GOLPE_TTL_MIN = 10 minutos). Ningun test de JS puede ver esto -- el
+    DOM de mentira de arranque.test.js no sabe DONDE vive cada span-, asi que
+    la correspondencia se fija aca: el badge #badge-X vive adentro del boton
+    data-vista="X" y cuenta esa bandeja."""
+    html = (srv.WEB / "fabrica" / "index.html").read_text(encoding="utf-8")
+    nav = re.search(r'<nav id="submesa">(.*?)</nav>', html, re.S)
+    assert nav, "index.html de la fabrica no tiene la nav #submesa"
+    badges_por_vista = {}
+    for boton in nav.group(1).split("<button")[1:]:
+        vista = re.search(r'data-vista="([^"]+)"', boton)
+        assert vista, f"un boton de #submesa no declara data-vista: {boton}"
+        badges_por_vista[vista.group(1)] = re.findall(r'id="badge-([^"]+)"',
+                                                      boton)
+    for vista, badges in badges_por_vista.items():
+        assert badges in ([], [vista]), (
+            f'el boton data-vista="{vista}" de #submesa lleva los badges '
+            f"{badges}: un badge cuenta la bandeja del boton donde vive")
+    for vista in ("permisos", "aparatos"):
+        assert badges_por_vista.get(vista) == [vista], (
+            f'la sub-pestana "{vista}" no tiene badge propio: lo que espera '
+            "respuesta ahi quedaria contado al lado de otra bandeja")

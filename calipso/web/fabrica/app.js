@@ -22,6 +22,8 @@ import {textoDePerillas, aMilimonedas, aMilimonedasConCero, aEntero,
         resumenDeSiembra} from "./perillas.js";
 import {textoDePermisos, contadorPendientes} from "./permisos.js";
 import {textoDeInbox, contadorDeInbox} from "./inbox.js";
+import {textoDeAparatos, contadorDeAparatos,
+        alcanceDe} from "./aparatos.js";
 
 const lienzo = document.getElementById("mapa");
 const sinFabrica = document.getElementById("sin-fabrica");
@@ -471,9 +473,10 @@ function avisarEnPerillas(texto) {
 // se enchufen (calipso/permisos/motor.py), asi que el lugar donde se
 // contesta tambien tiene que ser uno solo.
 //
-// El badge de aca (junto a "Permisos") es lo que hace que Pedro se entere
-// SIN buscarlo: si algo queda esperando su respuesta mientras esta mirando
-// el chat o el mapa, el numero ya esta puesto cuando llegue.
+// El badge de aca (#badge-permisos, adentro del boton "Permisos") es lo que
+// hace que Pedro se entere SIN buscarlo: si algo queda esperando su
+// respuesta mientras esta mirando el chat o el mapa, el numero ya esta
+// puesto cuando llegue.
 //
 // La pestana global YA NO la pinta esta funcion: la pinta pintarInbox(),
 // con la cuenta de las CUATRO bandejas -que es superconjunto de esta sola.
@@ -481,14 +484,31 @@ function avisarEnPerillas(texto) {
 // valores distintos cada 60 segundos (el intervalo de cada una); un solo
 // dueno por badge evita eso.
 const cajaPermisos = document.getElementById("permisos");
-const badgeSubmesa = document.getElementById("badge-submesa");
+const badgePermisos = document.getElementById("badge-permisos");
 let mensajePermisos = null;
 
+/**
+ * Un badge por sub-pestana y una sola bandeja escribiendo cada uno.
+ *
+ * Las dos reglas son la misma cosa vista de los dos lados. Dos bandejas
+ * sumadas en un badge lo dejan al lado de UNA de ellas: cero permisos
+ * pendientes y un aparato golpeando prenderian el "1" junto a "Permisos",
+ * Pedro abriria esa bandeja vacia y el golpe -que dura GOLPE_TTL_MIN, 10
+ * minutos- se venceria mientras busca donde no es. Y dos funciones
+ * escribiendo el mismo elemento lo hacen parpadear entre dos valores cada
+ * 60 segundos, uno por intervalo (ya paso con el badge de la pestana
+ * global). Un numero que no dice donde esta lo que espera es peor que
+ * ninguno.
+ */
+function pintarBadge(badge, n) {
+  // el badge puede no estar: arranque.test.js monta un DOM de mentira
+  if (!badge) return;
+  badge.textContent = String(n);
+  badge.classList.toggle("oculto", n === 0);
+}
+
 function pintarBadgeDePermisos(datos) {
-  if (!badgeSubmesa) return;
-  const n = contadorPendientes(datos);
-  badgeSubmesa.textContent = String(n);
-  badgeSubmesa.classList.toggle("oculto", n === 0);
+  pintarBadge(badgePermisos, contadorPendientes(datos));
 }
 
 async function pintarPermisos() {
@@ -592,6 +612,132 @@ cajaPermisos?.addEventListener("submit", async evento => {
   }
 });
 
+// --- Aparatos: quien entra a Calipso desde afuera -----------------------
+//
+// La sub-pestana de la capa de sesion. Aprobar y rechazar son solo-loopback
+// (invariante 4: la Ally, no la red), asi que desde un navegador remoto los
+// dos botones vuelven con 403 y el detail del server lo explica -- se
+// muestran igual porque esconderlos haria creer que el golpe no llego.
+// Revocar si entra desde una sesion `navegador` (D3: cortar un aparato
+// robado desde otro aparato).
+const cajaAparatos = document.getElementById("aparatos");
+// el badge de ESTA sub-pestana (#badge-aparatos, adentro del boton
+// "Aparatos"): los golpes se cuentan al lado de la bandeja que los tiene
+const badgeAparatos = document.getElementById("badge-aparatos");
+let mensajeAparatos = null;
+
+async function pintarAparatos() {
+  // misma guarda que cajaMesa/cajaPermisos: arranque.test.js monta un DOM
+  // de mentira y no todos los ids estan.
+  if (!cajaAparatos) return;
+  const sinLista = texto => {
+    cajaAparatos.innerHTML = `<div class="vacio">${texto}</div>`;
+    pintarBadge(badgeAparatos, 0);
+  };
+  try {
+    const r = await fetch("/api/aparatos");
+    if (!r.ok) {
+      // 401/403 no es una falla: es esta pantalla abierta desde un aparato
+      // que no manda aca (un `tablero` queda afuera por alcance). Decirlo
+      // con el cartel y no con un alert, que seria gritarle a Pedro por
+      // algo que no puede arreglar desde ahi.
+      sinLista(r.status === 401 || r.status === 403
+        ? "Solo desde la Ally o desde un navegador."
+        : "No se pudo leer la lista de aparatos.");
+      return;
+    }
+    const datos = await r.json();
+    // Lo que Pedro ya eligio en cada selector, leido JUSTO antes de
+    // reemplazar el HTML (despues del await: pudo tocarlo mientras la
+    // lista venia). Sin esto, el repintado -cada 60 s, tras cada accion,
+    // al entrar a la pestana- devolvia cada selector al tipo que SUGIRIO
+    // el aparato, y el click de aprobar manda lo que el selector dice en
+    // ese momento: Pedro bajaba a lector, se demoraba leyendo el alcance,
+    // y el POST aprobaba la casa entera. La sugerencia es input no
+    // autenticado; el tipo lo fija Pedro (invariante 4), tambien contra el
+    // intervalo.
+    const elegidos = new Map();
+    for (const s of cajaAparatos.querySelectorAll("select[data-tipo-de]")) {
+      elegidos.set(s.dataset.tipoDe, s.value);
+    }
+    cajaAparatos.innerHTML = textoDeAparatos(datos, mensajeAparatos, elegidos);
+    pintarBadge(badgeAparatos, contadorDeAparatos(datos));
+  } catch (_) {
+    sinLista("No se pudo leer la lista de aparatos.");
+  }
+}
+
+/** Mismo patron que avisarEnPermisos: el aviso de "salio bien" se ve un
+ *  rato y se apaga solo. */
+function avisarEnAparatos(texto) {
+  mensajeAparatos = texto;
+  pintarAparatos();
+  setTimeout(() => {
+    if (mensajeAparatos === texto) { mensajeAparatos = null; pintarAparatos(); }
+  }, 5000);
+}
+
+cajaAparatos?.addEventListener("change", evento => {
+  const select = evento.target.closest("select[data-tipo-de]");
+  if (!select) return;
+  // El alcance en grande tiene que describir lo que se va a aprobar, no lo
+  // que sugirio el aparato. Sin esto, cambiar el tipo a "navegador" deja el
+  // cartel diciendo "solo lectura" mientras el boton entrega la casa
+  // entera: la unica linea de esta pantalla que no puede mentir.
+  const alcance = select.closest(".golpe")?.querySelector(".alcance");
+  if (alcance) alcance.textContent = alcanceDe(select.value);
+});
+
+cajaAparatos?.addEventListener("click", async evento => {
+  const boton = evento.target.closest("button[data-aparato]");
+  if (!boton) return;
+  const accion = boton.dataset.aparato;
+  const id = boton.dataset.id;
+  // toda la tarjeta se deshabilita, no solo el boton tocado: aprobar dos
+  // veces por un doble toque manda el segundo POST sobre un golpe ya
+  // consumido (404) y el alert que sale de ahi asusta sin motivo.
+  const tarjeta = boton.closest(".golpe, .aparato") || boton;
+  const botones = tarjeta.querySelectorAll
+    ? tarjeta.querySelectorAll("button") : [boton];
+  for (const b of botones) b.disabled = true;
+  try {
+    let r;
+    if (accion === "aprobar") {
+      // el tipo es el que dice el selector EN ESTE MOMENTO, no el que
+      // sugirio el aparato: quien elige el alcance es Pedro (invariante 4)
+      const select = tarjeta.querySelector?.("select[data-tipo-de]");
+      r = await fetch("/api/aparatos/aprobar", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({id_pedido: id, tipo: select?.value})});
+    } else if (accion === "rechazar") {
+      r = await fetch("/api/aparatos/rechazar", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({id_pedido: id})});
+    } else if (accion === "revocar") {
+      // el hash SI va por el path: no es una credencial (el id en claro
+      // jamas toca el disco), y el id_pedido de una sesion viva ni viaja
+      r = await fetch(`/api/aparatos/${encodeURIComponent(id)}/revocar`,
+                      {method: "POST"});
+    } else {
+      return;
+    }
+    if (!r.ok) {
+      let detalle = "no se pudo";
+      try { detalle = (await r.json()).detail || detalle; } catch (_) {}
+      alert(detalle);
+    } else if (accion === "aprobar") {
+      avisarEnAparatos("listo: el aparato quedo aprobado, falta que entre");
+    } else if (accion === "rechazar") {
+      avisarEnAparatos("listo: el aparato quedo rechazado");
+    } else {
+      avisarEnAparatos("listo: la sesion quedo cortada");
+    }
+  } finally {
+    for (const b of botones) b.disabled = false;
+    await pintarAparatos();
+  }
+});
+
 // --- Inbox: las cuatro bandejas juntas, "Todo" -------------------------
 //
 // Primera sub-vista de "La mesa" (no una pestana global: en escritorio la
@@ -657,12 +803,14 @@ for (const boton of document.querySelectorAll("#submesa button")) {
     cajaMesa?.classList.toggle("oculto", vista !== "decidir");
     cajaPerillas?.classList.toggle("oculto", vista !== "plata");
     cajaPermisos?.classList.toggle("oculto", vista !== "permisos");
+    cajaAparatos?.classList.toggle("oculto", vista !== "aparatos");
     // igual que la pestana global de "Mesa" (spec seccion 9): sin esto,
     // tocar una sub-pestana muestra la foto del momento en que cargo la
     // pagina.
     if (vista === "inbox") pintarInbox();
     if (vista === "plata") pintarPerillas();
     if (vista === "permisos") pintarPermisos();
+    if (vista === "aparatos") pintarAparatos();
   });
 }
 
@@ -1045,6 +1193,10 @@ pintarPerillas();
 // badge ya no le dice nada nuevo.
 pintarInbox();
 pintarPermisos();
+// Y los aparatos, por la misma razon con mas apuro: un golpe caduca a los
+// 10 minutos (GOLPE_TTL_MIN del spec). Si Pedro tuviera que entrar a la
+// sub-pestana para enterarse, el aparato ya habria vuelto a golpear.
+pintarAparatos();
 
 // La mesa no tiene push: sin este refresco, Pedro abre /fabrica, hace otra
 // cosa, toca la pestana "Mesa" y ve la foto del momento de la carga (spec
@@ -1067,6 +1219,10 @@ setInterval(pintarInbox, 60_000).unref?.();
 // badge (el de aca, junto a "Permisos") al dia mientras Pedro esta en otra
 // pestana.
 setInterval(pintarPermisos, 60_000).unref?.();
+// Y los aparatos: el sondeo es lo unico que hace aparecer un golpe
+// nuevo sin que Pedro recargue. Contra los 10 minutos que vive un
+// golpe, 60 s deja de sobra para verlo y contestarlo.
+setInterval(pintarAparatos, 60_000).unref?.();
 
 const panelCentro = document.getElementById("panel-centro");
 const panelRazonamiento = document.getElementById("razonamiento");

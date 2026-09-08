@@ -58,21 +58,26 @@ La lista exacta del `tablero` se refina en el plan contra las rutas reales de `/
 
 Orden en `auth_guard` (anclas por simbolo; las lineas se corren):
 1. `/login` exenta. `/setup` exenta SOLO si: loopback Y no existe `totp_secret` Y el request trae `?token=` valido -- loopback no es Pedro (flatpaks, otros uid); el token si, porque solo el uid de Pedro lee `~/.calipso/token`. Sin esa prueba, la ventana de primer arranque regalaba el secreto TOTP al primer proceso local que pasara.
-2. `POST /api/aparatos/golpear`, `POST /api/aparatos/estado` y `POST /api/aparatos/canjear` exentas de credencial, con freno propio: **claves `aparatos:{host}` y balde `aparatos:*`, separados de los del login** (compartir el balde del login regalaria a un martillador sin credencial la palanca del DoS del TOTP). Cuenta como fallo: un golpe nuevo, o un estado/canje con `id_pedido` desconocido. NO cuenta: sondear un `id_pedido` valido (es el flujo feliz esperando a Pedro). El id viaja en el BODY (nunca en el path: el access log no lo ve).
+2. `POST /api/aparatos/golpear`, `POST /api/aparatos/estado` y `POST /api/aparatos/canjear` exentas de credencial, con freno propio: **claves `aparatos:{host}` y balde `aparatos:*`, separados de los del login** (compartir el balde del login regalaria a un martillador sin credencial la palanca del DoS del TOTP). Cuenta como fallo: un golpe nuevo, o un estado/canje con `id_pedido` desconocido. NO cuenta: sondear un `id_pedido` valido (es el flujo feliz esperando a Pedro). El id viaja en el BODY (nunca en el path: el access log no lo ve), y ese body tiene tope (4 KB, `CUERPO_MAX_BYTES`; pasarse es 413 y cuenta como fallo): son las unicas rutas nuevas que leen lo que manda cualquiera.
 3. Cookie de sesion (`calipso_sesion`, httponly, samesite=lax, max_age 30 dias) que resuelve viva: pasa con su alcance.
-4. Cookie o `?token=` que valen el TOKEN: **solo loopback** (la Ally y Tauri intactos). Un 401 remoto con cookie-token ademas la EXPIRA (Set-Cookie vencida): limpieza de las cookies-token viejas de un anio.
+4. Cookie o `?token=` que valen el TOKEN: **solo loopback** (la Ally y Tauri intactos). Un 401 remoto con cookie-token ademas la EXPIRA (Set-Cookie vencida), **valga o no la cookie**: limpieza de las cookies-token viejas de un anio, que tras rotar el token (paso 2 del despliegue) ya no valen -- y condicionar la limpieza a la validez seria el oraculo remoto que C8 cerro.
 5. `/login` + TOTP: local planta el token como hoy; **remoto crea una sesion `navegador` YA VIVA** -- la excepcion explicita del invariante 4: el TOTP es Pedro en persona, no un aparato aprobandose solo. (Y como aprobar es solo-loopback, ninguna sesion aprueba jamas a otra.)
 6. Websockets (no pasan por el middleware; su chequeo vive en cada handshake): **token valido DESDE LOOPBACK o sesion viva cuyo alcance cubra ese ws.**
 
 ### Alta, revocacion y corte en `/fabrica`
 
 - El aparato: `golpear` -> sondea `estado` -> al ver `viva`, `canjear` UNA vez -> cookie.
-- `/fabrica`: la superficie de solicitudes existente (el molde de `/api/permisos` + inbox) muestra los que golpean con el tipo SUGERIDO y su alcance en grande; **aprobar exige loopback** (la Ally); rechazar idem. `GET /api/aparatos` lista (estado efectivo); `POST /api/aparatos/{hash}/revocar` desde loopback o sesion `navegador` (D3: "revocar desde otro dispositivo"; el `tablero` y el `lector` NO revocan). El token no se revoca por esta capa: su unica revocacion es rotarlo en la Ally.
+- `/fabrica`: la superficie de solicitudes existente (el molde de `/api/permisos` + inbox) muestra los que golpean con el tipo SUGERIDO y su alcance en grande; **aprobar exige loopback** (la Ally); rechazar idem. `GET /api/aparatos` lista (estado efectivo; el `id_pedido` sale SOLO mientras el golpe espera y SOLO hacia loopback -- despues es la credencial del canje, y un navegador remoto que la leyera se llevaria la sesion aprobada para otro aparato); `POST /api/aparatos/{hash}/revocar` desde loopback o sesion `navegador` (D3: "revocar desde otro dispositivo"; el `tablero` y el `lector` NO revocan). El token no se revoca por esta capa: su unica revocacion es rotarlo en la Ally.
 - **Corte de WS vivos:** registro EN MEMORIA sesion->generacion que `revocar()` incrementa; cada ws guarda su sesion del handshake y re-chequea la generacion al recibir un mensaje, antes de cada emision al cliente, y en el latido periodico -- un ws ocioso no sobrevive a la revocacion mas alla del proximo latido. `ws_mapa` ya itera por tick; `ws_chat` agrega el chequeo en sus puntos de emision.
 
 ### Migracion y despliegue
 
-Al aterrizar la capa: (1) las cookies-token remotas viejas mueren solas (paso 4 las expira); (2) **rotar el TOKEN es parte del despliegue** (las viejas quedaron un anio en navegadores); (3) la PWA remota existente hace `/login`+TOTP una vez y queda como sesion `navegador`.
+**Despliegue de la fase 1** (el orden importa: el paso 2 corta a los remotos, el 3 los vuelve a dar de alta):
+
+1. Reiniciar el server con el codigo nuevo.
+2. **Rotar el TOKEN:** borrar `~/.calipso/token` y reiniciar -- `_load_token` (server.py) genera y guarda uno nuevo cuando el archivo no existe. Es obligatorio y no opcional: el paso 4 del guard expira la cookie-token vieja recien cuando ese navegador VUELVE, y las que se repartieron duraron un anio. (Si `CALIPSO_TOKEN` esta exportado en el entorno del server, gana sobre el archivo: rotar ahi tambien, o borrarla.)
+3. La PWA remota hace `/login` + TOTP una vez y queda como sesion `navegador` (paso 5 del guard). No hay que golpear ni aprobar nada para eso.
+4. Tauri y la Ally no cambian: son loopback y siguen con el token (rotado) como hasta hoy.
 
 ## 4. Invariantes
 

@@ -29,7 +29,12 @@ SKIP_DIRS_RAIZ = {"logs"}
 # token y la semilla TOTP adentro esquivaba el unico NUNCA del motor de
 # permisos (que matchea las rutas exactas, no el zip) y nacia 0644
 # (revision de seguridad 2026-09-07, C6). Solo aplica en la raiz del home.
-SKIP_FILES_RAIZ = {"token", "totp_secret"}
+# `sesiones.json` va por lo mismo (invariante 7 de la capa de sesion): un zip
+# viejo con los hashes de las sesiones vivas y los id_pedido pendientes
+# adentro es la misma puerta de al lado, y el almacen se regenera solo -- los
+# aparatos vuelven a golpear.
+# Solo el nombre exacto: los `sesiones.json.corrupto-<ts>` llevan hashes.
+SKIP_FILES_RAIZ = {"token", "totp_secret", "sesiones.json"}
 
 
 def _backups_dir() -> pathlib.Path:

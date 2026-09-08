@@ -87,6 +87,7 @@ except Exception:
 from calipso import prompt_compiler  # noqa: E402
 from calipso import routines as calipso_routines  # noqa: E402
 from calipso import backup as calipso_backup  # noqa: E402
+from calipso import sesiones  # noqa: E402
 from calipso import sessions  # noqa: E402
 from calipso import skills  # noqa: E402
 from calipso import telemetry  # noqa: E402
@@ -125,6 +126,14 @@ app = FastAPI(title="Calipso")
 # si no existe, se genera uno y se imprime en consola al arrancar.
 
 COOKIE = "calipso_token"
+
+# La cookie de la capa de sesion: identidad de APARATO, no de la
+# maquina. Es la unica credencial que vale desde afuera, y jamas
+# contiene ni deriva el TOKEN (invariante 1). El max_age espeja el
+# sueno de `sesiones.SESION_SUENO_DIAS`: una cookie que sobreviva a
+# la sesion solo consigue 401 al aparato.
+COOKIE_SESION = "calipso_sesion"
+SESION_COOKIE_MAX_AGE = 30 * 86400
 
 
 def _home_calipso() -> pathlib.Path:
@@ -231,6 +240,15 @@ def _verify_totp(code: str, valid_window: int = 1) -> bool:
     clean = "".join(ch for ch in code if ch.isdigit())
     if len(clean) != 6:
         return False
+    if not _TOTP_SECRET_FILE.exists():
+        # Sin secreto no hay codigo que valga, y CREARLO no es cosa de esta
+        # funcion. `_get_totp_secret` lo genera cuando falta, y /login entra
+        # sin guard: cualquier POST con seis digitos -un remoto anonimo, un
+        # flatpak, otro uid- daba a luz el secreto sin que nadie viera el
+        # QR, y la ventana del punto 1 del guard ("no existe totp_secret")
+        # se cerraba para siempre con un secreto que Pedro nunca enrolo. El
+        # unico lugar que lo crea es `setup_page`, detras de esa ventana.
+        return False
     secret = _get_totp_secret()
     now = int(time.time() // 30)
     return any(
@@ -330,6 +348,70 @@ def _login_exito(clave: str) -> None:
         _login_fallos.pop(clave, None)
 
 
+# --- freno propio del alta de aparatos (spec, invariante 6)
+# Golpear/estado/canjear entran SIN credencial (un aparato que todavia no
+# existe no tiene ninguna), asi que llevan freno igual que /login. La
+# maquinaria es la misma; las claves son otras a proposito: con el balde
+# compartido, veinte golpes anonimos dejaban a Pedro afuera de su propio
+# TOTP -- el DoS del login regalado a cualquiera que alcance el puerto.
+_APARATOS_EXENTAS = ("/api/aparatos/golpear", "/api/aparatos/estado",
+                     "/api/aparatos/canjear")
+
+
+def _aparatos_espera(host: str) -> float:
+    """Segundos de castigo que le quedan al alta desde ese host (0 = pasa)."""
+    return max(_login_espera(f"aparatos:{host}", _LOGIN_MAX_FALLOS_HOST),
+               _login_espera("aparatos:*", _LOGIN_MAX_FALLOS_GLOBAL))
+
+
+def _aparatos_fallo(host: str) -> None:
+    """Cuenta un golpe nuevo -tambien el que sale bien, para que quien
+    martilla se frene solo- y un estado/canje con un id desconocido. Sondear
+    un pedido VALIDO no pasa por aca: es el flujo feliz esperando a Pedro, y
+    cobrarselo mataria al aparato legitimo que sondea cada pocos segundos."""
+    _login_fallo(f"aparatos:{host}")
+    _login_fallo("aparatos:*")
+
+
+def _aparatos_frenado(espera: float) -> JSONResponse:
+    """El 429 del freno. No cuenta como fallo (no llego a intentar nada) y
+    dice cuando volver: el aparato legitimo que se paso reintenta solo."""
+    return JSONResponse({"detail": "demasiados intentos"}, status_code=429,
+                        headers={"Retry-After": str(int(espera) + 1)})
+
+
+# --- el tope del cuerpo en las rutas sin credencial
+# Golpear/estado/canjear y /login leen un body que manda cualquiera, y
+# uvicorn no limita el tamano: `await request.json()` era un cuerpo de GB
+# creciendo en memoria antes de que el freno se cobrara nada. 4 KB es
+# holgado -un golpe pesa menos de cien bytes, un login menos de veinte-.
+CUERPO_MAX_BYTES = 4096
+
+
+def _cuerpo_declarado_excede(request: Request) -> bool:
+    """El Content-Length, cuando viene: el rechazo mas barato, antes de leer
+    un solo byte. Un cliente que mienta (o mande chunked, sin cabecera) se
+    topa igual con el tope de `_leer_cuerpo_acotado`."""
+    largo = request.headers.get("content-length", "")
+    return largo.isdigit() and int(largo) > CUERPO_MAX_BYTES
+
+
+def _cuerpo_grande() -> JSONResponse:
+    return JSONResponse({"detail": "cuerpo demasiado grande"}, status_code=413)
+
+
+async def _leer_cuerpo_acotado(request: Request) -> bytes:
+    """El body entero, o 413 apenas pasa el tope: se lee por trozos y se
+    corta ahi, asi que lo que sobra nunca toca la memoria."""
+    cuerpo = bytearray()
+    async for trozo in request.stream():
+        cuerpo.extend(trozo)
+        if len(cuerpo) > CUERPO_MAX_BYTES:
+            raise HTTPException(status_code=413,
+                                detail="cuerpo demasiado grande")
+    return bytes(cuerpo)
+
+
 def _session_response(url: str = "/") -> RedirectResponse:
     resp = RedirectResponse(url=url, status_code=303)
     resp.set_cookie(COOKIE, TOKEN, httponly=True, samesite="lax",
@@ -386,38 +468,330 @@ height:100vh;margin:0;align-items:center;justify-content:center}
 Usa <a href="/login">/login</a> para entrar con tu autenticador.</p></div></html>"""
 
 
+def _sin_credencial(path: str) -> Response:
+    """La puerta cerrada: json para las apis, la pantalla de login para el
+    resto. Se llama desde dos ramas del guard -sin nada, y con una credencial
+    que no vale desde ahi- y las dos tienen que contestar IGUAL: un remoto
+    que distinguiera los dos casos tendria un oraculo de validez del token."""
+    if path.startswith("/api") or path.startswith("/ws"):
+        return JSONResponse({"detail": "no autorizado"}, status_code=401)
+    return RedirectResponse(url="/login", status_code=303)
+
+
+def _expirar_token_viajero(resp: Response, request: Request,
+                           host: str) -> Response:
+    """La limpieza del punto 4 del guard: la cookie-token que un remoto
+    PRESENTA se expira, valga o no. Esas cookies se plantaron con un anio de
+    vida cuando el token si viajaba, y hay dos poblaciones que limpiar: el
+    navegador que trae la vieja y ninguna otra cosa (401), y el que ademas
+    trae una sesion viva porque entro por /login despues del upgrade -- la
+    rama del token no llega a mirarlo nunca y el TOKEN seguiria saliendo a
+    la red en cada request hasta 2027.
+
+    "Valga o no" es lo que importa, por dos razones. Rotar el token es paso
+    obligatorio del despliegue (spec, "Migracion y despliegue"), y despues
+    de rotar la cookie vieja ya no es valida: condicionar la limpieza a
+    `_valid` la dejaba viva un anio, justo en el orden que el spec manda. Y
+    condicionarla era un oraculo (C8): status y body son iguales para la
+    cookie valida y la invalida a proposito, pero el Set-Cookie solo para
+    la valida le decia a un remoto si un token fugado por otra via seguia
+    vigente. Borrando lo que el cliente presento, valga o no, solo aprende
+    que mando una cookie -- cosa que ya sabe."""
+    if not _es_loopback(host) and request.cookies.get(COOKIE) is not None:
+        resp.delete_cookie(COOKIE)
+    return resp
+
+
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
     path = request.url.path
+    host = request.client.host if request.client else ""
     if path == "/login":
+        if request.method == "POST" and _cuerpo_declarado_excede(request):
+            return _cuerpo_grande()
         return await call_next(request)
-    if _valid(request.cookies.get(COOKIE)):
+    if (path == "/setup" and _es_loopback(host)
+            and not _TOTP_SECRET_FILE.exists()
+            and _valid(request.query_params.get("token"))):
+        # La ventana del primer arranque, con las tres condiciones juntas.
+        # Loopback solo no alcanza: en esta maquina corren flatpaks y otros
+        # uid, y cualquiera de ellos habria podido pedir el QR antes que
+        # Pedro y quedarse con SU segundo factor. El token si prueba que es
+        # el uid de Pedro, porque `~/.calipso/token` esta en 0600. Con el
+        # secreto ya escrito la ventana se cierra sola y /setup vuelve al
+        # camino normal (donde la pantalla ya no muestra nada).
         return await call_next(request)
-    if _valid(request.query_params.get("token")):
-        # C8 (revision de seguridad 2026-09-07): la credencial por URL viaja
-        # en claro y queda en historial/logs; desde afuera de la propia
-        # maquina no es una via de entrada. Un dispositivo remoto entra por
-        # /login (TOTP) y cookie -- y con la capa de sesion, por identidad
-        # de aparato.
+    if path == "/setup" and not _TOTP_SECRET_FILE.exists():
+        # Fuera de esa ventana, /setup no se sirve a NADIE mientras el
+        # secreto falte: servirlo es CREARLO (`_get_totp_secret` lo genera y
+        # lo escribe) y despues mostrarlo en claro. Sin esta linea, una
+        # sesion `navegador` -alcance `*`- se llevaba el segundo factor de
+        # Pedro desde otra maquina: la sesion se revoca (invariante 9), el
+        # enrolamiento del autenticador NO, y ese aparato entraria por
+        # /login para siempre sin pasar nunca por la Ally (invariante 4).
+        # Con el secreto ya escrito la regla no aplica: la pantalla de
+        # despues no muestra nada y sigue siendo una ruta como cualquier
+        # otra.
+        return _sin_credencial(path)
+    if request.method == "POST" and path in _APARATOS_EXENTAS:
+        # el alta de aparatos no puede exigir credencial -es como se
+        # consigue la primera- y paga con su freno propio. Por METODO
+        # ademas de por path: un GET a estas rutas sigue el camino normal.
+        espera = _aparatos_espera(host)
+        if espera > 0:
+            return _aparatos_frenado(espera)
+        if _cuerpo_declarado_excede(request):
+            # pesa como un golpe mas: quien manda cuerpos asi no es un
+            # aparato esperando a Pedro
+            _aparatos_fallo(host)
+            return _cuerpo_grande()
+        return await call_next(request)
+    if (galleta_sesion := request.cookies.get(COOKIE_SESION)):
+        # La credencial de un APARATO, y la unica que vale desde afuera. Va
+        # a un hilo porque `resolver` puede escribir (renueva `ultima_vez`
+        # con histeresis, y mata a la que se durmio): el flock jamas en el
+        # event loop. Una cookie que no resuelve -revocada, caduca, basura-
+        # sigue de largo: quizas el mismo request trae el token y viene de
+        # la propia maquina.
+        ses = await asyncio.to_thread(sesiones.resolver, galleta_sesion)
+        if ses:
+            # `.get` y no `ses["tipo"]`: el registro sale del disco, y
+            # `permite` es fail-closed hasta con un tipo que no es texto --
+            # un KeyError aca desarmaria justo esa defensa (500 en vez de
+            # 403) para un archivo editado a mano al que le falte el campo
+            if not sesiones.permite(ses.get("tipo"), path, request.method):
+                # el alcance aplica a TODA ruta, no solo a /api (invariante
+                # 3): el `tablero` que pide /fabrica/algo tambien rebota
+                return _expirar_token_viajero(JSONResponse(
+                    {"detail": "fuera del alcance del aparato"},
+                    status_code=403), request, host)
+            request.state.sesion = ses
+            resp = await call_next(request)
+            if ses.get("renovada"):
+                # el aparato que entra todos los dias no puede perder la
+                # cookie a los 30 dias con la sesion viva: cada renovacion
+                # del almacen re-planta la cookie con max_age fresco
+                resp.set_cookie(COOKIE_SESION, galleta_sesion, httponly=True,
+                                samesite="lax", max_age=SESION_COOKIE_MAX_AGE)
+            return _expirar_token_viajero(resp, request, host)
+    galleta_token = request.cookies.get(COOKIE)
+    if _valid(galleta_token) or _valid(request.query_params.get("token")):
+        # C8 (revision de seguridad 2026-09-07) y despues el invariante 2 de
+        # la capa de sesion: el TOKEN identifica a la MAQUINA de Pedro, asi
+        # que vale solo desde ella -- por cookie igual que por URL. Un
+        # aparato remoto entra por identidad de aparato (la cookie de
+        # sesion) o por /login con TOTP, que le da una.
         # (los websockets NO pasan por este middleware http: ws_chat y
-        # ws_mapa autentican su propio handshake por cookie y jamas
-        # aceptaron ?token= -- no agregar "/ws" aca creyendo que protege)
-        if not _es_loopback(request.client.host if request.client else ""):
-            if path.startswith("/api"):
-                # mismo detail que un token invalido: distinguirlos era un
-                # oraculo remoto de validez del token
-                return JSONResponse({"detail": "no autorizado"},
-                                    status_code=401)
-            return RedirectResponse(url="/login", status_code=303)
+        # ws_mapa autentican su propio handshake -- no agregar "/ws" aca
+        # creyendo que protege)
+        if not _es_loopback(host):
+            # y ADEMAS expira la cookie-token si vino (el `?token=` a secas
+            # no dispara la limpieza: no hay nada que borrar). La misma
+            # respuesta, cabecera por cabecera, que la de la rama de abajo
+            # con una cookie-token invalida: ver `_expirar_token_viajero`
+            return _expirar_token_viajero(_sin_credencial(path), request,
+                                          host)
+        if _valid(galleta_token):
+            return await call_next(request)
         if path.startswith("/api") or request.method != "GET":
             resp = await call_next(request)
             resp.set_cookie(COOKIE, TOKEN, httponly=True, samesite="lax",
                             max_age=31_536_000)
             return resp
         return _session_response(path)
-    if path.startswith("/api") or path.startswith("/ws"):
-        return JSONResponse({"detail": "no autorizado"}, status_code=401)
-    return RedirectResponse(url="/login", status_code=303)
+    # sin credencial que valga desde aca. Si el remoto trajo una cookie-token
+    # que NO vale (la de antes de rotar el token), se expira igual que la
+    # valida de arriba: distinguirlas por el Set-Cookie era el oraculo de
+    # validez que C8 cerro, y sin esto las viejas vivian su anio entero
+    return _expirar_token_viajero(_sin_credencial(path), request, host)
+
+
+async def _ws_autorizado(ws: WebSocket) -> dict | bool | None:
+    """La credencial del handshake: el punto 6 del guard, el unico que no
+    vive en `auth_guard` -- ese es middleware http y los websockets no lo
+    cruzan. Sin esta funcion los ws se quedaban con "cookie == TOKEN", que
+    desde afuera es justo lo que el invariante 2 prohibe.
+
+    Devuelve el registro de la sesion cuando entro por sesion (el corte por
+    generaciones necesita saber DE QUIEN es el socket) mas `generacion`, la
+    foto del registro de revocaciones para ese hash; `True` cuando entro
+    con el token desde la propia maquina; y None cuando no entra. La sesion
+    se mira primero para que el que trae las dos cosas quede identificado
+    como aparato y no como maquina.
+
+    Que ws abre cada tipo no se decide aca: lo dice la tabla de alcances
+    (`/ws/mapa` figura en la del tablero; a `/ws/chat` solo lo cubre el `*`
+    del navegador). Una segunda copia de esa tabla en el handshake se
+    desincronizaria sola.
+    """
+    host = ws.client.host if ws.client else ""
+    if (galleta_sesion := ws.cookies.get(COOKIE_SESION)):
+        # La foto de la generacion se saca ANTES de resolver, por hash. Al
+        # reves -resolver en el hilo y fotografiar al envolver el socket-
+        # una revocacion que aterrizara entre las dos cosas (almacen ya
+        # revocado, contador ya subido) dejaba un socket con la foto NUEVA:
+        # vigente para siempre, sordo a la revocacion que ya paso. Con la
+        # foto primero cualquier intercalado cierra, porque
+        # `aparatos_revocar` escribe el almacen antes de subir el contador:
+        # o `resolver` ya devuelve None, o la foto es la vieja y el primer
+        # chequeo corta.
+        generacion = _generacion_de(sesiones.hash_de(galleta_sesion))
+        # a un hilo por lo mismo que en el guard: `resolver` puede escribir
+        # (renueva `ultima_vez`, mata a la dormida) y el flock jamas corre
+        # en el event loop
+        ses = await asyncio.to_thread(sesiones.resolver, galleta_sesion)
+        # el handshake es un GET. `.get("tipo")` y no `ses["tipo"]`: el
+        # registro sale del disco y `permite` es fail-closed hasta con el
+        # campo ausente -- un KeyError aca desarmaria esa misma defensa
+        if ses and sesiones.permite(ses.get("tipo"), ws.url.path, "GET"):
+            return dict(ses, generacion=generacion)
+    if _valid(ws.cookies.get(COOKIE)) and _es_loopback(host):
+        # el token identifica a la MAQUINA de Pedro, asi que vale solo desde
+        # ella (invariante 2): un aparato remoto entra por sesion o no entra
+        return True
+    return None
+
+
+# --------------------------------------------------------------------------
+# EL CORTE EN VIVO: revocar mata los websockets que YA estaban abiertos
+# (spec seccion 3, "Corte de WS vivos"; invariante 9)
+# --------------------------------------------------------------------------
+# Hasta aca revocar solo cerraba la puerta a los handshakes NUEVOS: el socket
+# que ya estaba adentro seguia hablando hasta que el cliente se fuera. El
+# registro es de memoria a proposito -- lo unico que tiene que sobrevivir es
+# el proceso que sostiene esos sockets; despues de un reinicio no queda
+# ninguno vivo y `resolver` ya rechaza a la revocada en el handshake.
+_ws_generaciones: dict[str, int] = {}
+
+
+def _generacion_de(hash_id: str) -> int:
+    """Cero es la respuesta para el hash que nadie revoco todavia: asi el
+    handshake no tiene que dar de alta nada."""
+    return _ws_generaciones.get(hash_id, 0)
+
+
+def _revocar_en_vivo(hash_id: str) -> None:
+    """Le mueve el piso a los sockets abiertos de esa sesion: la generacion
+    que guardaron en el handshake deja de coincidir y el proximo chequeo los
+    cierra.
+
+    Incrementa aunque no haya ningun socket abierto -- averiguarlo costaria
+    un registro de conexiones y el dict crece, como mucho, con una entrada
+    por revocacion de la vida del proceso.
+
+    LIMITE CONOCIDO: la expiracion por reloj (una sesion que se duerme o
+    cumple 180 dias mientras su ws esta abierto) no pasa por aca; esa muere
+    en la proxima reconexion, cuando `resolver` la rechaza."""
+    _ws_generaciones[hash_id] = _generacion_de(hash_id) + 1
+
+
+class _SocketVigilado:
+    """El socket de una sesion, envuelto para que ninguna emision sobreviva a
+    la revocacion.
+
+    Por que un proxy y no un chequeo en cada punto de emision: `ws_chat`
+    emite desde 46 lugares -- el cuerpo del handler, los helpers que reciben
+    el `ws` (`_run_dynamic_team`, `_run_subscription_text_live`), la clase
+    `Emisor` y el borrador que corre suelto con `ensure_future`. Tocarlos uno
+    por uno deja el invariante colgado del proximo que agregue el numero 47.
+    Envolver el socket una sola vez, apenas se sabe de quien es, cubre a todos
+    sin que ninguno se entere.
+
+    Envuelve las cinco puertas del socket y no solo las dos que el server usa
+    hoy (`send_json` y `receive_text`) por lo mismo: la que se estrene manana
+    ya nace vigilada. Lo demas pasa derecho por `__getattr__` (`cookies`,
+    `client`, `url`, `accept`, `close`): esto es un guardia, no una fachada.
+    """
+
+    def __init__(self, ws: WebSocket, hash_id: str,
+                 generacion: int | None = None) -> None:
+        self._ws = ws
+        self._hash_id = hash_id
+        # la foto del handshake: si el numero cambia, esta sesion se revoco
+        # despues de que este socket entrara. La saca `_ws_autorizado`
+        # ANTES de resolver (ver ahi por que); sin foto se toma la de ahora
+        self._generacion = (_generacion_de(hash_id) if generacion is None
+                            else generacion)
+
+    def __getattr__(self, nombre: str):
+        return getattr(self._ws, nombre)
+
+    def vigente(self) -> bool:
+        return _generacion_de(self._hash_id) == self._generacion
+
+    async def cerrar_revocado(self) -> None:
+        """1008 es "politica violada", el mismo codigo con el que el
+        handshake rechaza a una sesion muerta: el cliente ve una sola razon
+        de cierre y no tiene que distinguir el momento.
+
+        El cierre puede fallar (el cliente ya se fue, el socket ya se cerro
+        por el otro lado) y eso no cambia lo que hay que hacer: dejar de
+        hablarle."""
+        with contextlib.suppress(Exception):
+            await self._ws.close(code=1008)
+
+    async def _vigilar(self) -> None:
+        if self.vigente():
+            return
+        await self.cerrar_revocado()
+        # WebSocketDisconnect y no una excepcion propia: cada handler ya la
+        # atrapa para limpiar cuando el cliente se desconecta, y una sesion
+        # revocada es exactamente eso, un cliente que dejo de estar
+        raise WebSocketDisconnect(1008)
+
+    async def send_json(self, *args, **kwargs):
+        await self._vigilar()
+        return await self._ws.send_json(*args, **kwargs)
+
+    async def send_text(self, *args, **kwargs):
+        await self._vigilar()
+        return await self._ws.send_text(*args, **kwargs)
+
+    async def send_bytes(self, *args, **kwargs):
+        await self._vigilar()
+        return await self._ws.send_bytes(*args, **kwargs)
+
+    async def receive_text(self, *args, **kwargs):
+        await self._vigilar()
+        return await self._ws.receive_text(*args, **kwargs)
+
+    async def receive_json(self, *args, **kwargs):
+        await self._vigilar()
+        return await self._ws.receive_json(*args, **kwargs)
+
+
+async def _vigilar_socket(
+        ws: WebSocket,
+        sesion: dict | bool | None) -> WebSocket | _SocketVigilado | None:
+    """Envuelve el socket cuando entro por sesion y lo deja crudo cuando
+    entro con el token: el token es la maquina de Pedro y esta capa no lo
+    revoca (su unica revocacion es rotarlo en la Ally).
+
+    Falla CERRADO: un registro de sesion sin `hash_id` no tiene con que
+    vigilarse, y un socket que ninguna revocacion pueda alcanzar no entra
+    -- se cierra con 1008 y se devuelve None, antes del accept. Hoy no
+    pasa (`resolver` busca por hash), pero esto es una capa de
+    autenticacion y la version anterior devolvia el socket crudo."""
+    if sesion is True:
+        return ws
+    hash_id = sesion.get("hash_id") if isinstance(sesion, dict) else None
+    if not hash_id:
+        await ws.close(code=1008)
+        return None
+    return _SocketVigilado(ws, hash_id, sesion.get("generacion"))
+
+
+async def _cortar_si_revocada(ws: WebSocket | _SocketVigilado) -> bool:
+    """True cuando la sesion del socket se revoco -- y para entonces el
+    socket ya quedo cerrado con 1008.
+
+    Es el chequeo de los bucles que pueden pasar horas sin emitir ni recibir
+    nada: sin el, un socket ocioso sobrevive a la revocacion hasta que
+    alguien hable."""
+    if not isinstance(ws, _SocketVigilado) or ws.vigente():
+        return False
+    await ws.cerrar_revocado()
+    return True
 
 
 _TOTP_DISABLED = os.environ.get("CALIPSO_NO_TOTP", "").strip().lower() in ("1", "true", "yes")
@@ -456,14 +830,27 @@ async def login_submit(request: Request):
         return HTMLResponse(LOGIN_HTML.replace("{error}", error)
                             .replace("{totp_mode}", _login_mode_html(cliente)),
                             status_code=429)
-    body = (await request.body()).decode("utf-8", errors="ignore")
+    body = (await _leer_cuerpo_acotado(request)).decode("utf-8",
+                                                        errors="ignore")
     data = urllib.parse.parse_qs(body)
     code = data.get("code", [""])[0]
     if _totp_bypass_permitido(cliente) or _verify_totp(code):
         # el exito limpia el contador del host; el balde global queda (un
         # acierto en medio de una lluvia de fallos no la amnistia)
         _login_exito(cliente)
-        return _session_response("/")
+        if _es_loopback(cliente):
+            return _session_response("/")
+        # Desde afuera, el premio del TOTP es una SESION, jamas el token
+        # (invariante 1). Es la unica excepcion a "el aparato no se aprueba
+        # solo", y es explicita en el spec: un codigo del autenticador es
+        # Pedro en persona, no un aparato consagrandose. El alcance es
+        # `navegador` porque quien tiene el TOTP ya tiene la casa entera.
+        id_sesion = await asyncio.to_thread(
+            sesiones.crear_viva, f"navegador {cliente}"[:60], "navegador")
+        resp = RedirectResponse(url="/", status_code=303)
+        resp.set_cookie(COOKIE_SESION, id_sesion, httponly=True,
+                        samesite="lax", max_age=SESION_COOKIE_MAX_AGE)
+        return resp
     _login_fallo(cliente)
     _login_fallo("*")
     error = '<p class="err">Codigo invalido. Revisa el autenticador y vuelve a intentar.</p>'
@@ -484,6 +871,189 @@ def setup_page() -> HTMLResponse:
         qr = '<p class=m>No esta instalado el generador de QR. Usa el enlace de abajo.</p>'
     html = SETUP_HTML.replace("{qr}", qr).replace("{uri}", uri)
     return HTMLResponse(html)
+
+
+# --------------------------------------------------------------------------
+# ALTA DE APARATOS: golpear -> Pedro aprueba -> canjear (capa de sesion)
+# --------------------------------------------------------------------------
+# Los tres primeros son los EXENTOS del guard y entran sin credencial. Los
+# otros viven detras del guard y ademas exigen la propia maquina: aprobar es
+# solo-loopback (invariante 4), asi que ninguna sesion consagra jamas a otra.
+
+
+async def _cuerpo_json(request: Request) -> dict:
+    """El body como dict, o vacio si vino roto. Estas rutas las pega
+    cualquiera sin credencial: un cuerpo basura tiene que morir en la
+    validacion del almacen -422 y un fallo contado- y no en un 500.
+
+    Y un cuerpo que pase el tope muere en 413 sin leerse entero. El guard
+    ya rechazo el Content-Length declarado; aca cae el que vino chunked o
+    mintio la cabecera. En las rutas sin credencial cuenta como fallo del
+    freno; en aprobar/rechazar (la Ally) no, que el freno es del alta.
+
+    Cualquier OTRA rotura de la lectura es un cuerpo vacio, no una
+    excepcion: leer por trozos agrego un modo de falla que `request.json()`
+    no tenia -el cliente que se corta a mitad del cuerpo levanta
+    `ClientDisconnect`-, y dejarlo subir como excepcion ASGI le regalaba al
+    martillador un intento que el freno no cuenta (el fallo lo cobra la ruta
+    DESPUES de este helper)."""
+    try:
+        crudo = await _leer_cuerpo_acotado(request)
+    except HTTPException:
+        if request.url.path in _APARATOS_EXENTAS:
+            _aparatos_fallo(request.client.host if request.client else "")
+        raise
+    except Exception:
+        return {}
+    try:
+        datos = json.loads(crudo)
+    except ValueError:
+        return {}
+    return datos if isinstance(datos, dict) else {}
+
+
+def _id_pedido(cuerpo: dict) -> str:
+    """El id de pedido viaja SIEMPRE por el body, nunca por el path: el
+    access log ve el path. Lo que no sea texto es un id desconocido como
+    cualquier otro, no un 500."""
+    valor = cuerpo.get("id_pedido")
+    return valor if isinstance(valor, str) else ""
+
+
+def _solo_la_ally(host: str) -> None:
+    """Invariante 4: la aprobacion se firma en la maquina, no por la red.
+    Rechazar comparte el mensaje porque comparte la razon."""
+    if not _es_loopback(host):
+        raise HTTPException(status_code=403,
+                            detail="aprobar es solo desde la Ally")
+
+
+@app.post("/api/aparatos/golpear")
+async def aparatos_golpear(request: Request):
+    """El aparato se anuncia y queda esperando. El fallo se cuenta ANTES de
+    mirar el pedido: golpe valido, tipo basura o cuerpo roto pesan igual,
+    que es lo que hace que martillar esta ruta se frene solo."""
+    host = request.client.host if request.client else ""
+    cuerpo = await _cuerpo_json(request)
+    _aparatos_fallo(host)
+    try:
+        return await asyncio.to_thread(sesiones.golpear,
+                                       cuerpo.get("aparato"),
+                                       cuerpo.get("tipo"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except sesiones.Lleno as exc:
+        # el otro 429 de esta ruta (la sala de espera llena, no el freno) y
+        # lleva Retry-After igual: el aparato legitimo que llego tarde tiene
+        # que reintentar solo. 60s porque los golpes caducan a los 10 min,
+        # asi que la sala se vacia sola y sondear cada minuto la alcanza.
+        raise HTTPException(status_code=429, detail=str(exc),
+                            headers={"Retry-After": "60"})
+
+
+@app.post("/api/aparatos/estado")
+async def aparatos_estado(request: Request):
+    """El sondeo del aparato mientras espera a Pedro. `sesiones.estado` no
+    toma el candado (lee por cache de stat), asi que no necesita hilo."""
+    host = request.client.host if request.client else ""
+    cuerpo = await _cuerpo_json(request)
+    situacion = sesiones.estado(_id_pedido(cuerpo))
+    if situacion is None:
+        _aparatos_fallo(host)
+        raise HTTPException(status_code=404, detail="pedido desconocido")
+    return {"estado": situacion}
+
+
+@app.post("/api/aparatos/canjear")
+async def aparatos_canjear(request: Request):
+    """El id de sesion nace aca y se entrega UNA sola vez, en la cookie
+    (invariante 8). Un segundo canje encuentra el id_pedido quemado."""
+    host = request.client.host if request.client else ""
+    cuerpo = await _cuerpo_json(request)
+    id_sesion = await asyncio.to_thread(sesiones.canjear, _id_pedido(cuerpo))
+    if id_sesion is None:
+        _aparatos_fallo(host)
+        raise HTTPException(status_code=404, detail="pedido desconocido")
+    # el tipo lo eligio Pedro al aprobar y el aparato necesita saber con que
+    # alcance quedo; el canje devuelve el id pelado, asi que se relee. None
+    # solo si alguien revoco entre estas dos lineas: la cookie sale igual y
+    # el proximo request la encuentra muerta, que es lo correcto.
+    registro = await asyncio.to_thread(sesiones.resolver, id_sesion)
+    resp = JSONResponse({"ok": True,
+                         "tipo": registro.get("tipo") if registro else None})
+    resp.set_cookie(COOKIE_SESION, id_sesion, httponly=True, samesite="lax",
+                    max_age=SESION_COOKIE_MAX_AGE)
+    return resp
+
+
+@app.post("/api/aparatos/aprobar")
+async def aparatos_aprobar(request: Request):
+    """Pedro dice que si y elige el tipo (el sugerido por el aparato ni se
+    mira). El 404 no repite el id_pedido: es la credencial del canje."""
+    _solo_la_ally(request.client.host if request.client else "")
+    cuerpo = await _cuerpo_json(request)
+    try:
+        await asyncio.to_thread(sesiones.aprobar, _id_pedido(cuerpo),
+                                cuerpo.get("tipo"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="no hay un golpe vigente")
+    return {"ok": True}
+
+
+@app.post("/api/aparatos/rechazar")
+async def aparatos_rechazar(request: Request):
+    """Sin marcha atras: el aparato rechazado vuelve a golpear."""
+    _solo_la_ally(request.client.host if request.client else "")
+    cuerpo = await _cuerpo_json(request)
+    try:
+        await asyncio.to_thread(sesiones.rechazar, _id_pedido(cuerpo))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="pedido desconocido")
+    return {"ok": True}
+
+
+@app.get("/api/aparatos")
+def aparatos_listar(request: Request):
+    """Lo que muestra /fabrica, con el estado EFECTIVO del reloj (una sesion
+    dormida ya figura muerta sin esperar a que alguien la resuelva).
+    `def` y no `async def` porque no hay nada que esperar: FastAPI corre el
+    codigo sincrono en su threadpool.
+
+    El `id_pedido` de los golpes que esperan sale solo hacia loopback: la
+    Ally es la que aprueba y rechaza por body. Una sesion `navegador`
+    remota ve la lista (D3: revocar desde otro aparato) pero no aprueba ni
+    rechaza, asi que el id no le sirve para nada legitimo -- y si es la
+    credencial de un canje, le sirve para robarse la sesion que Pedro
+    aprobo para otro aparato."""
+    filas = sesiones.listar()
+    if not _es_loopback(request.client.host if request.client else ""):
+        for fila in filas:
+            fila["id_pedido"] = None
+    return {"aparatos": filas}
+
+
+@app.post("/api/aparatos/{hash_id}/revocar")
+async def aparatos_revocar(hash_id: str, request: Request):
+    """El hash SI viaja por el path: no es una credencial (el id en claro
+    jamas toca el disco). Loopback o una sesion `navegador` -- el lector y
+    el tablero no revocan. `request.state.sesion` lo va a poblar el guard de
+    la capa siguiente; hasta entonces solo entra por loopback."""
+    host = request.client.host if request.client else ""
+    ses = getattr(request.state, "sesion", None)
+    if not (_es_loopback(host) or (ses and ses.get("tipo") == "navegador")):
+        raise HTTPException(
+            status_code=403,
+            detail="revocar es solo desde la Ally o un navegador")
+    try:
+        await asyncio.to_thread(sesiones.revocar, hash_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="no hay una sesion viva")
+    # despues del almacen, no antes: si `revocar` falla, la sesion sigue viva
+    # y sus sockets no tienen por que caerse
+    _revocar_en_vivo(hash_id)
+    return {"ok": True}
 
 
 # Defensa en profundidad de _safe (revision de seguridad 2026-09-07, C2):
@@ -2553,12 +3123,41 @@ def _next_or_stop(gen, sentinel):
 # `conversacion._por_chat`.
 _ultimo_pedido: dict[str, str] = {}
 
+# cada cuanto despierta un chat ocioso a mirar si su sesion sigue viva. Alto a
+# proposito: es el peor caso de un socket que ya no deberia existir, no una
+# latencia que Pedro sienta.
+LATIDO_CHAT_S = 30.0
+
+
+async def _proximo_del_chat(ws: WebSocket | _SocketVigilado,
+                            inbox: asyncio.Queue) -> str | None:
+    """Lo proximo que mande el cliente, o None cuando el socket se termino.
+
+    Espera con plazo en vez de quedarse colgada del `get`: el chat ocioso es
+    justo el que no se enteraria nunca de que su sesion fue revocada. El
+    latido no manda nada al cliente -- es un despertar del servidor, y la PWA
+    no tiene por que aprender un tipo de evento nuevo para esto."""
+    while True:
+        try:
+            return await asyncio.wait_for(inbox.get(), timeout=LATIDO_CHAT_S)
+        except asyncio.TimeoutError:
+            if await _cortar_si_revocada(ws):
+                return None
+
 
 @app.websocket("/ws/chat")
 async def ws_chat(ws: WebSocket) -> None:
-    if not _valid(ws.cookies.get(COOKIE)):
-        await ws.close(code=1008)  # polÃƒÂ­tica violada: sin token vÃƒÂ¡lido
+    # de quien es este socket: con eso se envuelve para el corte en vivo
+    sesion = await _ws_autorizado(ws)
+    if not sesion:
+        await ws.close(code=1008)   # politica violada: sin credencial
         return
+    # antes del accept y de cualquier emision: de aca en adelante `ws` es el
+    # vigilado, asi que los 46 puntos de emision de este handler y todo lo
+    # que reciba el socket quedan cubiertos sin tocarlos
+    ws = await _vigilar_socket(ws, sesion)
+    if ws is None:
+        return                      # sin hash no se vigila: ya cerro 1008
     await ws.accept()
     active_goal = goals.active(str(ROOT))
     if active_goal:
@@ -2589,7 +3188,7 @@ async def ws_chat(ws: WebSocket) -> None:
             if pending is not None:
                 user_msg, pending = pending, None
             else:
-                raw = await inbox.get()
+                raw = await _proximo_del_chat(ws, inbox)
                 if raw is None:
                     break
                 try:
@@ -3418,8 +4017,15 @@ def api_launch_checklist() -> dict:
         _launch_item(
             "totp", "Login TOTP", _TOTP_SECRET_FILE.exists(),
             "Autenticador configurado." if _TOTP_SECRET_FILE.exists()
-            else "Abre /setup para escanear el QR.",
-            "/setup"),
+            # con el token en la URL y desde la propia maquina: mientras
+            # el secreto falte, /setup no se sirve de otra forma
+            else "Abre /setup?token=<el token> en la propia maquina.",
+            # sin boton mientras falte el secreto: un "Abrir" a /setup a
+            # secas rebota a /login (la cookie-token no abre la ventana del
+            # punto 1) y contradice el detail. El token no se pone en la
+            # URL del boton: dejaria `?token=` en el historial, que es lo
+            # que C4 saco. Con el secreto escrito el enlace vuelve.
+            "/setup" if _TOTP_SECRET_FILE.exists() else None),
         _launch_item(
             "pwa", "PWA celular", manifest_ok,
             "Manifest y service worker presentes." if manifest_ok
@@ -6434,9 +7040,14 @@ async def ws_mapa(ws: WebSocket) -> None:
     tocar el event loop desde otro hilo es la clase de cosa que anda hasta
     que no. El costo es un cuarto de segundo de latencia para ver pensar a
     un agente."""
-    if not _valid(ws.cookies.get(COOKIE)):
-        await ws.close(code=1008)   # politica violada: sin token valido
+    # de quien es este socket: con eso se envuelve para el corte en vivo
+    sesion = await _ws_autorizado(ws)
+    if not sesion:
+        await ws.close(code=1008)   # politica violada: sin credencial
         return
+    ws = await _vigilar_socket(ws, sesion)
+    if ws is None:
+        return                      # sin hash no se vigila: ya cerro 1008
     await ws.accept()
     if EL_PULSO is None:
         await ws.send_json({"evento": "sin-pulso"})
@@ -6446,6 +7057,10 @@ async def ws_mapa(ws: WebSocket) -> None:
     vueltas = 0           # lo que el anillo todavia guarda
     try:
         while True:
+            # aca no hace falta latido aparte: el tick ya corre cada cuarto de
+            # segundo y un lookup de dict por vuelta no se siente
+            if await _cortar_si_revocada(ws):
+                return
             cursor, nuevos = EL_PULSO.desde(cursor)
             for ev in nuevos:
                 await ws.send_json(ev)

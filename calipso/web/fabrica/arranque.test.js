@@ -116,7 +116,8 @@ function montarNavegador() {
                     "conversacion", "entrada", "texto", "panel-mapa",
                     "expandir", "tarjeta", "sin-fabrica", "pestanas",
                     "avisos", "costo", "foco", "razonamiento", "empleado",
-                    "mesa", "plantel"]) {
+                    "mesa", "plantel", "aparatos",
+                    "badge-permisos", "badge-aparatos"]) {
     nodos.set(id, nodo(id));
   }
   const pestanas = [nodo("", "button"), nodo("", "button")];
@@ -175,6 +176,16 @@ function montarNavegador() {
     if (String(url).includes("/activate")) {
       return Promise.resolve({ok: true, json: async () => (
         {id: "c9", title: "otro", messages: [{role: "user", text: "viejo"}]})});
+    }
+    // la lista de aparatos contesta con UN golpe vigente y nada mas: es el
+    // caso que separa los badges de la submesa (cero permisos pendientes,
+    // un aparato esperando en la puerta). El endsWith deja afuera a
+    // /aprobar y a /{hash}/revocar, que son POST y contestan {ok: true}.
+    if (String(url).endsWith("/api/aparatos")) {
+      return Promise.resolve({ok: true, json: async () => ({aparatos: [
+        {hash_id: null, id_pedido: "ped_1", aparato: "e-reader",
+         tipo: "lector", creada: "2026-09-08T10:00:00", ultima_vez: null,
+         estado: "golpeando", efectivo: "golpeando"}]})});
     }
     return Promise.resolve({ok: true,
                             json: async () => ({activa: true,
@@ -506,4 +517,148 @@ test("un clic en financiar arma el POST con la cuenta del selector y el " +
                    {cuenta: "dep:atlas", mm: 10000, palabras: ""});
   assert.ok(selsPedidos.includes('select.paga[data-id="p1"]'),
             "no se pidio el selector de la propuesta p1");
+});
+
+// --- Los aparatos: aprobar manda el tipo que dice el SELECTOR ------------
+//
+// Es la mitad que el modulo puro no puede probar. `aparatos.test.js` fija
+// que la tarjeta dibuja el selector preseleccionado en la sugerencia; lo que
+// se fija aca es que el POST lleve lo que el selector dice EN EL MOMENTO DEL
+// CLIC. Si el cableado mandara `golpe.tipo` (la sugerencia del aparato),
+// cambiar el tipo antes de aprobar no cambiaria nada y Pedro le daria a un
+// aparato un alcance que no eligio -- el canario del invariante 4 del lado
+// del cliente.
+
+test("con el id sumado, la lista de aparatos se pinta sola", async () => {
+  await new Promise(r => setTimeout(r, 0));
+  const caja = nav.nodos.get("aparatos");
+  assert.ok(caja.innerHTML, "pintarAparatos nunca escribio nada");
+  assert.ok(nav.pedidos.some(u => u.includes("/api/aparatos")),
+            "no se pidio la lista de aparatos");
+});
+
+// Un badge dice "hay algo esperandote ACA". Si la cuenta de los golpes se
+// escribiera en el badge de otra bandeja, Pedro abriria esa, la encontraria
+// vacia, y el golpe -que vive 10 minutos- se venceria mientras busca donde
+// no es: lo contrario de enterarse sin buscarlo. Cada sub-pestana escribe
+// SOLO su propio badge.
+test("el golpe prende el badge de Aparatos y no toca el de Permisos",
+     async () => {
+  await new Promise(r => setTimeout(r, 0));
+  const badgeAparatos = nav.nodos.get("badge-aparatos");
+  const badgePermisos = nav.nodos.get("badge-permisos");
+  assert.equal(badgeAparatos.textContent, "1",
+               "el golpe no llego al badge de su propia sub-pestana: quedo " +
+               `en ${JSON.stringify(badgeAparatos.textContent)}`);
+  assert.equal(badgeAparatos.clases.has("oculto"), false,
+               "el badge de Aparatos quedo oculto con un golpe esperando");
+  // este DOM de mentira no declara "permisos", asi que pintarPermisos ni
+  // corre: si el badge de Permisos tiene algo escrito, se lo escribio la
+  // bandeja de aparatos, que es exactamente el numero que apunta a la
+  // bandeja equivocada
+  assert.equal(badgePermisos.textContent, "",
+               "la cuenta de los golpes se escribio en el badge de Permisos");
+});
+
+test("aprobar arma el POST con el tipo del selector, no con el sugerido",
+     async () => {
+  const caja = nav.nodos.get("aparatos");
+  // misma tactica que el clic en financiar: el nodo de mentira no tiene
+  // querySelector de verdad, se lo apunta para el unico selector que el
+  // manejador busca
+  const tarjeta = {
+    querySelector: sel => (sel === "select[data-tipo-de]"
+                           ? {value: "tablero"} : null),
+    querySelectorAll: () => [],
+  };
+  const boton = {
+    dataset: {aparato: "aprobar", id: "ped_1"},
+    disabled: false,
+    closest(sel) { return sel === "button[data-aparato]" ? boton : tarjeta; },
+  };
+
+  const antes = nav.peticiones.length;
+  for (const f of caja.oyentes.get("click") || []) f({target: boton});
+  await new Promise(r => setTimeout(r, 0));
+  await new Promise(r => setTimeout(r, 0));
+
+  const pedido = nav.peticiones.slice(antes)
+    .find(p => p.url.includes("/api/aparatos/aprobar"));
+  assert.ok(pedido, "el clic no armo ningun POST a /api/aparatos/aprobar");
+  assert.equal(pedido.opciones.method, "POST");
+  assert.deepEqual(JSON.parse(pedido.opciones.body),
+                   {id_pedido: "ped_1", tipo: "tablero"});
+});
+
+test("revocar manda el hash por el path y no manda cuerpo", async () => {
+  const caja = nav.nodos.get("aparatos");
+  const tarjeta = {querySelector: () => null, querySelectorAll: () => []};
+  const boton = {
+    dataset: {aparato: "revocar", id: "a1b2c3d4"},
+    disabled: false,
+    closest(sel) { return sel === "button[data-aparato]" ? boton : tarjeta; },
+  };
+
+  const antes = nav.peticiones.length;
+  for (const f of caja.oyentes.get("click") || []) f({target: boton});
+  await new Promise(r => setTimeout(r, 0));
+  await new Promise(r => setTimeout(r, 0));
+
+  const pedido = nav.peticiones.slice(antes)
+    .find(p => p.url.includes("/revocar"));
+  assert.ok(pedido, "el clic no armo ningun POST a revocar");
+  assert.equal(pedido.url, "/api/aparatos/a1b2c3d4/revocar");
+  assert.equal(pedido.opciones.method, "POST");
+});
+
+// El repintado (cada 60 s, tras cada accion, al entrar a la pestana)
+// reconstruye el HTML de la caja entera. Lo que se fija aca es que ANTES de
+// reconstruirlo, pintarAparatos lea lo que dicen los selectores y se lo
+// pase al modulo puro. El DOM de mentira no reconstruye nada, asi que el
+// observable es el HTML generado: si el selector de ped_1 decia "tablero",
+// el HTML nuevo tiene que traer `tablero` seleccionado y no la sugerencia
+// del aparato ("lector", que es lo que contesta /api/aparatos aca). Sin
+// esto, rechazar OTRO golpe -o el intervalo de 60 s- le devolvia a este el
+// tipo que sugirio el aparato, y el POST de aprobar se lo llevaba.
+test("el repintado conserva el tipo que Pedro eligio en el selector",
+     async () => {
+  const caja = nav.nodos.get("aparatos");
+  // el selector que Pedro ya toco, tal como pintarAparatos lo busca
+  const selectTocado = {dataset: {tipoDe: "ped_1"}, value: "tablero"};
+  caja.querySelectorAll = sel =>
+    (sel === "select[data-tipo-de]" ? [selectTocado] : []);
+  try {
+    // el repintado lo dispara una accion sobre OTRA tarjeta: rechazar el
+    // golpe ped_2 (el finally del click repinta la caja entera)
+    const tarjeta = {querySelector: () => null, querySelectorAll: () => []};
+    const boton = {
+      dataset: {aparato: "rechazar", id: "ped_2"},
+      disabled: false,
+      closest(sel) { return sel === "button[data-aparato]" ? boton : tarjeta; },
+    };
+    for (const f of caja.oyentes.get("click") || []) f({target: boton});
+    for (let i = 0; i < 3; i++) await new Promise(r => setTimeout(r, 0));
+    assert.match(caja.innerHTML, /<option value="tablero" selected>/,
+                 "el repintado volvio el selector a la sugerencia del aparato");
+    assert.ok(!caja.innerHTML.includes('<option value="lector" selected>'),
+              "la sugerencia del aparato quedo seleccionada");
+    assert.match(caja.innerHTML, /Ve toda la fabrica/,
+                 "el alcance en grande volvio a describir la sugerencia");
+  } finally {
+    caja.querySelectorAll = () => [];
+  }
+});
+
+test("cambiar el tipo reescribe el alcance en grande", () => {
+  const caja = nav.nodos.get("aparatos");
+  const alcance = {textContent: "Solo sus endpoints de lectura (/api/lectura)"};
+  const tarjeta = {querySelector: sel => (sel === ".alcance" ? alcance : null)};
+  const select = {
+    value: "navegador",
+    closest(sel) { return sel === ".golpe" ? tarjeta : select; },
+  };
+
+  for (const f of caja.oyentes.get("change") || []) f({target: select});
+  assert.equal(alcance.textContent, "Todo: la PWA completa, como la Ally",
+               "el cartel del alcance quedo describiendo el tipo anterior");
 });

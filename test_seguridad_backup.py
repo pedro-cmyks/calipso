@@ -1,7 +1,8 @@
 """Revision de seguridad 2026-09-07, C6: el backup no respalda la credencial
 del servidor (se regenera), no arrastra logs, nace 0600, y el motor de
 permisos trata backups/ entero como credencial (los zips viejos la traen
-adentro)."""
+adentro). Y capa de sesion, invariante 7: `sesiones.json` entra a las dos
+listas por lo mismo."""
 import stat
 import zipfile
 
@@ -69,3 +70,30 @@ def test_backups_es_credencial_del_servidor(tmp_path, monkeypatch):
     assert acciones.es_credencial_del_servidor(
         tmp_path / "backups" / "calipso-backup-x.zip")
     assert not acciones.es_credencial_del_servidor(tmp_path / "chats.json")
+
+
+def test_sesiones_json_fuera_del_backup(tmp_path, monkeypatch):
+    # El almacen de sesiones tampoco se respalda (invariante 7): un zip
+    # viejo con los hashes y los id_pedido adentro es la misma puerta de al
+    # lado que ya abrio el token en C6. Se regenera solo: los aparatos
+    # vuelven a golpear.
+    monkeypatch.setattr(backup, "CALIPSO_HOME", tmp_path)
+    (tmp_path / "sesiones.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "chats.json").write_text("{}", encoding="utf-8")
+    r = backup.create_backup(stamp="sesiones")
+    with zipfile.ZipFile(r["path"]) as zf:
+        nombres = set(zf.namelist())
+    assert "sesiones.json" not in nombres
+    assert "chats.json" in nombres
+
+
+def test_sesiones_json_es_credencial_del_servidor(tmp_path, monkeypatch):
+    # Escribirlo es fabricar una sesion viva sin pasar por Pedro (el disco
+    # guarda sha256(id): un agente elige el id y planta su hash); leerlo
+    # entrega los id_pedido pendientes. Por eso entra al NUNCA.
+    monkeypatch.setenv("CALIPSO_HOME", str(tmp_path))
+    assert acciones.es_credencial_del_servidor(tmp_path / "sesiones.json")
+    # El NUNCA es la ruta exacta del almacen: un archivo homonimo dentro de
+    # un proyecto de Pedro sigue siendo un archivo comun.
+    assert not acciones.es_credencial_del_servidor(
+        tmp_path / "projects" / "sesiones.json")
