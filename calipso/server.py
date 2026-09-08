@@ -656,8 +656,8 @@ async def aparatos_rechazar(request: Request):
 def aparatos_listar():
     """Lo que muestra /fabrica, con el estado EFECTIVO del reloj (una sesion
     dormida ya figura muerta sin esperar a que alguien la resuelva).
-    Sincrono a proposito: `listar` lee disco y el threadpool lo saca del
-    event loop."""
+    `def` y no `async def` porque no hay nada que esperar: FastAPI corre el
+    codigo sincrono en su threadpool."""
     return {"aparatos": sesiones.listar()}
 
 

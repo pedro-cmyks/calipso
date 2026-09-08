@@ -122,6 +122,9 @@ def test_golpear_con_el_almacen_lleno_es_429():
     r = _postear("10.0.0.9", "/api/aparatos/golpear",
                  {"aparato": "Ally", "tipo": "lector"})
     assert r.status_code == 429, r.text
+    # el 429 del almacen lleno, no el del freno: el host que pide es otro y
+    # no tiene ni un fallo. Dos 429 distintos que hay que poder distinguir.
+    assert "golpes esperando" in r.json()["detail"]
 
 
 # --- estado -----------------------------------------------------------------
