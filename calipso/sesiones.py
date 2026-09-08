@@ -72,19 +72,27 @@ _DIA_S = 86400
 # tablero es fijo -- ver todo, firmar mesa y permisos, jamas tocar la
 # maquina (nada de /api/file, /api/commands, /api/config, /api/project). La
 # tabla vive aca porque es del ALMACEN: el guard la consume, no la define.
+#
+# Los prefijos del tablero estan escritos contra las rutas REALES de
+# server.py, no contra las del spec: el spec anotaba
+# "/api/permisos/responder" y la ruta que existe es
+# "/api/permisos/solicitudes/{id}/responder". Una regla que no matchea
+# ninguna ruta no abre nada, pero deja creyendo que si.
 ALCANCES: dict[str, tuple] = {
     "navegador": (("*", "*"),),
     "lector": (("/api/lectura/", "*"),),
     "tablero": (
-        ("/fabrica", ("GET",)),
-        ("/static", ("GET",)),
-        ("/ws/mapa", ("GET",)),
+        ("/fabrica", ("GET",)),           # y /fabrica/manifest.json
+        ("/static/", ("GET",)),           # el js y el css de la consola
+        ("/ws/mapa", ("GET",)),           # el handshake del ws es un GET
         ("/api/mapa/", ("GET",)),
-        ("/api/economia/", ("GET",)),
-        ("/api/permisos", ("GET",)),
+        ("/api/economia/", ("GET",)),     # tablero, bus, cola, config
+        ("/api/permisos", ("GET",)),      # la lista y sus sub-rutas GET
         ("/api/inbox", ("GET",)),
-        ("/api/economia/bus/", ("POST",)),
-        ("/api/permisos/responder", ("POST",)),
+        ("/api/plantel", ("GET",)),       # ver el interruptor, no tocarlo
+        ("/api/routines", ("GET",)),      # ver las rutinas, no correrlas
+        ("/api/economia/bus/", ("POST",)),          # LA MESA
+        ("/api/permisos/solicitudes/", ("POST",)),  # firmar solicitudes
     ),
 }
 
@@ -278,6 +286,38 @@ def _validar(aparato, tipo) -> tuple[str, str]:
     if not nombre.isprintable():
         raise ValueError("el nombre del aparato tiene caracteres invisibles")
     return nombre, tipo
+
+
+# --------------------------------------------------------------------------
+# el alcance
+# --------------------------------------------------------------------------
+
+def permite(tipo: str, path: str, metodo: str) -> bool:
+    """Si una sesion de ese tipo puede pedir esa ruta con ese metodo.
+
+    Fail-closed en las tres entradas -- tipo que no esta en la tabla, path
+    que no matchea ningun prefijo, metodo que la regla no lista -- porque
+    es la unica funcion que separa a un aparato remoto del resto de la
+    casa, y lo que todavia no se penso tiene que quedar afuera solo.
+
+    Se prueban TODAS las reglas y no la primera que matchea el prefijo: el
+    tablero VE `/api/permisos` con GET y FIRMA `/api/permisos/solicitudes/`
+    con POST, dos reglas que se pisan, y el orden de la tabla no puede
+    decidir cual gana.
+    """
+    reglas = ALCANCES.get(tipo)
+    if not reglas:
+        return False
+    # el path vacio no matchea ningun prefijo y el verbo vacio no esta en
+    # ninguna lista: normalizar alcanza para que la basura muera sola
+    ruta_pedida = path or ""
+    verbo = (metodo or "").upper()
+    for prefijo, metodos in reglas:
+        if prefijo != "*" and not ruta_pedida.startswith(prefijo):
+            continue
+        if metodos == "*" or verbo in metodos:
+            return True
+    return False
 
 
 # --------------------------------------------------------------------------

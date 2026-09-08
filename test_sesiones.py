@@ -320,7 +320,7 @@ def test_la_cache_se_recarga_cuando_el_archivo_cambia(ruta, reloj):
 
 
 # --------------------------------------------------------------------------
-# la tabla de alcances (la Task 2 la consume)
+# la tabla de alcances y su aplicacion
 # --------------------------------------------------------------------------
 
 def test_los_alcances_son_la_tabla_del_spec():
@@ -330,12 +330,144 @@ def test_los_alcances_son_la_tabla_del_spec():
     prefijos = [p for p, _ in sesiones.ALCANCES["tablero"]]
     assert "/fabrica" in prefijos
     assert "/api/economia/bus/" in prefijos
-    assert "/api/permisos/responder" in prefijos
+    # el spec escribe "/api/permisos/responder", pero la ruta que sirve
+    # server.py es esta: una regla que no matchea ninguna ruta real no
+    # firma nada
+    assert "/api/permisos/solicitudes/" in prefijos
     # el criterio fijo del spec: ver todo, firmar mesa y permisos, jamas
     # tocar la maquina
     for vedada in ("/api/file", "/api/commands", "/api/config",
                    "/api/project"):
         assert not any(p.startswith(vedada) for p in prefijos)
+
+
+@pytest.mark.parametrize("path,metodo", [
+    ("/fabrica", "GET"),
+    ("/fabrica/manifest.json", "GET"),
+    ("/static/fabrica/app.js", "GET"),        # index.html los pide asi
+    ("/static/fabrica/estilo.css", "GET"),
+    ("/ws/mapa", "GET"),                      # el handshake es un GET
+    ("/api/mapa/ciudad", "GET"),
+    ("/api/economia/tablero", "GET"),
+    ("/api/economia/bus", "GET"),
+    ("/api/economia/cola", "GET"),
+    ("/api/economia/config", "GET"),
+    ("/api/permisos", "GET"),
+    ("/api/inbox", "GET"),
+    ("/api/plantel", "GET"),                  # ver el interruptor
+    ("/api/routines", "GET"),
+])
+def test_el_tablero_ve_toda_la_fabrica(path, metodo):
+    assert sesiones.permite("tablero", path, metodo) is True
+
+
+@pytest.mark.parametrize("path", [
+    "/api/economia/bus/abc/financiar",
+    "/api/economia/bus/abc/descartar",
+    "/api/economia/bus/abc/no-mas",
+    "/api/economia/bus/abc/cumplio",
+    "/api/economia/bus/abc/no-cumplio",
+    "/api/permisos/solicitudes/abc/responder",
+])
+def test_el_tablero_firma_la_mesa_y_los_permisos(path):
+    assert sesiones.permite("tablero", path, "POST") is True
+
+
+@pytest.mark.parametrize("path,metodo", [
+    # tocar la maquina: los canarios explicitos del spec
+    ("/api/file", "GET"),
+    ("/api/file", "PUT"),
+    ("/api/commands", "GET"),
+    ("/api/commands/run", "POST"),
+    ("/api/config", "GET"),
+    ("/api/config", "PUT"),
+    ("/api/project", "GET"),
+    ("/api/project/open", "POST"),
+    ("/api/updates", "GET"),
+    ("/api/updates/run", "POST"),
+    ("/api/plugins", "GET"),
+    ("/api/plugins/install", "POST"),
+    ("/api/backup", "POST"),
+    # mover plata o configurar la economia no es firmar la mesa
+    ("/api/economia/abrir", "POST"),
+    ("/api/economia/cierre", "POST"),
+    ("/api/economia/sembrar", "POST"),
+    ("/api/economia/frontera/acunar", "POST"),
+    ("/api/economia/personal/movimiento", "POST"),
+    ("/api/economia/departamentos/taller/perillas", "POST"),
+    # poner techos y revocar permisos tampoco es firmar solicitudes
+    ("/api/permisos/techo", "POST"),
+    ("/api/permisos/concedidos/abc/revocar", "POST"),
+    # operar la fabrica: mirar el interruptor no es tocarlo
+    ("/api/plantel/modo", "PUT"),
+    ("/api/plantel/parar", "POST"),
+    ("/api/plantel/reanudar", "POST"),
+    ("/api/routines", "POST"),
+    ("/api/routines/abc", "PUT"),
+    ("/api/routines/abc", "DELETE"),
+    ("/api/routines/abc/run", "POST"),
+    # la conversacion es del navegador, no de la mesa
+    ("/api/chats", "GET"),
+    ("/ws/chat", "GET"),
+    # los aparatos los administra el navegador o el loopback
+    ("/api/aparatos", "GET"),
+    # y la PWA entera queda afuera
+    ("/", "GET"),
+    ("/manifest.json", "GET"),
+    ("/sw.js", "GET"),
+    ("/api/session", "GET"),
+    ("/api/sessions", "GET"),
+    ("/api/tree", "GET"),
+    ("/api/git/status", "GET"),
+])
+def test_el_tablero_jamas_toca_la_maquina(path, metodo):
+    assert sesiones.permite("tablero", path, metodo) is False
+
+
+@pytest.mark.parametrize("path,metodo,esperado", [
+    ("/api/lectura/pregunta", "POST", True),
+    ("/api/lectura/presencia", "GET", True),
+    ("/fabrica", "GET", False),
+    ("/api/economia/tablero", "GET", False),
+    ("/", "GET", False),                      # la PWA no es del lector
+    ("/api/lectura", "GET", False),           # el prefijo lleva la barra
+])
+def test_el_lector_solo_llega_a_sus_endpoints_de_lectura(path, metodo,
+                                                         esperado):
+    assert sesiones.permite("lector", path, metodo) is esperado
+
+
+@pytest.mark.parametrize("path,metodo", [
+    ("/", "GET"),
+    ("/api/file", "PUT"),
+    ("/api/commands/run", "POST"),
+    ("/ws/chat", "GET"),
+    ("/lo/que/sea", "DELETE"),
+])
+def test_el_navegador_es_el_unico_comodin(path, metodo):
+    assert sesiones.permite("navegador", path, metodo) is True
+
+
+@pytest.mark.parametrize("tipo", ["impresora", "", None, "TABLERO", "*"])
+def test_un_tipo_que_no_esta_en_la_tabla_no_permite_nada(tipo):
+    # fail-closed: el guard le pregunta a `permite` por el tipo que trae el
+    # registro, y un archivo editado a mano puede traer cualquier cosa
+    assert sesiones.permite(tipo, "/fabrica", "GET") is False
+
+
+@pytest.mark.parametrize("metodo", ["get", "Get", "GET"])
+def test_el_metodo_se_compara_en_mayusculas(metodo):
+    assert sesiones.permite("tablero", "/fabrica", metodo) is True
+
+
+@pytest.mark.parametrize("path,metodo", [
+    ("/fabrica", ""),
+    ("/fabrica", None),
+    ("", "GET"),
+    (None, "GET"),
+])
+def test_permite_falla_cerrado_ante_un_pedido_sin_forma(path, metodo):
+    assert sesiones.permite("tablero", path, metodo) is False
 
 
 # --------------------------------------------------------------------------
