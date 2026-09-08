@@ -80,6 +80,8 @@ from calipso import librarian  # noqa: E402
 from calipso import orchestrator  # noqa: E402
 from calipso.privacidad import conversacion, redaccion  # noqa: E402
 from calipso.privacidad import nube as privacidad_nube  # noqa: E402
+from calipso.abismo import filtro as abismo_filtro  # noqa: E402
+from calipso.abismo import marca as abismo_marca  # noqa: E402
 try:
     from calipso import resource_dispatcher as _rd  # noqa: E402
 except Exception:
@@ -7117,6 +7119,27 @@ def _resolver_foco(nombre: str) -> str | None:
     return _mapa_ficha.id_de_nombre(nombre, _edificios_livianos())
 
 
+def _avisar_abismo(aviso: dict) -> None:
+    """"Queda aviso" (spec seccion 9) para una marca que se retiro del texto
+    sin consulta -ilegible, sin corte por tope, abierta al cerrar-: fila en
+    telemetry.jsonl. Sin senal al WS: no hubo pondering que cerrar. Y sin el
+    cuerpo de la marca, que no se persiste en ningun lado."""
+    telemetry.log_event("abismo", evento="retirada", **aviso)
+
+
+def _retirar_con_aviso(texto: str, clase: str) -> str:
+    """Retira las marcas del abismo de un texto que NO pasa por el filtro del
+    Emisor -la sintesis de los agentes del orquestador, lo posterior a una
+    marca en la ruta one-shot- y deja el aviso que el spec exige (seccion
+    4: "se ignoran con aviso"): una fila por retiro, con la cantidad, sin
+    el cuerpo. Solo la gramatica del abismo: la de foco la retira quien
+    corresponda (el filtro de foco del Emisor, o `_limpiar_marcas`)."""
+    n = len(abismo_marca.PATRON.findall(texto or ""))
+    if n:
+        _avisar_abismo({"clase": clase, "largo": 0, "cantidad": n})
+    return abismo_marca.PATRON.sub("", texto or "")
+
+
 class Emisor:
     """Todo lo que Pedro lee sale por aca.
 
@@ -7124,16 +7147,29 @@ class Emisor:
     publicar el foco apenas aparece (la camara vuela mientras Calipso sigue
     escribiendo) y darle al pulso lo que se va diciendo. Antes los chunks
     salian desde cinco puntos de `ws_chat`, y filtrar en cinco lugares es
-    filtrar en cuatro."""
+    filtrar en cuatro.
+
+    Desde el abismo (spec seccion 4) los filtros son una tuberia ordenada:
+    foco primero, abismo despues. La marca del abismo no se resuelve aca
+    (es I/O y hay que cerrar el generador): se entrega hacia arriba por
+    `marca_abismo()` y la consume el bucle de `ws_chat`."""
 
     def __init__(self, ws, agente_id: str | None = None, resolver=None,
-                 pulso=None, filtro=None):
+                 pulso=None, filtro=None, filtros=None, avisar=None):
         self.ws = ws
         self.agente_id = agente_id
         self._resolver = resolver or _resolver_foco
         self._pulso = pulso if pulso is not None else EL_PULSO
-        self._filtro = filtro if filtro is not None else (
-            _mapa_foco.Filtro() if _mapa_foco is not None else None)
+        # el default es SOLO foco: el borrador de /redacta construye
+        # `Emisor(ws)` y no tiene quien resuelva una consulta (spec seccion
+        # 11); el turno conversacional pasa la lista completa a mano.
+        if filtros is not None:
+            self._filtros = list(filtros)
+        elif filtro is not None:
+            self._filtros = [filtro]
+        else:
+            self._filtros = [_mapa_foco.Filtro()] if _mapa_foco is not None else []
+        self._avisar = avisar or _avisar_abismo
         self.focos: list[str] = []
 
     async def _soltar(self, visible: str) -> str:
@@ -7144,33 +7180,71 @@ class Emisor:
             self._pulso.publicar(self.agente_id, "razonando", texto=visible)
         return visible
 
+    def _cosechar(self) -> None:
+        """Lo que los filtros vieron: focos (se resuelven y publican aca, es
+        una lectura de un JSON chico) y avisos del abismo (a telemetry)."""
+        for f in self._filtros:
+            for nombre in (f.tomar_focos() if hasattr(f, "tomar_focos") else ()):
+                destino = self._resolver(nombre)
+                if destino is None:
+                    continue          # el modelo se invento un departamento
+                self.focos.append(destino)
+                if self._pulso is not None:
+                    self._pulso.enfocar(destino)
+            for aviso in (f.tomar_avisos() if hasattr(f, "tomar_avisos") else ()):
+                self._avisar(aviso)
+
     async def chunk(self, texto: str) -> str:
         """Manda lo visible y devuelve exactamente eso, para que el que
         acumula la respuesta acumule lo mismo que Pedro leyo."""
-        if self._filtro is None:
-            return await self._soltar(texto)
-        visible = await self._soltar(self._filtro.comer(texto))
-        for nombre in self._filtro.tomar_focos():
-            destino = self._resolver(nombre)
-            if destino is None:
-                continue          # el modelo se invento un departamento
-            self.focos.append(destino)
-            if self._pulso is not None:
-                self._pulso.enfocar(destino)
+        visible = texto
+        for f in self._filtros:
+            visible = f.comer(visible)
+        visible = await self._soltar(visible)
+        self._cosechar()
         return visible
 
+    def marca_abismo(self):
+        """La marca valida pendiente del filtro del abismo, consumida; None
+        si no hay filtro o no hay marca. Cuando la hay, lo que los filtros
+        ANTERIORES de la tuberia retenian es posterior a la marca (el
+        corchete de un `⟦fo` a medio llegar) y se descarta con ella."""
+        for i, f in enumerate(self._filtros):
+            if not hasattr(f, "tomar_marca"):
+                continue
+            m = f.tomar_marca()
+            if m is not None:
+                for previo in self._filtros[:i]:
+                    previo.cerrar()
+            return m
+        return None
+
     async def cerrar(self) -> str:
-        """Una marca que nunca cerro es texto y Pedro tiene que verlo."""
-        if self._filtro is None:
-            return ""
-        return await self._soltar(self._filtro.cerrar())
+        """Una marca de foco que nunca cerro es texto y Pedro tiene que
+        verlo; lo que suelta un filtro pasa por los que le siguen (asi el
+        abismo mira el corchete que foco venia reteniendo), y lo que retenga
+        el del abismo se descarta con aviso (spec seccion 11)."""
+        salida = ""
+        for i, f in enumerate(self._filtros):
+            cola = f.cerrar()
+            for siguiente in self._filtros[i + 1:]:
+                cola = siguiente.comer(cola)
+            salida += cola
+        self._cosechar()
+        return await self._soltar(salida)
 
 
 def _limpiar_marcas(texto: str) -> str:
     """El parcial de la suscripcion se remanda ENTERO cada dos segundos, asi
     que no necesita la maquinaria de retencion del Filtro: alcanza con sacar
     las marcas completas. Una marca a medio llegar se limpia sola en el envio
-    siguiente, porque el texto se relee desde cero."""
+    siguiente, porque el texto se relee desde cero.
+
+    Compone las dos gramaticas: la del abismo (`marca.PATRON`, la misma regex
+    del filtro y del banco) y la de foco. Es el retiro que cubre la ruta
+    orquestador (spec seccion 4: las marcas de los agentes se ignoran con
+    aviso) y el preview y los artefactos de la suscripcion."""
+    texto = abismo_marca.PATRON.sub("", texto or "")
     return _mapa_foco.limpiar(texto) if _mapa_foco is not None else texto
 
 
