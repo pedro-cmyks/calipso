@@ -932,6 +932,75 @@ def test_el_socket_vigilado_no_deja_pasar_una_emision_de_una_revocada():
     assert crudo.cerrado_con == 1008
 
 
+def test_la_foto_de_la_generacion_se_saca_antes_de_resolver(monkeypatch):
+    """El TOCTOU del handshake: `_ws_autorizado` resolvia en un hilo y recien
+    despues el handler envolvia el socket, que fotografiaba la generacion en
+    ESE momento. Una revocacion entre las dos cosas (el almacen ya dice
+    revocada y el contador ya subio) dejaba un socket con la foto NUEVA:
+    `vigente()` daba True para siempre y ese ws sobrevivia a la revocacion
+    hasta que el cliente se fuera -- el invariante entero de la fase 3.
+
+    El intercalado se fuerza: un `resolver` que, con el registro viva ya en
+    la mano, revoca en el almacen y en el registro de generaciones antes de
+    devolverlo. Con la foto sacada ANTES de resolver, el primer chequeo del
+    tick ve el contador movido y corta con 1008."""
+    monkeypatch.setattr(srv, "EL_PULSO", pulso.Pulso())
+    c = _ws(REMOTO, {srv.COOKIE_SESION: _sesion("tablero")})
+    hash_id = _hash_de("Aparato de prueba")
+    resolver_real = sesiones.resolver
+
+    def resolver_y_revocar_en_el_medio(id_en_claro):
+        registro = resolver_real(id_en_claro)
+        if registro is not None:
+            # lo que hace `aparatos_revocar`, en el orden en que lo hace:
+            # primero el almacen, despues la generacion
+            sesiones.revocar(registro["hash_id"])
+            srv._revocar_en_vivo(registro["hash_id"])
+        return registro
+
+    monkeypatch.setattr(sesiones, "resolver", resolver_y_revocar_en_el_medio)
+    with c.websocket_connect("/ws/mapa") as ws:
+        assert srv._generacion_de(hash_id) == 1     # la revocacion paso
+        assert _cierre_del_ws(ws) == 1008
+
+
+def test_el_socket_de_una_sesion_sin_hash_falla_cerrado():
+    """`_vigilar_socket` devolvia el socket CRUDO cuando el registro no traia
+    `hash_id`: un socket que ninguna revocacion podia alcanzar. Hoy es
+    inalcanzable (`resolver` busca por hash), pero es una capa de
+    autenticacion y un guard no falla abierto: sin hash no hay con que
+    vigilarlo, asi que no entra."""
+    class _Falso:
+        def __init__(self):
+            self.cerrado_con = None
+
+        async def close(self, code=1000):
+            self.cerrado_con = code
+
+    sin_hash = _Falso()
+    assert asyncio.run(srv._vigilar_socket(sin_hash, {"tipo": "navegador"})) is None
+    assert sin_hash.cerrado_con == 1008
+    hash_vacio = _Falso()
+    assert asyncio.run(srv._vigilar_socket(hash_vacio, {"hash_id": ""})) is None
+    assert hash_vacio.cerrado_con == 1008
+    # el token de la maquina sigue entrando crudo: no hay sesion que revocar
+    con_token = _Falso()
+    assert asyncio.run(srv._vigilar_socket(con_token, True)) is con_token
+    assert con_token.cerrado_con is None
+
+
+def test_un_registro_sin_hash_no_abre_ningun_ws(monkeypatch):
+    """El mismo fail-closed, de punta a punta: un `resolver` que devuelva un
+    registro viva sin `hash_id` (un almacen manoseado, un bug futuro) rebota
+    en el handshake con 1008 en vez de entrar sin vigilancia."""
+    monkeypatch.setattr(sesiones, "resolver",
+                        lambda id_en_claro: {"tipo": "navegador",
+                                             "estado": "viva"})
+    c = _ws(REMOTO, {srv.COOKIE_SESION: "cualquier-cookie"})
+    _rebota(c, "/ws/chat")
+    _rebota(c, "/ws/mapa")
+
+
 def test_una_revocacion_no_toca_el_ws_abierto_con_el_token(monkeypatch):
     """La otra mitad: el corte es por sesion, no un interruptor general. La
     Ally entra con el token de la maquina y no tiene sesion que revocar, asi

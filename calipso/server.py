@@ -574,8 +574,9 @@ async def _ws_autorizado(ws: WebSocket) -> dict | bool | None:
     desde afuera es justo lo que el invariante 2 prohibe.
 
     Devuelve el registro de la sesion cuando entro por sesion (el corte por
-    generaciones necesita saber DE QUIEN es el socket), `True` cuando entro
-    con el token desde la propia maquina, y None cuando no entra. La sesion
+    generaciones necesita saber DE QUIEN es el socket) mas `generacion`, la
+    foto del registro de revocaciones para ese hash; `True` cuando entro
+    con el token desde la propia maquina; y None cuando no entra. La sesion
     se mira primero para que el que trae las dos cosas quede identificado
     como aparato y no como maquina.
 
@@ -586,6 +587,16 @@ async def _ws_autorizado(ws: WebSocket) -> dict | bool | None:
     """
     host = ws.client.host if ws.client else ""
     if (galleta_sesion := ws.cookies.get(COOKIE_SESION)):
+        # La foto de la generacion se saca ANTES de resolver, por hash. Al
+        # reves -resolver en el hilo y fotografiar al envolver el socket-
+        # una revocacion que aterrizara entre las dos cosas (almacen ya
+        # revocado, contador ya subido) dejaba un socket con la foto NUEVA:
+        # vigente para siempre, sordo a la revocacion que ya paso. Con la
+        # foto primero cualquier intercalado cierra, porque
+        # `aparatos_revocar` escribe el almacen antes de subir el contador:
+        # o `resolver` ya devuelve None, o la foto es la vieja y el primer
+        # chequeo corta.
+        generacion = _generacion_de(sesiones.hash_de(galleta_sesion))
         # a un hilo por lo mismo que en el guard: `resolver` puede escribir
         # (renueva `ultima_vez`, mata a la dormida) y el flock jamas corre
         # en el event loop
@@ -594,7 +605,7 @@ async def _ws_autorizado(ws: WebSocket) -> dict | bool | None:
         # registro sale del disco y `permite` es fail-closed hasta con el
         # campo ausente -- un KeyError aca desarmaria esa misma defensa
         if ses and sesiones.permite(ses.get("tipo"), ws.url.path, "GET"):
-            return ses
+            return dict(ses, generacion=generacion)
     if _valid(ws.cookies.get(COOKIE)) and _es_loopback(host):
         # el token identifica a la MAQUINA de Pedro, asi que vale solo desde
         # ella (invariante 2): un aparato remoto entra por sesion o no entra
@@ -653,12 +664,15 @@ class _SocketVigilado:
     `client`, `url`, `accept`, `close`): esto es un guardia, no una fachada.
     """
 
-    def __init__(self, ws: WebSocket, hash_id: str) -> None:
+    def __init__(self, ws: WebSocket, hash_id: str,
+                 generacion: int | None = None) -> None:
         self._ws = ws
         self._hash_id = hash_id
         # la foto del handshake: si el numero cambia, esta sesion se revoco
-        # despues de que este socket entrara
-        self._generacion = _generacion_de(hash_id)
+        # despues de que este socket entrara. La saca `_ws_autorizado`
+        # ANTES de resolver (ver ahi por que); sin foto se toma la de ahora
+        self._generacion = (_generacion_de(hash_id) if generacion is None
+                            else generacion)
 
     def __getattr__(self, nombre: str):
         return getattr(self._ws, nombre)
@@ -707,13 +721,25 @@ class _SocketVigilado:
         return await self._ws.receive_json(*args, **kwargs)
 
 
-def _vigilar_socket(ws: WebSocket,
-                    sesion: dict | bool | None) -> WebSocket | _SocketVigilado:
+async def _vigilar_socket(
+        ws: WebSocket,
+        sesion: dict | bool | None) -> WebSocket | _SocketVigilado | None:
     """Envuelve el socket cuando entro por sesion y lo deja crudo cuando
     entro con el token: el token es la maquina de Pedro y esta capa no lo
-    revoca (su unica revocacion es rotarlo en la Ally)."""
+    revoca (su unica revocacion es rotarlo en la Ally).
+
+    Falla CERRADO: un registro de sesion sin `hash_id` no tiene con que
+    vigilarse, y un socket que ninguna revocacion pueda alcanzar no entra
+    -- se cierra con 1008 y se devuelve None, antes del accept. Hoy no
+    pasa (`resolver` busca por hash), pero esto es una capa de
+    autenticacion y la version anterior devolvia el socket crudo."""
+    if sesion is True:
+        return ws
     hash_id = sesion.get("hash_id") if isinstance(sesion, dict) else None
-    return _SocketVigilado(ws, hash_id) if hash_id else ws
+    if not hash_id:
+        await ws.close(code=1008)
+        return None
+    return _SocketVigilado(ws, hash_id, sesion.get("generacion"))
 
 
 async def _cortar_si_revocada(ws: WebSocket | _SocketVigilado) -> bool:
@@ -3053,7 +3079,9 @@ async def ws_chat(ws: WebSocket) -> None:
     # antes del accept y de cualquier emision: de aca en adelante `ws` es el
     # vigilado, asi que los 46 puntos de emision de este handler y todo lo
     # que reciba el socket quedan cubiertos sin tocarlos
-    ws = _vigilar_socket(ws, sesion)
+    ws = await _vigilar_socket(ws, sesion)
+    if ws is None:
+        return                      # sin hash no se vigila: ya cerro 1008
     await ws.accept()
     active_goal = goals.active(str(ROOT))
     if active_goal:
@@ -6941,7 +6969,9 @@ async def ws_mapa(ws: WebSocket) -> None:
     if not sesion:
         await ws.close(code=1008)   # politica violada: sin credencial
         return
-    ws = _vigilar_socket(ws, sesion)
+    ws = await _vigilar_socket(ws, sesion)
+    if ws is None:
+        return                      # sin hash no se vigila: ya cerro 1008
     await ws.accept()
     if EL_PULSO is None:
         await ws.send_json({"evento": "sin-pulso"})

@@ -203,6 +203,19 @@ def test_la_renovacion_tiene_histeresis_de_una_hora(ruta, reloj):
     assert en_disco(ruta)[0]["ultima_vez"] != antes
 
 
+def test_hash_de_es_el_hash_con_el_que_el_almacen_conoce_a_la_sesion(ruta, reloj):
+    """El contrato del que depende el corte en vivo de los ws: el handshake
+    fotografia la generacion por hash ANTES de resolver, y ese hash tiene
+    que ser exactamente el que `resolver` va a buscar y el que `listar`
+    muestra."""
+    pedido = sesiones.golpear("Ally", "navegador")["id_pedido"]
+    sesiones.aprobar(pedido, "tablero")
+    id_claro = sesiones.canjear(pedido)
+    assert sesiones.hash_de(id_claro) == sesiones.listar()[0]["hash_id"]
+    assert sesiones.hash_de(id_claro) == sesiones.resolver(id_claro)["hash_id"]
+    assert id_claro not in sesiones.hash_de(id_claro)
+
+
 def test_listar_reporta_el_estado_efectivo_sin_escribir(ruta, reloj):
     vivir()
     pendiente = sesiones.golpear("otro", "lector")["id_pedido"]

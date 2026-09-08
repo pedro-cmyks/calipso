@@ -135,8 +135,19 @@ def _epoch(iso: str | None) -> float:
         return 0.0
 
 
-def _hash(id_en_claro: str) -> str:
+def hash_de(id_en_claro: str) -> str:
+    """El sha256 hex con el que el almacen conoce a una sesion: lo unico
+    que se persiste de ella, y la clave de `resolver`, `revocar` y del
+    registro de generaciones del corte en vivo.
+
+    Publico porque el handshake de los websockets lo necesita ANTES de
+    resolver: la foto de la generacion se saca por hash primero y recien
+    despues se resuelve la cookie en un hilo -- al reves, una revocacion en
+    el medio dejaba un socket con la foto nueva, vigente para siempre."""
     return hashlib.sha256(id_en_claro.encode("utf-8")).hexdigest()
+
+
+_hash = hash_de
 
 
 def _vacio() -> dict:
