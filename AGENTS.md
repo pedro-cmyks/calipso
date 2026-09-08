@@ -202,16 +202,39 @@
 
 ## Seguridad actual
 
-- Cookie: `calipso_token`, httponly, `samesite=lax`.
+La autoridad es el spec de la capa de sesion,
+`docs/superpowers/specs/2026-09-07-capa-de-sesion-design.md`; esto es el resumen.
+
+- **Hay DOS credenciales, no una.** La cookie `calipso_token` (httponly,
+  `samesite=lax`) vale el TOKEN y vale SOLO desde loopback: la Ally y el shell
+  Tauri. Un remoto que la presente cobra 401 y ademas se le expira la cookie.
+  Lo mismo `?token=`: desde afuera no entra a ningun lado.
+- **Desde afuera se entra por una sesion de aparato:** cookie `calipso_sesion`
+  (httponly, `samesite=lax`, 30 dias) con un `tipo` -- `lector`, `tablero` o
+  `navegador` -- y alcance FAIL-CLOSED (`calipso/sesiones.py`, tabla `ALCANCES`):
+  lo que no matchea es 403, en http y en websockets. El `tablero` ve `/fabrica` y
+  firma mesa y permisos, jamas archivos, comandos ni config.
+- **El alta es "golpear la puerta":** `POST /api/aparatos/golpear`, `.../estado` y
+  `.../canjear` entran sin credencial (un aparato que todavia no existe no tiene
+  ninguna) y pagan con freno propio, con baldes separados de los del login. Quien
+  aprueba es Pedro y SOLO desde loopback, en la sub-pestana `Aparatos` de
+  `/fabrica`; el tipo lo elige el que aprueba, el golpe solo lo sugiere. La cookie
+  se entrega una unica vez, al canjear.
+- **Revocar** desde `/fabrica` (loopback o sesion `navegador`) corta ademas los
+  websockets vivos de ese aparato, sin esperar a que hable.
+- `/login`: pide codigo TOTP de 6 digitos. Desde loopback planta el token como
+  siempre; desde afuera crea una sesion `navegador` viva -- el token JAMAS viaja a
+  un aparato remoto. Es la unica excepcion a "el aparato no se aprueba solo",
+  porque un codigo del autenticador es Pedro en persona.
 - Token de recuperacion: `~/.calipso/token`, o `CALIPSO_TOKEN`.
 - TOTP: secreto en `~/.calipso/totp_secret`.
 - `/setup`: muestra QR/URI la primera vez, y SOLO desde loopback con `?token=`
-  valido (capa de sesion, punto 1 del guard: servirlo es crear el secreto, y
-  una sesion remota se llevaba el segundo factor). Si el secreto ya existe, no
-  vuelve a mostrarlo.
-- `/login`: pide codigo TOTP de 6 digitos; si valida, setea la misma cookie de
-  sesion.
-- El token viejo sigue funcionando como recuperacion con `?token=...`.
+  valido y mientras el secreto no exista (servirlo es CREARLO, y una sesion remota
+  se llevaba el segundo factor). Con el secreto ya escrito no muestra nada.
+- `sesiones.json` guarda HASHES del id (el id en claro solo vive en la cookie del
+  aparato), nace 0600, no se respalda y esta bajo el NUNCA del motor de permisos
+  (`calipso/permisos/acciones.py`, `es_credencial_del_servidor`). Ilegible = se
+  renombra y se avisa, jamas se pisa.
 - El servidor se ata a `0.0.0.0` para red local. Para remoto seguro usar Tailscale.
   Nunca abrir el puerto a internet.
 
