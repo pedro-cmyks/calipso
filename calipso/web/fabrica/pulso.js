@@ -29,11 +29,11 @@ function vacio(ev, ahora) {
           rol: ev.rol, modelo: ev.modelo, trabajo: ev.trabajo,
           estado: "esperando", texto: "", tokens_in: 0, tokens_out: 0,
           costo_mm: 0, runtime_ms: 0, diff: null, herramienta: null,
-          desde: ahora, visto: ahora};
+          abismo: null, desde: ahora, visto: ahora};
 }
 
 const CONOCIDOS = ["inicio", "razonando", "herramienta", "tokens", "diff",
-                   "fin", "foco"];
+                   "fin", "foco", "abismo"];
 
 export function aplicarEvento(estado, ev, ahora) {
   if (!ev || !CONOCIDOS.includes(ev.evento)) return estado;   // latido incluido
@@ -90,6 +90,13 @@ export function aplicarEvento(estado, ev, ahora) {
       e.estado = "liberado";
       e.runtime_ms = ev.runtime_ms || 0;
       e.resultado = ev.resultado || "ok";
+      break;
+    case "abismo":
+      // la consulta al abismo del turno de chat (spec del abismo, seccion
+      // 9): pondering | pescado | fallo. No es texto del razonamiento: el
+      // texto sigue llegando por `razonando`; esto es un estado al lado
+      e.abismo = {fase: ev.fase, fuente: ev.fuente};
+      if (ev.fase === "pondering") e.estado = "razonando";
       break;
     default:
       break;

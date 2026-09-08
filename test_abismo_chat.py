@@ -500,3 +500,12 @@ def test_el_steer_durante_el_stream_de_la_reentrada_deja_su_aviso(chat, monkeypa
     # el turno se persiste fusionado hasta donde llego, con el aviso del steer
     assert chat.mensajes()[1]["text"].startswith("a sigo y termino")
     assert chat.telemetria("chat_turn")[0]["abismo_consultas"] == 1
+
+
+def test_la_senal_del_abismo_se_publica_al_pulso(chat):
+    _sembrar_chat_viejo(["un libro"])
+    chat.modelo.guiones = [["a ⟦abismo:chats libro⟧"], ["b"]]
+    chat.turno("libro", departamento="dep:atlas")
+    eventos = [e for e in chat.pulso.desde(0)[1] if e["evento"] == "abismo"]
+    assert [(e["fase"], e["fuente"]) for e in eventos] == [("pondering", "chats"), ("pescado", "chats")]
+    assert all(e["agente_id"].startswith("chat:") and e["departamento"] == "dep:atlas" for e in eventos)

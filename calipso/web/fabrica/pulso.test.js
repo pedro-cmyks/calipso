@@ -122,6 +122,18 @@ test("el foco se guarda con su seq para que no vuele dos veces", () => {
   assert.deepEqual(e.foco, {departamento: "dep:atlas", seq: 7});
 });
 
+test("el abismo cuelga del escritorio del turno y lo deja razonando", () => {
+  const base = aplicarEvento(estadoInicial(), ev("inicio"), 5000);
+  const e = aplicarEvento(base, ev("abismo", {fase: "pondering", fuente: "chats"}, 2), 5001);
+  assert.notEqual(e, base);                        // ya no es un desconocido
+  const [empleado] = empleadosDe(e, "dep:atlas");
+  assert.deepEqual(empleado.abismo, {fase: "pondering", fuente: "chats"});
+  assert.equal(empleado.estado, "razonando");
+  const f = aplicarEvento(e, ev("abismo", {fase: "pescado", fuente: "chats", tamano: 12}, 3), 5002);
+  assert.deepEqual(empleadosDe(f, "dep:atlas")[0].abismo, {fase: "pescado", fuente: "chats"});
+  assert.equal(empleadosDe(f, "dep:atlas")[0].texto, "", "el abismo no es texto del razonamiento");
+});
+
 test("el latido y lo desconocido no rompen ni ensucian el estado", () => {
   const base = aplicarEvento(estadoInicial(), ev("inicio"), 5000);
   assert.equal(aplicarEvento(base, {evento: "latido", seq: 9}, 5001), base);

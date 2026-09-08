@@ -7569,6 +7569,11 @@ async def _pescar_abismo(ws, m, estado, *, destino: str, mapa,
     en su tope."""
     estado.consultas += 1
     await ws.send_json(abismo_turno.senal("pondering", m.fuente))
+    # la misma senal al pulso del mapa (spec seccion 9): la escena de la
+    # rebanada 3 la lee de ahi. Va con el `agente_id` del turno para colgar
+    # del escritorio que el `inicio` ya abrio
+    if EL_PULSO is not None and agente_id:
+        EL_PULSO.publicar(agente_id, "abismo", fase="pondering", fuente=m.fuente)
     inicio = time.perf_counter()
     motivo = ""
     motivo_telemetry = ""
@@ -7597,6 +7602,9 @@ async def _pescar_abismo(ws, m, estado, *, destino: str, mapa,
     ms = round((time.perf_counter() - inicio) * 1000)
     if motivo:
         await ws.send_json(abismo_turno.senal("fallo", m.fuente, motivo=motivo))
+        if EL_PULSO is not None and agente_id:
+            EL_PULSO.publicar(agente_id, "abismo", fase="fallo", fuente=m.fuente,
+                              motivo=motivo)
         telemetry.log_event("abismo", evento="consulta", fuente=m.fuente,
                             resultado="fallo", motivo=motivo_telemetry or motivo,
                             destino=destino, consultas=estado.consultas,
@@ -7608,6 +7616,12 @@ async def _pescar_abismo(ws, m, estado, *, destino: str, mapa,
                    "texto_tapado": v["texto"]})
     await ws.send_json(abismo_turno.senal("pescado", m.fuente,
                                           tamano=len(v["texto"]), viaje=viaje_info))
+    # al pulso va el tamano, nunca el bloque: el pulso es efimero pero se
+    # replica a todo cliente del mapa, y el bloque pescado no sale del turno
+    # (invariante 2)
+    if EL_PULSO is not None and agente_id:
+        EL_PULSO.publicar(agente_id, "abismo", fase="pescado", fuente=m.fuente,
+                          tamano=len(v["texto"]))
     telemetry.log_event("abismo", evento="consulta", fuente=m.fuente,
                         resultado="pescado", chars=len(v["texto"]), destino=destino,
                         tapados=len(v["tapados"]), consultas=estado.consultas,
