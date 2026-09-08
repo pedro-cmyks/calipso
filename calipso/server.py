@@ -2773,6 +2773,15 @@ def _HISTORY_TURNS_CONST():
 
 _HISTORY_TURNS = 12  # max mensajes del historial (6 intercambios)
 
+# `num_ctx` explicito en la llamada local del chat (spec del abismo,
+# seccion 4, presupuesto de contexto). El mismo valor que `_pensar_local`
+# y por la misma razon: Ollama trunca desde el COMIENZO del prompt, y con el
+# default (2048 en la mayoria de los builds) una reentrada con hasta tres
+# bloques del abismo mas el parcial dejaria de ver justo el system con el
+# contrato, en silencio. 8192 es holgura, no capacidad: cada token de
+# contexto cuesta RAM en la Ally.
+CHAT_NUM_CTX = 8192
+
 
 def _history_messages(chat_id: str | None, limit: int = _HISTORY_TURNS) -> list[dict]:
     """Ultimos N mensajes del chat como lista [{role, content}] para messages[].
@@ -2838,7 +2847,8 @@ def _chunks_for(route: str, system: str, user_msg: str, usage: dict,
     messages = [{"role": "system", "content": system}]
     messages.extend(history)
     messages.append({"role": "user", "content": user_msg})
-    payload = {"model": mdl, "messages": messages, "stream": True}
+    payload = {"model": mdl, "messages": messages, "stream": True,
+               "options": {"num_ctx": CHAT_NUM_CTX}}
     return dispatch._ollama_chat_chunks(cfg["base_url"], payload, usage), mdl
 
 def _subscription_invocation(client: str, system: str, user_msg: str,
