@@ -205,8 +205,10 @@
 - Cookie: `calipso_token`, httponly, `samesite=lax`.
 - Token de recuperacion: `~/.calipso/token`, o `CALIPSO_TOKEN`.
 - TOTP: secreto en `~/.calipso/totp_secret`.
-- `/setup`: muestra QR/URI la primera vez. Si el secreto ya existe, no vuelve a
-  mostrarlo.
+- `/setup`: muestra QR/URI la primera vez, y SOLO desde loopback con `?token=`
+  valido (capa de sesion, punto 1 del guard: servirlo es crear el secreto, y
+  una sesion remota se llevaba el segundo factor). Si el secreto ya existe, no
+  vuelve a mostrarlo.
 - `/login`: pide codigo TOTP de 6 digitos; si valida, setea la misma cookie de
   sesion.
 - El token viejo sigue funcionando como recuperacion con `?token=...`.
@@ -292,7 +294,9 @@ cookie queda. El ?token= sigue existiendo SOLO como recuperacion manual
 Luego, para TOTP:
 
 1. Entrar con el token de recuperacion.
-2. Abrir `/setup`.
+2. Abrir `/setup?token=<el token>` desde la propia maquina: mientras el secreto
+   no exista, esa ventana es la unica puerta (la cookie sola no alcanza, porque
+   loopback no prueba que sea Pedro).
 3. Escanear el QR con Microsoft Authenticator, Google Authenticator o similar.
 4. Desde entonces usar `/login` con el codigo de 6 digitos.
 

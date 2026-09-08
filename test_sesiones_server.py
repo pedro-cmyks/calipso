@@ -510,6 +510,38 @@ def test_setup_con_token_desde_afuera_no_regala_el_secreto(tmp_path,
     assert not (tmp_path / "totp_secret").exists()
 
 
+def test_setup_con_sesion_navegador_remota_no_regala_el_secreto(tmp_path,
+                                                                monkeypatch):
+    """El alcance `*` del navegador NO es una llave del segundo factor.
+    Servir /setup con el secreto ausente es crearlo y mostrarlo en claro, y
+    ese enrolamiento no se revoca: la sesion muere (invariante 9) y el
+    aparato sigue entrando por /login para siempre sin pasar por la Ally
+    (invariante 4). Mientras el secreto no exista, la ventana del punto 1 es
+    la UNICA puerta de /setup."""
+    monkeypatch.setattr(srv, "_TOTP_SECRET_FILE", tmp_path / "totp_secret")
+    r = _pedir(REMOTO, "GET", "/setup",
+               cookies={srv.COOKIE_SESION: _sesion("navegador")})
+    assert r.status_code == 303, r.text
+    assert r.headers["location"] == "/login"
+    assert "otpauth://" not in r.text
+    assert not (tmp_path / "totp_secret").exists()
+
+
+def test_setup_con_el_secreto_escrito_sigue_abierto_a_la_sesion(tmp_path,
+                                                                monkeypatch):
+    """La otra mitad: cerrada la ventana, la regla no le quita nada a nadie.
+    La pantalla de despues no muestra ni el QR ni el secreto, asi que el
+    navegador remoto la ve como cualquier otra ruta de su alcance."""
+    secreto = tmp_path / "totp_secret"
+    secreto.write_text("JBSWY3DPEHPK3PXP", encoding="utf-8")
+    monkeypatch.setattr(srv, "_TOTP_SECRET_FILE", secreto)
+    r = _pedir(REMOTO, "GET", "/setup",
+               cookies={srv.COOKIE_SESION: _sesion("navegador")})
+    assert r.status_code == 200, r.text
+    assert "otpauth://" not in r.text
+    assert "JBSWY3DPEHPK3PXP" not in r.text
+
+
 # --- el guard: la cookie de sesion que se usa no caduca ---------------------
 
 def test_la_sesion_usada_a_diario_renueva_su_cookie(monkeypatch):

@@ -454,6 +454,18 @@ async def auth_guard(request: Request, call_next):
         # secreto ya escrito la ventana se cierra sola y /setup vuelve al
         # camino normal (donde la pantalla ya no muestra nada).
         return await call_next(request)
+    if path == "/setup" and not _TOTP_SECRET_FILE.exists():
+        # Fuera de esa ventana, /setup no se sirve a NADIE mientras el
+        # secreto falte: servirlo es CREARLO (`_get_totp_secret` lo genera y
+        # lo escribe) y despues mostrarlo en claro. Sin esta linea, una
+        # sesion `navegador` -alcance `*`- se llevaba el segundo factor de
+        # Pedro desde otra maquina: la sesion se revoca (invariante 9), el
+        # enrolamiento del autenticador NO, y ese aparato entraria por
+        # /login para siempre sin pasar nunca por la Ally (invariante 4).
+        # Con el secreto ya escrito la regla no aplica: la pantalla de
+        # despues no muestra nada y sigue siendo una ruta como cualquier
+        # otra.
+        return _sin_credencial(path)
     if request.method == "POST" and path in _APARATOS_EXENTAS:
         # el alta de aparatos no puede exigir credencial -es como se
         # consigue la primera- y paga con su freno propio. Por METODO
