@@ -322,6 +322,33 @@ def test_listar_exige_credencial():
     assert fila["efectivo"] == "golpeando"
 
 
+def test_una_sesion_tablero_no_ve_la_lista_de_aparatos():
+    """El GET que consume la sub-pestana "Aparatos" de /fabrica: lo ven
+    loopback y una sesion `navegador`, no un `tablero`. Es lo que hace que la
+    UI, ante un 403, tenga que decir "solo desde la Ally o desde un
+    navegador" en vez de dibujar una lista vacia -- que se leeria como
+    "ningun aparato entro", que es otra cosa."""
+    _golpe()
+    r = _pedir(REMOTO, "GET", "/api/aparatos",
+               cookies={srv.COOKIE_SESION: _sesion("tablero")})
+    assert r.status_code == 403, r.text
+    assert r.json() == {"detail": "fuera del alcance del aparato"}
+
+
+def test_una_aprobacion_sin_canjear_figura_viva_y_sin_hash():
+    """La forma exacta que /fabrica muestra como "aprobado, esperando al
+    aparato": el hash nace en el CANJE, asi que entre el si de Pedro y la
+    primera entrada del aparato no hay con que revocar. Sin este contrato la
+    lista dibujaria un boton de revocar que solo puede dar 404."""
+    id_pedido = _golpe()
+    assert _local().post("/api/aparatos/aprobar",
+                         json={"id_pedido": id_pedido,
+                               "tipo": "lector"}).status_code == 200
+    fila = _local().get("/api/aparatos").json()["aparatos"][0]
+    assert fila["efectivo"] == "viva"
+    assert fila["hash_id"] is None
+
+
 def test_los_tres_exentos_lo_son_solo_por_POST():
     """La exencion es por path exacto Y metodo: el POST sin credencial entra
     y un GET a la misma ruta sigue el camino normal del guard."""

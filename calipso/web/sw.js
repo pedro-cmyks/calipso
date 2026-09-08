@@ -23,7 +23,8 @@ const SHELL = [
   "/static/fabrica/freno.js",
   "/static/fabrica/svg.js",
   "/static/fabrica/permisos.js",
-  "/static/fabrica/inbox.js"
+  "/static/fabrica/inbox.js",
+  "/static/fabrica/aparatos.js"
 ];
 
 self.addEventListener("install", event => {
