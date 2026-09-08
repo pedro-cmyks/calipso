@@ -441,7 +441,7 @@ def test_la_cookie_token_sigue_entrando_desde_loopback():
 
 # --- el guard: /login remoto crea sesion, no reparte el token ---------------
 
-def test_el_login_remoto_con_totp_deja_sesion_y_no_planta_el_token(monkeypatch):
+def test_el_login_remoto_deja_sesion_y_no_planta_el_token(monkeypatch):
     """La excepcion explicita del invariante 4: el TOTP es Pedro en persona.
     Lo que NO puede pasar es que se lleve el token (invariante 1)."""
     monkeypatch.setattr(srv, "_TOTP_DISABLED", False)
