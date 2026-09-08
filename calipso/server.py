@@ -380,6 +380,38 @@ def _aparatos_frenado(espera: float) -> JSONResponse:
                         headers={"Retry-After": str(int(espera) + 1)})
 
 
+# --- el tope del cuerpo en las rutas sin credencial
+# Golpear/estado/canjear y /login leen un body que manda cualquiera, y
+# uvicorn no limita el tamano: `await request.json()` era un cuerpo de GB
+# creciendo en memoria antes de que el freno se cobrara nada. 4 KB es
+# holgado -un golpe pesa menos de cien bytes, un login menos de veinte-.
+CUERPO_MAX_BYTES = 4096
+
+
+def _cuerpo_declarado_excede(request: Request) -> bool:
+    """El Content-Length, cuando viene: el rechazo mas barato, antes de leer
+    un solo byte. Un cliente que mienta (o mande chunked, sin cabecera) se
+    topa igual con el tope de `_leer_cuerpo_acotado`."""
+    largo = request.headers.get("content-length", "")
+    return largo.isdigit() and int(largo) > CUERPO_MAX_BYTES
+
+
+def _cuerpo_grande() -> JSONResponse:
+    return JSONResponse({"detail": "cuerpo demasiado grande"}, status_code=413)
+
+
+async def _leer_cuerpo_acotado(request: Request) -> bytes:
+    """El body entero, o 413 apenas pasa el tope: se lee por trozos y se
+    corta ahi, asi que lo que sobra nunca toca la memoria."""
+    cuerpo = bytearray()
+    async for trozo in request.stream():
+        cuerpo.extend(trozo)
+        if len(cuerpo) > CUERPO_MAX_BYTES:
+            raise HTTPException(status_code=413,
+                                detail="cuerpo demasiado grande")
+    return bytes(cuerpo)
+
+
 def _session_response(url: str = "/") -> RedirectResponse:
     resp = RedirectResponse(url=url, status_code=303)
     resp.set_cookie(COOKIE, TOKEN, httponly=True, samesite="lax",
@@ -475,6 +507,8 @@ async def auth_guard(request: Request, call_next):
     path = request.url.path
     host = request.client.host if request.client else ""
     if path == "/login":
+        if request.method == "POST" and _cuerpo_declarado_excede(request):
+            return _cuerpo_grande()
         return await call_next(request)
     if (path == "/setup" and _es_loopback(host)
             and not _TOTP_SECRET_FILE.exists()
@@ -506,6 +540,11 @@ async def auth_guard(request: Request, call_next):
         espera = _aparatos_espera(host)
         if espera > 0:
             return _aparatos_frenado(espera)
+        if _cuerpo_declarado_excede(request):
+            # pesa como un golpe mas: quien manda cuerpos asi no es un
+            # aparato esperando a Pedro
+            _aparatos_fallo(host)
+            return _cuerpo_grande()
         return await call_next(request)
     if (galleta_sesion := request.cookies.get(COOKIE_SESION)):
         # La credencial de un APARATO, y la unica que vale desde afuera. Va
@@ -791,7 +830,8 @@ async def login_submit(request: Request):
         return HTMLResponse(LOGIN_HTML.replace("{error}", error)
                             .replace("{totp_mode}", _login_mode_html(cliente)),
                             status_code=429)
-    body = (await request.body()).decode("utf-8", errors="ignore")
+    body = (await _leer_cuerpo_acotado(request)).decode("utf-8",
+                                                        errors="ignore")
     data = urllib.parse.parse_qs(body)
     code = data.get("code", [""])[0]
     if _totp_bypass_permitido(cliente) or _verify_totp(code):
@@ -844,10 +884,21 @@ def setup_page() -> HTMLResponse:
 async def _cuerpo_json(request: Request) -> dict:
     """El body como dict, o vacio si vino roto. Estas rutas las pega
     cualquiera sin credencial: un cuerpo basura tiene que morir en la
-    validacion del almacen -422 y un fallo contado- y no en un 500."""
+    validacion del almacen -422 y un fallo contado- y no en un 500.
+
+    Y un cuerpo que pase el tope muere en 413 sin leerse entero. El guard
+    ya rechazo el Content-Length declarado; aca cae el que vino chunked o
+    mintio la cabecera. En las rutas sin credencial cuenta como fallo del
+    freno; en aprobar/rechazar (la Ally) no, que el freno es del alta."""
     try:
-        datos = await request.json()
-    except Exception:
+        crudo = await _leer_cuerpo_acotado(request)
+    except HTTPException:
+        if request.url.path in _APARATOS_EXENTAS:
+            _aparatos_fallo(request.client.host if request.client else "")
+        raise
+    try:
+        datos = json.loads(crudo)
+    except ValueError:
         return {}
     return datos if isinstance(datos, dict) else {}
 

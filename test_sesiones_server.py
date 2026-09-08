@@ -236,6 +236,92 @@ def test_el_freno_del_login_no_frena_el_alta():
     assert sesiones.estado(_golpe()) == "golpeando"
 
 
+def _postear_chunked(ip: str, ruta: str, trozos: list[bytes]) -> httpx.Response:
+    """Un cuerpo por trozos, sin Content-Length: httpx lo manda con
+    Transfer-Encoding chunked, que es lo que un cliente hostil usa para que
+    el tamano no se sepa hasta haberlo leido entero."""
+    transporte = httpx.ASGITransport(app=srv.app, client=(ip, 4321))
+
+    async def _gen():
+        for trozo in trozos:
+            yield trozo
+
+    async def _ir():
+        async with httpx.AsyncClient(transport=transporte,
+                                     base_url="http://calipso") as c:
+            return await c.post(ruta, content=_gen(),
+                                headers={"Content-Type": "application/json"})
+
+    return asyncio.run(_ir())
+
+
+# --- el tope del cuerpo en las rutas sin credencial ------------------------
+#
+# Golpear/estado/canjear son la unica superficie NUEVA sin credencial de la
+# capa, y `await request.json()` leia lo que mandara cualquiera: uvicorn no
+# limita el body y el freno se cobraba recien despues de leerlo. Un host de
+# la red podia mandar cuerpos de GB y crecer la memoria del server. El tope
+# es CUERPO_MAX_BYTES (4 KB: un golpe pesa menos de cien bytes).
+
+def test_un_cuerpo_declarado_de_mas_de_4kb_en_golpear_es_413_y_cuenta():
+    grande = {"aparato": "Musnap", "tipo": "lector", "relleno": "a" * 5000}
+    r = _postear(REMOTO, "/api/aparatos/golpear", grande)
+    assert r.status_code == 413, r.text
+    assert r.json() == {"detail": "cuerpo demasiado grande"}
+    assert _fallos(f"aparatos:{REMOTO}") == 1     # pesa como un golpe mas
+    assert _fallos("aparatos:*") == 1
+    assert sesiones.listar() == []                # y no estaciono nada
+
+
+def test_un_cuerpo_chunked_de_mas_de_4kb_tambien_es_413_y_cuenta():
+    """Sin Content-Length el guard no puede mirar el tamano antes de leer:
+    el tope se aplica leyendo por trozos y cortando al pasarse, sin que el
+    resto del cuerpo toque la memoria."""
+    trozos = [b'{"id_pedido": "' + b"x" * 1500 + b'"'] + [b"," * 1500] * 4
+    r = _postear_chunked(REMOTO, "/api/aparatos/estado", trozos)
+    assert r.status_code == 413, r.text
+    assert _fallos(f"aparatos:{REMOTO}") == 1
+    r = _postear_chunked(REMOTO, "/api/aparatos/canjear", trozos)
+    assert r.status_code == 413, r.text
+    assert _fallos(f"aparatos:{REMOTO}") == 2
+
+
+def test_un_cuerpo_justo_bajo_el_tope_sigue_entrando():
+    """El tope no puede morder al aparato legitimo: un golpe con un cuerpo
+    holgado pero por debajo de los 4 KB se estaciona normal."""
+    holgado = {"aparato": "Musnap Neo C", "tipo": "lector",
+               "relleno": "a" * 3800}
+    r = _postear(REMOTO, "/api/aparatos/golpear", holgado)
+    assert r.status_code == 200, r.text
+    assert [s["aparato"] for s in sesiones.listar()] == ["Musnap Neo C"]
+
+
+def test_aprobar_con_un_cuerpo_gigante_es_413_sin_contar_fallo_del_alta():
+    """Las rutas con credencial comparten el tope (el helper es el mismo)
+    pero no el freno: un 413 desde la Ally no le cuenta un fallo al alta."""
+    grande = {"id_pedido": "x", "tipo": "lector", "relleno": "a" * 5000}
+    r = _local().post("/api/aparatos/aprobar", json=grande)
+    assert r.status_code == 413, r.text
+    assert _fallos("aparatos:testclient") == 0
+    assert _fallos("aparatos:*") == 0
+
+
+def test_el_login_tambien_tiene_tope_de_cuerpo():
+    """`login_submit` hacia `await request.body()` sin tope desde antes de
+    la rama; es la otra ruta sin credencial y se tapa con el mismo helper."""
+    transporte = httpx.ASGITransport(app=srv.app, client=(REMOTO, 4321))
+
+    async def _ir():
+        async with httpx.AsyncClient(transport=transporte,
+                                     base_url="http://calipso") as c:
+            return await c.post("/login", content=b"code=" + b"1" * 5000,
+                                headers={"Content-Type":
+                                         "application/x-www-form-urlencoded"})
+
+    r = asyncio.run(_ir())
+    assert r.status_code == 413, r.text
+
+
 # --- aprobar y rechazar: solo desde la Ally (invariante 4) -------------------
 
 def test_aprobar_desde_una_sesion_navegador_remota_es_403():
