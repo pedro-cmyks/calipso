@@ -473,9 +473,12 @@ function avisarEnPerillas(texto) {
 // se enchufen (calipso/permisos/motor.py), asi que el lugar donde se
 // contesta tambien tiene que ser uno solo.
 //
-// El badge de aca (junto a "Permisos") es lo que hace que Pedro se entere
-// SIN buscarlo: si algo queda esperando su respuesta mientras esta mirando
-// el chat o el mapa, el numero ya esta puesto cuando llegue.
+// El badge de aca (#badge-submesa, junto a "Permisos") es lo que hace que
+// Pedro se entere SIN buscarlo: si algo queda esperando su respuesta
+// mientras esta mirando el chat o el mapa, el numero ya esta puesto cuando
+// llegue. Desde la capa de sesion ese numero ya no es solo de permisos:
+// tambien cuenta los aparatos que estan golpeando la puerta (ver
+// pintarBadgeSubmesa mas abajo).
 //
 // La pestana global YA NO la pinta esta funcion: la pinta pintarInbox(),
 // con la cuenta de las CUATRO bandejas -que es superconjunto de esta sola.
@@ -661,7 +664,7 @@ function avisarEnAparatos(texto) {
 }
 
 cajaAparatos?.addEventListener("change", evento => {
-  const select = evento.target.closest?.("select[data-tipo-de]");
+  const select = evento.target.closest("select[data-tipo-de]");
   if (!select) return;
   // El alcance en grande tiene que describir lo que se va a aprobar, no lo
   // que sugirio el aparato. Sin esto, cambiar el tipo a "navegador" deja el
