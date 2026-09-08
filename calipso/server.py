@@ -87,6 +87,7 @@ except Exception:
 from calipso import prompt_compiler  # noqa: E402
 from calipso import routines as calipso_routines  # noqa: E402
 from calipso import backup as calipso_backup  # noqa: E402
+from calipso import sesiones  # noqa: E402
 from calipso import sessions  # noqa: E402
 from calipso import skills  # noqa: E402
 from calipso import telemetry  # noqa: E402
@@ -125,6 +126,14 @@ app = FastAPI(title="Calipso")
 # si no existe, se genera uno y se imprime en consola al arrancar.
 
 COOKIE = "calipso_token"
+
+# La cookie de la capa de sesion: identidad de APARATO, no de la
+# maquina. Es la unica credencial que vale desde afuera, y jamas
+# contiene ni deriva el TOKEN (invariante 1). El max_age espeja el
+# sueno de `sesiones.SESION_SUENO_DIAS`: una cookie que sobreviva a
+# la sesion solo consigue 401 al aparato.
+COOKIE_SESION = "calipso_sesion"
+SESION_COOKIE_MAX_AGE = 30 * 86400
 
 
 def _home_calipso() -> pathlib.Path:
@@ -330,6 +339,38 @@ def _login_exito(clave: str) -> None:
         _login_fallos.pop(clave, None)
 
 
+# --- freno propio del alta de aparatos (spec, invariante 6)
+# Golpear/estado/canjear entran SIN credencial (un aparato que todavia no
+# existe no tiene ninguna), asi que llevan freno igual que /login. La
+# maquinaria es la misma; las claves son otras a proposito: con el balde
+# compartido, veinte golpes anonimos dejaban a Pedro afuera de su propio
+# TOTP -- el DoS del login regalado a cualquiera que alcance el puerto.
+_APARATOS_EXENTAS = ("/api/aparatos/golpear", "/api/aparatos/estado",
+                     "/api/aparatos/canjear")
+
+
+def _aparatos_espera(host: str) -> float:
+    """Segundos de castigo que le quedan al alta desde ese host (0 = pasa)."""
+    return max(_login_espera(f"aparatos:{host}", _LOGIN_MAX_FALLOS_HOST),
+               _login_espera("aparatos:*", _LOGIN_MAX_FALLOS_GLOBAL))
+
+
+def _aparatos_fallo(host: str) -> None:
+    """Cuenta un golpe nuevo -tambien el que sale bien, para que quien
+    martilla se frene solo- y un estado/canje con un id desconocido. Sondear
+    un pedido VALIDO no pasa por aca: es el flujo feliz esperando a Pedro, y
+    cobrarselo mataria al aparato legitimo que sondea cada pocos segundos."""
+    _login_fallo(f"aparatos:{host}")
+    _login_fallo("aparatos:*")
+
+
+def _aparatos_frenado(espera: float) -> JSONResponse:
+    """El 429 del freno. No cuenta como fallo (no llego a intentar nada) y
+    dice cuando volver: el aparato legitimo que se paso reintenta solo."""
+    return JSONResponse({"detail": "demasiados intentos"}, status_code=429,
+                        headers={"Retry-After": str(int(espera) + 1)})
+
+
 def _session_response(url: str = "/") -> RedirectResponse:
     resp = RedirectResponse(url=url, status_code=303)
     resp.set_cookie(COOKIE, TOKEN, httponly=True, samesite="lax",
@@ -390,6 +431,15 @@ Usa <a href="/login">/login</a> para entrar con tu autenticador.</p></div></html
 async def auth_guard(request: Request, call_next):
     path = request.url.path
     if path == "/login":
+        return await call_next(request)
+    if request.method == "POST" and path in _APARATOS_EXENTAS:
+        # el alta de aparatos no puede exigir credencial -es como se
+        # consigue la primera- y paga con su freno propio. Por METODO
+        # ademas de por path: un GET a estas rutas sigue el camino normal.
+        espera = _aparatos_espera(
+            request.client.host if request.client else "")
+        if espera > 0:
+            return _aparatos_frenado(espera)
         return await call_next(request)
     if _valid(request.cookies.get(COOKIE)):
         return await call_next(request)
@@ -484,6 +534,150 @@ def setup_page() -> HTMLResponse:
         qr = '<p class=m>No esta instalado el generador de QR. Usa el enlace de abajo.</p>'
     html = SETUP_HTML.replace("{qr}", qr).replace("{uri}", uri)
     return HTMLResponse(html)
+
+
+# --------------------------------------------------------------------------
+# ALTA DE APARATOS: golpear -> Pedro aprueba -> canjear (capa de sesion)
+# --------------------------------------------------------------------------
+# Los tres primeros son los EXENTOS del guard y entran sin credencial. Los
+# otros viven detras del guard y ademas exigen la propia maquina: aprobar es
+# solo-loopback (invariante 4), asi que ninguna sesion consagra jamas a otra.
+
+
+async def _cuerpo_json(request: Request) -> dict:
+    """El body como dict, o vacio si vino roto. Estas rutas las pega
+    cualquiera sin credencial: un cuerpo basura tiene que morir en la
+    validacion del almacen -422 y un fallo contado- y no en un 500."""
+    try:
+        datos = await request.json()
+    except Exception:
+        return {}
+    return datos if isinstance(datos, dict) else {}
+
+
+def _id_pedido(cuerpo: dict) -> str:
+    """El id de pedido viaja SIEMPRE por el body, nunca por el path: el
+    access log ve el path. Lo que no sea texto es un id desconocido como
+    cualquier otro, no un 500."""
+    valor = cuerpo.get("id_pedido")
+    return valor if isinstance(valor, str) else ""
+
+
+def _solo_la_ally(host: str) -> None:
+    """Invariante 4: la aprobacion se firma en la maquina, no por la red.
+    Rechazar comparte el mensaje porque comparte la razon."""
+    if not _es_loopback(host):
+        raise HTTPException(status_code=403,
+                            detail="aprobar es solo desde la Ally")
+
+
+@app.post("/api/aparatos/golpear")
+async def aparatos_golpear(request: Request):
+    """El aparato se anuncia y queda esperando. El fallo se cuenta ANTES de
+    mirar el pedido: golpe valido, tipo basura o cuerpo roto pesan igual,
+    que es lo que hace que martillar esta ruta se frene solo."""
+    host = request.client.host if request.client else ""
+    cuerpo = await _cuerpo_json(request)
+    _aparatos_fallo(host)
+    try:
+        return await asyncio.to_thread(sesiones.golpear,
+                                       cuerpo.get("aparato"),
+                                       cuerpo.get("tipo"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except sesiones.Lleno as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+
+
+@app.post("/api/aparatos/estado")
+async def aparatos_estado(request: Request):
+    """El sondeo del aparato mientras espera a Pedro. `sesiones.estado` no
+    toma el candado (lee por cache de stat), asi que no necesita hilo."""
+    host = request.client.host if request.client else ""
+    cuerpo = await _cuerpo_json(request)
+    situacion = sesiones.estado(_id_pedido(cuerpo))
+    if situacion is None:
+        _aparatos_fallo(host)
+        raise HTTPException(status_code=404, detail="pedido desconocido")
+    return {"estado": situacion}
+
+
+@app.post("/api/aparatos/canjear")
+async def aparatos_canjear(request: Request):
+    """El id de sesion nace aca y se entrega UNA sola vez, en la cookie
+    (invariante 8). Un segundo canje encuentra el id_pedido quemado."""
+    host = request.client.host if request.client else ""
+    cuerpo = await _cuerpo_json(request)
+    id_sesion = await asyncio.to_thread(sesiones.canjear, _id_pedido(cuerpo))
+    if id_sesion is None:
+        _aparatos_fallo(host)
+        raise HTTPException(status_code=404, detail="pedido desconocido")
+    # el tipo lo eligio Pedro al aprobar y el aparato necesita saber con que
+    # alcance quedo; el canje devuelve el id pelado, asi que se relee. None
+    # solo si alguien revoco entre estas dos lineas: la cookie sale igual y
+    # el proximo request la encuentra muerta, que es lo correcto.
+    registro = await asyncio.to_thread(sesiones.resolver, id_sesion)
+    resp = JSONResponse({"ok": True,
+                         "tipo": registro.get("tipo") if registro else None})
+    resp.set_cookie(COOKIE_SESION, id_sesion, httponly=True, samesite="lax",
+                    max_age=SESION_COOKIE_MAX_AGE)
+    return resp
+
+
+@app.post("/api/aparatos/aprobar")
+async def aparatos_aprobar(request: Request):
+    """Pedro dice que si y elige el tipo (el sugerido por el aparato ni se
+    mira). El 404 no repite el id_pedido: es la credencial del canje."""
+    _solo_la_ally(request.client.host if request.client else "")
+    cuerpo = await _cuerpo_json(request)
+    try:
+        await asyncio.to_thread(sesiones.aprobar, _id_pedido(cuerpo),
+                                cuerpo.get("tipo"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="no hay un golpe vigente")
+    return {"ok": True}
+
+
+@app.post("/api/aparatos/rechazar")
+async def aparatos_rechazar(request: Request):
+    """Sin marcha atras: el aparato rechazado vuelve a golpear."""
+    _solo_la_ally(request.client.host if request.client else "")
+    cuerpo = await _cuerpo_json(request)
+    try:
+        await asyncio.to_thread(sesiones.rechazar, _id_pedido(cuerpo))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="pedido desconocido")
+    return {"ok": True}
+
+
+@app.get("/api/aparatos")
+def aparatos_listar():
+    """Lo que muestra /fabrica, con el estado EFECTIVO del reloj (una sesion
+    dormida ya figura muerta sin esperar a que alguien la resuelva).
+    Sincrono a proposito: `listar` lee disco y el threadpool lo saca del
+    event loop."""
+    return {"aparatos": sesiones.listar()}
+
+
+@app.post("/api/aparatos/{hash_id}/revocar")
+async def aparatos_revocar(hash_id: str, request: Request):
+    """El hash SI viaja por el path: no es una credencial (el id en claro
+    jamas toca el disco). Loopback o una sesion `navegador` -- el lector y
+    el tablero no revocan. `request.state.sesion` lo va a poblar el guard de
+    la capa siguiente; hasta entonces solo entra por loopback."""
+    host = request.client.host if request.client else ""
+    ses = getattr(request.state, "sesion", None)
+    if not (_es_loopback(host) or (ses and ses.get("tipo") == "navegador")):
+        raise HTTPException(
+            status_code=403,
+            detail="revocar es solo desde la Ally o un navegador")
+    try:
+        await asyncio.to_thread(sesiones.revocar, hash_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="no hay una sesion viva")
+    return {"ok": True}
 
 
 # Defensa en profundidad de _safe (revision de seguridad 2026-09-07, C2):
