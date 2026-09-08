@@ -561,6 +561,32 @@ def test_el_login_remoto_fallido_no_crea_nada(monkeypatch):
     assert sesiones.listar() == []
 
 
+def test_el_login_no_da_a_luz_el_secreto_totp(tmp_path, monkeypatch):
+    """El secreto nace SOLO en la ventana del punto 1 (/setup?token= desde
+    loopback). Antes, `_verify_totp` llamaba a `_get_totp_secret`, que lo
+    GENERA si falta: cualquier POST /login con seis digitos -de un remoto
+    anonimo, de un flatpak, de otro uid- escribia el secreto sin que nadie
+    viera el QR, la condicion "no existe totp_secret" dejaba de cumplirse y
+    /setup?token= le mostraba a Pedro "ya esta configurado". Enrolamiento
+    brickeado hasta borrar el archivo a mano.
+
+    Sin parchear `_verify_totp`: lo que se prueba es justamente lo que hace
+    con el archivo ausente."""
+    monkeypatch.setattr(srv, "_TOTP_DISABLED", False)
+    secreto = tmp_path / "totp_secret"
+    monkeypatch.setattr(srv, "_TOTP_SECRET_FILE", secreto)
+    assert _login(REMOTO, "123456").status_code == 401
+    assert not secreto.exists(), "un remoto anonimo creo el secreto TOTP"
+    # loopback tampoco: no es Pedro (flatpaks, otros uid)
+    assert _login("127.0.0.1", "123456").status_code == 401
+    assert not secreto.exists(), "un login local sin secreto lo creo"
+    # y la ventana del primer arranque sigue abierta para Pedro
+    r = _pedir("127.0.0.1", "GET", f"/setup?token={srv.TOKEN}")
+    assert r.status_code == 200, r.text
+    assert "otpauth://" in r.text
+    assert secreto.exists()
+
+
 # --- el guard: /setup endurecido (punto 1) ---------------------------------
 
 def test_setup_sin_token_redirige_aunque_no_haya_totp_secret(tmp_path,

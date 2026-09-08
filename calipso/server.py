@@ -240,6 +240,15 @@ def _verify_totp(code: str, valid_window: int = 1) -> bool:
     clean = "".join(ch for ch in code if ch.isdigit())
     if len(clean) != 6:
         return False
+    if not _TOTP_SECRET_FILE.exists():
+        # Sin secreto no hay codigo que valga, y CREARLO no es cosa de esta
+        # funcion. `_get_totp_secret` lo genera cuando falta, y /login entra
+        # sin guard: cualquier POST con seis digitos -un remoto anonimo, un
+        # flatpak, otro uid- daba a luz el secreto sin que nadie viera el
+        # QR, y la ventana del punto 1 del guard ("no existe totp_secret")
+        # se cerraba para siempre con un secreto que Pedro nunca enrolo. El
+        # unico lugar que lo crea es `setup_page`, detras de esa ventana.
+        return False
     secret = _get_totp_secret()
     now = int(time.time() // 30)
     return any(
