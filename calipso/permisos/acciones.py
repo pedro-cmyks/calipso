@@ -378,8 +378,9 @@ def _clasificar_archivo(a: Accion, techos: dict) -> Veredicto:
     p = _resolver(ruta)
     if es_credencial_del_servidor(p):
         return Veredicto(NIVEL_NUNCA,
-                         "es la credencial del propio servidor de Calipso "
-                         "(5.7): no hay prompt, hay negativa")
+                         "es el NUNCA de 5.7 (la credencial del propio "
+                         "servidor de Calipso, o su almacen de sesiones): "
+                         "no hay prompt, hay negativa")
     if es_credencial_de_pedro(p):
         return Veredicto(NIVEL_PREGUNTA,
                          f"credencial de Pedro: {p}", True)
