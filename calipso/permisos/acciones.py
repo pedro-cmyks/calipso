@@ -10,7 +10,8 @@ Tres niveles:
 
   directo   pasa sin preguntar, y queda escrito
   pregunta  pasa cuando Pedro dice que si, ahi mismo, con el texto exacto
-  nunca     no hay prompt, hay negativa (5.7: token y totp_secret)
+  nunca     no hay prompt, hay negativa (5.7: token, totp_secret y el
+            almacen de sesiones)
 
 Y una marca aparte, `siempre_pregunta`, que es la de 5.4: hay acciones que
 preguntan CADA VEZ aunque Pedro haya dado permiso permanente para el
@@ -162,7 +163,7 @@ def calipso_home() -> pathlib.Path:
 # 5.7 -- credenciales
 # --------------------------------------------------------------------------
 
-# Los dos unicos NUNCA de todo el spec, y no son una carpeta de Pedro: son
+# Los unicos NUNCA de todo el spec, y no son una carpeta de Pedro: son
 # la credencial del propio servidor. Un agente que lee ~/.calipso/token
 # llama a la API de Calipso como si fuera Pedro (auth_guard acepta
 # ?token=) y desde ahi se concede a si mismo todos los permisos de esta
@@ -170,7 +171,12 @@ def calipso_home() -> pathlib.Path:
 # registro. Un prompt no alcanza, porque el punto entero es que el modelo
 # no puede ser quien conteste. Aca se niega cualquier operacion sobre
 # ellos -- no solo leer: escribirlos tambien seria fabricar la credencial.
-NOMBRES_CREDENCIAL_DEL_SERVIDOR = ("token", "totp_secret")
+# `sesiones.json` esta por lo mismo aunque solo guarde hashes (invariante 7
+# de la capa de sesion): escribirlo es plantar el sha256 de un id elegido
+# por el agente y salir con una sesion viva sin pasar por Pedro, y leerlo
+# entrega los id_pedido pendientes.
+# Solo el nombre exacto: los `sesiones.json.corrupto-<ts>` llevan hashes.
+NOMBRES_CREDENCIAL_DEL_SERVIDOR = ("token", "totp_secret", "sesiones.json")
 
 # Credenciales de PEDRO. No estan prohibidas: son nivel pregunta, y el
 # prompt las nombra y dice que son. Lo que no admiten es permiso
@@ -200,9 +206,9 @@ def _dentro_de(hijo: pathlib.Path, padre: pathlib.Path) -> bool:
 
 
 def es_credencial_del_servidor(ruta) -> bool:
-    """Las rutas exactas del token/totp_secret Y todo backups/: un zip de
-    backup viejo contiene ambos secretos adentro, y matchear solo las rutas
-    exactas dejaba a un agente pedir POST /api/backup y leer el zip -- la
+    """Las rutas exactas de NOMBRES_CREDENCIAL_DEL_SERVIDOR Y todo backups/:
+    un zip de backup viejo contiene los secretos adentro, y matchear solo las
+    rutas exactas dejaba a un agente pedir POST /api/backup y leer el zip -- la
     credencial por la puerta de al lado (revision de seguridad 2026-09-07,
     C6). Los backups nuevos ya no llevan secretos, pero los viejos existen
     y un agente no tiene por que leer backups jamas."""

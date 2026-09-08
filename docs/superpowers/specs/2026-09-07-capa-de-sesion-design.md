@@ -74,6 +74,13 @@ Orden en `auth_guard` (anclas por simbolo; las lineas se corren):
 
 Al aterrizar la capa: (1) las cookies-token remotas viejas mueren solas (paso 4 las expira); (2) **rotar el TOKEN es parte del despliegue** (las viejas quedaron un anio en navegadores); (3) la PWA remota existente hace `/login`+TOTP una vez y queda como sesion `navegador`.
 
+**Despliegue de la fase 1** (el orden importa: el paso 2 corta a los remotos, el 3 los vuelve a dar de alta):
+
+1. Reiniciar el server con el codigo nuevo.
+2. **Rotar el TOKEN:** borrar `~/.calipso/token` y reiniciar -- `_load_token` (server.py) genera y guarda uno nuevo cuando el archivo no existe. Es obligatorio y no opcional: el paso 4 del guard expira la cookie-token vieja recien cuando ese navegador VUELVE, y las que se repartieron duraron un anio. (Si `CALIPSO_TOKEN` esta exportado en el entorno del server, gana sobre el archivo: rotar ahi tambien, o borrarla.)
+3. La PWA remota hace `/login` + TOTP una vez y queda como sesion `navegador` (paso 5 del guard). No hay que golpear ni aprobar nada para eso.
+4. Tauri y la Ally no cambian: son loopback y siguen con el token (rotado) como hasta hoy.
+
 ## 4. Invariantes
 
 1. **El TOKEN jamas viaja a un aparato remoto**; una sesion no contiene ni deriva el token.
