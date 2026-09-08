@@ -14,6 +14,8 @@ economia bajo candado y catastro no son lo que se prueba aca), pero
 from __future__ import annotations
 
 import json
+import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -187,3 +189,237 @@ def test_la_llamada_local_del_chat_fija_num_ctx(chat):
     assert payload["options"]["num_ctx"] == srv.CHAT_NUM_CTX == 8192
     assert payload["messages"][0]["role"] == "system"
     assert payload["messages"][-1] == {"role": "user", "content": "hola"}
+
+
+def _sembrar_chat_viejo(textos):
+    """Otra conversacion, mas vieja, que la fuente `chats` puede pescar."""
+    viejo = chats.create(str(srv.ROOT), "lecturas")
+    for t in textos:
+        chats.append(viejo["id"], "user", t)
+    return viejo["id"]
+
+
+def test_una_marca_valida_corta_pesca_y_la_continuacion_sigue_en_la_misma_burbuja(chat):
+    _sembrar_chat_viejo(["empece El nombre de la rosa, es un libro alucinante"])
+    # historial previo del MISMO chat: la reentrada tiene que llevarlo, y
+    # sin el parcial (que todavia no se persistio); con un chat vacio la
+    # asercion del historial seria vacua
+    chats.append(chat.chat_id, "user", "hola")
+    chats.append(chat.chat_id, "assistant", "hola Pedro")
+    chat.modelo.guiones = [["Dejame ver ", "⟦abismo:chats libro⟧", " esto no se ve"],
+                           ["y sigo ", "con contexto"]]
+    eventos = chat.turno("que libro lei")
+    tipos = [e["type"] for e in eventos]
+    # la senal, con cierre
+    abismo = de_tipo(eventos, "abismo")
+    assert [a["fase"] for a in abismo] == ["pondering", "pescado"]
+    assert abismo[0]["fuente"] == "chats" and abismo[0]["verbo"] == "buscando en tus chats"
+    assert abismo[1]["tamano"] > 0 and abismo[1]["viaje"] == {"destino": "local"}
+    # la marca no llega a Pedro, lo posterior a la marca se descarta y la
+    # continuacion sigue sin cerrar la burbuja: un solo thinking, un solo done
+    assert texto_visible(eventos) == "Dejame ver y sigo con contexto"
+    assert tipos.count("done") == 1 and tipos.count("thinking") == 1
+    assert tipos.index("abismo") > tipos.index("thinking")
+    # dos invocaciones al modelo: la reentrada lleva el bloque como append del
+    # system base, el "venias diciendo" en el mensaje, num_ctx fijado y el
+    # historial SIN el parcial (que todavia no se persistio)
+    assert len(chat.modelo.llamadas) == 2
+    primera, segunda = chat.modelo.llamadas
+    assert segunda["options"]["num_ctx"] == srv.CHAT_NUM_CTX
+    system2 = segunda["messages"][0]["content"]
+    assert system2.startswith(primera["messages"][0]["content"])
+    assert "=== Lo que subio del abismo (fuente: chats) ===" in system2
+    assert "El nombre de la rosa" in system2
+    usuario2 = segunda["messages"][-1]["content"]
+    assert usuario2.startswith("que libro lei")
+    assert "Venias diciendo: Dejame ver " in usuario2
+    # el historial normal viaja (`_history_messages` descarta solo el ultimo
+    # mensaje, el de Pedro) y el parcial NO va como mensaje assistant: su
+    # unica via es el "venias diciendo"
+    assert segunda["messages"][1:3] == [{"role": "user", "content": "hola"},
+                                        {"role": "assistant", "content": "hola Pedro"}]
+    assert "Dejame ver" not in json.dumps(segunda["messages"][:-1])
+    # persistencia fusionada: un solo par user/assistant nuevo, ya filtrado,
+    # sin marca ni bloque; la memoria recuerda una sola vez
+    assert [(m["role"], m["text"]) for m in chat.mensajes()] == [
+        ("user", "hola"), ("assistant", "hola Pedro"),
+        ("user", "que libro lei"), ("assistant", "Dejame ver y sigo con contexto")]
+    crudo = (chat.tmp / "chats.json").read_text(encoding="utf-8")
+    assert "⟦" not in crudo and "Lo que subio" not in crudo
+    assert len(chat.memoria.recordado) == 1 and "⟦" not in chat.memoria.recordado[0]
+    filas = chat.telemetria("abismo")
+    assert [f["evento"] for f in filas] == ["consulta"]
+    assert filas[0]["resultado"] == "pescado" and filas[0]["destino"] == "local"
+
+
+def test_la_pasada_sintetica_no_repite_nada_del_turno(chat, monkeypatch):
+    """Los catorce salteos del spec, medidos: meta, cost, chat/updated,
+    thinking y done salen una vez; el pulso abre y cierra un solo escritorio;
+    chat_turn se escribe una vez y cuenta la consulta; y los cuatro que el
+    fixture patchea sin contar (_decide, goals.detect, _sistema_del_turno,
+    _cobrar_turno) corren UNA vez: si una regresion los moviera adentro del
+    bucle exterior, esto lo ve (todos se resuelven como globales del modulo
+    en el momento de la llamada, asi que el monkeypatch alcanza)."""
+    llamadas = {"decide": 0, "goals": 0, "system": 0, "cobro": 0}
+
+    def decide(*a, **k):
+        llamadas["decide"] += 1
+        return _decide_local(*a, **k)
+    monkeypatch.setattr(srv, "_decide", decide)
+    monkeypatch.setattr(srv.goals, "detect",
+                        lambda texto: llamadas.__setitem__("goals", llamadas["goals"] + 1))
+    sistema_real = srv._sistema_del_turno
+
+    def sistema(*a, **k):
+        llamadas["system"] += 1
+        return sistema_real(*a, **k)
+    monkeypatch.setattr(srv, "_sistema_del_turno", sistema)
+    cobrar_real = srv._cobrar_turno
+
+    def cobrar(*a, **k):
+        llamadas["cobro"] += 1
+        return cobrar_real(*a, **k)
+    monkeypatch.setattr(srv, "_cobrar_turno", cobrar)
+    _sembrar_chat_viejo(["un libro"])
+    chat.modelo.guiones = [["a ⟦abismo:chats libro⟧"], ["b"]]
+    eventos = chat.turno("libro")
+    tipos = [e["type"] for e in eventos]
+    for tipo in ("thinking", "meta", "cost", "done"):
+        assert tipos.count(tipo) == 1, tipo
+    assert len([e for e in eventos if e["type"] == "chat" and e.get("action") == "updated"]) == 1
+    pulso = [e["evento"] for e in chat.pulso.desde(0)[1]]
+    assert pulso.count("inicio") == 1 and pulso.count("fin") == 1
+    turnos = chat.telemetria("chat_turn")
+    assert len(turnos) == 1 and turnos[0]["abismo_consultas"] == 1
+    assert llamadas == {"decide": 1, "goals": 1, "system": 1, "cobro": 1}
+
+
+def test_el_tope_de_tres_consultas_por_turno(chat):
+    _sembrar_chat_viejo(["un libro"])
+    chat.modelo.guiones = [["a ⟦abismo:chats libro⟧"], ["b ⟦abismo:chats libro⟧"],
+                           ["c ⟦abismo:chats libro⟧"], ["d ⟦abismo:chats libro⟧ e"]]
+    eventos = chat.turno("libros")
+    fases = [a["fase"] for a in de_tipo(eventos, "abismo")]
+    assert fases == ["pondering", "pescado"] * 3
+    # la cuarta marca no corta: se retira con aviso y el texto posterior vale
+    assert texto_visible(eventos) == "a b c d  e"
+    assert len(chat.modelo.llamadas) == 4
+    retiradas = [f for f in chat.telemetria("abismo") if f["evento"] == "retirada"]
+    assert [f["clase"] for f in retiradas] == ["sin_corte"]
+    assert chat.telemetria("chat_turn")[0]["abismo_consultas"] == 3
+    # invariante 8: un mensaje real de Pedro resetea el contador, y el turno
+    # siguiente vuelve a poder consultar
+    chat.modelo.guiones = [["z ⟦abismo:chats libro⟧"], ["w"]]
+    chat.modelo.llamadas.clear()      # el espia elige el guion por el indice global
+    eventos = chat.turno("otra vez")
+    assert [a["fase"] for a in de_tipo(eventos, "abismo")] == ["pondering", "pescado"]
+    assert texto_visible(eventos) == "z w"
+    assert chat.telemetria("chat_turn")[-1]["abismo_consultas"] == 1
+
+
+def test_la_pesca_vacia_es_fallo_y_la_reentrada_sigue_sin_bloque(chat):
+    chat.modelo.guiones = [["Dejame ver ", "⟦abismo:chats zzzz⟧ nada"], ["y sigo"]]
+    eventos = chat.turno("hola")
+    abismo = de_tipo(eventos, "abismo")
+    assert [a["fase"] for a in abismo] == ["pondering", "fallo"]
+    assert abismo[1]["motivo"] == "vacio"
+    assert texto_visible(eventos) == "Dejame ver y sigo"
+    assert len(chat.modelo.llamadas) == 2
+    assert "Lo que subio" not in chat.modelo.llamadas[1]["messages"][0]["content"]
+    assert "Venias diciendo: Dejame ver " in chat.modelo.llamadas[1]["messages"][-1]["content"]
+
+
+def test_una_consulta_que_revienta_degrada_a_seguir_sin_contexto(chat, monkeypatch):
+    def bomba(m, **kw):
+        raise RuntimeError("chroma caido")
+    monkeypatch.setattr(srv.abismo_consulta, "resolver", bomba)
+    chat.modelo.guiones = [["a ⟦abismo:memoria que leo⟧"], ["b"]]
+    eventos = chat.turno("hola")
+    abismo = de_tipo(eventos, "abismo")
+    assert [a["fase"] for a in abismo] == ["pondering", "fallo"]
+    assert abismo[1]["motivo"] == "error"
+    assert texto_visible(eventos) == "a b"
+    assert [e["type"] for e in eventos].count("done") == 1
+    assert chat.telemetria("abismo")[0]["motivo"] == "error"
+
+
+def test_una_marca_ilegible_se_retira_sin_cortar(chat):
+    chat.modelo.guiones = [["hola ⟦abismo:memorai que dije⟧ sigo"]]
+    eventos = chat.turno("hola")
+    assert texto_visible(eventos) == "hola  sigo"
+    assert de_tipo(eventos, "abismo") == [] and len(chat.modelo.llamadas) == 1
+    assert [f["clase"] for f in chat.telemetria("abismo")] == ["ilegible"]
+
+
+def test_una_marca_abierta_al_fin_del_stream_no_se_vuelca(chat):
+    chat.modelo.guiones = [["termino asi ", "⟦abismo:chats sin cie"]]
+    eventos = chat.turno("hola")
+    assert texto_visible(eventos) == "termino asi "
+    assert chat.mensajes()[-1]["text"] == "termino asi"
+    assert [f["clase"] for f in chat.telemetria("abismo")] == ["abierta"]
+
+
+def test_la_zona_y_el_consolidado_los_pone_el_server(chat, monkeypatch):
+    """La frontera del consolidado del libro personal (spec seccion 6): solo
+    llega a la fuente en un chat de zona personal, y la zona sale del prefijo
+    de la cuenta del edificio tocado. Sin edificio: fabrica."""
+    eco = chat.tmp / ".calipso" / "economia"
+    eco.mkdir(parents=True)
+    (eco / "personal.jsonl").write_text(json.dumps({
+        "ts": "2026-09-01T10:00:00", "semana": "2026-W36", "tipo": "ingreso",
+        "monto_mm": 1000, "categoria": "sueldo", "nota": ""}) + "\n", encoding="utf-8")
+    visto = []
+
+    def espia(m, **kw):
+        visto.append((kw["zona_chat"], kw["consolidado"]))
+        return {"estado": "fallo", "fuente": m.fuente, "texto": "", "bloques": [],
+                "aviso": "la consulta no trajo nada"}
+    monkeypatch.setattr(srv.abismo_consulta, "resolver", espia)
+    for dep in ("personal:finanzas", "dep:atlas", None):
+        chat.modelo.guiones = [["a ⟦abismo:memoria plata⟧"], ["b"]]
+        chat.modelo.llamadas.clear()      # el espia elige el guion por el indice global
+        chat.turno("hola", departamento=dep)
+    assert visto == [("personal", "ingresos 1000 mm, gastos 0 mm, neto 1000 mm"),
+                     ("fabrica", None), ("fabrica", None)]
+
+
+def test_el_steer_de_pedro_gana_durante_la_pesca(chat, monkeypatch):
+    """La carrera del spec (seccion 10): un steer que llega mientras se pesca
+    aborta la consulta (sin reentrada, aviso en telemetry) y se procesa como
+    hoy: es el turno siguiente. El steer viaja como texto crudo, como lo manda
+    `planSend` de la PWA (el steer JSON de `send()` es una rareza previa que
+    este plan no toca)."""
+    visto, liberar = threading.Event(), threading.Event()
+
+    def pesca_lenta(m, **kw):
+        visto.set()
+        liberar.wait(10)
+        return {"estado": "pescado", "fuente": m.fuente, "texto": "=== bloque ===",
+                "bloques": [("un bloque", 2)], "aviso": ""}
+    monkeypatch.setattr(srv.abismo_consulta, "resolver", pesca_lenta)
+    chat.modelo.guiones = [["Dejame ver ", "⟦abismo:chats libro⟧"], ["respuesta al steer"]]
+    with chat.cliente.websocket_connect("/ws/chat") as ws:
+        ws.send_text(chat.paquete("que libro lei"))
+        assert visto.wait(10), "la pesca no arranco"
+        ws.send_text("otra cosa")
+        time.sleep(0.5)          # que el receptor lo deje en el inbox antes de soltar la pesca
+        liberar.set()
+        eventos = chat.recibir(ws, hasta_dones=2)
+    tipos = [e["type"] for e in eventos]
+    assert "steered" in tipos and tipos.count("done") == 2
+    # la senal cerro en `fallo` (spec seccion 10: bloque descartado, fase
+    # fallo, aviso): la pesca termino en su hilo, `_pescar_abismo` vio el
+    # steer en el inbox y no dio `pescado`; MOTIVOS es cerrada, el motivo
+    # de la senal es `error` y el de telemetry, `abortada_por_steer`
+    assert [a["fase"] for a in de_tipo(eventos, "abismo")] == ["pondering", "fallo"]
+    assert de_tipo(eventos, "abismo")[1]["motivo"] == "error"
+    assert tipos.index("steered") > tipos.index("abismo")
+    # la consulta se aborto: sin reentrada; el steer fue el turno siguiente
+    assert len(chat.modelo.llamadas) == 2
+    assert chat.modelo.llamadas[1]["messages"][-1]["content"] == "otra cosa"
+    assert "Venias diciendo" not in json.dumps(chat.modelo.llamadas)
+    filas = chat.telemetria("abismo")
+    assert [f["evento"] for f in filas] == ["consulta", "abortada_por_steer"]
+    assert filas[0]["motivo"] == "abortada_por_steer" and filas[1]["momento"] == "pesca"
+    roles = [(m["role"], m["text"].split(" ")[0]) for m in chat.mensajes()]
+    assert roles == [("user", "que"), ("assistant", "Dejame"), ("user", "otra"), ("assistant", "respuesta")]
