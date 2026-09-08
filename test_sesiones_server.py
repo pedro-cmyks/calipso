@@ -19,6 +19,7 @@ websockets van por el otro camino -`websocket_connect` no es un request de
 httpx-: ahi el host remoto se pone en `TestClient(..., client=(ip, puerto))`.
 """
 import asyncio
+import threading
 import time
 
 import httpx
@@ -28,6 +29,7 @@ from starlette.websockets import WebSocketDisconnect
 
 import calipso.server as srv
 from calipso import sesiones
+from calipso.mapa import pulso
 
 REMOTO = "192.168.1.66"
 
@@ -49,6 +51,15 @@ def _freno_limpio():
     yield
     with srv._login_lock:
         srv._login_fallos.clear()
+
+
+@pytest.fixture(autouse=True)
+def _generaciones_limpias():
+    """El registro del corte en vivo es estado de modulo, como los contadores
+    del freno: un hash revocado en un test no puede llegar al siguiente."""
+    srv._ws_generaciones.clear()
+    yield
+    srv._ws_generaciones.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -732,3 +743,99 @@ def test_una_sesion_revocada_no_abre_un_ws_nuevo():
     sesiones.revocar(_hash_de("Aparato de prueba"))
     _rebota(c, "/ws/chat")
     _rebota(c, "/ws/mapa")
+
+
+# --- el corte en vivo de los ws (spec seccion 3, "Corte de WS vivos") -------
+
+def _cierre_del_ws(ws, plazo: float = 5.0) -> int:
+    """El codigo con el que el SERVIDOR cerro el socket, esperando `plazo`
+    como mucho.
+
+    En un hilo aparte porque `receive_json` del TestClient no acepta timeout:
+    si el corte no llega, un test que tiene que fallar colgaria la suite
+    entera en vez de fallar."""
+    caidas: list[BaseException] = []
+
+    def _leer() -> None:
+        try:
+            ws.receive_json()
+        except BaseException as exc:      # se re-mira afuera del hilo
+            caidas.append(exc)
+
+    hilo = threading.Thread(target=_leer, daemon=True)
+    hilo.start()
+    hilo.join(plazo)
+    assert caidas, f"el ws seguia abierto {plazo} s despues de la revocacion"
+    assert isinstance(caidas[0], WebSocketDisconnect), repr(caidas[0])
+    return caidas[0].code
+
+
+def test_revocar_corta_el_ws_del_chat_aunque_este_ocioso(monkeypatch):
+    """El agujero que quedaba abierto: revocar frenaba los handshakes NUEVOS
+    y el socket que ya estaba adentro seguia hablando. Ocioso es el caso
+    dificil -- nadie escribe, asi que el corte solo puede venir del latido.
+
+    Revoca por la ruta http de verdad: lo que se prueba aca es que el hook
+    este enganchado al endpoint, no que el registro sepa contar."""
+    monkeypatch.setattr(srv, "LATIDO_CHAT_S", 0.05)
+    c = _ws(REMOTO, {srv.COOKIE_SESION: _sesion("navegador")})
+    hash_id = _hash_de("Aparato de prueba")
+    with c.websocket_connect("/ws/chat") as ws:
+        assert _local().post(
+            f"/api/aparatos/{hash_id}/revocar").status_code == 200
+        assert _cierre_del_ws(ws) == 1008
+
+
+def test_revocar_corta_el_ws_del_mapa_en_el_proximo_tick(monkeypatch):
+    """El mapa no tiene tarea receptora ni latido con timeout: su chequeo va
+    en el tick, que ya corre cada cuarto de segundo."""
+    monkeypatch.setattr(srv, "EL_PULSO", pulso.Pulso())
+    c = _ws(REMOTO, {srv.COOKIE_SESION: _sesion("tablero")})
+    hash_id = _hash_de("Aparato de prueba")
+    with c.websocket_connect("/ws/mapa") as ws:
+        srv._revocar_en_vivo(hash_id)
+        assert _cierre_del_ws(ws) == 1008
+
+
+def test_el_socket_vigilado_no_deja_pasar_una_emision_de_una_revocada():
+    """El proxy es lo que cubre los 46 puntos de emision de `ws_chat` sin
+    tocar ninguno: los helpers, el `Emisor` y el borrador que corre suelto
+    reciben el socket envuelto y quedan vigilados sin enterarse."""
+    class _Falso:
+        """Un socket de mentira, no un mock: registra lo que salio."""
+
+        def __init__(self):
+            self.enviado = []
+            self.cerrado_con = None
+            self.cookies = {"marca": "pasa de largo"}
+
+        async def send_json(self, dato):
+            self.enviado.append(dato)
+
+        async def close(self, code=1000):
+            self.cerrado_con = code
+
+    crudo = _Falso()
+    vigilado = srv._SocketVigilado(crudo, "hash-de-prueba")
+    asyncio.run(vigilado.send_json({"type": "a tiempo"}))
+    assert vigilado.cookies == {"marca": "pasa de largo"}
+
+    srv._revocar_en_vivo("hash-de-prueba")
+    with pytest.raises(WebSocketDisconnect) as caida:
+        asyncio.run(vigilado.send_json({"type": "tarde"}))
+    assert caida.value.code == 1008
+    assert crudo.enviado == [{"type": "a tiempo"}]
+    assert crudo.cerrado_con == 1008
+
+
+def test_una_revocacion_no_toca_el_ws_abierto_con_el_token(monkeypatch):
+    """La otra mitad: el corte es por sesion, no un interruptor general. La
+    Ally entra con el token de la maquina y no tiene sesion que revocar, asi
+    que su socket no se envuelve y ninguna revocacion lo alcanza."""
+    monkeypatch.setattr(srv, "EL_PULSO", pulso.Pulso())
+    _sesion("navegador", aparato="Celular revocado")
+    c = _ws("127.0.0.1", {srv.COOKIE: srv.TOKEN})
+    with c.websocket_connect("/ws/mapa") as ws:
+        srv._revocar_en_vivo(_hash_de("Celular revocado"))
+        srv.EL_PULSO.publicar("a1", "inicio", departamento="dep:atlas")
+        assert ws.receive_json()["evento"] == "inicio"

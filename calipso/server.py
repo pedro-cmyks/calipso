@@ -583,6 +583,133 @@ async def _ws_autorizado(ws: WebSocket) -> dict | bool | None:
     return None
 
 
+# --------------------------------------------------------------------------
+# EL CORTE EN VIVO: revocar mata los websockets que YA estaban abiertos
+# (spec seccion 3, "Corte de WS vivos"; invariante 9)
+# --------------------------------------------------------------------------
+# Hasta aca revocar solo cerraba la puerta a los handshakes NUEVOS: el socket
+# que ya estaba adentro seguia hablando hasta que el cliente se fuera. El
+# registro es de memoria a proposito -- lo unico que tiene que sobrevivir es
+# el proceso que sostiene esos sockets; despues de un reinicio no queda
+# ninguno vivo y `resolver` ya rechaza a la revocada en el handshake.
+_ws_generaciones: dict[str, int] = {}
+
+
+def _generacion_de(hash_id: str) -> int:
+    """Cero es la respuesta para el hash que nadie revoco todavia: asi el
+    handshake no tiene que dar de alta nada."""
+    return _ws_generaciones.get(hash_id, 0)
+
+
+def _revocar_en_vivo(hash_id: str) -> None:
+    """Le mueve el piso a los sockets abiertos de esa sesion: la generacion
+    que guardaron en el handshake deja de coincidir y el proximo chequeo los
+    cierra.
+
+    Incrementa aunque no haya ningun socket abierto -- averiguarlo costaria
+    un registro de conexiones y el dict crece, como mucho, con una entrada
+    por revocacion de la vida del proceso.
+
+    LIMITE CONOCIDO: la expiracion por reloj (una sesion que se duerme o
+    cumple 180 dias mientras su ws esta abierto) no pasa por aca; esa muere
+    en la proxima reconexion, cuando `resolver` la rechaza."""
+    _ws_generaciones[hash_id] = _generacion_de(hash_id) + 1
+
+
+class _SocketVigilado:
+    """El socket de una sesion, envuelto para que ninguna emision sobreviva a
+    la revocacion.
+
+    Por que un proxy y no un chequeo en cada punto de emision: `ws_chat`
+    emite desde 46 lugares -- el cuerpo del handler, los helpers que reciben
+    el `ws` (`_run_dynamic_team`, `_run_subscription_text_live`), la clase
+    `Emisor` y el borrador que corre suelto con `ensure_future`. Tocarlos uno
+    por uno deja el invariante colgado del proximo que agregue el numero 47.
+    Envolver el socket una sola vez, apenas se sabe de quien es, cubre a todos
+    sin que ninguno se entere.
+
+    Envuelve las cinco puertas del socket y no solo las dos que el server usa
+    hoy (`send_json` y `receive_text`) por lo mismo: la que se estrene manana
+    ya nace vigilada. Lo demas pasa derecho por `__getattr__` (`cookies`,
+    `client`, `url`, `accept`, `close`): esto es un guardia, no una fachada.
+    """
+
+    def __init__(self, ws: WebSocket, hash_id: str) -> None:
+        self._ws = ws
+        self._hash_id = hash_id
+        # la foto del handshake: si el numero cambia, esta sesion se revoco
+        # despues de que este socket entrara
+        self._generacion = _generacion_de(hash_id)
+
+    def __getattr__(self, nombre: str):
+        return getattr(self._ws, nombre)
+
+    def vigente(self) -> bool:
+        return _generacion_de(self._hash_id) == self._generacion
+
+    async def cerrar_revocado(self) -> None:
+        """1008 es "politica violada", el mismo codigo con el que el
+        handshake rechaza a una sesion muerta: el cliente ve una sola razon
+        de cierre y no tiene que distinguir el momento.
+
+        El cierre puede fallar (el cliente ya se fue, el socket ya se cerro
+        por el otro lado) y eso no cambia lo que hay que hacer: dejar de
+        hablarle."""
+        with contextlib.suppress(Exception):
+            await self._ws.close(code=1008)
+
+    async def _vigilar(self) -> None:
+        if self.vigente():
+            return
+        await self.cerrar_revocado()
+        # WebSocketDisconnect y no una excepcion propia: cada handler ya la
+        # atrapa para limpiar cuando el cliente se desconecta, y una sesion
+        # revocada es exactamente eso, un cliente que dejo de estar
+        raise WebSocketDisconnect(1008)
+
+    async def send_json(self, *args, **kwargs):
+        await self._vigilar()
+        return await self._ws.send_json(*args, **kwargs)
+
+    async def send_text(self, *args, **kwargs):
+        await self._vigilar()
+        return await self._ws.send_text(*args, **kwargs)
+
+    async def send_bytes(self, *args, **kwargs):
+        await self._vigilar()
+        return await self._ws.send_bytes(*args, **kwargs)
+
+    async def receive_text(self, *args, **kwargs):
+        await self._vigilar()
+        return await self._ws.receive_text(*args, **kwargs)
+
+    async def receive_json(self, *args, **kwargs):
+        await self._vigilar()
+        return await self._ws.receive_json(*args, **kwargs)
+
+
+def _vigilar_socket(ws: WebSocket,
+                    sesion: dict | bool | None) -> WebSocket | _SocketVigilado:
+    """Envuelve el socket cuando entro por sesion y lo deja crudo cuando
+    entro con el token: el token es la maquina de Pedro y esta capa no lo
+    revoca (su unica revocacion es rotarlo en la Ally)."""
+    hash_id = sesion.get("hash_id") if isinstance(sesion, dict) else None
+    return _SocketVigilado(ws, hash_id) if hash_id else ws
+
+
+async def _cortar_si_revocada(ws: WebSocket | _SocketVigilado) -> bool:
+    """True cuando la sesion del socket se revoco -- y para entonces el
+    socket ya quedo cerrado con 1008.
+
+    Es el chequeo de los bucles que pueden pasar horas sin emitir ni recibir
+    nada: sin el, un socket ocioso sobrevive a la revocacion hasta que
+    alguien hable."""
+    if not isinstance(ws, _SocketVigilado) or ws.vigente():
+        return False
+    await ws.cerrar_revocado()
+    return True
+
+
 _TOTP_DISABLED = os.environ.get("CALIPSO_NO_TOTP", "").strip().lower() in ("1", "true", "yes")
 
 
@@ -802,6 +929,9 @@ async def aparatos_revocar(hash_id: str, request: Request):
         await asyncio.to_thread(sesiones.revocar, hash_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="no hay una sesion viva")
+    # despues del almacen, no antes: si `revocar` falla, la sesion sigue viva
+    # y sus sockets no tienen por que caerse
+    _revocar_en_vivo(hash_id)
     return {"ok": True}
 
 
@@ -2872,14 +3002,39 @@ def _next_or_stop(gen, sentinel):
 # `conversacion._por_chat`.
 _ultimo_pedido: dict[str, str] = {}
 
+# cada cuanto despierta un chat ocioso a mirar si su sesion sigue viva. Alto a
+# proposito: es el peor caso de un socket que ya no deberia existir, no una
+# latencia que Pedro sienta.
+LATIDO_CHAT_S = 30.0
+
+
+async def _proximo_del_chat(ws: WebSocket | _SocketVigilado,
+                            inbox: asyncio.Queue) -> str | None:
+    """Lo proximo que mande el cliente, o None cuando el socket se termino.
+
+    Espera con plazo en vez de quedarse colgada del `get`: el chat ocioso es
+    justo el que no se enteraria nunca de que su sesion fue revocada. El
+    latido no manda nada al cliente -- es un despertar del servidor, y la PWA
+    no tiene por que aprender un tipo de evento nuevo para esto."""
+    while True:
+        try:
+            return await asyncio.wait_for(inbox.get(), timeout=LATIDO_CHAT_S)
+        except asyncio.TimeoutError:
+            if await _cortar_si_revocada(ws):
+                return None
+
 
 @app.websocket("/ws/chat")
 async def ws_chat(ws: WebSocket) -> None:
-    # de quien es este socket (el corte por generaciones lo va a releer)
+    # de quien es este socket: con eso se envuelve para el corte en vivo
     sesion = await _ws_autorizado(ws)
     if not sesion:
         await ws.close(code=1008)   # politica violada: sin credencial
         return
+    # antes del accept y de cualquier emision: de aca en adelante `ws` es el
+    # vigilado, asi que los 46 puntos de emision de este handler y todo lo
+    # que reciba el socket quedan cubiertos sin tocarlos
+    ws = _vigilar_socket(ws, sesion)
     await ws.accept()
     active_goal = goals.active(str(ROOT))
     if active_goal:
@@ -2910,7 +3065,7 @@ async def ws_chat(ws: WebSocket) -> None:
             if pending is not None:
                 user_msg, pending = pending, None
             else:
-                raw = await inbox.get()
+                raw = await _proximo_del_chat(ws, inbox)
                 if raw is None:
                     break
                 try:
@@ -6757,11 +6912,12 @@ async def ws_mapa(ws: WebSocket) -> None:
     tocar el event loop desde otro hilo es la clase de cosa que anda hasta
     que no. El costo es un cuarto de segundo de latencia para ver pensar a
     un agente."""
-    # de quien es este socket (el corte por generaciones lo va a releer)
+    # de quien es este socket: con eso se envuelve para el corte en vivo
     sesion = await _ws_autorizado(ws)
     if not sesion:
         await ws.close(code=1008)   # politica violada: sin credencial
         return
+    ws = _vigilar_socket(ws, sesion)
     await ws.accept()
     if EL_PULSO is None:
         await ws.send_json({"evento": "sin-pulso"})
@@ -6771,6 +6927,10 @@ async def ws_mapa(ws: WebSocket) -> None:
     vueltas = 0           # lo que el anillo todavia guarda
     try:
         while True:
+            # aca no hace falta latido aparte: el tick ya corre cada cuarto de
+            # segundo y un lookup de dict por vuelta no se siente
+            if await _cortar_si_revocada(ws):
+                return
             cursor, nuevos = EL_PULSO.desde(cursor)
             for ev in nuevos:
                 await ws.send_json(ev)
