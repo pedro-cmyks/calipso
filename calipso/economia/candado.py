@@ -23,7 +23,8 @@ class ErrorCandado(Exception):
     pass
 
 
-def escribir_json_atomico(ruta: pathlib.Path, datos) -> None:
+def escribir_json_atomico(ruta: pathlib.Path, datos,
+                          modo: int | None = None) -> None:
     """Escribe un json de configuracion sin que exista un estado a medias.
 
     El candado de arriba resuelve la mitad del problema: que dos
@@ -43,14 +44,31 @@ def escribir_json_atomico(ruta: pathlib.Path, datos) -> None:
     patron que `permisos/almacen.py`, `consumo.py`, `routines.py` y
     `plantel/interruptor.py`; vive ACA para que economia tenga uno solo y
     no una quinta copia.
+
+    `modo` es para los archivos que ademas son SECRETOS (sesiones.json
+    guarda hashes de credenciales). Un `chmod` despues del `os.replace`
+    no alcanza: entre el replace y el chmod el archivo ya esta en su ruta
+    final con los permisos del umask (0644), y esa ventana es justo lo que
+    un archivo de credenciales no puede tener. Con `modo` el temporal NACE
+    con esos permisos -- y como el replace conserva el modo del temporal,
+    el archivo final nunca existio con otro. Sin `modo`, el comportamiento
+    de siempre, byte por byte.
     """
     ruta = pathlib.Path(ruta)
     ruta.parent.mkdir(parents=True, exist_ok=True)
     tmp = ruta.with_name(f"{ruta.name}.tmp{os.getpid()}."
                          f"{threading.get_ident()}")
+    texto = json.dumps(datos, ensure_ascii=False, indent=1)
     try:
-        tmp.write_text(json.dumps(datos, ensure_ascii=False, indent=1),
-                       encoding="utf-8")
+        if modo is None:
+            tmp.write_text(texto, encoding="utf-8")
+        else:
+            # O_EXCL: si el temporal ya existe, no se escribe adentro. Un
+            # archivo ajeno en esa ruta llega con permisos ajenos, y el
+            # replace se los pasaria al destino.
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, modo)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(texto)
         os.replace(tmp, ruta)
     finally:
         # si el replace no llego a pasar (disco lleno, permisos) no dejamos
