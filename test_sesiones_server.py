@@ -656,6 +656,15 @@ def test_el_ws_del_chat_con_la_cookie_token_remota_se_cierra():
     _rebota(_ws(REMOTO, {srv.COOKIE: srv.TOKEN}), "/ws/chat")
 
 
+def test_un_ws_sin_ninguna_credencial_se_cierra():
+    """El piso, y desde loopback para que no lo sostenga el host: la maquina
+    de Pedro no es una credencial (aca corren flatpaks y otros uid), el token
+    si."""
+    c = _ws("127.0.0.1", {})
+    _rebota(c, "/ws/chat")
+    _rebota(c, "/ws/mapa")
+
+
 def test_el_ws_del_mapa_con_la_cookie_token_remota_se_cierra():
     _rebota(_ws(REMOTO, {srv.COOKIE: srv.TOKEN}), "/ws/mapa")
 
