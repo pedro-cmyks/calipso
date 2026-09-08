@@ -72,8 +72,6 @@ Orden en `auth_guard` (anclas por simbolo; las lineas se corren):
 
 ### Migracion y despliegue
 
-Al aterrizar la capa: (1) las cookies-token remotas viejas mueren solas (paso 4 las expira); (2) **rotar el TOKEN es parte del despliegue** (las viejas quedaron un anio en navegadores); (3) la PWA remota existente hace `/login`+TOTP una vez y queda como sesion `navegador`.
-
 **Despliegue de la fase 1** (el orden importa: el paso 2 corta a los remotos, el 3 los vuelve a dar de alta):
 
 1. Reiniciar el server con el codigo nuevo.
