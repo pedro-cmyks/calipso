@@ -1,7 +1,9 @@
 """El estado del turno y las piezas puras de la reentrada (spec seccion 4)."""
 import pytest
 
-from calipso.abismo import marca, turno
+from calipso.abismo import anillos, consulta, fuentes, marca, turno, viaje
+from calipso.privacidad import juez
+from calipso.privacidad.redaccion import MapaMarcadores
 
 
 def test_el_estado_arranca_vacio_y_el_reset_lo_deja_igual():
@@ -54,9 +56,45 @@ def test_la_senal_lleva_los_campos_fijos_de_cada_fase():
         turno.senal("bailando", "chats")
 
 
-def test_el_motivo_de_la_consulta():
-    assert turno.motivo_de_consulta({"estado": "fallo", "aviso": "la consulta no trajo nada"}) == "vacio"
-    assert turno.motivo_de_consulta({"estado": "fallo", "aviso": "chats.json roto"}) == "error"
+_HONDO = [("del core:\n- vive en Cordoba", anillos.HONDO)]
+_ORILLA = [("proyecto calipso:\nbrief", anillos.ORILLA)]
+
+
+def test_los_motivos_reales_del_viaje_sobreviven_a_la_senal(monkeypatch):
+    """Acopla la lista cerrada MOTIVOS con lo que emiten DE VERDAD el viaje y
+    el juez: un motivo que no este en la lista lo aplana `senal` a "error" sin
+    hacer ruido, y la UI mostraria el motivo equivocado (spec seccion 9)."""
+    cortado = {"tramos": [], "fallo_cerrado": True, "motivo": "tipo_desconocido"}
+
+    def caido(texto):
+        raise RuntimeError("el juez local no responde")
+
+    casos = [([], lambda t: cortado, "vacio"),
+             (_HONDO, lambda t: cortado, "solo_hondo"),
+             (_ORILLA, caido, "juez_local_caido"),
+             (_ORILLA, lambda t: cortado, "tipo_desconocido"),
+             (_ORILLA, lambda t: dict(cortado, motivo="credencial"), "credencial")]
+    for bloques, juzgar, esperado in casos:
+        monkeypatch.setattr(juez, "juzgar", juzgar)
+        r = viaje.preparar_viaje(bloques, "nube", MapaMarcadores(), fuente="memoria")
+        assert r["motivo"] == esperado
+        assert turno.senal("fallo", "memoria", motivo=r["motivo"])["motivo"] == esperado
+
+
+def test_el_motivo_de_la_consulta(monkeypatch):
+    """Contra el resultado REAL del resolvedor y no contra el literal: el
+    aviso de la pesca vacia lo escribe consulta._fallo, y si cambia ahi el
+    motivo pasaria a "error" en silencio (Pedro leeria el motivo equivocado
+    en la senal)."""
+    monkeypatch.setattr(fuentes, "chats_viejos", lambda resto: [])
+    vacia = consulta.resolver(marca.Marca("chats", "zzz"))
+    assert vacia["estado"] == "fallo"
+    assert turno.motivo_de_consulta(vacia) == "vacio"
+
+    def bomba(resto):
+        raise RuntimeError("chats.json roto")
+    monkeypatch.setattr(fuentes, "chats_viejos", bomba)
+    assert turno.motivo_de_consulta(consulta.resolver(marca.Marca("chats", "zzz"))) == "error"
 
 
 def test_cortar_en_marca_corta_en_la_primera_valida():
