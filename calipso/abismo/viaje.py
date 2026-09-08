@@ -24,14 +24,14 @@ from calipso.privacidad import juez, redaccion
 
 
 def etiquetar(fuente: str, bloques: list[tuple[str, int]]) -> str:
-    """El mismo texto etiquetado que arma `consulta.resolver` (fuente y
-    anillo por sub-bloque, bajo ABISMO_BLOQUE_MAX): el viaje lo re-arma con
-    lo que sobrevive a los anillos. Si esto y el resolvedor divergen, el
-    modelo ve dos formatos para lo mismo; test_abismo_viaje lo custodia."""
-    partes = [f"=== Lo que subio del abismo (fuente: {fuente}) ==="]
-    for texto, anillo in bloques:
-        partes.append(f"[anillo {anillo}]\n{texto.strip()}")
-    return "\n".join(partes)[:consulta.ABISMO_BLOQUE_MAX]
+    """Re-arma el bloque etiquetado con lo que sobrevive a los anillos.
+
+    Delega en `consulta.etiquetar` a proposito: el armado es UNO solo, donde
+    vive el techo, para que el viaje no pueda divergir del resolvedor cuando
+    el formato cambie (el modelo veria dos formatos para lo mismo). Queda el
+    nombre `viaje.etiquetar` porque es la interfaz que consume el cableado
+    del 1b, y porque el viaje es quien decide con QUE bloques se re-arma."""
+    return consulta.etiquetar(fuente, bloques)
 
 
 def _fallo(motivo: str) -> dict:

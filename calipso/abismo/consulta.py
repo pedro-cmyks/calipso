@@ -13,6 +13,19 @@ from calipso.abismo import fuentes, marca
 ABISMO_BLOQUE_MAX = int(os.environ.get("ABISMO_BLOQUE_MAX", "2000"))
 
 
+def etiquetar(fuente: str, bloques: list[tuple[str, int]]) -> str:
+    """El bloque etiquetado (encabezado con la fuente, `[anillo N]` por
+    sub-bloque, todo bajo ABISMO_BLOQUE_MAX). Vive aca, junto al techo, y lo
+    usan los DOS que arman bloque: el resolvedor con lo que pesco y
+    `viaje.etiquetar` con lo que sobrevive a los anillos. Un solo armado
+    porque el modelo tiene que ver un solo formato para lo mismo; dos copias
+    verbatim divergen calladas en el primer cambio de formato."""
+    partes = [f"=== Lo que subio del abismo (fuente: {fuente}) ==="]
+    for texto, anillo in bloques:
+        partes.append(f"[anillo {anillo}]\n{texto.strip()}")
+    return "\n".join(partes)[:ABISMO_BLOQUE_MAX]
+
+
 def _fallo(fuente: str, aviso: str) -> dict:
     return {"estado": "fallo", "fuente": fuente, "texto": "",
             "bloques": [], "aviso": aviso[:200]}
@@ -35,9 +48,6 @@ def resolver(m: marca.Marca, *, mem=None, obtener=None, brief=None,
     bloques = [(t, a) for t, a in bloques if t.strip()]
     if not bloques:
         return _fallo(m.fuente, "la consulta no trajo nada")
-    partes = [f"=== Lo que subio del abismo (fuente: {m.fuente}) ==="]
-    for texto, anillo in bloques:
-        partes.append(f"[anillo {anillo}]\n{texto.strip()}")
     return {"estado": "pescado", "fuente": m.fuente,
-            "texto": "\n".join(partes)[:ABISMO_BLOQUE_MAX],
+            "texto": etiquetar(m.fuente, bloques),
             "bloques": bloques, "aviso": ""}

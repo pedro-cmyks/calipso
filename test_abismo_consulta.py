@@ -12,6 +12,20 @@ def test_pescado_arma_bloque_etiquetado(monkeypatch):
     assert r["aviso"] == ""
 
 
+def test_etiquetar_es_el_armado_compartido_del_bloque():
+    """El armado del bloque etiquetado vive aca, junto a ABISMO_BLOQUE_MAX, y
+    lo comparten el resolvedor y `viaje.etiquetar`: si hubiera dos copias, el
+    modelo terminaria viendo dos formatos para lo mismo."""
+    texto = consulta.etiquetar("chats", [("hola", anillos.MEDIA_AGUA),
+                                         ("  chau  ", anillos.ORILLA)])
+    assert texto == ("=== Lo que subio del abismo (fuente: chats) ===\n"
+                     "[anillo 2]\nhola\n"
+                     "[anillo 1]\nchau")
+    largo = consulta.etiquetar("chats", [("x" * (consulta.ABISMO_BLOQUE_MAX + 100),
+                                          anillos.MEDIA_AGUA)])
+    assert len(largo) == consulta.ABISMO_BLOQUE_MAX
+
+
 def test_techo_de_caracteres(monkeypatch):
     monkeypatch.setattr(fuentes, "chats_viejos",
                         lambda resto: [("x" * 5000, anillos.MEDIA_AGUA)])

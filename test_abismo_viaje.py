@@ -1,4 +1,6 @@
 """La etapa de viaje en aislado (spec seccion 15, enmienda 2026-09-08)."""
+import pytest
+
 from calipso.abismo import anillos, consulta, marca, viaje
 from calipso.privacidad import juez
 from calipso.privacidad.redaccion import MapaMarcadores
@@ -29,16 +31,36 @@ def test_destino_local_es_transparente_y_no_corre_el_juez(monkeypatch):
     assert r["texto"].startswith("=== Lo que subio del abismo (fuente: memoria) ===")
 
 
-def test_el_etiquetado_del_viaje_es_el_mismo_que_el_del_resolvedor(monkeypatch):
+_DOBLE_DE_FUENTE = {"chats": "chats_viejos", "proyecto": "proyecto",
+                    "memoria": "memoria"}
+
+
+def _texto_del_resolvedor(monkeypatch, fuente, bloques):
+    """El texto que arma el resolvedor DE VERDAD, con la fuente doblada."""
     from calipso.abismo import fuentes
-    monkeypatch.setattr(fuentes, "chats_viejos", lambda resto: BLOQUES[1:2])
-    r = consulta.resolver(marca.Marca("chats", "hola"))
-    assert viaje.etiquetar("chats", BLOQUES[1:2]) == r["texto"]
+    monkeypatch.setattr(fuentes, _DOBLE_DE_FUENTE[fuente], lambda *a, **k: bloques)
+    return consulta.resolver(marca.Marca(fuente, "hola"))["texto"]
 
 
-def test_el_etiquetado_respeta_el_techo():
-    largo = [("x" * 5000, anillos.MEDIA_AGUA)]
-    assert len(viaje.etiquetar("chats", largo)) <= consulta.ABISMO_BLOQUE_MAX
+@pytest.mark.parametrize("fuente", ["chats", "proyecto", "memoria"])
+def test_el_etiquetado_del_viaje_es_el_mismo_que_el_del_resolvedor(monkeypatch, fuente):
+    """El custodio de que el modelo vea UN solo formato. Va con DOS
+    sub-bloques y las TRES fuentes a proposito: con uno solo y una sola,
+    un separador entre sub-bloques o un encabezado distinto por fuente
+    divergian en verde."""
+    bloques = BLOQUES[:2]
+    assert viaje.etiquetar(fuente, bloques) == _texto_del_resolvedor(
+        monkeypatch, fuente, bloques)
+
+
+def test_el_etiquetado_recorta_el_techo_igual_que_el_resolvedor(monkeypatch):
+    """El caso que cruza el techo: el recorte es del bloque ENTERO, no por
+    sub-bloque, y es el mismo de los dos lados."""
+    largo = "x" * consulta.ABISMO_BLOQUE_MAX
+    largos = [(largo, anillos.MEDIA_AGUA), (largo, anillos.ORILLA)]
+    texto = viaje.etiquetar("chats", largos)
+    assert len(texto) == consulta.ABISMO_BLOQUE_MAX
+    assert texto == _texto_del_resolvedor(monkeypatch, "chats", largos)
 
 
 def test_a_la_nube_lo_hondo_se_descarta_antes_del_juez(monkeypatch):
