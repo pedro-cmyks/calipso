@@ -82,6 +82,7 @@ from calipso.privacidad import conversacion, redaccion  # noqa: E402
 from calipso.privacidad import nube as privacidad_nube  # noqa: E402
 from calipso.abismo import filtro as abismo_filtro  # noqa: E402
 from calipso.abismo import marca as abismo_marca  # noqa: E402
+from calipso.abismo import viaje as abismo_viaje  # noqa: E402
 try:
     from calipso import resource_dispatcher as _rd  # noqa: E402
 except Exception:
