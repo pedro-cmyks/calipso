@@ -427,47 +427,94 @@ height:100vh;margin:0;align-items:center;justify-content:center}
 Usa <a href="/login">/login</a> para entrar con tu autenticador.</p></div></html>"""
 
 
+def _sin_credencial(path: str) -> Response:
+    """La puerta cerrada: json para las apis, la pantalla de login para el
+    resto. Se llama desde dos ramas del guard -sin nada, y con una credencial
+    que no vale desde ahi- y las dos tienen que contestar IGUAL: un remoto
+    que distinguiera los dos casos tendria un oraculo de validez del token."""
+    if path.startswith("/api") or path.startswith("/ws"):
+        return JSONResponse({"detail": "no autorizado"}, status_code=401)
+    return RedirectResponse(url="/login", status_code=303)
+
+
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
     path = request.url.path
+    host = request.client.host if request.client else ""
     if path == "/login":
+        return await call_next(request)
+    if (path == "/setup" and _es_loopback(host)
+            and not _TOTP_SECRET_FILE.exists()
+            and _valid(request.query_params.get("token"))):
+        # La ventana del primer arranque, con las tres condiciones juntas.
+        # Loopback solo no alcanza: en esta maquina corren flatpaks y otros
+        # uid, y cualquiera de ellos habria podido pedir el QR antes que
+        # Pedro y quedarse con SU segundo factor. El token si prueba que es
+        # el uid de Pedro, porque `~/.calipso/token` esta en 0600. Con el
+        # secreto ya escrito la ventana se cierra sola y /setup vuelve al
+        # camino normal (donde la pantalla ya no muestra nada).
         return await call_next(request)
     if request.method == "POST" and path in _APARATOS_EXENTAS:
         # el alta de aparatos no puede exigir credencial -es como se
         # consigue la primera- y paga con su freno propio. Por METODO
         # ademas de por path: un GET a estas rutas sigue el camino normal.
-        espera = _aparatos_espera(
-            request.client.host if request.client else "")
+        espera = _aparatos_espera(host)
         if espera > 0:
             return _aparatos_frenado(espera)
         return await call_next(request)
-    if _valid(request.cookies.get(COOKIE)):
-        return await call_next(request)
-    if _valid(request.query_params.get("token")):
-        # C8 (revision de seguridad 2026-09-07): la credencial por URL viaja
-        # en claro y queda en historial/logs; desde afuera de la propia
-        # maquina no es una via de entrada. Un dispositivo remoto entra por
-        # /login (TOTP) y cookie -- y con la capa de sesion, por identidad
-        # de aparato.
+    if (galleta_sesion := request.cookies.get(COOKIE_SESION)):
+        # La credencial de un APARATO, y la unica que vale desde afuera. Va
+        # a un hilo porque `resolver` puede escribir (renueva `ultima_vez`
+        # con histeresis, y mata a la que se durmio): el flock jamas en el
+        # event loop. Una cookie que no resuelve -revocada, caduca, basura-
+        # sigue de largo: quizas el mismo request trae el token y viene de
+        # la propia maquina.
+        ses = await asyncio.to_thread(sesiones.resolver, galleta_sesion)
+        if ses:
+            if not sesiones.permite(ses["tipo"], path, request.method):
+                # el alcance aplica a TODA ruta, no solo a /api (invariante
+                # 3): el `tablero` que pide /fabrica/algo tambien rebota
+                return JSONResponse(
+                    {"detail": "fuera del alcance del aparato"},
+                    status_code=403)
+            request.state.sesion = ses
+            resp = await call_next(request)
+            if ses.get("renovada"):
+                # el aparato que entra todos los dias no puede perder la
+                # cookie a los 30 dias con la sesion viva: cada renovacion
+                # del almacen re-planta la cookie con max_age fresco
+                resp.set_cookie(COOKIE_SESION, galleta_sesion, httponly=True,
+                                samesite="lax", max_age=SESION_COOKIE_MAX_AGE)
+            return resp
+    galleta_token = request.cookies.get(COOKIE)
+    if _valid(galleta_token) or _valid(request.query_params.get("token")):
+        # C8 (revision de seguridad 2026-09-07) y despues el invariante 2 de
+        # la capa de sesion: el TOKEN identifica a la MAQUINA de Pedro, asi
+        # que vale solo desde ella -- por cookie igual que por URL. Un
+        # aparato remoto entra por identidad de aparato (la cookie de
+        # sesion) o por /login con TOTP, que le da una.
         # (los websockets NO pasan por este middleware http: ws_chat y
-        # ws_mapa autentican su propio handshake por cookie y jamas
-        # aceptaron ?token= -- no agregar "/ws" aca creyendo que protege)
-        if not _es_loopback(request.client.host if request.client else ""):
-            if path.startswith("/api"):
-                # mismo detail que un token invalido: distinguirlos era un
-                # oraculo remoto de validez del token
-                return JSONResponse({"detail": "no autorizado"},
-                                    status_code=401)
-            return RedirectResponse(url="/login", status_code=303)
+        # ws_mapa autentican su propio handshake -- no agregar "/ws" aca
+        # creyendo que protege)
+        if not _es_loopback(host):
+            resp = _sin_credencial(path)
+            if _valid(galleta_token):
+                # y ADEMAS la expira. Esa cookie se planto con un anio de
+                # vida cuando el token si viajaba: sin esto, cada request de
+                # esos navegadores seguiria mandandolo por la red hasta
+                # 2027. Nada de oraculo: se borra lo que el cliente YA
+                # tiene, y el `?token=` a secas no dispara la limpieza.
+                resp.delete_cookie(COOKIE)
+            return resp
+        if _valid(galleta_token):
+            return await call_next(request)
         if path.startswith("/api") or request.method != "GET":
             resp = await call_next(request)
             resp.set_cookie(COOKIE, TOKEN, httponly=True, samesite="lax",
                             max_age=31_536_000)
             return resp
         return _session_response(path)
-    if path.startswith("/api") or path.startswith("/ws"):
-        return JSONResponse({"detail": "no autorizado"}, status_code=401)
-    return RedirectResponse(url="/login", status_code=303)
+    return _sin_credencial(path)
 
 
 _TOTP_DISABLED = os.environ.get("CALIPSO_NO_TOTP", "").strip().lower() in ("1", "true", "yes")
@@ -513,7 +560,19 @@ async def login_submit(request: Request):
         # el exito limpia el contador del host; el balde global queda (un
         # acierto en medio de una lluvia de fallos no la amnistia)
         _login_exito(cliente)
-        return _session_response("/")
+        if _es_loopback(cliente):
+            return _session_response("/")
+        # Desde afuera, el premio del TOTP es una SESION, jamas el token
+        # (invariante 1). Es la unica excepcion a "el aparato no se aprueba
+        # solo", y es explicita en el spec: un codigo del autenticador es
+        # Pedro en persona, no un aparato consagrandose. El alcance es
+        # `navegador` porque quien tiene el TOTP ya tiene la casa entera.
+        id_sesion = await asyncio.to_thread(
+            sesiones.crear_viva, f"navegador {cliente}"[:60], "navegador")
+        resp = RedirectResponse(url="/", status_code=303)
+        resp.set_cookie(COOKIE_SESION, id_sesion, httponly=True,
+                        samesite="lax", max_age=SESION_COOKIE_MAX_AGE)
+        return resp
     _login_fallo(cliente)
     _login_fallo("*")
     error = '<p class="err">Codigo invalido. Revisa el autenticador y vuelve a intentar.</p>'
