@@ -2484,7 +2484,9 @@ async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
             try:
                 output, queued = await _run_agent_text(
                     ws, inbox, agent, agent_system, agent["task"])
-                queued_msg = queued_msg or queued
+                # "/stop" (el CLI de un agente interrumpido) no es un mensaje
+                # para despues: no pisa lo que Pedro escriba durante otro agente
+                queued_msg = queued_msg or (queued if queued != "/stop" else None)
             except Exception as e:
                 agent["fallback_error"] = str(e)
                 try:
@@ -2508,7 +2510,10 @@ async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
             # panel de razonamiento, porque `agent_system` hereda el
             # `base_system` -instruccion de emitir la marca incluida- y esta
             # salida no pasa por el `Emisor`.
-            mango.razonando(_limpiar_marcas(output))
+            # La del abismo se retira ANTES y con aviso (spec seccion 4: la
+            # ruta orquestador queda fuera, "se ignoran con aviso"); despues
+            # `_limpiar_marcas` saca las de foco y cualquier empalme.
+            mango.razonando(_limpiar_marcas(_retirar_con_aviso(output, "agente")))
             mango.tokens(len(agent_system) // 4, len(output) // 4, 0)
         result = {**agent, "output": output}
         results.append(result)
@@ -2539,7 +2544,9 @@ async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
             final, queued = await _run_subscription_text_live(
                 ws, inbox, verdict.get("client"), base_system, synth_prompt,
                 verdict.get("model"), label="sintesis")
-            queued_msg = queued_msg or queued
+            # "/stop" (el CLI de un agente interrumpido) no es un mensaje
+            # para despues: no pisa lo que Pedro escriba durante otro agente
+            queued_msg = queued_msg or (queued if queued != "/stop" else None)
         else:
             final = await asyncio.to_thread(
                 _run_backend_text, verdict.get("route"), verdict.get("client"),
@@ -2996,12 +3003,18 @@ async def _run_subscription_text_live(
         ws: WebSocket, inbox: asyncio.Queue, client: str, system: str,
         user_msg: str, model: str | None = None,
         label: str = "proceso",
-        chat_id: str | None = None) -> tuple[str, str | None]:
+        chat_id: str | None = None,
+        congelar=None) -> tuple[str, str | None]:
+    """`congelar(parcial) -> str | None`: cuando devuelve un texto, el preview
+    `process/running` se congela ahi (spec seccion 4: Pedro no lee texto que
+    despues se descarta). El proceso corre a termino igual; matarlo por una
+    marca dejaria un job en estado raro y perderia la parte util."""
     cmd, env, temp_name, output_name = _subscription_invocation(
         client, system, user_msg, model, chat_id=chat_id)
     started = time.perf_counter()
     last_notice = started
     pending_msg: str | None = None
+    preview_congelado: str | None = None
     stdout_name = None
     stderr_name = None
     stdout_file = tempfile.NamedTemporaryFile(
@@ -3049,13 +3062,20 @@ async def _run_subscription_text_live(
             now = time.perf_counter()
             if now - last_notice >= 2:
                 partial, _ = _read_partial()
+                if congelar is not None and preview_congelado is None and partial:
+                    preview_congelado = congelar(partial)
+                muestra = partial if preview_congelado is None else preview_congelado
+                # una marca a medio llegar al final del parcial se recorta
+                # (Pedro no la lee cruda entre dos tics); las cerradas las
+                # saca _limpiar_marcas
+                muestra = abismo_turno.recortar_abierta(muestra)
                 await ws.send_json({
                     "type": "process", "action": "running",
                     "job_id": job["id"],
                     "label": label, "client": client, "model": model,
                     "elapsed": round(now - started),
                     "tokens": max(1, ((len(system) + len(user_msg)) + len(partial)) // 4),
-                    "partial": _limpiar_marcas(partial)[-3000:] if partial else "",
+                    "partial": _limpiar_marcas(muestra)[-3000:] if muestra else "",
                     "hint": "sigue corriendo; envia /stop para cancelar o escribe y lo atiendo al terminar"})
                 jobs.event(
                     str(ROOT), job["id"], "running",
@@ -3084,14 +3104,20 @@ async def _run_subscription_text_live(
                             str(ROOT), active_goal["id"], "job",
                             f"Proceso cancelado: {label}", job_id=job["id"], status="cancelled")
                     if partial:
-                        jobs.write_artifact(str(ROOT), job["id"], "partial-output.txt", partial)
+                        jobs.write_artifact(str(ROOT), job["id"], "partial-output.txt",
+                                            _limpiar_marcas(partial))
                     if stderr:
                         jobs.write_artifact(str(ROOT), job["id"], "stderr.txt", stderr)
+                    # el segundo valor es "/stop": un /stop durante el CLI es
+                    # el gesto mas fuerte de Pedro y el bucle one-shot del
+                    # abismo lo tiene que ver como steer (sin pesca, sin
+                    # reinvocacion). Para los demas llamadores es un no-op:
+                    # queda en `pending` y el tope del turno lo saltea
                     if partial:
-                        return partial + "\n\n...(proceso interrumpido)", None
+                        return partial + "\n\n...(proceso interrumpido)", "/stop"
                     if stderr:
-                        return stderr + "\n\n...(proceso interrumpido)", None
-                    return "...(proceso interrumpido sin salida parcial)", None
+                        return stderr + "\n\n...(proceso interrumpido)", "/stop"
+                    return "...(proceso interrumpido sin salida parcial)", "/stop"
                 if clean:
                     pending_msg = clean
                     await ws.send_json({
@@ -3102,7 +3128,11 @@ async def _run_subscription_text_live(
         await asyncio.to_thread(proc.wait)
         partial, stderr = _read_partial()
         if proc.returncode != 0:
-            msg = (stderr or partial or "").strip()
+            # limpio de marcas: este `msg` va a jobs.update(error=), al
+            # jobs.event(error=) y, via el RuntimeError, a fallbacks[].error
+            # del chat_turn de telemetry -- tres sumideros que la seccion 4
+            # del spec le prohibe a la marca
+            msg = _limpiar_marcas(stderr or partial or "").strip()
             jobs.update(str(ROOT), job["id"], status="failed", error=msg)
             jobs.event(str(ROOT), job["id"], "failed", error=msg[:1000])
             if active_goal:
@@ -3110,7 +3140,8 @@ async def _run_subscription_text_live(
                     str(ROOT), active_goal["id"], "job",
                     f"Proceso fallo: {label}", job_id=job["id"], status="failed")
             if partial:
-                jobs.write_artifact(str(ROOT), job["id"], "partial-output.txt", partial)
+                jobs.write_artifact(str(ROOT), job["id"], "partial-output.txt",
+                                    _limpiar_marcas(partial))
             if stderr:
                 jobs.write_artifact(str(ROOT), job["id"], "stderr.txt", stderr)
             raise RuntimeError(msg or f"{client} fallo con exit {proc.returncode}")
@@ -3125,7 +3156,7 @@ async def _run_subscription_text_live(
             tokens=max(1, ((len(system) + len(user_msg)) + len(text)) // 4))
         jobs.event(str(ROOT), job["id"], "done", elapsed=elapsed)
         if text:
-            jobs.write_artifact(str(ROOT), job["id"], "output.txt", text)
+            jobs.write_artifact(str(ROOT), job["id"], "output.txt", _limpiar_marcas(text))
         if stderr:
             jobs.write_artifact(str(ROOT), job["id"], "stderr.txt", stderr)
         if active_goal:
@@ -3587,17 +3618,83 @@ async def ws_chat(ws: WebSocket) -> None:
                     estado_abismo.apagada = True
                     full = await emisor.chunk(full)
                 elif route == "subscription":
-                    full, queued = await _run_subscription_text_live(
-                        ws, inbox, verdict["client"], system, mensaje_saliente, model,
-                        label=f"{verdict.get('persona') or verdict['client']} via {verdict['client']}",
-                        chat_id=chat_id_nube)
-                    if queued:
-                        pending = queued
-                    usage["completion_tokens"] = len(full.split())
-                    if mapa is not None:
-                        full = redaccion.reponer(full, mapa)
-                    estado_abismo.apagada = True   # hasta el cableado one-shot (Task 7)
-                    full = await emisor.chunk(full)
+                    # EL ABISMO en la ruta one-shot (spec secciones 4 y 8):
+                    # no hay stream que cortar. El detector lee el texto
+                    # entero cuando vuelve; la primera marca valida corta (lo
+                    # posterior vino sin contexto y se descarta) y la
+                    # reentrada re-invoca el CLI completo: una consulta son
+                    # DOS invocaciones reales, declaradas en telemetry (el
+                    # probe pasivo de consumo las ve). Si la consulta falla,
+                    # o el steer gana, no se reinvoca: lo que el CLI escribio
+                    # despues de la marca vale, sin marcas (seccion 8.4).
+                    system_base = system
+                    mensaje_turno = mensaje_saliente
+                    destino = "nube" if a_la_nube_tapado else "local"
+                    etiqueta = f"{verdict.get('persona') or verdict['client']} via {verdict['client']}"
+                    while True:
+                        texto, queued = await _run_subscription_text_live(
+                            ws, inbox, verdict["client"], system, mensaje_turno, model,
+                            # la reentrada deja un SEGUNDO registro de job (no
+                            # un cobro): que se distinga en el panel y en
+                            # process/start
+                            label=(etiqueta if not estado_abismo.sintetica else
+                                   f"{etiqueta} (reentrada del abismo {estado_abismo.consultas})"),
+                            chat_id=chat_id_nube,
+                            congelar=abismo_turno.prefijo_congelado)
+                        if queued:
+                            pending = queued     # un texto de Pedro, o "/stop" (no-op en el tope del turno)
+                        usage["completion_tokens"] = (usage.get("completion_tokens", 0)
+                                                      + len(texto.split()))
+                        tramo_crudo, marca_valida = abismo_turno.cortar_en_marca(texto)
+                        if marca_valida is not None and not estado_abismo.puede_cortar():
+                            # tope alcanzado: la marca se retira (lo hace el
+                            # filtro, con aviso) y el texto posterior vale
+                            tramo_crudo, marca_valida = texto, None
+                        # en /nube la nube escribe con marcadores: se repone
+                        # lo visible; lo CRUDO es lo que vuelve a la nube
+                        visible = (redaccion.reponer(tramo_crudo, mapa)
+                                   if mapa is not None else tramo_crudo)
+                        visible = await emisor.chunk(visible)
+                        full += visible
+                        if marca_valida is None:
+                            break
+                        estado_abismo.tramos.append(visible)
+                        # crudo (con marcadores, invariante 9) pero SIN las
+                        # marcas ilegibles anteriores al corte: el modelo no
+                        # tiene que releer su propia marca fallida en el
+                        # "venias diciendo" (los marcadores [ID_N] no son marcas)
+                        estado_abismo.tramos_crudos.append(abismo_turno.retirar_marcas(tramo_crudo))
+                        if queued:
+                            # el steer de Pedro gana (spec seccion 10); tambien
+                            # el /stop, que ya mato al CLI: ni pesca ni reinvocacion
+                            telemetry.log_event("abismo", evento="abortada_por_steer",
+                                                consultas=estado_abismo.consultas,
+                                                momento="cli")
+                            hubo_bloque = False
+                        else:
+                            hubo_bloque = await _pescar_abismo(
+                                ws, marca_valida, estado_abismo, destino=destino,
+                                mapa=mapa, departamento=departamento,
+                                agente_id=agente_id, inbox=inbox)
+                        if not hubo_bloque:
+                            # lo posterior a la marca vale (seccion 8.4, la
+                            # letra exacta: aca el texto posterior existe).
+                            # Sus marcas se retiran CON aviso por fuera del
+                            # filtro, que con la consulta a medias no puede
+                            # volver a cortar (dejaria una marca pendiente
+                            # que nadie consume)
+                            resto_crudo = _retirar_con_aviso(texto[len(tramo_crudo):], "posterior")
+                            full += await emisor.chunk(
+                                redaccion.reponer(resto_crudo, mapa)
+                                if mapa is not None else resto_crudo)
+                            break
+                        system, mensaje_turno = abismo_turno.prompt_reentrada(
+                            system_base, estado_abismo.bloques,
+                            estado_abismo.tramos_crudos, mensaje_saliente)
+                        estado_abismo.sintetica = True
+                        telemetry.log_event("abismo", evento="reinvocacion_suscripcion",
+                                            client=verdict["client"],
+                                            consultas=estado_abismo.consultas)
                 else:
                     # EL ABISMO (spec seccion 4): el bucle de streaming de
                     # siempre, envuelto en un bucle exterior que reentra al
