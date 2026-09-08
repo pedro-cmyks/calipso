@@ -10,7 +10,17 @@ import os
 
 from calipso.abismo import fuentes, marca
 
-ABISMO_BLOQUE_MAX = int(os.environ.get("ABISMO_BLOQUE_MAX", "2000"))
+
+def _entero_env(nombre: str, defecto: int) -> int:
+    """Un env mal tipeado no puede impedir que arranque el server: desde el
+    1b este modulo esta en la cadena de import de calipso/server.py."""
+    try:
+        return int(os.environ.get(nombre, defecto))
+    except (TypeError, ValueError):
+        return defecto
+
+
+ABISMO_BLOQUE_MAX = _entero_env("ABISMO_BLOQUE_MAX", 2000)
 
 
 def etiquetar(fuente: str, bloques: list[tuple[str, int]]) -> str:
@@ -33,6 +43,9 @@ def _fallo(fuente: str, aviso: str) -> dict:
 
 def resolver(m: marca.Marca, *, mem=None, obtener=None, brief=None,
              consolidado=None, zona_chat: str = "fabrica") -> dict:
+    # el armado tambien va adentro del try (minor del review 1a): una fuente
+    # que devuelva algo que no sea una lista de pares (texto, anillo) es un
+    # fallo suave, no un TypeError que suba por la pasada sintetica
     try:
         if m.fuente == "memoria":
             bloques = fuentes.memoria(m.resto, mem, consolidado=consolidado,
@@ -43,11 +56,11 @@ def resolver(m: marca.Marca, *, mem=None, obtener=None, brief=None,
             bloques = fuentes.proyecto(m.resto, obtener, brief)
         else:  # la gramatica cerrada no deberia dejar llegar esto
             return _fallo(m.fuente, f"fuente desconocida: {m.fuente}")
+        bloques = [(t, a) for t, a in bloques if t.strip()]
+        if not bloques:
+            return _fallo(m.fuente, "la consulta no trajo nada")
+        texto = etiquetar(m.fuente, bloques)
     except Exception as e:
         return _fallo(m.fuente, str(e))
-    bloques = [(t, a) for t, a in bloques if t.strip()]
-    if not bloques:
-        return _fallo(m.fuente, "la consulta no trajo nada")
-    return {"estado": "pescado", "fuente": m.fuente,
-            "texto": etiquetar(m.fuente, bloques),
+    return {"estado": "pescado", "fuente": m.fuente, "texto": texto,
             "bloques": bloques, "aviso": ""}
