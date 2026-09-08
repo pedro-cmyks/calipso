@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {estadoInicial, aplicarEvento, paquete, crearChat,
-        turnosDeHistorial} from "./chat.js";
+        turnosDeHistorial, textoDeAbismo} from "./chat.js";
 import {textoDeCosto} from "./paneles.js";
 
 const aplicar = (eventos, e0 = estadoInicial()) =>
@@ -343,4 +343,79 @@ test("un error de un turno nuevo si se pinta, porque llega despues de su thinkin
   const ultimo = chat.estado().turnos.at(-1);
   assert.equal(ultimo.quien, "error");
   assert.ok(ultimo.texto.includes("se cayo de nuevo"));
+});
+
+// --- El abismo: un renglon hermano del pensando, nunca un turno ---------
+
+test("el pondering del abismo no agrega turnos y el chunk siguiente sigue en el mismo", () => {
+  const e = aplicar([{type: "thinking"}, {type: "chunk", text: "Dejame ver "},
+                     {type: "abismo", fase: "pondering", fuente: "chats",
+                      verbo: "buscando en tus chats"},
+                     {type: "chunk", text: "y sigo"}]);
+  assert.equal(e.turnos.length, 1);
+  assert.equal(e.turnos[0].texto, "Dejame ver y sigo");
+  assert.equal(e.abismo.fase, "pondering");
+  assert.equal(e.abismo.fuente, "chats");
+  assert.equal(e.abismo.n, 1);
+});
+
+test("pescado reemplaza el pondering y done lo apaga", () => {
+  let e = aplicar([{type: "thinking"},
+                   {type: "abismo", fase: "pondering", fuente: "memoria"},
+                   {type: "abismo", fase: "pescado", fuente: "memoria", tamano: 120,
+                    viaje: {destino: "local"}}]);
+  assert.deepEqual({fase: e.abismo.fase, tamano: e.abismo.tamano, n: e.abismo.n},
+                   {fase: "pescado", tamano: 120, n: 1});
+  e = aplicarEvento(e, {type: "done"});
+  assert.equal(e.abismo, null);
+});
+
+test("un thinking nuevo apaga un pondering colgado del turno anterior", () => {
+  // un turno que murio sin done (socket caido) no deja el renglon vivo
+  // hasta el done del turno siguiente: el thinking del turno nuevo lo apaga
+  const e = aplicar([{type: "thinking"}, {type: "abismo", fase: "pondering", fuente: "chats"},
+                     {type: "thinking"}]);
+  assert.equal(e.abismo, null);
+});
+
+test("la segunda consulta del mismo turno sube n, y error y cargar apagan", () => {
+  let e = aplicar([{type: "thinking"},
+                   {type: "abismo", fase: "pondering", fuente: "chats"},
+                   {type: "abismo", fase: "pescado", fuente: "chats", tamano: 5},
+                   {type: "abismo", fase: "pondering", fuente: "proyecto"}]);
+  assert.equal(e.abismo.n, 2);
+  assert.equal(aplicarEvento(e, {type: "error", text: "x"}).abismo, null);
+  const vistos = [];
+  const chat = crearChat(x => vistos.push(x), WSFalso);
+  chat.cargar({id: "c9", messages: []});
+  assert.equal(vistos.at(-1).abismo, null);
+});
+
+test("una fase inventada del abismo no cambia nada", () => {
+  const antes = aplicar([{type: "thinking"}]);
+  const despues = aplicarEvento(antes, {type: "abismo", fase: "bailando", fuente: "chats"});
+  assert.equal(despues.abismo, antes.abismo);
+});
+
+test("un abismo que llega despues de cargar otro chat se descarta", () => {
+  const {chat, disparar} = wsAbierto();
+  disparar({type: "thinking"});
+  chat.cargar({id: "c9", messages: [{role: "user", text: "viejo"}]});
+  disparar({type: "abismo", fase: "pondering", fuente: "chats"});
+  assert.equal(chat.estado().abismo, null);
+});
+
+test("el texto del renglon del abismo", () => {
+  assert.equal(textoDeAbismo({fase: "pondering", fuente: "chats", verbo: ""}, 3),
+               "buscando en tus chats... 3 s");
+  assert.equal(textoDeAbismo({fase: "pondering", fuente: "chats", verbo: "hurgando"}, 0),
+               "hurgando... 0 s");
+  assert.equal(textoDeAbismo({fase: "pescado", fuente: "memoria", tamano: 120,
+                              viaje: {destino: "local"}}, 0),
+               "del abismo: memoria (120 chars)");
+  assert.equal(textoDeAbismo({fase: "pescado", fuente: "chats", tamano: 12,
+                              viaje: {destino: "nube", tapados: [{marcador: "[ID_1]", tipo: "identidad"}]}}, 0),
+               "del abismo: chats (12 chars, viajo tapado a la nube: [ID_1])");
+  assert.equal(textoDeAbismo({fase: "fallo", fuente: "chats", motivo: "solo_hondo"}, 0),
+               "el abismo (chats): solo habia hondo");
 });

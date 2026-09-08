@@ -10,7 +10,7 @@ import {crearSocketQueReconecta} from "./socket.js";
 export function estadoInicial() {
   return {turnos: [], pensando: false, chatId: null, ruta: null,
           modelo: null, costo_usd: 0, tokens: 0, costo_mm: 0, cuenta: null,
-          conectado: false, epoca: 0, streamViejo: false};
+          conectado: false, epoca: 0, streamViejo: false, abismo: null};
 }
 
 export function paquete(texto, chatId, departamento = null) {
@@ -35,7 +35,7 @@ export function turnosDeHistorial(mensajes) {
 // el caso de la conexion cortada: el servidor lo manda tambien en medio de
 // un turno normal (ruta local sin fallback) y sigue con cost/done despues.
 const EVENTOS_DEL_STREAM = new Set(["chunk", "done", "meta", "cost", "chat",
-                                     "error"]);
+                                     "error", "abismo"]);
 
 export function aplicarEvento(estado, ev) {
   const e = {...estado, turnos: [...estado.turnos]};
@@ -53,6 +53,10 @@ export function aplicarEvento(estado, ev) {
   switch (ev.type) {
     case "thinking":
       e.pensando = true;
+      // un turno que murio sin `done` (socket caido) no deja el renglon del
+      // abismo vivo hasta el `done` del turno siguiente: el `thinking` del
+      // turno nuevo lo apaga, y `n` no cuenta desde un fantasma
+      e.abismo = null;
       break;
     case "chunk": {
       const ultimo = e.turnos.at(-1);
@@ -66,11 +70,30 @@ export function aplicarEvento(estado, ev) {
     }
     case "done": {
       e.pensando = false;
+      e.abismo = null;
       const ultimo = e.turnos.at(-1);
       if (ultimo && ultimo.abierto) {
         e.turnos[e.turnos.length - 1] = {...ultimo, abierto: false};
       }
       break;
+    }
+    case "abismo": {
+      // El pondering NO es un turno: si entrara a `turnos`, el proximo
+      // chunk abriria otra burbuja (el `case "chunk"` mira el ultimo turno
+      // abierto). Es un campo al lado. `n` cuenta las consultas del turno
+      // para que app.js distinga "segunda consulta" (reiniciar el reloj)
+      // de "repintado" (no reiniciarlo): este reductor no tiene reloj.
+      if (ev.fase === "pondering") {
+        e.abismo = {fase: "pondering", fuente: ev.fuente, verbo: ev.verbo || "",
+                    tamano: 0, motivo: "", viaje: null,
+                    n: (estado.abismo ? estado.abismo.n : 0) + 1};
+      } else if (ev.fase === "pescado" || ev.fase === "fallo") {
+        e.abismo = {fase: ev.fase, fuente: ev.fuente, verbo: "",
+                    tamano: ev.tamano || 0, motivo: ev.motivo || "",
+                    viaje: ev.viaje || null,
+                    n: estado.abismo ? estado.abismo.n : 1};
+      }
+      break;                // cualquier otra fase: fallo cerrado, no se toca nada
     }
     case "meta":
       if (ev.route) e.ruta = ev.route;
@@ -86,6 +109,7 @@ export function aplicarEvento(estado, ev) {
       break;
     case "error":
       e.pensando = false;
+      e.abismo = null;
       e.turnos.push({quien: "error", texto: "error: " + (ev.text || ""),
                      abierto: false});
       break;
@@ -96,6 +120,29 @@ export function aplicarEvento(estado, ev) {
       break;      // el /ws/chat manda mas cosas de las que este panel usa
   }
   return e;
+}
+
+const VERBOS = {memoria: "buscando en tu memoria", chats: "buscando en tus chats",
+                proyecto: "mirando el repo"};
+const MOTIVOS = {vacio: "no trajo nada", credencial: "esto no sale de la maquina",
+                 solo_hondo: "solo habia hondo", juez_local_caido: "el juez local no responde",
+                 tipo_desconocido: "tipo desconocido, no sale", error: "fallo la consulta"};
+
+/** El renglon del abismo, con los segundos contados por quien pinta. */
+export function textoDeAbismo(abismo, segundos) {
+  if (abismo.fase === "pondering") {
+    const verbo = abismo.verbo || VERBOS[abismo.fuente] || "consultando el abismo";
+    return `${verbo}... ${segundos} s`;
+  }
+  if (abismo.fase === "pescado") {
+    let nube = "";
+    if (abismo.viaje && abismo.viaje.destino === "nube") {
+      const tapados = (abismo.viaje.tapados || []).map(t => t.marcador).join(", ");
+      nube = ", viajo tapado a la nube" + (tapados ? ": " + tapados : "");
+    }
+    return `del abismo: ${abismo.fuente} (${abismo.tamano || 0} chars${nube})`;
+  }
+  return `el abismo (${abismo.fuente}): ${MOTIVOS[abismo.motivo] || abismo.motivo || "fallo"}`;
 }
 
 // El `WebSocket` real solo existe en el navegador; el parametro deja
@@ -152,7 +199,8 @@ export function crearChat(alCambiar, ConstructorWS = WebSocket) {
       estado = {...estado, chatId: chat.id,
                 turnos: turnosDeHistorial(chat.messages),
                 epoca: estado.epoca + 1,
-                pensando: false, ruta: null, modelo: null, costo_usd: 0,
+                pensando: false, abismo: null,
+                ruta: null, modelo: null, costo_usd: 0,
                 tokens: 0, costo_mm: 0, cuenta: null, streamViejo: true};
       alCambiar(estado);
     },

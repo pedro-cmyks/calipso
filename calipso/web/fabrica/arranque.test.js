@@ -115,7 +115,9 @@ function montarNavegador() {
   for (const id of ["app", "panel-chats", "lista-chats", "panel-centro",
                     "conversacion", "entrada", "texto", "panel-mapa",
                     "expandir", "tarjeta", "sin-fabrica", "pestanas",
-                    "avisos", "costo", "foco", "razonamiento", "empleado",
+                    "avisos", "costo", "foco", "razonamiento",
+                    "abismo", "abismo-texto", "abismo-viaje",
+                    "abismo-viaje-texto", "empleado",
                     "mesa", "plantel", "aparatos",
                     "badge-permisos", "badge-aparatos"]) {
     nodos.set(id, nodo(id));
@@ -661,4 +663,47 @@ test("cambiar el tipo reescribe el alcance en grande", () => {
   for (const f of caja.oyentes.get("change") || []) f({target: select});
   assert.equal(alcance.textContent, "Todo: la PWA completa, como la Ally",
                "el cartel del alcance quedo describiendo el tipo anterior");
+});
+
+// --- El renglon del abismo: fuera de la conversacion, y con cierre ------
+
+test("el pondering del abismo no agrega nodos a la conversacion y el chunk sigue en el mismo", () => {
+  socket.dice({type: "done"});
+  socket.dice({type: "thinking"});
+  socket.dice({type: "chunk", text: "Dejame ver "});
+  const nodoAbierto = conversacion.hijos.at(-1);
+  const cuantos = conversacion.hijos.length;
+  socket.dice({type: "abismo", fase: "pondering", fuente: "chats", verbo: "buscando en tus chats"});
+  const caja = nav.nodos.get("abismo");
+  const renglon = nav.nodos.get("abismo-texto");
+  assert.ok(!caja.classList.contains("oculto"), "el renglon del abismo no se mostro");
+  assert.ok(renglon.textContent.startsWith("buscando en tus chats..."), renglon.textContent);
+  assert.equal(conversacion.hijos.length, cuantos, "el pondering se pinto como turno");
+  socket.dice({type: "abismo", fase: "pescado", fuente: "chats", tamano: 40, viaje: {destino: "local"}});
+  socket.dice({type: "chunk", text: "y sigo"});
+  assert.equal(conversacion.hijos.at(-1), nodoAbierto, "la continuacion abrio otra burbuja");
+  assert.equal(nodoAbierto.textContent, "Dejame ver y sigo");
+  assert.equal(renglon.textContent, "del abismo: chats (40 chars)");
+  assert.ok(nav.nodos.get("abismo-viaje").classList.contains("oculto"), "en local no hay detalle del viaje");
+  socket.dice({type: "done"});
+  assert.ok(caja.classList.contains("oculto"), "done no apago el renglon");
+});
+
+test("con destino nube el renglon del abismo despliega el texto tapado", () => {
+  // spec seccion 9: el detalle desplegable con el texto tapado va en las
+  // DOS UIs; es la informacion verificable de que viajo (seccion 8.3)
+  socket.dice({type: "thinking"});
+  socket.dice({type: "abismo", fase: "pondering", fuente: "chats"});
+  const detalle = nav.nodos.get("abismo-viaje");
+  assert.ok(detalle.classList.contains("oculto"), "el detalle se mostro antes de pescar");
+  socket.dice({type: "abismo", fase: "pescado", fuente: "chats", tamano: 40,
+               viaje: {destino: "nube", tapados: [{marcador: "[ID_1]", tipo: "identidad"}],
+                       texto_tapado: "hola [ID_1]"}});
+  assert.ok(!detalle.classList.contains("oculto"), "el detalle del viaje no se mostro");
+  assert.equal(nav.nodos.get("abismo-viaje-texto").textContent, "hola [ID_1]");
+  assert.equal(nav.nodos.get("abismo-texto").textContent,
+               "del abismo: chats (40 chars, viajo tapado a la nube: [ID_1])");
+  socket.dice({type: "done"});
+  assert.ok(detalle.classList.contains("oculto"), "done no apago el detalle");
+  assert.ok(nav.nodos.get("abismo").classList.contains("oculto"), "done no apago el renglon");
 });
