@@ -548,6 +548,41 @@ async def auth_guard(request: Request, call_next):
     return _sin_credencial(path)
 
 
+async def _ws_autorizado(ws: WebSocket) -> dict | bool | None:
+    """La credencial del handshake: el punto 6 del guard, el unico que no
+    vive en `auth_guard` -- ese es middleware http y los websockets no lo
+    cruzan. Sin esta funcion los ws se quedaban con "cookie == TOKEN", que
+    desde afuera es justo lo que el invariante 2 prohibe.
+
+    Devuelve el registro de la sesion cuando entro por sesion (el corte por
+    generaciones necesita saber DE QUIEN es el socket), `True` cuando entro
+    con el token desde la propia maquina, y None cuando no entra. La sesion
+    se mira primero para que el que trae las dos cosas quede identificado
+    como aparato y no como maquina.
+
+    Que ws abre cada tipo no se decide aca: lo dice la tabla de alcances
+    (`/ws/mapa` figura en la del tablero; a `/ws/chat` solo lo cubre el `*`
+    del navegador). Una segunda copia de esa tabla en el handshake se
+    desincronizaria sola.
+    """
+    host = ws.client.host if ws.client else ""
+    if (galleta_sesion := ws.cookies.get(COOKIE_SESION)):
+        # a un hilo por lo mismo que en el guard: `resolver` puede escribir
+        # (renueva `ultima_vez`, mata a la dormida) y el flock jamas corre
+        # en el event loop
+        ses = await asyncio.to_thread(sesiones.resolver, galleta_sesion)
+        # el handshake es un GET. `.get("tipo")` y no `ses["tipo"]`: el
+        # registro sale del disco y `permite` es fail-closed hasta con el
+        # campo ausente -- un KeyError aca desarmaria esa misma defensa
+        if ses and sesiones.permite(ses.get("tipo"), ws.url.path, "GET"):
+            return ses
+    if _valid(ws.cookies.get(COOKIE)) and _es_loopback(host):
+        # el token identifica a la MAQUINA de Pedro, asi que vale solo desde
+        # ella (invariante 2): un aparato remoto entra por sesion o no entra
+        return True
+    return None
+
+
 _TOTP_DISABLED = os.environ.get("CALIPSO_NO_TOTP", "").strip().lower() in ("1", "true", "yes")
 
 
@@ -2840,8 +2875,10 @@ _ultimo_pedido: dict[str, str] = {}
 
 @app.websocket("/ws/chat")
 async def ws_chat(ws: WebSocket) -> None:
-    if not _valid(ws.cookies.get(COOKIE)):
-        await ws.close(code=1008)  # polÃƒÂ­tica violada: sin token vÃƒÂ¡lido
+    # de quien es este socket (el corte por generaciones lo va a releer)
+    sesion = await _ws_autorizado(ws)
+    if not sesion:
+        await ws.close(code=1008)   # politica violada: sin credencial
         return
     await ws.accept()
     active_goal = goals.active(str(ROOT))
@@ -6720,8 +6757,10 @@ async def ws_mapa(ws: WebSocket) -> None:
     tocar el event loop desde otro hilo es la clase de cosa que anda hasta
     que no. El costo es un cuarto de segundo de latencia para ver pensar a
     un agente."""
-    if not _valid(ws.cookies.get(COOKIE)):
-        await ws.close(code=1008)   # politica violada: sin token valido
+    # de quien es este socket (el corte por generaciones lo va a releer)
+    sesion = await _ws_autorizado(ws)
+    if not sesion:
+        await ws.close(code=1008)   # politica violada: sin credencial
         return
     await ws.accept()
     if EL_PULSO is None:

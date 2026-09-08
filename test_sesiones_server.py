@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 test_sesiones_server.py — El alta de aparatos y el guard que resuelve
-sesiones (spec de la capa de sesion, seccion 3 "El guard" puntos 1-5 y
+sesiones (spec de la capa de sesion, seccion 3 "El guard" puntos 1-6 y
 "Alta, revocacion y corte"; invariantes 1, 2, 3, 4, 6 y 8).
 
 Lo que se prueba aca no es el almacen (eso es test_sesiones.py) sino la
@@ -13,8 +13,10 @@ regalaria a un martillador anonimo la palanca para dejar a Pedro afuera de su
 propio TOTP.
 
 El host remoto se simula con `httpx.ASGITransport(client=(ip, puerto))`: el
-`TestClient` de Starlette siempre dice "testclient", que `_es_loopback`
-acepta, asi que con el solo no se puede escribir un test de "desde afuera".
+`TestClient` de Starlette dice "testclient" por default, que `_es_loopback`
+acepta, asi que sin eso no se puede escribir un test de "desde afuera". Los
+websockets van por el otro camino -`websocket_connect` no es un request de
+httpx-: ahi el host remoto se pone en `TestClient(..., client=(ip, puerto))`.
 """
 import asyncio
 import time
@@ -22,6 +24,7 @@ import time
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 import calipso.server as srv
 from calipso import sesiones
@@ -620,3 +623,76 @@ def test_una_sesion_sin_tipo_en_el_disco_no_abre_nada():
                cookies={srv.COOKIE_SESION: id_sesion})
     assert r.status_code == 403, r.text
     assert r.json() == {"detail": "fuera del alcance del aparato"}
+
+
+# --- el guard: los websockets (punto 6, invariante 2) -----------------------
+
+def _ws(ip: str, cookies: dict) -> TestClient:
+    """Un cliente de websocket con host propio. `websocket_connect` no viaja
+    por `httpx.ASGITransport` -no es un request http-, asi que el `client=`
+    del TestClient es el unico lugar donde se le puede poner un host remoto a
+    un handshake."""
+    return TestClient(srv.app, client=(ip, 4321), cookies=cookies)
+
+
+def _rebota(c: TestClient, ruta: str) -> None:
+    """El handshake muere con 1008 antes de aceptar: el cierre llega en el
+    `__enter__`, no en el primer receive."""
+    with pytest.raises(WebSocketDisconnect) as caida:
+        with c.websocket_connect(ruta):
+            pass
+    assert caida.value.code == 1008
+
+
+def _entra(c: TestClient, ruta: str) -> None:
+    with c.websocket_connect(ruta):
+        pass
+
+
+def test_el_ws_del_chat_con_la_cookie_token_remota_se_cierra():
+    """EL canario del invariante 2. Los ws no pasan por `auth_guard`, asi que
+    hasta esta tarea la cookie del token abria el chat desde cualquier host:
+    el guard http ya la rechazaba de afuera y el handshake no."""
+    _rebota(_ws(REMOTO, {srv.COOKIE: srv.TOKEN}), "/ws/chat")
+
+
+def test_el_ws_del_mapa_con_la_cookie_token_remota_se_cierra():
+    _rebota(_ws(REMOTO, {srv.COOKIE: srv.TOKEN}), "/ws/mapa")
+
+
+def test_los_ws_con_el_token_desde_loopback_siguen_entrando():
+    """La otra mitad del invariante 2: la Ally no perdio nada."""
+    c = _ws("127.0.0.1", {srv.COOKIE: srv.TOKEN})
+    _entra(c, "/ws/chat")
+    _entra(c, "/ws/mapa")
+
+
+def test_una_sesion_navegador_remota_entra_a_los_dos_ws():
+    """Lo que hacia incoherente a la fase 1 sin esta tarea: la PWA entra por
+    /login con TOTP, recibe su sesion... y se quedaba sin chat."""
+    c = _ws(REMOTO, {srv.COOKIE_SESION: _sesion("navegador")})
+    _entra(c, "/ws/chat")
+    _entra(c, "/ws/mapa")
+
+
+def test_una_sesion_tablero_entra_al_mapa_y_no_al_chat():
+    """Quien decide es la tabla de alcances, no el handshake: el `tablero`
+    tiene `/ws/mapa` con GET y nada mas."""
+    c = _ws(REMOTO, {srv.COOKIE_SESION: _sesion("tablero")})
+    _entra(c, "/ws/mapa")
+    _rebota(c, "/ws/chat")
+
+
+def test_una_sesion_lector_no_abre_ningun_ws():
+    c = _ws(REMOTO, {srv.COOKIE_SESION: _sesion("lector")})
+    _rebota(c, "/ws/chat")
+    _rebota(c, "/ws/mapa")
+
+
+def test_una_sesion_revocada_no_abre_un_ws_nuevo():
+    """Cortar los ws que YA estaban vivos es otra tarea (el corte por
+    generaciones); lo que esto sostiene es que la sesion muerta no abre uno."""
+    c = _ws(REMOTO, {srv.COOKIE_SESION: _sesion("navegador")})
+    sesiones.revocar(_hash_de("Aparato de prueba"))
+    _rebota(c, "/ws/chat")
+    _rebota(c, "/ws/mapa")
