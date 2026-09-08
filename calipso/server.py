@@ -437,6 +437,21 @@ def _sin_credencial(path: str) -> Response:
     return RedirectResponse(url="/login", status_code=303)
 
 
+def _expirar_token_viajero(resp: Response, request: Request,
+                           host: str) -> Response:
+    """La limpieza del punto 4 del guard, tambien cuando gana la SESION. Esas
+    cookies-token se plantaron con un anio de vida cuando el token si
+    viajaba; si el navegador remoto ademas trae una sesion viva, la rama del
+    token no llega a mirarlas nunca y el TOKEN seguiria saliendo a la red en
+    cada request hasta 2027 -- que es exactamente la poblacion que el punto 4
+    queria limpiar (el que entro por /login despues del upgrade). No abre
+    oraculo: se borra solo lo que el cliente YA tiene, y quien manda una
+    sesion viva ya entro."""
+    if not _es_loopback(host) and _valid(request.cookies.get(COOKIE)):
+        resp.delete_cookie(COOKIE)
+    return resp
+
+
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
     path = request.url.path
@@ -490,9 +505,9 @@ async def auth_guard(request: Request, call_next):
             if not sesiones.permite(ses.get("tipo"), path, request.method):
                 # el alcance aplica a TODA ruta, no solo a /api (invariante
                 # 3): el `tablero` que pide /fabrica/algo tambien rebota
-                return JSONResponse(
+                return _expirar_token_viajero(JSONResponse(
                     {"detail": "fuera del alcance del aparato"},
-                    status_code=403)
+                    status_code=403), request, host)
             request.state.sesion = ses
             resp = await call_next(request)
             if ses.get("renovada"):
@@ -501,7 +516,7 @@ async def auth_guard(request: Request, call_next):
                 # del almacen re-planta la cookie con max_age fresco
                 resp.set_cookie(COOKIE_SESION, galleta_sesion, httponly=True,
                                 samesite="lax", max_age=SESION_COOKIE_MAX_AGE)
-            return resp
+            return _expirar_token_viajero(resp, request, host)
     galleta_token = request.cookies.get(COOKIE)
     if _valid(galleta_token) or _valid(request.query_params.get("token")):
         # C8 (revision de seguridad 2026-09-07) y despues el invariante 2 de

@@ -439,6 +439,47 @@ def test_la_cookie_token_sigue_entrando_desde_loopback():
     assert "set-cookie" not in r.headers
 
 
+def _token_vencido(resp: httpx.Response) -> bool:
+    """La cookie del token, vaciada y con Max-Age=0, en el Set-Cookie."""
+    return any(g.startswith('calipso_token=""') and "Max-Age=0" in g
+               and "Path=/" in g
+               for g in resp.headers.get_list("set-cookie"))
+
+
+def test_la_cookie_token_remota_muere_tambien_con_una_sesion_viva():
+    """La poblacion que el punto 4 queria limpiar es justamente esta: el
+    navegador remoto que YA tenia la cookie-token de un anio y que despues
+    entra por /login. Si la sesion gana el guard y nadie mira la otra cookie,
+    ese navegador sigue mandando el TOKEN por la LAN hasta 2027."""
+    r = _pedir(REMOTO, "GET", "/api/tree",
+               cookies={srv.COOKIE_SESION: _sesion("navegador"),
+                        srv.COOKIE: srv.TOKEN})
+    assert r.status_code == 200, r.text
+    assert _token_vencido(r), r.headers.get_list("set-cookie")
+
+
+def test_la_cookie_token_remota_muere_tambien_en_el_403_del_alcance():
+    """El aparato fuera de alcance rebota, pero el token que traia colgando
+    tampoco tiene por que seguir viajando."""
+    r = _pedir(REMOTO, "GET", "/api/tree",
+               cookies={srv.COOKIE_SESION: _sesion("lector"),
+                        srv.COOKIE: srv.TOKEN})
+    assert r.status_code == 403, r.text
+    assert r.json() == {"detail": "fuera del alcance del aparato"}
+    assert _token_vencido(r), r.headers.get_list("set-cookie")
+
+
+def test_una_sesion_desde_loopback_no_le_toca_la_cookie_token():
+    """El canario del ORIGEN: la limpieza es para el token que salio a la
+    red. Un navegador de la propia maquina con las dos cookies no puede
+    perder la del token por haber usado una sesion."""
+    r = _pedir("127.0.0.1", "GET", "/api/tree",
+               cookies={srv.COOKIE_SESION: _sesion("navegador"),
+                        srv.COOKIE: srv.TOKEN})
+    assert r.status_code == 200, r.text
+    assert "set-cookie" not in r.headers
+
+
 # --- el guard: /login remoto crea sesion, no reparte el token ---------------
 
 def test_el_login_remoto_deja_sesion_y_no_planta_el_token(monkeypatch):
