@@ -473,12 +473,10 @@ function avisarEnPerillas(texto) {
 // se enchufen (calipso/permisos/motor.py), asi que el lugar donde se
 // contesta tambien tiene que ser uno solo.
 //
-// El badge de aca (#badge-submesa, junto a "Permisos") es lo que hace que
-// Pedro se entere SIN buscarlo: si algo queda esperando su respuesta
-// mientras esta mirando el chat o el mapa, el numero ya esta puesto cuando
-// llegue. Desde la capa de sesion ese numero ya no es solo de permisos:
-// tambien cuenta los aparatos que estan golpeando la puerta (ver
-// pintarBadgeSubmesa mas abajo).
+// El badge de aca (#badge-permisos, adentro del boton "Permisos") es lo que
+// hace que Pedro se entere SIN buscarlo: si algo queda esperando su
+// respuesta mientras esta mirando el chat o el mapa, el numero ya esta
+// puesto cuando llegue.
 //
 // La pestana global YA NO la pinta esta funcion: la pinta pintarInbox(),
 // con la cuenta de las CUATRO bandejas -que es superconjunto de esta sola.
@@ -486,29 +484,31 @@ function avisarEnPerillas(texto) {
 // valores distintos cada 60 segundos (el intervalo de cada una); un solo
 // dueno por badge evita eso.
 const cajaPermisos = document.getElementById("permisos");
-const badgeSubmesa = document.getElementById("badge-submesa");
+const badgePermisos = document.getElementById("badge-permisos");
 let mensajePermisos = null;
 
-// #badge-submesa tiene DOS aportantes -las solicitudes de permisos y los
-// aparatos que estan golpeando la puerta, las dos cosas de esta mesa que
-// esperan un si o un no de Pedro- y un solo dueno que lo escribe. Que cada
-// pintarX escribiera el elemento por su cuenta es el bug que ya paso con el
-// badge de la pestana global: el numero parpadeaba entre dos valores cada
-// 60 segundos, uno por intervalo. Cada bandeja deja su cuenta aca y una
-// sola funcion la suma.
-let pendientesDePermisos = 0;
-let golpesDeAparatos = 0;
-
-function pintarBadgeSubmesa() {
-  if (!badgeSubmesa) return;
-  const n = pendientesDePermisos + golpesDeAparatos;
-  badgeSubmesa.textContent = String(n);
-  badgeSubmesa.classList.toggle("oculto", n === 0);
+/**
+ * Un badge por sub-pestana y una sola bandeja escribiendo cada uno.
+ *
+ * Las dos reglas son la misma cosa vista de los dos lados. Dos bandejas
+ * sumadas en un badge lo dejan al lado de UNA de ellas: cero permisos
+ * pendientes y un aparato golpeando prenderian el "1" junto a "Permisos",
+ * Pedro abriria esa bandeja vacia y el golpe -que dura GOLPE_TTL_MIN, 10
+ * minutos- se venceria mientras busca donde no es. Y dos funciones
+ * escribiendo el mismo elemento lo hacen parpadear entre dos valores cada
+ * 60 segundos, uno por intervalo (ya paso con el badge de la pestana
+ * global). Un numero que no dice donde esta lo que espera es peor que
+ * ninguno.
+ */
+function pintarBadge(badge, n) {
+  // el badge puede no estar: arranque.test.js monta un DOM de mentira
+  if (!badge) return;
+  badge.textContent = String(n);
+  badge.classList.toggle("oculto", n === 0);
 }
 
 function pintarBadgeDePermisos(datos) {
-  pendientesDePermisos = contadorPendientes(datos);
-  pintarBadgeSubmesa();
+  pintarBadge(badgePermisos, contadorPendientes(datos));
 }
 
 async function pintarPermisos() {
@@ -621,6 +621,9 @@ cajaPermisos?.addEventListener("submit", async evento => {
 // Revocar si entra desde una sesion `navegador` (D3: cortar un aparato
 // robado desde otro aparato).
 const cajaAparatos = document.getElementById("aparatos");
+// el badge de ESTA sub-pestana (#badge-aparatos, adentro del boton
+// "Aparatos"): los golpes se cuentan al lado de la bandeja que los tiene
+const badgeAparatos = document.getElementById("badge-aparatos");
 let mensajeAparatos = null;
 
 async function pintarAparatos() {
@@ -629,8 +632,7 @@ async function pintarAparatos() {
   if (!cajaAparatos) return;
   const sinLista = texto => {
     cajaAparatos.innerHTML = `<div class="vacio">${texto}</div>`;
-    golpesDeAparatos = 0;
-    pintarBadgeSubmesa();
+    pintarBadge(badgeAparatos, 0);
   };
   try {
     const r = await fetch("/api/aparatos");
@@ -646,8 +648,7 @@ async function pintarAparatos() {
     }
     const datos = await r.json();
     cajaAparatos.innerHTML = textoDeAparatos(datos, mensajeAparatos);
-    golpesDeAparatos = contadorDeAparatos(datos);
-    pintarBadgeSubmesa();
+    pintarBadge(badgeAparatos, contadorDeAparatos(datos));
   } catch (_) {
     sinLista("No se pudo leer la lista de aparatos.");
   }

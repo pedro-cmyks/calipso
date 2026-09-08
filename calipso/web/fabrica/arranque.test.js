@@ -116,7 +116,8 @@ function montarNavegador() {
                     "conversacion", "entrada", "texto", "panel-mapa",
                     "expandir", "tarjeta", "sin-fabrica", "pestanas",
                     "avisos", "costo", "foco", "razonamiento", "empleado",
-                    "mesa", "plantel", "aparatos"]) {
+                    "mesa", "plantel", "aparatos",
+                    "badge-permisos", "badge-aparatos"]) {
     nodos.set(id, nodo(id));
   }
   const pestanas = [nodo("", "button"), nodo("", "button")];
@@ -175,6 +176,16 @@ function montarNavegador() {
     if (String(url).includes("/activate")) {
       return Promise.resolve({ok: true, json: async () => (
         {id: "c9", title: "otro", messages: [{role: "user", text: "viejo"}]})});
+    }
+    // la lista de aparatos contesta con UN golpe vigente y nada mas: es el
+    // caso que separa los badges de la submesa (cero permisos pendientes,
+    // un aparato esperando en la puerta). El endsWith deja afuera a
+    // /aprobar y a /{hash}/revocar, que son POST y contestan {ok: true}.
+    if (String(url).endsWith("/api/aparatos")) {
+      return Promise.resolve({ok: true, json: async () => ({aparatos: [
+        {hash_id: null, id_pedido: "ped_1", aparato: "e-reader",
+         tipo: "lector", creada: "2026-09-08T10:00:00", ultima_vez: null,
+         estado: "golpeando", efectivo: "golpeando"}]})});
     }
     return Promise.resolve({ok: true,
                             json: async () => ({activa: true,
@@ -524,6 +535,29 @@ test("con el id sumado, la lista de aparatos se pinta sola", async () => {
   assert.ok(caja.innerHTML, "pintarAparatos nunca escribio nada");
   assert.ok(nav.pedidos.some(u => u.includes("/api/aparatos")),
             "no se pidio la lista de aparatos");
+});
+
+// Un badge dice "hay algo esperandote ACA". Si la cuenta de los golpes se
+// escribiera en el badge de otra bandeja, Pedro abriria esa, la encontraria
+// vacia, y el golpe -que vive 10 minutos- se venceria mientras busca donde
+// no es: lo contrario de enterarse sin buscarlo. Cada sub-pestana escribe
+// SOLO su propio badge.
+test("el golpe prende el badge de Aparatos y no toca el de Permisos",
+     async () => {
+  await new Promise(r => setTimeout(r, 0));
+  const badgeAparatos = nav.nodos.get("badge-aparatos");
+  const badgePermisos = nav.nodos.get("badge-permisos");
+  assert.equal(badgeAparatos.textContent, "1",
+               "el golpe no llego al badge de su propia sub-pestana: quedo " +
+               `en ${JSON.stringify(badgeAparatos.textContent)}`);
+  assert.equal(badgeAparatos.clases.has("oculto"), false,
+               "el badge de Aparatos quedo oculto con un golpe esperando");
+  // este DOM de mentira no declara "permisos", asi que pintarPermisos ni
+  // corre: si el badge de Permisos tiene algo escrito, se lo escribio la
+  // bandeja de aparatos, que es exactamente el numero que apunta a la
+  // bandeja equivocada
+  assert.equal(badgePermisos.textContent, "",
+               "la cuenta de los golpes se escribio en el badge de Permisos");
 });
 
 test("aprobar arma el POST con el tipo del selector, no con el sugerido",
