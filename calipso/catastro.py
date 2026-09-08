@@ -499,3 +499,15 @@ def obtener(nombre: str) -> dict[str, Any] | None:
         if p["nombre"].lower() == nombre_norm:
             return p
     return None
+
+
+def nombres() -> list[str]:
+    """Los nombres del catastro SIN escanear jamas: para el contrato del
+    abismo, que corre en cada turno y en tests con home vacio. Un catastro
+    que todavia no existe da una lista vacia; el escaneo de la primera vez
+    sigue siendo de `cargar()` (lo dispara `proyectos_brief` en el mismo
+    turno). Orden: el de `cargar`, por `visto` descendente -- los mas usados
+    primero, que es lo que el recorte del contrato quiere conservar."""
+    if not _file().exists():
+        return []
+    return [p["nombre"] for p in _cargar_json()["proyectos"]]

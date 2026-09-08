@@ -80,6 +80,7 @@ from calipso import librarian  # noqa: E402
 from calipso import orchestrator  # noqa: E402
 from calipso.privacidad import conversacion, redaccion  # noqa: E402
 from calipso.privacidad import nube as privacidad_nube  # noqa: E402
+from calipso.abismo import contrato as abismo_contrato  # noqa: E402
 from calipso.abismo import filtro as abismo_filtro  # noqa: E402
 from calipso.abismo import marca as abismo_marca  # noqa: E402
 from calipso.abismo import turno as abismo_turno  # noqa: E402
@@ -2715,14 +2716,37 @@ _SISTEMA_NUBE_MINIMO = (
 )
 
 
+# la linea que acompana al contrato en /nube: lo que suba del abismo ya paso
+# por el viaje y puede traer los mismos marcadores que el mensaje.
+_NUBE_ABISMO_MARCADORES = (
+    "Lo que suba del abismo (el bloque \"Lo que subio del abismo\") puede "
+    "traer marcadores [TIPO_N] como el mensaje: son datos tapados por "
+    "privacidad, usalos tal cual y no intentes adivinarlos."
+)
+
+
+def _sistema_nube() -> str:
+    """El system de un turno /nube tapado: el minimo de siempre + el contrato
+    del abismo en su variante SIN nombres de repos (spec seccion 8.1: cero
+    datos derivados de Pedro; el modelo pide por nombre y el nombre lo trae
+    el mensaje, si lo trae) + la linea de los marcadores. En produccion el
+    contrato va segundo, detras del minimo, no tercero de ocho secciones
+    como en local; no se re-mide (los modelos de nube son mas capaces que
+    el 7b con el que se calibro la letra)."""
+    return "\n\n".join([_SISTEMA_NUBE_MINIMO,
+                        abismo_contrato.bloque_contrato(()),
+                        _NUBE_ABISMO_MARCADORES])
+
+
 def _sistema_del_turno(chat_msg: str, runtime: str, features: dict,
                        a_la_nube_tapado: bool) -> str:
     """El system del turno. Si el turno va a la nube tapado (/nube), NO se
     arma el contexto completo (recuerdos, economia, catastro) porque llevaria
-    datos sensibles sin tapar a la nube: se usa un system minimo. Si no, el
-    contexto de siempre."""
+    datos sensibles sin tapar a la nube: se usa el system minimo de nube, que
+    desde el abismo lleva el contrato sin nombres (`_sistema_nube`). Si no,
+    el contexto de siempre."""
     if a_la_nube_tapado:
-        return _SISTEMA_NUBE_MINIMO
+        return _sistema_nube()
     return _build_context(chat_msg, runtime, features)
 
 
