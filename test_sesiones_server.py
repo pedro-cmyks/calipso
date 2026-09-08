@@ -650,6 +650,32 @@ def test_setup_con_el_secreto_escrito_sigue_abierto_a_la_sesion(tmp_path,
     assert "JBSWY3DPEHPK3PXP" not in r.text
 
 
+def test_el_checklist_no_ofrece_abrir_setup_mientras_falte_el_secreto(
+        tmp_path, monkeypatch):
+    """El unico boton que el server le ofrecia a Pedro para enrolar el
+    autenticador apuntaba a `/setup` a secas, que desde la rama exige
+    `?token=` en la query (punto 1 del guard): el clic desde la Ally, con la
+    cookie-token, daba 303 a /login. El detail ya decia el camino correcto;
+    el boton lo contradecia. Mientras el secreto falte, el item es una
+    instruccion y no un enlace."""
+    monkeypatch.setattr(srv, "_TOTP_SECRET_FILE", tmp_path / "totp_secret")
+    r = _local().get("/api/launch/checklist")
+    assert r.status_code == 200, r.text
+    item = next(i for i in r.json()["items"] if i["key"] == "totp")
+    assert item["ok"] is False
+    assert item["action"] == "", item
+    assert "/setup?token=" in item["detail"]
+    # y lo que ese boton habria hecho, para que conste: la cookie-token sola
+    # no abre /setup mientras falte el secreto
+    r = _local().get("/setup", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/login"
+    # con el secreto escrito el item cierra solo
+    (tmp_path / "totp_secret").write_text("JBSWY3DPEHPK3PXP", encoding="utf-8")
+    item = next(i for i in _local().get("/api/launch/checklist").json()["items"]
+                if i["key"] == "totp")
+    assert item["ok"] is True
+
+
 # --- el guard: la cookie de sesion que se usa no caduca ---------------------
 
 def test_la_sesion_usada_a_diario_renueva_su_cookie(monkeypatch):

@@ -3906,7 +3906,12 @@ def api_launch_checklist() -> dict:
             # con el token en la URL y desde la propia maquina: mientras
             # el secreto falte, /setup no se sirve de otra forma
             else "Abre /setup?token=<el token> en la propia maquina.",
-            "/setup"),
+            # sin boton mientras falte el secreto: un "Abrir" a /setup a
+            # secas rebota a /login (la cookie-token no abre la ventana del
+            # punto 1) y contradice el detail. El token no se pone en la
+            # URL del boton: dejaria `?token=` en el historial, que es lo
+            # que C4 saco. Con el secreto escrito el enlace vuelve.
+            "/setup" if _TOTP_SECRET_FILE.exists() else None),
         _launch_item(
             "pwa", "PWA celular", manifest_ok,
             "Manifest y service worker presentes." if manifest_ok
