@@ -1001,12 +1001,23 @@ async def aparatos_rechazar(request: Request):
 
 
 @app.get("/api/aparatos")
-def aparatos_listar():
+def aparatos_listar(request: Request):
     """Lo que muestra /fabrica, con el estado EFECTIVO del reloj (una sesion
     dormida ya figura muerta sin esperar a que alguien la resuelva).
     `def` y no `async def` porque no hay nada que esperar: FastAPI corre el
-    codigo sincrono en su threadpool."""
-    return {"aparatos": sesiones.listar()}
+    codigo sincrono en su threadpool.
+
+    El `id_pedido` de los golpes que esperan sale solo hacia loopback: la
+    Ally es la que aprueba y rechaza por body. Una sesion `navegador`
+    remota ve la lista (D3: revocar desde otro aparato) pero no aprueba ni
+    rechaza, asi que el id no le sirve para nada legitimo -- y si es la
+    credencial de un canje, le sirve para robarse la sesion que Pedro
+    aprobo para otro aparato."""
+    filas = sesiones.listar()
+    if not _es_loopback(request.client.host if request.client else ""):
+        for fila in filas:
+            fila["id_pedido"] = None
+    return {"aparatos": filas}
 
 
 @app.post("/api/aparatos/{hash_id}/revocar")

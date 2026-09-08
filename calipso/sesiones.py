@@ -534,13 +534,19 @@ def resolver(id_en_claro: str | None) -> dict | None:
 
 def listar() -> list[dict]:
     """Todo lo que hay, con el estado EFECTIVO derivado del reloj. Nunca
-    escribe: /fabrica no miente, pero tampoco decide. Incluye `id_pedido`
-    porque la UI aprueba por body, y el `hash_id` porque es con lo que se
-    revoca (un hash no es una credencial)."""
+    escribe: /fabrica no miente, pero tampoco decide. Incluye el `hash_id`
+    porque es con lo que se revoca (un hash no es una credencial), y el
+    `id_pedido` SOLO mientras el golpe espera: la UI aprueba y rechaza por
+    body y lo necesita ahi. Despues es la credencial del canje -una
+    aprobacion sin canjear es una sesion lista con el tipo que Pedro
+    eligio- y no sale por ningun listado: el unico que la necesita es el
+    aparato que golpeo, que ya la tiene."""
     ahora = _reloj()
     salida = []
     for registro in _leer()["sesiones"]:
         fila = dict(registro)
         fila["efectivo"] = _efectivo(registro, ahora)
+        if fila["efectivo"] != ESTADO_GOLPEANDO:
+            fila["id_pedido"] = None
         salida.append(fila)
     return salida

@@ -439,6 +439,41 @@ def test_una_sesion_tablero_no_ve_la_lista_de_aparatos():
     assert r.json() == {"detail": "fuera del alcance del aparato"}
 
 
+def test_el_id_pedido_solo_lo_ve_la_ally_y_solo_mientras_el_golpe_espera():
+    """H1 de la ronda adversaria: una sesion `navegador` remota leia
+    `GET /api/aparatos`, sacaba el `id_pedido` de una aprobacion que el
+    lector todavia no habia canjeado y lo canjeaba ella: se llevaba la
+    cookie con el tipo que Pedro eligio, el lector recibia 404, y la sesion
+    robada -con el nombre del lector- sobrevivia a la revocacion del
+    navegador. No es escalada (ya tenia `*`): es persistencia invisible.
+
+    Dos capas: `listar` no devuelve el id fuera de `golpeando`, y el endpoint
+    solo lo incluye desde loopback (la Ally aprueba y rechaza por body; el
+    navegador no aprueba ni rechaza, no le sirve para nada)."""
+    id_pedido = _golpe()
+    navegador = {srv.COOKIE_SESION: _sesion("navegador")}
+
+    def _ids(resp):
+        return {f["aparato"]: f["id_pedido"] for f in resp.json()["aparatos"]}
+
+    # mientras golpea: la Ally lo ve, el navegador remoto no
+    assert _ids(_local().get("/api/aparatos"))["Lector de Pedro"] == id_pedido
+    remoto = _pedir(REMOTO, "GET", "/api/aparatos", cookies=navegador)
+    assert remoto.status_code == 200, remoto.text
+    assert _ids(remoto) == {"Lector de Pedro": None, "Aparato de prueba": None}
+    # aprobado y sin canjear: ya nadie, ni la Ally
+    assert _local().post("/api/aparatos/aprobar",
+                         json={"id_pedido": id_pedido,
+                               "tipo": "tablero"}).status_code == 200
+    assert _ids(_local().get("/api/aparatos"))["Lector de Pedro"] is None
+    assert _ids(_pedir(REMOTO, "GET", "/api/aparatos",
+                       cookies=navegador))["Lector de Pedro"] is None
+    # y el aparato legitimo, que es el unico que lo tiene, canjea normal
+    r = _postear(REMOTO, "/api/aparatos/canjear", {"id_pedido": id_pedido})
+    assert r.status_code == 200, r.text
+    assert r.json()["tipo"] == "tablero"
+
+
 def test_una_aprobacion_sin_canjear_figura_viva_y_sin_hash():
     """La forma exacta que /fabrica muestra como "aprobado, esperando al
     aparato": el hash nace en el CANJE, asi que entre el si de Pedro y la

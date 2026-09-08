@@ -216,6 +216,36 @@ def test_hash_de_es_el_hash_con_el_que_el_almacen_conoce_a_la_sesion(ruta, reloj
     assert id_claro not in sesiones.hash_de(id_claro)
 
 
+def test_listar_solo_publica_el_id_pedido_mientras_el_golpe_espera(ruta,
+                                                                  reloj):
+    """El `id_pedido` es la credencial del canje (el 404 de canjear no lo
+    repite por eso). `listar` lo incluia en TODAS las filas, tambien en la
+    viva sin hash de una aprobacion que el aparato todavia no canjeo: quien
+    leyera la lista en esos segundos se llevaba la sesion que Pedro aprobo
+    para otro, con el nombre del otro. Solo lo necesita la UI mientras el
+    golpe espera (aprueba y rechaza por body); despues, nadie."""
+    pedido = sesiones.golpear("Musnap Neo C", "lector")["id_pedido"]
+    assert sesiones.listar()[0]["id_pedido"] == pedido
+    sesiones.aprobar(pedido, "tablero")
+    fila = sesiones.listar()[0]
+    assert fila["efectivo"] == "viva" and fila["hash_id"] is None
+    assert fila["id_pedido"] is None, "la credencial del canje salio por la lista"
+    # el archivo lo sigue teniendo: el canje del aparato legitimo funciona
+    assert sesiones.canjear(pedido)
+    # tampoco sale el de un golpe que ya vencio ni el de un rechazado
+    def _filas():
+        return {s["aparato"]: (s["efectivo"], s["id_pedido"])
+                for s in sesiones.listar()}
+    sesiones.golpear("tarde", "lector")
+    reloj[0] += sesiones.GOLPE_TTL_MIN * MIN
+    assert _filas() == {"Musnap Neo C": ("viva", None),
+                        "tarde": ("caduca", None)}
+    # (el golpe siguiente poda al vencido: es la escritura en que molesta)
+    sesiones.rechazar(sesiones.golpear("no", "lector")["id_pedido"])
+    assert _filas() == {"Musnap Neo C": ("viva", None),
+                        "no": ("rechazada", None)}
+
+
 def test_listar_reporta_el_estado_efectivo_sin_escribir(ruta, reloj):
     vivir()
     pendiente = sesiones.golpear("otro", "lector")["id_pedido"]
