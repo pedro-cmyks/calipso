@@ -282,6 +282,8 @@
   .thinking { align-self: flex-start; color: var(--amber); font-size: 12.5px;
               font-style: italic; padding: 2px 6px; }
   .thinking::after { content: "…"; }
+  .abismo { align-self: flex-start; color: var(--accent2); font-size: 12.5px;
+            font-style: italic; padding: 2px 6px; }
   .proposal-card { align-self: stretch; background: #1a1b23; border: 1px solid var(--accent-dim, #355);
                    border-radius: 12px; padding: 0; overflow: hidden; max-width: 100%; }
   .proposal-header { display: flex; justify-content: space-between; align-items: center;
@@ -2173,6 +2175,7 @@ function renderHistory(chat) {
   currentChatId = chat?.id || currentChatId;
   messages.innerHTML = "";
   botEl = null;
+  stopAbismo();
   processEls.clear(); agentEls.clear();
   for (const msg of (chat?.messages || [])) {
     addMsg(msg.role === "user" ? "user" : "bot", msg.text || "");
@@ -2353,7 +2356,15 @@ function connect() {
       if (m.why) t += ` - ${m.why}`;
       addMsg("meta", t);
     } else if (m.type === "steered") {
-      stopThinking(); addMsg("meta", "interrumpido"); botEl = null;
+      stopThinking(); stopAbismo(); addMsg("meta", "interrumpido"); botEl = null;
+    } else if (m.type === "abismo") {
+      if (m.fase === "pondering") {
+        startAbismo(m);
+      } else {
+        stopAbismo();
+        addMsg("meta", textoDeAbismo(m));
+        if (m.fase === "pescado" && m.viaje && m.viaje.destino === "nube") addDetalleViaje(m);
+      }
     } else if (m.type === "chunk") {
       stopThinking();
       if (!botEl) botEl = addMsg("bot", "");
@@ -2404,9 +2415,9 @@ function connect() {
       messages.appendChild(el);
       messages.scrollTop = messages.scrollHeight;
     } else if (m.type === "error") {
-      stopThinking(); addMsg("meta", "! " + m.text);
+      stopThinking(); stopAbismo(); addMsg("meta", "! " + m.text);
     } else if (m.type === "done") {
-      stopThinking();
+      stopThinking(); stopAbismo();
       if (_autoNarrate && botEl) {
         const span = botEl.querySelector(".msg-text");
         const narrbtn = botEl.querySelector(".narrbtn");
@@ -2415,7 +2426,7 @@ function connect() {
       botEl = null; setBusy(false);
     }
   };
-  ws.onclose = () => { addMsg("meta", "desconectado, reintentando..."); setTimeout(connect, 1500); };
+  ws.onclose = () => { stopAbismo(); addMsg("meta", "desconectado, reintentando..."); setTimeout(connect, 1500); };
 }
 const stopBtn = document.getElementById("stop");
 document.getElementById("autoNarrBtn").onclick = function() {
@@ -2447,6 +2458,57 @@ function startThinking() {
 function stopThinking() {
   if (thinkTimer) { clearInterval(thinkTimer); thinkTimer = null; }
   if (thinkEl) { thinkEl.remove(); thinkEl = null; }
+}
+
+// El pondering del abismo (spec del abismo, seccion 9): un renglon HERMANO
+// del "pensando", nunca un mensaje ni un turno. La burbuja abierta (botEl)
+// no se toca en ninguna fase: la continuacion cae en la misma. El elapsed
+// se cuenta aca, en el cliente: el server no tiene el bucle de 2 s de la
+// suscripcion. El cierre lo garantiza el cliente: done, error, steered y
+// cambiar de chat lo apagan aunque el pescado nunca haya llegado.
+let abismoEl = null, abismoTimer = null, abismoDesde = 0;
+const ABISMO_VERBOS = {memoria: "buscando en tu memoria",
+                       chats: "buscando en tus chats", proyecto: "mirando el repo"};
+const ABISMO_MOTIVOS = {vacio: "no trajo nada", credencial: "esto no sale de la maquina",
+                        solo_hondo: "solo habia hondo", juez_local_caido: "el juez local no responde",
+                        tipo_desconocido: "tipo desconocido, no sale", error: "fallo la consulta"};
+function startAbismo(m) {
+  stopThinking();
+  const verbo = m.verbo || ABISMO_VERBOS[m.fuente] || "consultando el abismo";
+  abismoDesde = Date.now();
+  if (!abismoEl) {
+    abismoEl = document.createElement("div");
+    abismoEl.className = "abismo";
+    messages.appendChild(abismoEl);
+  }
+  const tick = () => {
+    abismoEl.textContent = `${verbo}... ${Math.round((Date.now() - abismoDesde) / 1000)} s`;
+    messages.scrollTop = messages.scrollHeight;
+  };
+  if (abismoTimer) clearInterval(abismoTimer);
+  tick(); abismoTimer = setInterval(tick, 1000);
+}
+function stopAbismo() {
+  if (abismoTimer) { clearInterval(abismoTimer); abismoTimer = null; }
+  if (abismoEl) { abismoEl.remove(); abismoEl = null; }
+  abismoDesde = 0;
+}
+function textoDeAbismo(m) {
+  // la misma letra que textoDeAbismo de la fabrica (chat.js): una senal, un texto
+  if (m.fase === "pescado") {
+    let nube = "";
+    if (m.viaje && m.viaje.destino === "nube") {
+      const tapados = (m.viaje.tapados || []).map(t => t.marcador).join(", ");
+      nube = ", viajo tapado a la nube" + (tapados ? ": " + tapados : "");
+    }
+    return `del abismo: ${m.fuente} (${m.tamano || 0} chars${nube})`;
+  }
+  return `el abismo (${m.fuente}): ${ABISMO_MOTIVOS[m.motivo] || m.motivo || "fallo"}`;
+}
+function addDetalleViaje(m) {
+  const tapados = (m.viaje.tapados || []).map(t => `${t.marcador} (${t.tipo})`).join(", ") || "nada tapado";
+  addDetail(null, `lo que viajo a la nube desde ${m.fuente}`,
+            `tapados: ${tapados}\n\n${m.viaje.texto_tapado || ""}`);
 }
 function setBusy(b) {
   busy = b;

@@ -39,6 +39,9 @@ def main() -> int:
         "githubPanel", "githubRefresh", "loadGithub", "/api/github/overview")), fails)
     check("panel rutinas", all(x in text for x in (
         "routinesPanel", "loadRoutines", "/api/routines", "backupNow", "/api/backup")), fails)
+    check("rama del abismo", all(x in text for x in (
+        "startAbismo", "stopAbismo", 'm.type === "abismo"', "addDetalleViaje",
+        "abismoEl")), fails)
     scripts = re.findall(r"<script>([\s\S]*?)</script>", text)
     check("scripts inline encontrados", bool(scripts), fails)
     node = shutil.which("node")
