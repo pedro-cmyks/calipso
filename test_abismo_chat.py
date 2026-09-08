@@ -423,3 +423,80 @@ def test_el_steer_de_pedro_gana_durante_la_pesca(chat, monkeypatch):
     assert filas[0]["motivo"] == "abortada_por_steer" and filas[1]["momento"] == "pesca"
     roles = [(m["role"], m["text"].split(" ")[0]) for m in chat.mensajes()]
     assert roles == [("user", "que"), ("assistant", "Dejame"), ("user", "otra"), ("assistant", "respuesta")]
+
+
+def _pausar_el_modelo(chat, monkeypatch, invocacion, trozo):
+    """Frena al modelo espia justo ANTES de entregar el trozo numero `trozo`
+    de la invocacion numero `invocacion` (los dos 1-based). Asi el test mete
+    un steer con el stream abierto y en un momento elegido, sin carreras: se
+    espera `arranco`, se manda el steer, se suelta `liberar`. Devuelve
+    (arranco, liberar)."""
+    arranco, liberar = threading.Event(), threading.Event()
+    espia = chat.modelo
+
+    def pausado(url, payload, *resto):
+        gen = espia(url, payload, *resto)
+        if len(espia.llamadas) != invocacion:
+            return gen
+
+        def _pausado():
+            for i, t in enumerate(gen):
+                if i == trozo - 1:
+                    arranco.set()
+                    liberar.wait(10)
+                yield t
+        return _pausado()
+    monkeypatch.setattr(srv.dispatch, "_ollama_chat_chunks", pausado)
+    return arranco, liberar
+
+
+def test_el_steer_que_llega_con_el_corte_no_llega_a_pescar(chat, monkeypatch):
+    """El steer de Pedro gana ANTES del pondering (spec seccion 10): si ya
+    estaba en la cola cuando la marca corto el stream, no hay consulta, no
+    hay senal que cerrar y no se abre un stream nuevo para cerrarlo
+    enseguida. Queda la fila de aviso, con el contador todavia en cero."""
+    _sembrar_chat_viejo(["un libro"])
+    chat.modelo.guiones = [["a ", "⟦abismo:chats libro⟧"], ["no deberia correr"]]
+    arranco, liberar = _pausar_el_modelo(chat, monkeypatch, invocacion=1, trozo=2)
+    with chat.cliente.websocket_connect("/ws/chat") as ws:
+        ws.send_text(chat.paquete("que libro lei"))
+        assert arranco.wait(10), "el modelo no arranco"
+        ws.send_text("otra cosa")
+        time.sleep(0.5)      # que el receptor lo deje en el inbox antes de soltar
+        liberar.set()
+        eventos = chat.recibir(ws, hasta_dones=2)
+    assert de_tipo(eventos, "abismo") == []      # ni pondering ni cierre
+    assert "steered" in [e["type"] for e in eventos]
+    # dos invocaciones: la cortada y la del steer, ninguna reentrada
+    assert len(chat.modelo.llamadas) == 2
+    assert chat.modelo.llamadas[1]["messages"][-1]["content"] == "otra cosa"
+    filas = chat.telemetria("abismo")
+    assert [(f["evento"], f["momento"], f["consultas"]) for f in filas] == [
+        ("abortada_por_steer", "pesca", 0)]
+    assert chat.telemetria("chat_turn")[0]["abismo_consultas"] == 0
+
+
+def test_el_steer_durante_el_stream_de_la_reentrada_deja_su_aviso(chat, monkeypatch):
+    """El cuarto momento del steer (spec seccion 10, "idem"): la consulta ya
+    se pesco y la pasada sintetica esta streameando. Corta como cualquier
+    barge-in -mismo `steered`, mismo "(interrumpido)"- y suma la fila de
+    aviso con `momento="reentrada"`, que es lo que la distingue del steer de
+    un turno normal."""
+    _sembrar_chat_viejo(["un libro"])
+    chat.modelo.guiones = [["a ⟦abismo:chats libro⟧"], ["sigo ", "y termino"]]
+    arranco, liberar = _pausar_el_modelo(chat, monkeypatch, invocacion=2, trozo=2)
+    with chat.cliente.websocket_connect("/ws/chat") as ws:
+        ws.send_text(chat.paquete("que libro lei"))
+        assert arranco.wait(10), "la reentrada no arranco"
+        ws.send_text("otra cosa")
+        time.sleep(0.5)
+        liberar.set()
+        eventos = chat.recibir(ws, hasta_dones=2)
+    # la consulta si se hizo y cerro bien: el steer llego despues
+    assert [a["fase"] for a in de_tipo(eventos, "abismo")] == ["pondering", "pescado"]
+    assert "steered" in [e["type"] for e in eventos]
+    avisos = [f for f in chat.telemetria("abismo") if f["evento"] == "abortada_por_steer"]
+    assert [(f["momento"], f["consultas"]) for f in avisos] == [("reentrada", 1)]
+    # el turno se persiste fusionado hasta donde llego, con el aviso del steer
+    assert chat.mensajes()[1]["text"].startswith("a sigo y termino")
+    assert chat.telemetria("chat_turn")[0]["abismo_consultas"] == 1
