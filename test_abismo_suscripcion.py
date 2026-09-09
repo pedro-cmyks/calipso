@@ -272,6 +272,41 @@ def test_el_alterno_que_si_responde_se_suma_al_tramo_y_no_lo_pisa(chat, cli_fals
     assert "Dejame ver" in chat.memoria.recordado[0]
 
 
+def test_el_fallback_entre_suscripciones_retira_la_marca_sin_cortar(chat, cli_falso, monkeypatch):
+    """Guarda del `apagada = True` del fallback entre suscripciones: el
+    alterno emite una marca valida y sale el texto entero, sin consulta."""
+    _sembrar_chat_viejo(["un libro"])
+    cli_falso.guion([{"partes": [], "stderr": "boom ⟦abismo:chats libro⟧", "exit": 1},
+                     {"partes": ["hola ⟦abismo:chats libro⟧ entero"], "pausa": 0}])
+    monkeypatch.setattr(srv, "_best_subscription_client", lambda p: "codex")
+    eventos = chat.turno("/claude libro")
+    assert texto_visible(eventos) == "hola  entero"
+    assert de_tipo(eventos, "abismo") == [] and len(cli_falso.llamadas()) == 2
+    assert [m.get("note") for m in de_tipo(eventos, "meta")] == [None, "fallback entre suscripciones"]
+    assert [e["type"] for e in eventos].count("done") == 1
+    assert [f["clase"] for f in chat.telemetria("abismo")] == ["sin_corte"]
+    assert "⟦" not in json.dumps(chat.telemetria("chat_turn"))     # el error del fallback va limpio
+
+
+def test_el_stderr_de_los_jobs_no_lleva_la_marca(chat, cli_falso, monkeypatch):
+    """m2 del cierre: stderr.txt era el unico artefacto de jobs que se
+    escribia crudo (output.txt, partial-output.txt y el msg del error ya
+    pasaban por _limpiar_marcas). Un CLI que eco-ee su entrada a stderr
+    dejaba la marca en disco; en los tres sitios (fallo, /stop, exito)."""
+    marca_en_stderr = "aviso ⟦abismo:chats libro⟧ del cli"
+    cli_falso.guion([{"partes": ["a"], "stderr": marca_en_stderr, "exit": 1},
+                     {"partes": ["hola"], "stderr": marca_en_stderr, "exit": 0}])
+    monkeypatch.setattr(srv, "_best_subscription_client", lambda p: "codex")
+    eventos = chat.turno("/claude hola")
+    arrancados = [e for e in de_tipo(eventos, "process") if e.get("action") == "start"]
+    assert len(arrancados) == 2      # el que fallo y el alterno que termino
+    for ev in arrancados:
+        ruta = jobs.artifact_path(str(srv.ROOT), ev["job_id"], "stderr.txt")
+        assert ruta.exists(), ev
+        assert "⟦" not in ruta.read_text(encoding="utf-8")
+        assert "del cli" in ruta.read_text(encoding="utf-8")
+
+
 def test_los_archivos_temporales_de_las_dos_invocaciones_se_borran(chat, cli_falso, monkeypatch):
     """El bloque pescado viaja a la reinvocacion en el archivo del system
     (`--append-system-prompt-file`, un `.md` en el tmpdir del sistema), no en

@@ -3106,8 +3106,11 @@ async def _run_subscription_text_live(
                     if partial:
                         jobs.write_artifact(str(ROOT), job["id"], "partial-output.txt",
                                             _limpiar_marcas(partial))
+                    # stderr tambien limpio: es un artefacto de jobs como los
+                    # otros dos, y un CLI que eco-ee su entrada dejaria la
+                    # marca en disco (la marca jamas se persiste, spec 4)
                     if stderr:
-                        jobs.write_artifact(str(ROOT), job["id"], "stderr.txt", stderr)
+                        jobs.write_artifact(str(ROOT), job["id"], "stderr.txt", _limpiar_marcas(stderr))
                     # el segundo valor es "/stop": un /stop durante el CLI es
                     # el gesto mas fuerte de Pedro y el bucle one-shot del
                     # abismo lo tiene que ver como steer (sin pesca, sin
@@ -3149,7 +3152,7 @@ async def _run_subscription_text_live(
                 jobs.write_artifact(str(ROOT), job["id"], "partial-output.txt",
                                     _limpiar_marcas(partial))
             if stderr:
-                jobs.write_artifact(str(ROOT), job["id"], "stderr.txt", stderr)
+                jobs.write_artifact(str(ROOT), job["id"], "stderr.txt", _limpiar_marcas(stderr))
             raise RuntimeError(msg or f"{client} fallo con exit {proc.returncode}")
         text = partial
         elapsed = round(time.perf_counter() - started)
@@ -3164,7 +3167,7 @@ async def _run_subscription_text_live(
         if text:
             jobs.write_artifact(str(ROOT), job["id"], "output.txt", _limpiar_marcas(text))
         if stderr:
-            jobs.write_artifact(str(ROOT), job["id"], "stderr.txt", stderr)
+            jobs.write_artifact(str(ROOT), job["id"], "stderr.txt", _limpiar_marcas(stderr))
         if active_goal:
             goals.add_evidence(
                 str(ROOT), active_goal["id"], "job",
