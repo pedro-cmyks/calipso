@@ -132,7 +132,7 @@ La tarjeta muestra: aparato (escapado con el esc()/textContent del molde — es 
 
 1. **Capa de sesion** — spec `2026-09-07-capa-de-sesion-design.md` (revisado adversarialmente, PENDIENTE de la lectura de Pedro; dos rulings a confirmar: tope 180 dias, tablero/lector no revocan). Plan: ESTE. Es el desbloqueante gordo del lector.
 2. **El abismo, rebanada 1b** — el cableado de la consulta al chat vivo (spec `2026-09-07-abismo-consulta-design.md` secciones 4-10; el porton v2 esta EN VERDE con el contrato "dura" aterrizado). Plan pendiente de escribir. Piezas: filtro compuesto en el Emisor, estado del turno, reentrada sintetica (la seccion 4 ya enumera que saltea), senal de pondering, ramas de UI, pulso.
-3. **El abismo, rebanadas 2-4** — sin spec todavia, decisiones madre tomadas (spec del abismo seccion 2): el fondo OneDrive (2: subida cifrada rclone, indice local, pesca, ojos sobre lo existente con anillos), la escena del mapa (3: la boca en el centro, cambio de escena, profundidad=anillos), los otros habitantes (4: jefes en su tic con corte seguro, el lector -- DEPENDE de la capa de sesion y trae los endpoints /api/lectura/*).
+3. **El abismo, rebanadas 2-4** — sin spec todavia, decisiones madre tomadas (spec del abismo seccion 2): el fondo (2: DESDE EL 2026-09-09 es el disco de 2 TB del Mac, no OneDrive; subida cifrada rclone, indice local, pesca, ojos sobre lo existente con anillos), la escena del mapa (3: la boca en el centro, cambio de escena, profundidad=anillos), los otros habitantes (4: jefes en su tic con corte seguro, el lector -- DEPENDE de la capa de sesion y trae los endpoints /api/lectura/*).
 
 **Seguridad, lo que queda del informe (`2026-09-07-revision-seguridad.md`):**
 

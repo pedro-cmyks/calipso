@@ -115,7 +115,7 @@ y `docs/superpowers/2026-09-08-cierre-abismo-1b/`. Los README de ambas empiezan 
    tanto (sin marca el filtro es transparente), pero el contrato suma ~600 chars al system de cada turno local.
    Opciones: (a) podar el system de produccion y re-medir el porton SOBRE ese system, excluyendo la copia
    literal; (b) cablear la consulta solo en rutas grandes (suscripcion/API) y sacar el contrato del system
-   local; (c) aceptar el regimen actual hasta la rebanada 2 (el fondo de OneDrive), que cambia las fuentes.
+   local; (c) aceptar el regimen actual hasta la rebanada 2 (el fondo: el disco del Mac), que cambia las fuentes.
 2. **h04, una politica que el fix del cierre decidio y el spec no escribe:** en local, la fuente `chats` no
    pesca la ventana de 12 mensajes que el modelo ya tiene ni la pregunta actual, pero SI los mensajes mas
    viejos del mismo chat; en /nube el chat activo queda fuera ENTERO (para que un turno local previo no viaje
@@ -142,8 +142,12 @@ Los items 1 y 2 de la ruta del 2026-09-07 (capa de sesion, abismo 1b) estan hech
 3. **El abismo segun h05:** si (a), un ciclo corto de medicion sobre el system real (banco v2 con la
    exclusion de la copia literal, 4-6 variantes del system podado); si (b), un plan chico que apague el contrato
    en local y lo deje en suscripcion/API; si (c), nada.
-4. **Abismo, rebanadas 2-4** (decisiones madre tomadas, sin spec): (2) el fondo de OneDrive (subida cifrada
-   con rclone del lado de la Ally, indice local de lo hundido, la consulta pesca, anillos sobre lo existente);
+4. **Abismo, rebanadas 2-4** (decisiones madre tomadas, sin spec): (2) el fondo: **el disco de 2 TB conectado al
+   Mac de Pedro, no OneDrive** (decision del 2026-09-09: "mejor eso que una cosa de Microsoft"). El Mac va a ser un
+   nodo de la red de Calipso, y esa red no esta disenada: el brainstorm de la rebanada 2 empieza por ahi (como llega
+   la Ally al disco: nodo de Calipso en el Mac por Tailscale, mount o rclone contra el Mac; si hace falta cifrado en un
+   disco propio; que tipo de aparato es un nodo). Siguen valiendo: local-primero, indice local de lo hundido, la
+   consulta pesca, anillos sobre lo existente, la base viva jamas sobre un mount;
    (3) la escena del mapa (la boca en el centro de la ciudad, cambio de escena, profundidad = anillos); (4) los
    otros habitantes: los jefes consultan en su tic con corte seguro, y el lector, que trae los endpoints
    `/api/lectura/*` (pregunta, respuesta, presencia). Cada una: brainstorm -> spec -> plan.
