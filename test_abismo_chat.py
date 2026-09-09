@@ -590,6 +590,53 @@ def test_el_steer_durante_el_stream_de_la_reentrada_deja_su_aviso(chat, monkeypa
     assert chat.telemetria("chat_turn")[0]["abismo_consultas"] == 1
 
 
+def test_la_ruta_orquestador_retira_la_marca_sin_cortar_y_emite_el_texto_entero(chat, monkeypatch):
+    """Guarda del `apagada = True` del orquestador (ledger T6, must-fix del
+    cierre): si faltara, una marca valida en la sintesis dejaria el filtro
+    cortado con una marca que nadie consume y el resto se truncaria mudo."""
+    monkeypatch.setattr(srv, "_should_orchestrate", lambda *a, **k: True)
+
+    async def equipo(ws, inbox, chat_msg, features, system, verdict, **kw):
+        return "sintesis ⟦abismo:chats libro⟧ entera", None, None
+    monkeypatch.setattr(srv, "_run_dynamic_team", equipo)
+    _sembrar_chat_viejo(["un libro"])
+    eventos = chat.turno("libro")
+    assert texto_visible(eventos) == "sintesis  entera"
+    assert de_tipo(eventos, "abismo") == [] and chat.modelo.llamadas == []
+    assert [e["type"] for e in eventos].count("done") == 1
+    assert de_tipo(eventos, "cost")[0]["route"] == "orchestrator"
+    assert [f["clase"] for f in chat.telemetria("abismo")] == ["sin_corte"]
+    assert chat.mensajes()[-1]["text"] == "sintesis  entera"
+    assert "⟦" not in (chat.tmp / "chats.json").read_text(encoding="utf-8")
+
+
+def test_el_fallback_local_tras_un_corte_retira_la_marca_sin_cortar(chat, monkeypatch):
+    """Guarda del `apagada = True` del fallback local: la api corta en una
+    marca, pesca, y la reentrada por api revienta; el local que la reemplaza
+    emite otra marca valida, que se retira sin cortar y sin consultar (un
+    turno que cayo al fallback no consulta). Texto entero, un done, un cobro."""
+    _sembrar_chat_viejo(["un libro"])
+    api = ModeloEspia([["a ⟦abismo:chats libro⟧"]])
+
+    def api_que_revienta_en_la_reentrada(url, payload, *resto):
+        if api.llamadas:
+            raise RuntimeError("litellm se cayo")
+        return api(url, payload, *resto)
+    monkeypatch.setattr(srv.dispatch, "_sse_text_chunks", api_que_revienta_en_la_reentrada)
+    chat.modelo.guiones = [["fallback ⟦abismo:chats libro⟧ entero"]]
+    eventos = chat.turno("/api libro")
+    assert [a["fase"] for a in de_tipo(eventos, "abismo")] == ["pondering", "pescado"]
+    assert texto_visible(eventos) == "a fallback  entero"
+    assert [m.get("note") for m in de_tipo(eventos, "meta")] == [None, "fallback a local"]
+    assert [e["type"] for e in eventos].count("done") == 1
+    assert len(api.llamadas) == 1 and len(chat.modelo.llamadas) == 1
+    retiradas = [f["clase"] for f in chat.telemetria("abismo") if f["evento"] == "retirada"]
+    assert retiradas == ["sin_corte"]
+    turno = chat.telemetria("chat_turn")[0]
+    assert [(f["from"], f["to"]) for f in turno["fallbacks"]] == [("api", "local")]
+    assert chat.mensajes()[-1]["text"] == "a fallback  entero"
+
+
 def test_la_senal_del_abismo_se_publica_al_pulso(chat):
     _sembrar_chat_viejo(["un libro"])
     chat.modelo.guiones = [["a ⟦abismo:chats libro⟧"], ["b"]]
