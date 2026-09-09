@@ -6,7 +6,10 @@
 > a la boca/modelo mas adecuado.
 >
 > **Idioma:** Pedro escribe en espanol. Responde en espanol.
-> **Estado:** funcional de punta a punta. Esta guia es la fuente de verdad del repo.
+> **Estado:** funcional de punta a punta. **El estado VIVO del proyecto (que hace, que esta apagado,
+> que falta, decisiones pendientes de Pedro y como seguir) esta en
+> `docs/superpowers/2026-09-09-estado-del-proyecto-y-como-seguimos.md`; leerlo antes que esta guia,
+> que quedo desactualizada (no cubre economia, plantel, mapa, abismo, privacidad, compositor ni sesiones).**
 
 ## Estado actual, en corto
 
