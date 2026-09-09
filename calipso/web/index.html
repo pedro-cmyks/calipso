@@ -2321,6 +2321,9 @@ function connect() {
       } else if (m.action === "stopped") {
         updateDetail(el, `${m.label || "proceso"} cancelado`, "cancelado por Pedro");
         stopThinking(); addMsg("meta", `${m.label || "proceso"} cancelado`);
+      } else if (m.action === "failed") {
+        updateDetail(el, `${m.label || "proceso"} fallo`, m.error || "fallo sin detalle");
+        addMsg("meta", `${m.label || "proceso"} fallo`);
       } else if (m.action === "done") {
         const wi = workItem(key, m.label || "proceso", `listo - ${m.elapsed || 0}s - ${m.tokens || "?"} tokens`);
         if (m.job_id) wi.onclick = () => showJob(m.job_id);

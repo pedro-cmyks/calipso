@@ -3135,6 +3135,12 @@ async def _run_subscription_text_live(
             msg = _limpiar_marcas(stderr or partial or "").strip()
             jobs.update(str(ROOT), job["id"], status="failed", error=msg)
             jobs.event(str(ROOT), job["id"], "failed", error=msg[:1000])
+            # el job fallido se anuncia por el WS como los demas estados
+            # (start/running/done/stopped): la UI no tenia ni ese indicio
+            await ws.send_json({"type": "process", "action": "failed",
+                                "job_id": job["id"], "label": label,
+                                "client": client, "model": model,
+                                "error": msg[:300]})
             if active_goal:
                 goals.add_evidence(
                     str(ROOT), active_goal["id"], "job",
@@ -3817,6 +3823,12 @@ async def ws_chat(ws: WebSocket) -> None:
                             estado_abismo.tramos_crudos, mensaje_saliente)
                         estado_abismo.sintetica = True
             except Exception as e:  # p.ej. LiteLLM apagado en ruta api
+                # el exito del alterno se declara con una bandera y no con
+                # `full` no vacio: desde el abismo `full` ya lleva el tramo
+                # pescado cuando la REINVOCACION del CLI falla, y con `full`
+                # como senal ese fallo pasaba por exito (sin fallback local,
+                # sin meta, sin fila) y el turno cerraba con el tramo a medias
+                alterno_ok = False
                 if route != "local":
                     if route == "subscription":
                         alternate = _best_subscription_client(
@@ -3852,18 +3864,24 @@ async def ws_chat(ws: WebSocket) -> None:
                                 if bloque_dep and not a_la_nube_tapado:
                                     system += "\n\n" + bloque_dep
                                 estado_abismo.apagada = True   # un turno que cayo al fallback no consulta
-                                full, queued = await _run_subscription_text_live(
+                                texto_alterno, queued = await _run_subscription_text_live(
                                     ws, inbox, alternate, system, mensaje_saliente, None,
                                     label=f"fallback via {alternate}",
                                     chat_id=chat_id_nube)
                                 if queued:
                                     pending = queued
-                                usage["completion_tokens"] = len(full.split())
+                                usage["completion_tokens"] = (usage.get("completion_tokens", 0)
+                                                              + len(texto_alterno.split()))
                                 if mapa is not None:
-                                    full = redaccion.reponer(full, mapa)
-                                full = await emisor.chunk(full)
+                                    texto_alterno = redaccion.reponer(texto_alterno, mapa)
+                                # se SUMA al tramo que Pedro ya leyo (si la
+                                # que fallo fue la reinvocacion del abismo):
+                                # lo persistido es lo que se vio, no solo lo
+                                # del alterno
+                                full += await emisor.chunk(texto_alterno)
                                 used_route = "subscription"
                                 route = "subscription"
+                                alterno_ok = True
                                 raise StopIteration
                             except StopIteration:
                                 pass
@@ -3871,11 +3889,7 @@ async def ws_chat(ws: WebSocket) -> None:
                                 e = e2
                             else:
                                 continue
-                        if full:
-                            pass
-                    if full and used_route == "subscription":
-                        pass
-                    else:
+                    if not alterno_ok:
                         await ws.send_json({"type": "meta", "route": verdict["route"],
                                             "used": "local",
                                             "model": _route_model_name("local"),

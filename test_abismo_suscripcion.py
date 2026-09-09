@@ -21,8 +21,10 @@ from test_abismo_chat import _sembrar_chat_viejo
 @pytest.fixture
 def cli_falso(tmp_path, monkeypatch):
     """Un CLI de suscripcion de mentira: sigue un guion por invocacion (partes
-    con pausa entre ellas, asi el preview de 2 s alcanza a verlas llegar) y
-    anota el system y el prompt que recibio en llamada-N.json."""
+    con pausa entre ellas, asi el preview de 2 s alcanza a verlas llegar;
+    `stderr` y `exit` opcionales para un paso que falla) y anota el system y
+    el prompt que recibio en llamada-N.json. Sirve para cualquier cliente
+    (`_subscription_command` devuelve el mismo script para claude y codex)."""
     carpeta = tmp_path / "cli"
     carpeta.mkdir()
     script = carpeta / "claude_falso.py"
@@ -44,6 +46,9 @@ def cli_falso(tmp_path, monkeypatch):
             sys.stdout.write(parte)
             sys.stdout.flush()
             time.sleep(paso.get("pausa", 0))
+        if paso.get("stderr"):
+            sys.stderr.write(paso["stderr"])
+        sys.exit(paso.get("exit", 0))
     '''), encoding="utf-8")
     script.chmod(0o755)
     monkeypatch.setattr(srv, "_subscription_command", lambda c: str(script))
@@ -195,6 +200,76 @@ def test_en_suscripcion_una_marca_abierta_al_final_no_se_vuelca(chat, cli_falso)
     assert texto_visible(eventos) == "termino asi "
     assert de_tipo(eventos, "abismo") == [] and len(cli_falso.llamadas()) == 1
     assert [f["clase"] for f in chat.telemetria("abismo")] == ["abierta"]
+
+
+def _reinvocacion_que_falla(cli_falso):
+    """La primera invocacion escribe una marca valida; la reinvocacion (y
+    cualquier alterno) sale con exit 1."""
+    _sembrar_chat_viejo(["un libro"])
+    cli_falso.guion([{"partes": ["Dejame ver ⟦abismo:chats libro⟧"], "pausa": 0},
+                     {"partes": [], "stderr": "boom en la reinvocacion", "exit": 1}])
+
+
+def test_una_reinvocacion_que_falla_cae_al_fallback_local_con_aviso(chat, cli_falso, monkeypatch):
+    """h03 del cierre: la rama `if full and used_route == "subscription"`
+    era en main el camino de exito del alterno (`full` llegaba vacio si la
+    suscripcion reventaba). Con el bucle one-shot `full` YA lleva el tramo
+    pescado, y un fallo de la SEGUNDA invocacion caia ahi como si fuera un
+    exito: ni fallback, ni meta, ni fila, la burbuja cerraba con el tramo a
+    medias y el bloque conseguido se tiraba. Ahora cae al fallback local
+    como cualquier suscripcion que falla, y el job fallido se anuncia."""
+    _reinvocacion_que_falla(cli_falso)
+    monkeypatch.setattr(srv, "_best_subscription_client", lambda p: None)
+    chat.modelo.guiones = [["respuesta local"]]
+    eventos = chat.turno("/claude libro")
+    assert [a["fase"] for a in de_tipo(eventos, "abismo")] == ["pondering", "pescado"]
+    assert texto_visible(eventos) == "Dejame ver respuesta local"
+    assert [e["type"] for e in eventos].count("done") == 1
+    assert [m.get("note") for m in de_tipo(eventos, "meta")] == [None, "fallback a local"]
+    assert len(cli_falso.llamadas()) == 2 and len(chat.modelo.llamadas) == 1
+    fallidos = [e for e in de_tipo(eventos, "process") if e.get("action") == "failed"]
+    assert len(fallidos) == 1 and "reentrada del abismo" in fallidos[0]["label"]
+    assert "⟦" not in json.dumps(fallidos)
+    turno = chat.telemetria("chat_turn")[0]
+    assert [(f["from"], f["to"]) for f in turno["fallbacks"]] == [("subscription", "local")]
+    assert turno["route_used"] == "local"
+    assert chat.mensajes()[-1]["text"] == "Dejame ver respuesta local"
+
+
+def test_una_reinvocacion_que_falla_prueba_el_alterno_y_despues_el_local(chat, cli_falso, monkeypatch):
+    """Lo mismo con un alterno configurado que tambien falla (U2 de la
+    adversaria): tres invocaciones reales y despues el local, con las dos
+    filas de fallback."""
+    _reinvocacion_que_falla(cli_falso)
+    monkeypatch.setattr(srv, "_best_subscription_client", lambda p: "codex")
+    chat.modelo.guiones = [["respuesta local"]]
+    eventos = chat.turno("/claude libro")
+    assert texto_visible(eventos) == "Dejame ver respuesta local"
+    assert [e["type"] for e in eventos].count("done") == 1
+    assert [m.get("note") for m in de_tipo(eventos, "meta")] == [
+        None, "fallback entre suscripciones", "fallback a local"]
+    assert len(cli_falso.llamadas()) == 3 and len(chat.modelo.llamadas) == 1
+    turno = chat.telemetria("chat_turn")[0]
+    assert [(f["from"], f["to"]) for f in turno["fallbacks"]] == [("claude", "codex"), ("subscription", "local")]
+
+
+def test_el_alterno_que_si_responde_se_suma_al_tramo_y_no_lo_pisa(chat, cli_falso, monkeypatch):
+    """H4 de completitud (minor pegado a h03): el fallback entre
+    suscripciones REASIGNABA `full`, asi que Pedro leia el tramo mas la
+    respuesta del alterno y chats.json guardaba solo la del alterno. Lo
+    persistido tiene que ser lo que se leyo (spec seccion 4)."""
+    _sembrar_chat_viejo(["un libro"])
+    cli_falso.guion([{"partes": ["Dejame ver ⟦abismo:chats libro⟧"], "pausa": 0},
+                     {"partes": [], "stderr": "boom", "exit": 1},
+                     {"partes": ["desde el alterno"], "pausa": 0}])
+    monkeypatch.setattr(srv, "_best_subscription_client", lambda p: "codex")
+    eventos = chat.turno("/claude libro")
+    assert texto_visible(eventos) == "Dejame ver desde el alterno"
+    assert [e["type"] for e in eventos].count("done") == 1
+    assert len(cli_falso.llamadas()) == 3 and chat.modelo.llamadas == []
+    assert chat.mensajes()[-1]["text"] == "Dejame ver desde el alterno"
+    assert chat.memoria.recordado and "desde el alterno" in chat.memoria.recordado[0]
+    assert "Dejame ver" in chat.memoria.recordado[0]
 
 
 def test_los_archivos_temporales_de_las_dos_invocaciones_se_borran(chat, cli_falso, monkeypatch):
