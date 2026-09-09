@@ -29,9 +29,11 @@ def bloque_contrato(nombres_proyectos=()) -> str:
             cola = f" y {extra} mas" if extra else ""
             repos = "repo: " + ", ".join(nombres) + cola + "."
         elif extra:
-            # El recorte vacio la lista (nombres muy largos): cola honesta
-            # en vez de esconder que el catastro existe (minor del review 1a).
-            repos = f"un repo del catastro; hay {extra} mas, pedilos por nombre."
+            # El recorte vacio la lista (nombres muy largos): cola honesta en
+            # vez de esconder que el catastro existe (minor del review 1a),
+            # corta para que el cierre medido entre siempre. "Pedilos por
+            # nombre" ya lo dice la marca de la linea.
+            repos = f"un repo del catastro; hay {extra} mas."
         else:
             repos = "el detalle de un repo del catastro."
         return "\n".join([
@@ -54,4 +56,10 @@ def bloque_contrato(nombres_proyectos=()) -> str:
     while len(texto) > INDICE_MAX and nombres:
         nombres = nombres[:-1]
         texto = _armar(nombres, total - len(nombres))
-    return texto[:INDICE_MAX]
+    if len(texto) > INDICE_MAX:
+        # ni un nombre entra y la cola honesta tampoco: vuelve la variante
+        # sin nombres (la medida) antes que cortar el cierre "Ante la duda
+        # ... CONSULTA", que es el desempate al que el porton v2 le atribuye
+        # la mejora. Nunca se rebana el texto.
+        texto = _armar([], 0)
+    return texto

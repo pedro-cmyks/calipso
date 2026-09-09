@@ -75,6 +75,19 @@ html, body {
 .conversacion .turno.mio { color: var(--acento); }
 .conversacion .turno.error { color: #ff7b72; }
 
+/* El renglon del abismo vive FUERA de .conversacion: pintarConversacion
+   indexa sus nodos por posicion y el reset de epoca le vacia el innerHTML. */
+.abismo { padding: 0 10px 8px; color: var(--acento); font-size: 12px; font-style: italic; }
+.abismo details { margin-top: 4px; font-style: normal; }
+.abismo summary { cursor: pointer; }
+/* el bloque tapado llega hasta ABISMO_BLOQUE_MAX (2000 chars): sin techo,
+   desplegarlo en la pantalla de la Ally empuja la conversacion y la entrada
+   fuera de vista */
+.abismo pre {
+  white-space: pre-wrap; margin: 4px 0 0; font-size: 11px;
+  max-height: 30vh; overflow-y: auto;
+}
+
 #entrada { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--linea); }
 #entrada input {
   flex: 1; min-width: 0; background: var(--fondo); color: var(--texto);
@@ -137,6 +150,7 @@ html, body {
 /* con el razonamiento abierto, el chat se esconde y la entrada tambien: es
    lectura, no una conversacion con el agente */
 #panel-centro[data-modo="razonamiento"] .conversacion,
+#panel-centro[data-modo="razonamiento"] .abismo,
 #panel-centro[data-modo="razonamiento"] #entrada { display: none; }
 #panel-centro[data-modo="razonamiento"] #razonamiento { display: block; }
 

@@ -13,7 +13,7 @@ import {crearMapa} from "./mapa.js";
 import {disposicion, escapar, textoDeTarjeta, posicionDeTarjeta,
         resumenDeAvisos, textoDeCosto, textoDeFoco,
         textoDeEmpleado, textoDeRazonamiento} from "./paneles.js";
-import {crearChat} from "./chat.js";
+import {crearChat, textoDeAbismo} from "./chat.js";
 import {crearPulso, empleadosDe, estadoVisible} from "./pulso.js";
 import {textoDeMesa} from "./mesa.js";
 import {textoDePlantel} from "./plantel.js";
@@ -1061,6 +1061,10 @@ function pintarTarjeta(px, py) {
 }
 
 const conversacion = document.getElementById("conversacion");
+const cajaAbismo = document.getElementById("abismo");
+const textoAbismo = document.getElementById("abismo-texto");
+const viajeAbismo = document.getElementById("abismo-viaje");
+const viajeAbismoTexto = document.getElementById("abismo-viaje-texto");
 const formulario = document.getElementById("entrada");
 const campo = document.getElementById("texto");
 
@@ -1103,6 +1107,58 @@ function pintarConversacion(turnos) {
   if (div.className !== clase) div.className = clase;
 }
 
+// El reloj del pondering vive aca y no en el reductor (que no tiene reloj):
+// `n` distingue una consulta nueva de un repintado. `.unref?.()` como en los
+// otros timers de este archivo: sin el, node --test no termina.
+let abismoTimer = null, abismoN = 0, abismoDesde = 0;
+
+/** El renglon del abismo, hermano de la conversacion y nunca un turno. */
+function pintarAbismo(estado) {
+  const a = estado.abismo;
+  if (!a) {
+    if (abismoTimer) { clearInterval(abismoTimer); abismoTimer = null; }
+    abismoN = 0;
+    cajaAbismo.classList.add("oculto");
+    viajeAbismo.classList.add("oculto");
+    return;
+  }
+  cajaAbismo.classList.remove("oculto");
+  if (a.fase === "pondering") {
+    viajeAbismo.classList.add("oculto");
+    if (a.n !== abismoN) {
+      abismoN = a.n;
+      abismoDesde = Date.now();
+      if (abismoTimer) clearInterval(abismoTimer);
+      const tic = () => {
+        textoAbismo.textContent = textoDeAbismo(a, Math.round((Date.now() - abismoDesde) / 1000));
+      };
+      tic();
+      abismoTimer = setInterval(tic, 1000);
+      abismoTimer.unref?.();
+    }
+    return;
+  }
+  if (abismoTimer) { clearInterval(abismoTimer); abismoTimer = null; }
+  // la misma guarda que pintarConversacion, y por la misma razon: asignar
+  // textContent reemplaza el nodo de texto aunque el string sea identico, y
+  // con el se va la seleccion. Aca cae un repintado por CADA chunk de la
+  // reentrada, que es justo la ventana en la que el renglon quieto y el
+  // detalle estan a la vista (el `done` esconde la caja): sin guarda, lo que
+  // existe para verificar que viajo tapado no se puede copiar. Las clases no
+  // tienen el problema: remove/toggle con el mismo valor no mutan el atributo.
+  const renglon = textoDeAbismo(a, 0);
+  if (textoAbismo.textContent !== renglon) textoAbismo.textContent = renglon;
+  // el detalle del viaje tapado (spec seccion 9, "en las dos UIs"): el texto
+  // tal cual salio, por textContent y nunca innerHTML -- es texto del abismo,
+  // que puede traer angulos
+  const viajo = a.fase === "pescado" && !!a.viaje && a.viaje.destino === "nube";
+  viajeAbismo.classList.toggle("oculto", !viajo);
+  const tapado = viajo ? (a.viaje.texto_tapado || "") : "";
+  if (viajeAbismoTexto.textContent !== tapado) {
+    viajeAbismoTexto.textContent = tapado;
+  }
+}
+
 const chat = crearChat(estado => {
   if (estado.epoca !== ultimaEpoca) {
     // se cargo otro chat: los nodos del anterior no se reciclan
@@ -1112,6 +1168,7 @@ const chat = crearChat(estado => {
     conversacion.innerHTML = "";
   }
   pintarConversacion(estado.turnos);
+  pintarAbismo(estado);
   conversacion.scrollTop = conversacion.scrollHeight;
   // el estado de conexion se pinta DESDE el estado. El aviso que agrega el
   // submit es pasajero y el proximo render lo borra; esto no, y por eso es

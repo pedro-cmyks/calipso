@@ -15,6 +15,7 @@ def test_respeta_el_techo_con_muchos_proyectos():
     b = contrato.bloque_contrato(nombres)
     assert len(b) <= contrato.INDICE_MAX
     assert "mas" in b  # la cola "y N mas" en vez de un corte a la mitad
+    assert b.endswith("CONSULTA.")
 
 
 def test_sin_proyectos_sigue_siendo_valido():

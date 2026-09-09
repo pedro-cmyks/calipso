@@ -20,7 +20,7 @@ import time
 from collections import deque
 
 EVENTOS = ("inicio", "razonando", "herramienta", "tokens", "diff", "fin",
-           "foco")
+           "foco", "abismo")
 IDENTIDAD = ("departamento", "trabajo", "rol", "modelo")
 
 POR_AGENTE = 200      # eventos que guarda cada agente

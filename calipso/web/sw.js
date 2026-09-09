@@ -1,4 +1,4 @@
-const CACHE = "calipso-shell-v3";
+const CACHE = "calipso-shell-v4";
 const SHELL = [
   "/",
   "/fabrica",

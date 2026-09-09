@@ -24,7 +24,12 @@ def puede_preguntar(anillo: int, consumidor: str) -> bool:
 
 
 def puede_viajar(anillo: int, destino: str) -> bool:
-    """Rebanada 1: la consulta no corre en turnos /nube (spec seccion 8),
-    asi que a "nube" no viaja nada. La firma completa queda para que las
-    rebanadas 2 y 4 implementen la politica (3 jamas; 1-2 redactados)."""
-    return destino == "local"
+    """La politica de la columna "Viaje a la nube" (spec seccion 6, enmienda
+    2026-09-08): destino local deja pasar todo; a la nube viajan la orilla y
+    media agua (redactados despues por el juez, en viaje.py) y lo hondo
+    JAMAS, ni tapado. Un destino desconocido no deja pasar nada."""
+    if destino == "local":
+        return True
+    if destino == "nube":
+        return anillo in (ORILLA, MEDIA_AGUA)
+    return False

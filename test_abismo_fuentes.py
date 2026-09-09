@@ -46,6 +46,35 @@ def test_chats_viejos_busca_por_palabra(tmp_path, monkeypatch):
     assert "[lecturas 2026-08-03]" in textos  # titulo y fecha del fragmento
 
 
+def test_chats_viejos_no_pesca_lo_que_el_chat_activo_ya_tiene_en_contexto(tmp_path, monkeypatch):
+    """h04 del cierre: la fuente pescaba el chat ACTIVO y la propia pregunta
+    (mas reciente primero, tope 8), desplazando a los chats viejos. Los
+    ultimos `en_contexto` mensajes del activo ya viajan en `messages`: no
+    se pescan. Los anteriores a esa ventana si (spec seccion 1: "mas alla de
+    los 12 mensajes de _HISTORY_TURNS")."""
+    _sembrar_chats(tmp_path, monkeypatch)
+    # c1: [rosa (0), buen libro (1), /redacta (2)]: con los ultimos 2 en
+    # contexto, "rosa" (indice 0) sigue siendo pescable y "buen libro" no
+    textos = "\n".join(t for t, _ in fuentes.chats_viejos("libro", chat_activo="c1", en_contexto=2))
+    assert "rosa" in textos and "cocina" in textos and "buen libro" not in textos
+    textos = "\n".join(t for t, _ in fuentes.chats_viejos("libro", chat_activo="c1", en_contexto=3))
+    assert "rosa" not in textos and "cocina" in textos
+    # otro chat activo: c1 entero sigue siendo viejo
+    textos = "\n".join(t for t, _ in fuentes.chats_viejos("libro", chat_activo="c2", en_contexto=2))
+    assert "rosa" in textos and "buen libro" in textos and "cocina" not in textos
+
+
+def test_chats_viejos_deja_fuera_el_chat_activo_entero_si_se_lo_pide(tmp_path, monkeypatch):
+    """`en_contexto=None`: el activo entero queda afuera. Es lo que pide un
+    turno /nube, donde el historial no viaja (chat_id_nube=None, Fase 2a) y
+    el bloque no puede ser la puerta de atras de un turno local previo."""
+    _sembrar_chats(tmp_path, monkeypatch)
+    textos = "\n".join(t for t, _ in fuentes.chats_viejos("libro", chat_activo="c1", en_contexto=None))
+    assert "rosa" not in textos and "buen libro" not in textos and "cocina" in textos
+    # sin chat activo declarado, todo es viejo (los tests del 1a siguen tal cual)
+    assert len(fuentes.chats_viejos("libro")) == 3
+
+
 def test_chats_viejos_respeta_rango(tmp_path, monkeypatch):
     _sembrar_chats(tmp_path, monkeypatch)
     bloques = fuentes.chats_viejos("libro desde:2026-09")

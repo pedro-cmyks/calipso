@@ -38,3 +38,10 @@ def test_encontrar_en_texto():
 
 def test_encontrar_sin_marcas():
     assert marca.encontrar("un texto cualquiera sin marcas") == []
+
+
+def test_un_corchete_anidado_no_traga_la_marca_siguiente():
+    # la ilegible abierta no puede comerse la valida que viene detras, ni
+    # una marca de foco puede quedar adentro del cuerpo del abismo
+    assert marca.encontrar("x ⟦abismo:zzz ⟦abismo:chats hola⟧") == [marca.Marca("chats", "hola")]
+    assert marca.encontrar("x ⟦abismo:memoria a ⟦foco:atlas⟧ resto") == []

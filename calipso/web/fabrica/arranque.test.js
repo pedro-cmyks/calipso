@@ -36,7 +36,7 @@ function nodo(id, etiqueta = "div") {
   const clases = new Set();
   const n = {
     id, tagName: etiqueta, dataset: {}, style: {}, className: "",
-    textContent: "", value: "", placeholder: "",
+    value: "", placeholder: "",
     offsetWidth: 200, offsetHeight: 110,
     scrollTop: 0, scrollHeight: 0,
     hijos: [], oyentes: new Map(),
@@ -77,6 +77,18 @@ function nodo(id, etiqueta = "div") {
     enumerable: true, configurable: true,
   });
   n.escriturasDeHtml = () => escrituras;
+  // el textContent se cuenta por la misma razon, y por una peor: asignarlo
+  // reemplaza el nodo de texto AUNQUE el string sea identico, y eso se lleva
+  // puesta la seleccion del navegador (lo mismo que documenta el comentario
+  // de `nodosDeTurno` en app.js). "Cuantas veces se escribio" es lo unico
+  // que se puede medir de eso desde afuera de un navegador de verdad.
+  let texto = "", escriturasDeTexto = 0;
+  Object.defineProperty(n, "textContent", {
+    get: () => texto,
+    set: v => { texto = v; escriturasDeTexto++; },
+    enumerable: true, configurable: true,
+  });
+  n.escriturasDeTexto = () => escriturasDeTexto;
   return n;
 }
 
@@ -115,7 +127,9 @@ function montarNavegador() {
   for (const id of ["app", "panel-chats", "lista-chats", "panel-centro",
                     "conversacion", "entrada", "texto", "panel-mapa",
                     "expandir", "tarjeta", "sin-fabrica", "pestanas",
-                    "avisos", "costo", "foco", "razonamiento", "empleado",
+                    "avisos", "costo", "foco", "razonamiento",
+                    "abismo", "abismo-texto", "abismo-viaje",
+                    "abismo-viaje-texto", "empleado",
                     "mesa", "plantel", "aparatos",
                     "badge-permisos", "badge-aparatos"]) {
     nodos.set(id, nodo(id));
@@ -661,4 +675,80 @@ test("cambiar el tipo reescribe el alcance en grande", () => {
   for (const f of caja.oyentes.get("change") || []) f({target: select});
   assert.equal(alcance.textContent, "Todo: la PWA completa, como la Ally",
                "el cartel del alcance quedo describiendo el tipo anterior");
+});
+
+// --- El renglon del abismo: fuera de la conversacion, y con cierre ------
+
+test("el pondering del abismo no agrega nodos a la conversacion y el chunk sigue en el mismo", () => {
+  socket.dice({type: "done"});
+  socket.dice({type: "thinking"});
+  socket.dice({type: "chunk", text: "Dejame ver "});
+  const nodoAbierto = conversacion.hijos.at(-1);
+  const cuantos = conversacion.hijos.length;
+  socket.dice({type: "abismo", fase: "pondering", fuente: "chats", verbo: "buscando en tus chats"});
+  const caja = nav.nodos.get("abismo");
+  const renglon = nav.nodos.get("abismo-texto");
+  assert.ok(!caja.classList.contains("oculto"), "el renglon del abismo no se mostro");
+  assert.ok(renglon.textContent.startsWith("buscando en tus chats..."), renglon.textContent);
+  assert.equal(conversacion.hijos.length, cuantos, "el pondering se pinto como turno");
+  socket.dice({type: "abismo", fase: "pescado", fuente: "chats", tamano: 40, viaje: {destino: "local"}});
+  socket.dice({type: "chunk", text: "y sigo"});
+  assert.equal(conversacion.hijos.at(-1), nodoAbierto, "la continuacion abrio otra burbuja");
+  assert.equal(nodoAbierto.textContent, "Dejame ver y sigo");
+  assert.equal(renglon.textContent, "del abismo: chats (40 chars)");
+  assert.ok(nav.nodos.get("abismo-viaje").classList.contains("oculto"), "en local no hay detalle del viaje");
+  socket.dice({type: "done"});
+  assert.ok(caja.classList.contains("oculto"), "done no apago el renglon");
+});
+
+test("con destino nube el renglon del abismo despliega el texto tapado", () => {
+  // spec seccion 9: el detalle desplegable con el texto tapado va en las
+  // DOS UIs; es la informacion verificable de que viajo (seccion 8.3)
+  socket.dice({type: "thinking"});
+  socket.dice({type: "abismo", fase: "pondering", fuente: "chats"});
+  const detalle = nav.nodos.get("abismo-viaje");
+  assert.ok(detalle.classList.contains("oculto"), "el detalle se mostro antes de pescar");
+  socket.dice({type: "abismo", fase: "pescado", fuente: "chats", tamano: 40,
+               viaje: {destino: "nube", tapados: [{marcador: "[ID_1]", tipo: "identidad"}],
+                       texto_tapado: "hola [ID_1]"}});
+  assert.ok(!detalle.classList.contains("oculto"), "el detalle del viaje no se mostro");
+  assert.equal(nav.nodos.get("abismo-viaje-texto").textContent, "hola [ID_1]");
+  assert.equal(nav.nodos.get("abismo-texto").textContent,
+               "del abismo: chats (40 chars, viajo tapado a la nube: [ID_1])");
+  socket.dice({type: "done"});
+  assert.ok(detalle.classList.contains("oculto"), "done no apago el detalle");
+  assert.ok(nav.nodos.get("abismo").classList.contains("oculto"), "done no apago el renglon");
+});
+
+test("el renglon y el detalle del abismo no se reescriben con cada chunk", () => {
+  // Asignar textContent reemplaza el nodo de texto aunque el string sea el
+  // mismo, y con el se va la seleccion: es la razon escrita en app.js (el
+  // comentario de `nodosDeTurno`) y la guarda que ya usa pintarConversacion.
+  // Aca muerde mas fuerte, porque despues del `pescado` el turno SIGUE
+  // streameando la reentrada -- un repintado por chunk-- y esa es la unica
+  // ventana en que el detalle esta a la vista: el `done` esconde la caja.
+  // Sin guarda, el nodo que existe para VERIFICAR lo que viajo tapado
+  // (spec 8.3) no se puede copiar.
+  socket.dice({type: "thinking"});
+  socket.dice({type: "chunk", text: "Dejame ver "});
+  socket.dice({type: "abismo", fase: "pondering", fuente: "chats"});
+  socket.dice({type: "abismo", fase: "pescado", fuente: "chats", tamano: 40,
+               viaje: {destino: "nube", tapados: [{marcador: "[ID_1]", tipo: "identidad"}],
+                       texto_tapado: "hola [ID_1]"}});
+  const renglon = nav.nodos.get("abismo-texto");
+  const detalle = nav.nodos.get("abismo-viaje-texto");
+  const antesRenglon = renglon.escriturasDeTexto();
+  const antesDetalle = detalle.escriturasDeTexto();
+  socket.dice({type: "chunk", text: "y sigo"});
+  socket.dice({type: "chunk", text: " con el dato"});
+  assert.equal(renglon.escriturasDeTexto(), antesRenglon,
+               "el renglon del abismo se reescribio con cada chunk de la reentrada");
+  assert.equal(detalle.escriturasDeTexto(), antesDetalle,
+               "el detalle del viaje se reescribio con cada chunk de la " +
+               "reentrada: cada reescritura reemplaza el nodo de texto y mata " +
+               "la seleccion, justo mientras el detalle esta a la vista");
+  assert.equal(detalle.textContent, "hola [ID_1]", "el detalle perdio su texto");
+  assert.equal(renglon.textContent,
+               "del abismo: chats (40 chars, viajo tapado a la nube: [ID_1])");
+  socket.dice({type: "done"});
 });

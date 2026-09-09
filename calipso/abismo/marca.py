@@ -15,11 +15,14 @@ CIERRA = "⟧"
 FUENTES = ("memoria", "chats", "proyecto")
 MAX_PREGUNTA = 160  # chars del cuerpo entre "abismo:" y el cierre
 
-# El cuerpo no puede contener el corchete de cierre; el tope de la regex va
-# holgado (el exacto lo valida parsear) para que una marca larga se detecte
-# como marca ilegible y no se escape entera al texto.
+# El cuerpo no puede contener ningun corchete: ni el de cierre ni el de
+# apertura (una ilegible abierta se tragaba la valida que venia detras, y una
+# marca de foco quedaba adentro del cuerpo del abismo, invisible para el
+# filtro de foco que corre antes). El tope de la regex va holgado (el exacto
+# lo valida parsear) para que una marca larga se detecte como marca ilegible
+# y no se escape entera al texto.
 PATRON = re.compile(
-    re.escape(ABRE) + r"abismo:([^" + CIERRA + r"]{1,400})" + re.escape(CIERRA))
+    re.escape(ABRE) + r"abismo:([^" + CIERRA + ABRE + r"]{1,400})" + re.escape(CIERRA))
 
 
 @dataclass(frozen=True)

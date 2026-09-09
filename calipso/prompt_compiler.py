@@ -13,6 +13,7 @@ import pathlib
 from typing import Any
 
 from calipso import catastro
+from calipso.abismo import contrato as abismo_contrato
 from calipso.economia import bus as eco_bus
 from calipso.economia import departamentos as eco_deps
 from calipso.economia.candado import candado as eco_candado
@@ -86,6 +87,12 @@ def internal_contract(features: dict[str, Any] | None = None,
         "Pide confirmacion antes de escribir, gastar, publicar, borrar o promover memoria sensible.",
         "Para cambios operativos, separa idea, implementado, verificado y pendiente.",
         f"Repo requerido: {'si' if needs_repo else 'no'}. Web requerida: {'si' if needs_web else 'no'}.",
+        # El abismo (spec 2026-09-07, seccion 5): la sintaxis de la marca y
+        # el indice de lo consultable, como bloque FINAL de esta seccion.
+        # La letra esta medida (porton v2) y no se toca; lo unico que decide
+        # este archivo es DONDE va: cuarta seccion de diez, no al final del
+        # system como en el banco. Queda anotado, no se re-mide.
+        abismo_contrato.bloque_contrato(catastro.nombres()),
     ])
 
 

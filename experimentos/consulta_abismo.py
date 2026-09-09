@@ -24,6 +24,7 @@ solo despues de esa lectura).
 
 CALIPSO_HOME va a un temporal ANTES de importar nada del paquete.
 """
+import datetime
 import json
 import os
 import pathlib
@@ -179,6 +180,18 @@ def preguntar(mensaje: str) -> tuple[str, int]:
     return data.get("response", ""), ms
 
 
+def _ruta_de_salida(por_defecto: pathlib.Path) -> pathlib.Path:
+    """Sin ABISMO_RESULTADOS, una re-corrida no pisa el reporte anterior (que
+    tiene Observaciones escritas a mano): escribe al lado, con fecha y hora."""
+    env = os.environ.get("ABISMO_RESULTADOS")
+    if env:
+        return pathlib.Path(env)
+    if not por_defecto.exists():
+        return por_defecto
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M")
+    return por_defecto.with_name(f"{por_defecto.stem}-{stamp}{por_defecto.suffix}")
+
+
 def main():
     _cache_load()
     limite = int(os.environ.get("ABISMO_LIMIT", "0")) or len(BANCO)
@@ -250,9 +263,8 @@ def main():
         lineas.append("- latencia por llamada: sin llamadas.")
     reporte = "\n".join(lineas) + "\n"
     print("\n" + reporte, flush=True)
-    out = pathlib.Path(os.environ.get("ABISMO_RESULTADOS")
-                       or (pathlib.Path(__file__).parent
-                           / "consulta_abismo_resultados.md"))
+    out = _ruta_de_salida(pathlib.Path(__file__).parent
+                          / "consulta_abismo_resultados.md")
     out.write_text(reporte, encoding="utf-8")
     print(f"reporte escrito en {out}", flush=True)
 
