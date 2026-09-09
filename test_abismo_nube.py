@@ -86,6 +86,27 @@ def test_en_nube_el_bloque_viaja_tapado_con_el_mapa_del_mensaje_y_se_ve(chat, mo
     assert chat.telemetria("abismo")[0]["destino"] == "nube"
 
 
+def test_en_nube_un_turno_local_previo_de_la_misma_conversacion_no_viaja_por_el_bloque(chat, monkeypatch):
+    """La sonda V1 del cierre (h04): la Fase 2a dejo la conversacion fuera de
+    todo envio a la nube (chat_id_nube=None) y la fuente `chats` la volvia a
+    meter por el bloque: un turno LOCAL previo del mismo chat viajaba,
+    tapado solo por el juez. En /nube el chat activo entero queda fuera de
+    la pesca; los otros chats viajan por el viaje, como siempre."""
+    _juez_que_tapa_nombres(monkeypatch)
+    _sembrar_chat_viejo(["con Ana hablamos del libro de recetas"])
+    chats.append(chat.chat_id, "user", "el libro que me presto Marta es de cocina")
+    chats.append(chat.chat_id, "assistant", "que bueno ese libro de Marta")
+    chat.modelo.guiones = [["Dejame ver ", "⟦abismo:chats libro⟧"], ["y seguimos"]]
+    eventos = _turno_con_un_solo_done(chat, "/nube /api que libro era")
+    abismo = de_tipo(eventos, "abismo")
+    assert [a["fase"] for a in abismo] == ["pondering", "pescado"]
+    assert "recetas" in abismo[1]["viaje"]["texto_tapado"]
+    assert "cocina" not in abismo[1]["viaje"]["texto_tapado"]
+    envios = json.dumps(chat.modelo.llamadas)
+    assert "recetas" in envios
+    assert "presto" not in envios and "cocina" not in envios and "Marta" not in envios
+
+
 def test_en_nube_una_credencial_en_lo_pescado_no_sale_y_la_nube_sigue_sin_bloque(chat, monkeypatch):
     _juez_que_tapa_nombres(monkeypatch, con_credencial=True)
     _sembrar_chat_viejo(["el token del libro es ghp_abcdef no lo pierdas"])

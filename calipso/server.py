@@ -3702,7 +3702,7 @@ async def ws_chat(ws: WebSocket) -> None:
                             hubo_bloque = await _pescar_abismo(
                                 ws, marca_valida, estado_abismo, destino=destino,
                                 mapa=mapa, departamento=departamento,
-                                agente_id=agente_id, inbox=inbox)
+                                agente_id=agente_id, inbox=inbox, chat_id=chat_id)
                         if not hubo_bloque:
                             # lo posterior a la marca vale (seccion 8.4, la
                             # letra exacta: aca el texto posterior existe).
@@ -3820,7 +3820,8 @@ async def ws_chat(ws: WebSocket) -> None:
                         await _pescar_abismo(ws, marca_pendiente, estado_abismo,
                                              destino=destino, mapa=mapa,
                                              departamento=departamento,
-                                             agente_id=agente_id, inbox=inbox)
+                                             agente_id=agente_id, inbox=inbox,
+                                             chat_id=chat_id)
                         system, mensaje_turno = abismo_turno.prompt_reentrada(
                             system_base, estado_abismo.bloques,
                             estado_abismo.tramos_crudos, mensaje_saliente)
@@ -7584,7 +7585,8 @@ def _consolidado_personal() -> str | None:
 async def _pescar_abismo(ws, m, estado, *, destino: str, mapa,
                          departamento: str | None,
                          agente_id: str | None = None,
-                         inbox: asyncio.Queue | None = None) -> bool:
+                         inbox: asyncio.Queue | None = None,
+                         chat_id: str | None = None) -> bool:
     """Una consulta al abismo de punta a punta: pondering -> resolver en
     hilo (100% local, invariante 1) -> viaje -> pescado/fallo. Cuenta la
     consulta contra el tope, acumula el bloque en el estado del turno y
@@ -7617,9 +7619,17 @@ async def _pescar_abismo(ws, m, estado, *, destino: str, mapa,
         zona = _zona_del_chat(departamento)
         consolidado = (await asyncio.to_thread(_consolidado_personal)
                        if zona == "personal" else None)
+        # la fuente `chats` no pesca lo que el modelo ya tiene del chat en
+        # curso: en local, la ventana del historial mas la pregunta (que ya
+        # se persistio: `_history_messages` descarta el ultimo mensaje y
+        # toma `_HISTORY_TURNS` anteriores); en /nube, el chat activo
+        # ENTERO -- la conversacion no viaja (chat_id_nube=None, Fase 2a) y
+        # el bloque no puede ser la puerta de atras de un turno local previo
+        en_contexto = None if destino == "nube" else _HISTORY_TURNS + 1
         r = await asyncio.to_thread(
             abismo_consulta.resolver, m, mem=mem, obtener=catastro.obtener,
-            brief=_repo_brief, consolidado=consolidado, zona_chat=zona)
+            brief=_repo_brief, consolidado=consolidado, zona_chat=zona,
+            chat_activo=chat_id, en_contexto=en_contexto)
         if r["estado"] != "pescado":
             motivo = abismo_turno.motivo_de_consulta(r)
         else:

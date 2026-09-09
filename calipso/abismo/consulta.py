@@ -42,7 +42,12 @@ def _fallo(fuente: str, aviso: str) -> dict:
 
 
 def resolver(m: marca.Marca, *, mem=None, obtener=None, brief=None,
-             consolidado=None, zona_chat: str = "fabrica") -> dict:
+             consolidado=None, zona_chat: str = "fabrica",
+             chat_activo: str | None = None, en_contexto: int | None = 0) -> dict:
+    """`chat_activo` y `en_contexto` son de la fuente `chats` (ver
+    `fuentes.chats_viejos`): que parte del chat en curso ya tiene el modelo y
+    no hay que pescar. Los pone el server, que sabe la ventana del historial
+    y si el turno va a la nube."""
     # el armado tambien va adentro del try (minor del review 1a): una fuente
     # que devuelva algo que no sea una lista de pares (texto, anillo) es un
     # fallo suave, no un TypeError que suba por la pasada sintetica
@@ -51,7 +56,8 @@ def resolver(m: marca.Marca, *, mem=None, obtener=None, brief=None,
             bloques = fuentes.memoria(m.resto, mem, consolidado=consolidado,
                                       zona_chat=zona_chat)
         elif m.fuente == "chats":
-            bloques = fuentes.chats_viejos(m.resto)
+            bloques = fuentes.chats_viejos(m.resto, chat_activo=chat_activo,
+                                           en_contexto=en_contexto)
         elif m.fuente == "proyecto":
             bloques = fuentes.proyecto(m.resto, obtener, brief)
         else:  # la gramatica cerrada no deberia dejar llegar esto

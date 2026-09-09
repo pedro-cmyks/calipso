@@ -326,6 +326,31 @@ def test_una_marca_valida_corta_pesca_y_la_continuacion_sigue_en_la_misma_burbuj
     assert filas[0]["resultado"] == "pescado" and filas[0]["destino"] == "local"
 
 
+def test_la_fuente_chats_no_pesca_la_pregunta_ni_lo_que_el_modelo_ya_tiene(chat):
+    """La sonda T1 del cierre (h04): con un chat activo largo que comparte la
+    palabra buscada, el bloque eran la propia pregunta mas los mensajes
+    recientes que el modelo YA tiene en `messages`, y el chat viejo quedaba
+    afuera del tope de 8. Lo que esta en la ventana del historial no se
+    pesca; lo anterior a la ventana del MISMO chat, si."""
+    _sembrar_chat_viejo(["empece El nombre de la rosa, un libro alucinante"])
+    for i in range(3):
+        chats.append(chat.chat_id, "user", f"mensaje viejo {i} del libro de siempre")
+    for i in range(12):
+        chats.append(chat.chat_id, "user" if i % 2 == 0 else "assistant",
+                     f"mensaje reciente {i} sobre el libro de siempre")
+    chat.modelo.guiones = [["a ⟦abismo:chats libro⟧"], ["b"]]
+    eventos = chat.turno("que libro lei")
+    assert [a["fase"] for a in de_tipo(eventos, "abismo")] == ["pondering", "pescado"]
+    system2 = chat.modelo.llamadas[1]["messages"][0]["content"]
+    bloque = system2[system2.index("=== Lo que subio del abismo"):]
+    assert "El nombre de la rosa" in bloque
+    assert "mensaje viejo" in bloque
+    assert "que libro lei" not in bloque and "reciente" not in bloque
+    # la ventana del historial es exactamente la que viaja en messages
+    historial = [m["content"] for m in chat.modelo.llamadas[1]["messages"][1:-1]]
+    assert len(historial) == srv._HISTORY_TURNS and all("reciente" in h for h in historial)
+
+
 def test_la_pasada_sintetica_no_repite_nada_del_turno(chat, monkeypatch):
     """Los catorce salteos del spec, medidos: meta, cost, chat/updated,
     thinking y done salen una vez; el pulso abre y cierra un solo escritorio;

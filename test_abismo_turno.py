@@ -86,12 +86,12 @@ def test_el_motivo_de_la_consulta(monkeypatch):
     aviso de la pesca vacia lo escribe consulta._fallo, y si cambia ahi el
     motivo pasaria a "error" en silencio (Pedro leeria el motivo equivocado
     en la senal)."""
-    monkeypatch.setattr(fuentes, "chats_viejos", lambda resto: [])
+    monkeypatch.setattr(fuentes, "chats_viejos", lambda resto, **kw: [])
     vacia = consulta.resolver(marca.Marca("chats", "zzz"))
     assert vacia["estado"] == "fallo"
     assert turno.motivo_de_consulta(vacia) == "vacio"
 
-    def bomba(resto):
+    def bomba(resto, **kw):
         raise RuntimeError("chats.json roto")
     monkeypatch.setattr(fuentes, "chats_viejos", bomba)
     assert turno.motivo_de_consulta(consulta.resolver(marca.Marca("chats", "zzz"))) == "error"

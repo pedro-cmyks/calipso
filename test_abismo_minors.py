@@ -16,12 +16,12 @@ def test_una_fuente_que_devuelve_basura_es_fallo_suave(monkeypatch):
     """Invariante 4: el armado del bloque (filtrado, etiquetado, techo) vive
     ADENTRO del try. Una fuente que devuelve None o tuplas de tres no puede
     subir como TypeError por la pasada sintetica hasta el WS."""
-    monkeypatch.setattr(fuentes, "chats_viejos", lambda resto: None)
+    monkeypatch.setattr(fuentes, "chats_viejos", lambda resto, **kw: None)
     r = consulta.resolver(marca.Marca("chats", "x"))
     assert r["estado"] == "fallo" and r["texto"] == "" and r["bloques"] == []
-    monkeypatch.setattr(fuentes, "chats_viejos", lambda resto: [("a", 2, "de mas")])
+    monkeypatch.setattr(fuentes, "chats_viejos", lambda resto, **kw: [("a", 2, "de mas")])
     assert consulta.resolver(marca.Marca("chats", "x"))["estado"] == "fallo"
-    monkeypatch.setattr(fuentes, "chats_viejos", lambda resto: [("ok", anillos.MEDIA_AGUA)])
+    monkeypatch.setattr(fuentes, "chats_viejos", lambda resto, **kw: [("ok", anillos.MEDIA_AGUA)])
     assert consulta.resolver(marca.Marca("chats", "x"))["estado"] == "pescado"
 
 

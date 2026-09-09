@@ -49,8 +49,20 @@ def _palabras(texto: str) -> set[str]:
     return set(re.findall(r"[0-9a-zà-öø-ÿ]{4,}", texto.lower()))
 
 
-def chats_viejos(resto: str) -> list[tuple[str, int]]:
-    """Busqueda lexica sobre chats.json, mas alla del historial del turno."""
+def chats_viejos(resto: str, *, chat_activo: str | None = None,
+                 en_contexto: int | None = 0) -> list[tuple[str, int]]:
+    """Busqueda lexica sobre chats.json, mas alla del historial del turno.
+
+    El chat ACTIVO se pesca solo por fuera de lo que el modelo ya tiene: sus
+    ultimos `en_contexto` mensajes (la ventana del historial mas la pregunta
+    actual, que ya esta persistida cuando la consulta corre) no entran al
+    bloque. Pescarlos desplazaba a los chats viejos del tope de 8 y le
+    devolvia al modelo su propia pregunta como "lo que subio". Lo anterior a
+    esa ventana en el mismo chat si se pesca (spec seccion 1: "mas alla de
+    los 12 mensajes de _HISTORY_TURNS"). Con `en_contexto=None` el activo
+    queda fuera ENTERO: es lo que pide un turno /nube, donde la conversacion
+    no viaja (Fase 2a, chat_id_nube=None) y el bloque no puede ser la puerta
+    de atras de un turno local previo. Sin `chat_activo`, todo es viejo."""
     desde, hasta, palabras = _rango(resto)
     claves = _palabras(palabras)
     if not claves:
@@ -58,7 +70,12 @@ def chats_viejos(resto: str) -> list[tuple[str, int]]:
     hallados = []  # (ts, fragmento)
     for chat in chats.todos():
         titulo = (chat.get("title") or "?").strip()
-        for msg in chat.get("messages", []):
+        mensajes = chat.get("messages", [])
+        if chat_activo is not None and chat.get("id") == chat_activo:
+            if en_contexto is None:
+                continue
+            mensajes = mensajes[:len(mensajes) - max(0, en_contexto)]
+        for msg in mensajes:
             texto = (msg.get("text") or "").strip()
             if not texto or texto.startswith("/"):
                 continue  # los gestos no se pescan (la leccion de voz._es_util)
