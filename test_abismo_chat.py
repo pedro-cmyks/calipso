@@ -351,6 +351,20 @@ def test_una_marca_ilegible_se_retira_sin_cortar(chat):
     assert [f["clase"] for f in chat.telemetria("abismo")] == ["ilegible"]
 
 
+def test_un_empalme_que_arma_una_marca_valida_no_llega_a_pedro_ni_a_disco(chat):
+    """La sonda I del cierre: el filtro retiraba la ilegible de adentro y
+    dejaba salir la marca valida que el empalme armaba, visible y persistida
+    en chats.json. Ahora el filtro relee hasta punto fijo: la marca armada
+    corta y consulta como cualquiera."""
+    _sembrar_chat_viejo(["un libro"])
+    chat.modelo.guiones = [["a ⟦abismo:chats ⟦abismo:zzz nada⟧ libro⟧ b"], ["z"]]
+    eventos = chat.turno("libro")
+    assert [a["fase"] for a in de_tipo(eventos, "abismo")] == ["pondering", "pescado"]
+    assert texto_visible(eventos) == "a z"
+    assert "⟦" not in (chat.tmp / "chats.json").read_text(encoding="utf-8")
+    assert [f["clase"] for f in chat.telemetria("abismo") if f["evento"] == "retirada"] == ["ilegible"]
+
+
 def test_una_marca_abierta_al_fin_del_stream_no_se_vuelca(chat):
     chat.modelo.guiones = [["termino asi ", "⟦abismo:chats sin cie"]]
     eventos = chat.turno("hola")

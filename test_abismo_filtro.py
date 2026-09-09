@@ -221,7 +221,8 @@ def test_limpiar_marcas_saca_las_dos_gramaticas():
 
 
 EMPALMES = ("⟦abismo:⟦abismo:chats x⟧chats y⟧",
-            "a ⟦abismo:chats ⟦foco:atlas⟧ libro⟧ b")
+            "a ⟦abismo:chats ⟦foco:atlas⟧ libro⟧ b",
+            "a ⟦abismo:chats ⟦abismo:zzz nada⟧ libro⟧ b")
 
 
 def test_las_dos_rutas_de_retiro_juzgan_igual_el_empalme():
@@ -246,9 +247,37 @@ def test_limpiar_marcas_llega_al_punto_fijo_y_saca_foco_primero():
     y al `jobs.event` del preview -o sea, en disco-. De ahi las dos cosas:
     el orden de la tuberia del Emisor (foco primero, abismo despues) y el
     punto fijo del retiro del abismo."""
-    anidada, tapada = EMPALMES
+    anidada, tapada = EMPALMES[:2]
     assert srv._limpiar_marcas(anidada) == ""
     assert srv._limpiar_marcas(tapada) == "a  b"
+
+
+def test_el_filtro_relee_el_empalme_hasta_punto_fijo():
+    """El tercer empalme (cierre del 1b, H1 de completitud): sacar la
+    ilegible de ADENTRO pegaba los dos costados en una marca valida y
+    completa que el filtro ya no volvia a mirar, y salia entera: visible
+    para Pedro y persistida en chats.json. El retiro tiene que releer lo
+    que empalmo, como `_retirar_abismo` (punto fijo): la marca armada se
+    juzga como cualquiera -corta si puede, se retira con aviso si no-."""
+    texto = "a ⟦abismo:chats ⟦abismo:zzz nada⟧ libro⟧ b"
+    f = _f()
+    assert f.comer(texto) == "a "
+    assert f.tomar_marca() == marca.Marca("chats", "libro")
+    assert [a["clase"] for a in f.tomar_avisos()] == ["ilegible"]
+    g = _f(puede=False)
+    assert g.comer(texto) == "a  b"
+    assert g.tomar_marca() is None
+    assert [a["clase"] for a in g.tomar_avisos()] == ["ilegible", "sin_corte"]
+    # partido en trozos: la de adentro cierra en uno, la armada en otro. El
+    # prefijo de afuera no se muestra a medias: se retiene hasta decidir
+    h = _f()
+    assert h.comer("a ⟦abismo:chats ⟦abismo:zzz nada⟧") == "a "
+    assert h.comer(" libro⟧ b") == ""
+    assert h.tomar_marca() == marca.Marca("chats", "libro")
+    # y el empalme con el tope alcanzado que se arma en dos vueltas
+    k = _f(puede=False)
+    assert k.comer("⟦abismo:⟦abismo:zzz⟧⟦abismo:zzz⟧chats y⟧ fin") == " fin"
+    assert [a["clase"] for a in k.tomar_avisos()] == ["ilegible", "ilegible", "sin_corte"]
 
 
 def test_retirar_con_aviso_llega_al_punto_fijo_y_cuenta_las_dos_vueltas(tmp_path, monkeypatch):

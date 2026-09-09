@@ -91,16 +91,22 @@ class FiltroAbismo:
                 buf = buf[i + len(ABRE):]
                 continue
             m = marca.parsear(cuerpo)
-            buf = buf[j + len(CIERRA):]
+            if m is not None and self._puede_cortar():
+                self._marca = m
+                break       # lo que quedaba en buf vino sin contexto: se descarta
             if m is None:
                 self._avisos.append({"clase": "ilegible", "largo": len(cuerpo)})
-                continue
-            if not self._puede_cortar():
+            else:
                 self._avisos.append({"clase": "sin_corte", "fuente": m.fuente,
                                      "largo": len(cuerpo)})
-                continue
-            self._marca = m
-            break           # lo que quedaba en buf vino sin contexto: se descarta
+            # el retiro pega los dos costados, y el empalme puede ARMAR una
+            # marca nueva y completa (un `⟦abismo:` de afuera que se juzgo
+            # texto porque su cuerpo tenia otro corchete): se relee desde
+            # lo que este trozo ya daba por visible, hasta punto fijo, como
+            # `_retirar_abismo` en la otra ruta de retiro. Termina siempre:
+            # cada vuelta acorta el texto en una marca por lo menos.
+            buf = "".join(visible) + buf[j + len(CIERRA):]
+            visible = []
         return "".join(visible)
 
     def cerrar(self) -> str:
