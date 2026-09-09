@@ -85,6 +85,33 @@ def _decide_local(user_msg, last_features=None, last_verdict=None):
     return verdict, features, [], d
 
 
+PLAZO = 60       # segundos que un turno del harness puede tardar en dar sus `done`
+DRENAJE = 0.25   # segundos que se sigue escuchando tras el ultimo `done`
+
+
+def lo_que_siga(ws, plazo):
+    """Lo que el server mande en los proximos `plazo` segundos, o nada.
+
+    En un hilo demonio con `join(plazo)` (el molde de `_cierre_del_ws`,
+    test_sesiones_server.py) porque `receive_json` del TestClient no acepta
+    timeout: esperar de frente un evento que NO tiene que llegar colgaria la
+    suite entera en vez de dejar pasar al test. El hilo muere cuando el
+    socket cierra al salir del `with`."""
+    extra: list[dict] = []
+
+    def _leer():
+        try:
+            while True:
+                extra.append(ws.receive_json())
+        except BaseException:
+            pass
+
+    hilo = threading.Thread(target=_leer, daemon=True)
+    hilo.start()
+    hilo.join(plazo)
+    return list(extra)
+
+
 class Harness:
     def __init__(self, cliente, chat_id, modelo, memoria, pulso, tmp):
         self.cliente = cliente
@@ -102,19 +129,43 @@ class Harness:
 
     def turno(self, texto, departamento=None, hasta_dones=1):
         """Manda un paquete real y junta todo lo que el server emite hasta el
-        `done` numero `hasta_dones` (2 cuando un steer encola otro turno)."""
+        `done` numero `hasta_dones` (2 cuando un steer encola otro turno), mas
+        lo que siga durante `DRENAJE`: asi "un solo done" es una asercion de
+        verdad y no una que solo podria fallar colgandose (un duplicado
+        saldria del mismo camino microsegundos despues del primero)."""
         with self.cliente.websocket_connect("/ws/chat") as ws:
             ws.send_text(self.paquete(texto, departamento))
-            return self.recibir(ws, hasta_dones)
+            eventos = self.recibir(ws, hasta_dones)
+            eventos.extend(lo_que_siga(ws, DRENAJE))
+            return eventos
 
     @staticmethod
-    def recibir(ws, hasta_dones=1):
-        eventos, dones = [], 0
-        while dones < hasta_dones:
-            ev = ws.receive_json()
-            eventos.append(ev)
-            if ev.get("type") == "done":
-                dones += 1
+    def recibir(ws, hasta_dones=1, plazo=PLAZO):
+        """Todo lo que llega hasta el `done` numero `hasta_dones`. Con plazo:
+        un `done` que no llega es un rojo con lo que SI llego, no un cuelgue
+        de la suite (hilo demonio + join, como `lo_que_siga`)."""
+        eventos, dones, error = [], 0, []
+
+        def _leer():
+            nonlocal dones
+            try:
+                while dones < hasta_dones:
+                    ev = ws.receive_json()
+                    eventos.append(ev)
+                    if ev.get("type") == "done":
+                        dones += 1
+            except BaseException as e:      # el socket cerro: que lo vea el test
+                error.append(e)
+
+        hilo = threading.Thread(target=_leer, daemon=True)
+        hilo.start()
+        hilo.join(plazo)
+        if hilo.is_alive():
+            raise AssertionError(
+                f"en {plazo} s llegaron {dones} de {hasta_dones} done: "
+                f"{[e.get('type') for e in eventos]}")
+        if error:
+            raise error[0]
         return eventos
 
     def mensajes(self):
@@ -165,6 +216,29 @@ def chat(tmp_path, monkeypatch):
     creado = chats.create(str(srv.ROOT), "prueba")
     cliente = TestClient(srv.app, cookies={srv.COOKIE: srv.TOKEN})
     return Harness(cliente, creado["id"], modelo, memoria, pu, tmp_path)
+
+
+class _SocketMudo:
+    """Manda de todo menos el `done`, hasta que se lo para."""
+
+    def __init__(self):
+        self.parar = threading.Event()
+
+    def receive_json(self):
+        if self.parar.wait(0.02):
+            raise RuntimeError("cerrado")
+        return {"type": "chunk", "text": "..."}
+
+
+def test_el_harness_no_se_cuelga_si_falta_el_done():
+    """Un `done` de menos tiene que ser un rojo con mensaje (que dice que
+    llego), no un cuelgue del ritual de merge."""
+    ws = _SocketMudo()
+    try:
+        with pytest.raises(AssertionError, match="0 de 1 done"):
+            Harness.recibir(ws, hasta_dones=1, plazo=0.3)
+    finally:
+        ws.parar.set()
 
 
 def test_un_turno_plano_da_thinking_chunks_y_un_solo_done(chat):

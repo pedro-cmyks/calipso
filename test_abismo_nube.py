@@ -5,7 +5,6 @@ pescado no aparece en ningun envio; solo hondo sigue sin bloque; los tramos
 que vuelven a la nube son los crudos, no los repuestos; el bloque no se
 persiste; el done es uno solo."""
 import json
-import threading
 
 import calipso.server as srv
 from calipso import chats
@@ -16,45 +15,13 @@ from test_abismo_chat import _sembrar_chat_viejo
 from test_abismo_suscripcion import cli_falso  # noqa: F401
 
 
-def _lo_que_siga(ws, plazo):
-    """Lo que el server mande en los proximos `plazo` segundos, o nada.
-
-    En un hilo demonio con `join(plazo)` (el molde de `_cierre_del_ws`,
-    test_sesiones_server.py) porque `receive_json` del TestClient no acepta
-    timeout: esperar de frente un evento que NO tiene que llegar colgaria la
-    suite entera en vez de dejar pasar al test."""
-    extra: list[dict] = []
-
-    def _leer():
-        try:
-            while True:
-                extra.append(ws.receive_json())
-        except BaseException:
-            pass        # al salir del `with` el socket cierra y el hilo muere
-
-    hilo = threading.Thread(target=_leer, daemon=True)
-    hilo.start()
-    hilo.join(plazo)
-    return list(extra)
-
-
-def _turno_con_un_solo_done(chat, texto, plazo=0.5):
+def _turno_con_un_solo_done(chat, texto):
     """`Harness.turno` mas la guarda del `done` unico (constraint global: un
-    solo `done` por turno).
-
-    Contar los `done` de lo que devuelve `Harness.turno` no prueba nada:
-    `recibir` corta en el primero (`hasta_dones=1`), asi que la lista jamas
-    puede traer dos y la cuenta solo podria "fallar" colgandose. Esto sigue
-    escuchando despues del `done` y cuenta sobre TODO lo que llego. El plazo
-    corto alcanza: el `done` es lo ultimo que manda el handler, un duplicado
-    saldria del mismo camino microsegundos despues, y el buffer del socket de
-    prueba no tiene tope, asi que nada se pierde si el drenaje arranca tarde
-    (el latido del chat, lo unico que despierta al handler ocioso, esta en 30
-    s y ademas no le manda nada al cliente)."""
-    with chat.cliente.websocket_connect("/ws/chat") as ws:
-        ws.send_text(chat.paquete(texto))
-        eventos = chat.recibir(ws, 1)
-        eventos.extend(_lo_que_siga(ws, plazo))
+    solo `done` por turno). `turno` ya sigue escuchando `DRENAJE` segundos
+    despues del primer `done` (el buffer del socket de prueba no tiene tope y
+    un duplicado saldria del mismo camino microsegundos despues), asi que la
+    cuenta es sobre TODO lo que llego y no una guarda vacua."""
+    eventos = chat.turno(texto)
     tipos = [e["type"] for e in eventos]
     assert tipos.count("done") == 1, f"un done de mas al final del turno: {tipos}"
     return eventos
