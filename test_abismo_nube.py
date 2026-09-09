@@ -155,6 +155,25 @@ def test_en_nube_por_suscripcion_los_tramos_vuelven_crudos(chat, cli_falso, monk
     assert "Lo que subio" not in (chat.tmp / "chats.json").read_text(encoding="utf-8")
 
 
+def test_en_nube_por_suscripcion_reponer_no_le_da_al_filtro_una_marca_que_el_detector_no_vio(chat, cli_falso, monkeypatch):
+    """S11b del cierre (h01): el detector juzga el texto CRUDO (161 chars de
+    cuerpo con cinco [ID_1]: ilegible por largo) pero lo visible pasa por
+    `reponer` ANTES del filtro y el cuerpo queda en 156: el filtro la tomaba
+    por valida y cortaba solo, tragando el resto sin rastro. En one-shot el
+    filtro no corta: la retira con aviso y lo posterior vale."""
+    _juez_que_tapa_nombres(monkeypatch)
+    _sembrar_chat_viejo(["con Marta hablamos del libro"])
+    cuerpo_crudo = "chats " + "x" * 120 + " [ID_1]" * 5
+    assert len(cuerpo_crudo) == 161
+    cli_falso.guion([{"partes": ["Le dije ⟦abismo:" + cuerpo_crudo + "⟧ y esto sigue"], "pausa": 0},
+                     {"partes": ["NO deberia reinvocar"], "pausa": 0}])
+    eventos = _turno_con_un_solo_done(chat, "/nube /claude que hablamos con Marta del libro")
+    assert de_tipo(eventos, "abismo") == []
+    assert texto_visible(eventos) == "Le dije  y esto sigue"
+    assert len(cli_falso.llamadas()) == 1
+    assert [f["clase"] for f in chat.telemetria("abismo")] == ["sin_corte"]
+
+
 def test_en_nube_por_suscripcion_un_bloque_que_no_viaja_no_reinvoca(chat, cli_falso, monkeypatch):
     """La letra exacta del 8.4, en la unica ruta donde el texto posterior
     existe: el viaje falla (credencial), no se reinvoca, lo que el CLI

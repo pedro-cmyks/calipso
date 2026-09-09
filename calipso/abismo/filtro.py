@@ -14,8 +14,10 @@ tres puntos que el spec declara:
    despues (el resto del trozo y los trozos siguientes hasta que la
    consuman) se descarta -- el modelo siguio escribiendo sin el contexto que
    pidio. Salvo que `puede_cortar()` diga que no (tope de consultas,
-   fallback, orquestador): ahi la marca se retira con aviso y el texto
-   posterior sigue saliendo (los dos regimenes del spec, a proposito).
+   fallback, orquestador, y la ruta one-shot entera, donde el corte lo
+   decide el detector sobre el texto crudo): ahi la marca se retira con
+   aviso y el texto posterior sigue saliendo (los dos regimenes del spec,
+   a proposito).
 3. `cerrar()` DESCARTA lo retenido con aviso, nunca lo vuelca crudo
    (divergencia deliberada de foco, spec seccion 11).
 

@@ -145,6 +145,48 @@ def test_en_suscripcion_la_cuarta_marca_no_corta(chat, cli_falso):
     assert [f["clase"] for f in retiradas] == ["sin_corte"]
 
 
+def test_en_suscripcion_un_prefijo_abierto_antes_de_la_marca_no_traga_la_reentrada(chat, cli_falso):
+    """La sonda A del cierre (h01): `cortar_en_marca` corta en la primera
+    valida y el tramo queda terminado en un `⟦abismo:` abierto; el filtro lo
+    RETENIA a traves de la pesca y la reinvocacion, la continuacion se
+    pegaba detras y `cerrar()` descartaba todo como `abierta`: dos
+    invocaciones reales pagadas para no mostrar nada. En one-shot el texto
+    llega entero: la tuberia se vuelca en cada tramo (el prefijo abierto se
+    descarta con aviso ahi mismo) y el "venias diciendo" no lleva la marca a
+    medias."""
+    _sembrar_chat_viejo(["un libro"])
+    cli_falso.guion([{"partes": ["x ⟦abismo:zzz ⟦abismo:chats libro⟧ fin"], "pausa": 0},
+                     {"partes": ["y sigo"], "pausa": 0}])
+    eventos = chat.turno("/claude libro")
+    assert [a["fase"] for a in de_tipo(eventos, "abismo")] == ["pondering", "pescado"]
+    assert texto_visible(eventos) == "x y sigo"
+    assert [e["type"] for e in eventos].count("done") == 1
+    llamadas = cli_falso.llamadas()
+    assert len(llamadas) == 2
+    assert "Venias diciendo: x \n" in llamadas[1]["prompt"]
+    assert "⟦" not in llamadas[1]["prompt"]
+    assert chat.mensajes()[-1] == chat.mensajes()[-1] | {"role": "assistant", "text": "x y sigo"}
+    retiradas = [f for f in chat.telemetria("abismo") if f["evento"] == "retirada"]
+    assert [(f["clase"], f["largo"]) for f in retiradas] == [("abierta", len("⟦abismo:zzz "))]
+
+
+def test_en_suscripcion_una_marca_que_solo_ve_la_tuberia_se_retira_sin_cortar(chat, cli_falso):
+    """S11a del cierre (h01): PATRON no admite corchetes en el cuerpo, asi que
+    el detector one-shot no ve la marca; el filtro de foco saca el
+    `⟦foco:atlas⟧` de adentro y el del abismo veia una VALIDA y cortaba por
+    su cuenta, sin que nadie consumiera la marca: el resto se tragaba mudo
+    (sin senal, sin fila). En one-shot el corte lo decide SOLO el detector:
+    la tuberia retira con aviso y el texto posterior vale."""
+    cli_falso.guion([{"partes": ["Dejame ver ⟦abismo:chats libro ⟦foco:atlas⟧ x⟧ y esto sigue"], "pausa": 0},
+                     {"partes": ["NO deberia reinvocar"], "pausa": 0}])
+    eventos = chat.turno("/claude libro")
+    assert de_tipo(eventos, "abismo") == []
+    assert texto_visible(eventos) == "Dejame ver  y esto sigue"
+    assert len(cli_falso.llamadas()) == 1
+    assert [f["clase"] for f in chat.telemetria("abismo")] == ["sin_corte"]
+    assert chat.mensajes()[-1]["text"] == "Dejame ver  y esto sigue"
+
+
 def test_en_suscripcion_una_marca_abierta_al_final_no_se_vuelca(chat, cli_falso):
     """Seccion 11 en one-shot: el texto del CLI pasa por el mismo Emisor, asi
     que una marca abierta al final se descarta con aviso y no se vuelca."""

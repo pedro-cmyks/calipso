@@ -3506,9 +3506,18 @@ async def ws_chat(ws: WebSocket) -> None:
             # abismo despues (spec seccion 4). `puede_cortar` mira el estado
             # del turno en el momento de cada marca: bajo el tope corta, con
             # el tope alcanzado o la consulta apagada retira sin cortar.
+            # En la ruta one-shot (suscripcion) el corte lo decide SOLO el
+            # detector sobre el texto crudo (`cortar_en_marca`, mas abajo):
+            # el filtro no corta nunca, retira con aviso. Si pudiera cortar
+            # por su cuenta -una marca que PATRON no ve porque foco o
+            # `reponer` la cambian ANTES de que el filtro la mire- quedaria
+            # una marca pendiente que nadie consume y el resto del turno se
+            # tragaria en silencio.
+            corta_el_filtro = (estado_abismo.puede_cortar if route != "subscription"
+                               else (lambda: False))
             emisor = Emisor(ws, agente_id=agente_id, filtros=[
                 *([_mapa_foco.Filtro()] if _mapa_foco is not None else []),
-                abismo_filtro.FiltroAbismo(puede_cortar=estado_abismo.puede_cortar)])
+                abismo_filtro.FiltroAbismo(puede_cortar=corta_el_filtro)])
             if EL_PULSO is not None:
                 # abierto y cerrado a mano: envolver el cuerpo del turno
                 # re-indentaria doscientas cincuenta lineas. Si el turno
@@ -3655,15 +3664,24 @@ async def ws_chat(ws: WebSocket) -> None:
                         visible = (redaccion.reponer(tramo_crudo, mapa)
                                    if mapa is not None else tramo_crudo)
                         visible = await emisor.chunk(visible)
+                        # el texto llego ENTERO: nada de lo que la tuberia
+                        # retenga puede completarse en otra invocacion. Se
+                        # vuelca aca (un corchete suelto se ve; un `⟦abismo:`
+                        # abierto se descarta con aviso, spec seccion 11) en
+                        # vez de arrastrarlo por la pesca y la reinvocacion,
+                        # donde se tragaba la continuacion entera
+                        visible += await emisor.cerrar()
                         full += visible
                         if marca_valida is None:
                             break
                         estado_abismo.tramos.append(visible)
                         # crudo (con marcadores, invariante 9) pero SIN las
-                        # marcas ilegibles anteriores al corte: el modelo no
-                        # tiene que releer su propia marca fallida en el
-                        # "venias diciendo" (los marcadores [ID_N] no son marcas)
-                        estado_abismo.tramos_crudos.append(abismo_turno.retirar_marcas(tramo_crudo))
+                        # marcas ilegibles anteriores al corte ni una abierta
+                        # al final: el modelo no tiene que releer su propia
+                        # marca fallida en el "venias diciendo" (los
+                        # marcadores [ID_N] no son marcas)
+                        estado_abismo.tramos_crudos.append(abismo_turno.recortar_abierta(
+                            abismo_turno.retirar_marcas(tramo_crudo)))
                         if queued:
                             # el steer de Pedro gana (spec seccion 10); tambien
                             # el /stop, que ya mato al CLI: ni pesca ni reinvocacion
