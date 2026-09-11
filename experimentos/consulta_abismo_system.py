@@ -113,12 +113,19 @@ bloque = contrato.bloque_contrato(catastro.nombres())
 # dentro de la variante de system que gano la ronda 1.
 _CONTRATO_FILE = os.environ.get("ABISMO_CONTRATO_FILE", "")
 if _CONTRATO_FILE:
-    _repos = bloque.split(f"{marca.ABRE}abismo:proyecto nombre{marca.CIERRA} -- ", 1)[1].split("\n", 1)[0]
+    # la cola de repos: lo que sigue al " -- " en la linea de la marca de
+    # proyecto, sea cual sea la letra del comodin (nombre / <nombre del repo>)
+    _linea_pro = next(l for l in bloque.splitlines() if l.startswith(f"{marca.ABRE}abismo:proyecto"))
+    _repos = _linea_pro.split(" -- ", 1)[1]
     bloque_alt = pathlib.Path(_CONTRATO_FILE).read_text(encoding="utf-8").strip().replace("{repos}", _repos)
 else:
     bloque_alt = bloque
 system_actual = srv._build_context("hola", RUNTIME, FEATS)
-assert system_actual == _armar(srv.SYSTEM, srv._identity_doc()), "el armado no reproduce el system real"
+# `_identity_doc` (CALIPSO.md como seccion Constitucion) murio al aterrizar la
+# opcion (a): desde entonces `actual` == identidad-corta + contrato podado, y
+# las variantes sin-constitucion / identidad-corta quedan como historia.
+_ident = getattr(srv, "_identity_doc", lambda: "")()
+assert system_actual == _armar(srv.SYSTEM, _ident), "el armado no reproduce el system real"
 SISTEMAS = {
     "actual": system_actual,
     "banco": "\n".join(["Sos Calipso, el asistente personal de Pedro. Respondele en su idioma,",

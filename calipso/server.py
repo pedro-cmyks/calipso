@@ -2627,7 +2627,7 @@ RECALL_MAX = int(os.environ.get("CALIPSO_RECALL_MAX", "4"))
 REPO_BRIEF_MAX = int(os.environ.get("CALIPSO_REPO_BRIEF_MAX", "4500"))
 
 
-# `_identity_doc` (CALIPSO.md cortado a CONTEXT_CONST_MAX como seccion
+# `_identity_doc` (CALIPSO.md cortado a 3000 chars como seccion
 # "Constitucion de Calipso") murio el 2026-09-10: ver el comentario de SYSTEM.
 
 

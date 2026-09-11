@@ -50,7 +50,7 @@ def test_la_identidad_de_produccion_es_la_medida():
     """SYSTEM es la identidad corta que se midio como seccion `Sistema`.
     CALIPSO.md sigue siendo el documento del repo; al 7b no le llega."""
     assert srv.SYSTEM == _seccion(_system_medido(), "Sistema")
-    assert "Constitucion de Calipso" not in srv._build_context.__doc__ or True  # informativo
+    assert not hasattr(srv, "_identity_doc")
 
 
 def test_el_bloque_del_abismo_es_la_letra_con_senales(tmp_path, monkeypatch):

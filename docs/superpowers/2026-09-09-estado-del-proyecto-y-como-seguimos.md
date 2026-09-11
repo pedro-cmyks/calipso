@@ -105,17 +105,15 @@ y `docs/superpowers/2026-09-08-cierre-abismo-1b/`. Los README de ambas empiezan 
 
 ## 5. Decisiones que solo Pedro puede tomar
 
-1. **h05, la decision de la seccion 12 del spec del abismo (la que manda).** El 7b local no emite la marca
-   del abismo por su cuenta con el system de PRODUCCION: cero marcas en seis turnos naturales del smoke, y en
-   uno confabulo. El porton v2 del dia 7 midio el contrato SOLO (junto a una identidad de dos renglones);
-   dentro del system real de ocho secciones no pasa en ninguna posicion (240 llamadas reales, N=2; evidencia en
-   `experimentos/consulta_abismo_posicion*.{py,md,jsonl}`). Ademas la metrica del porton contaba como legible
-   la copia literal del molde (22 de 34 marcas del control). Con marca explicita en el mensaje la pesca
-   funciona de punta a punta; en /nube por suscripcion el modelo de nube consulta solo. Nada se rompe mientras
-   tanto (sin marca el filtro es transparente), pero el contrato suma ~600 chars al system de cada turno local.
-   Opciones: (a) podar el system de produccion y re-medir el porton SOBRE ese system, excluyendo la copia
-   literal; (b) cablear la consulta solo en rutas grandes (suscripcion/API) y sacar el contrato del system
-   local; (c) aceptar el regimen actual hasta la rebanada 2 (el fondo: el disco del Mac), que cambia las fuentes.
+1. ~~**h05, la decision de la seccion 12 del spec del abismo (la que manda).**~~ **DECIDIDA Y ATERRIZADA el
+   2026-09-10 (opcion a).** El porton re-medido SOBRE el system de produccion, contando solo marcas utiles,
+   mostro que el v2 nunca habia pasado en memoria (copia literal del molde). Se podo el system local
+   (identidad corta en vez de CALIPSO.md; contrato interno de 7 renglones) y la letra del bloque paso a
+   "existe con senales" (`INDICE_MAX` 1300). A N=6: memoria 83%, chats 100%, proyecto 83%, espurias 0; ruteo
+   88% (dos items deterministas, Pedro acepto la excepcion). Smoke en vivo: el 7b emite la marca solo en
+   turnos naturales (5 de 12 contra 0 de 6). Evidencia: `experimentos/consulta_abismo_system_resultados.md`,
+   `docs/superpowers/2026-09-10-smoke-abismo-system-podado.md`. Hallazgo nuevo para Pedro (h06): la fuente
+   `memoria` le devuelve al modelo sus propias respuestas anteriores como recuerdos (seccion 9).
 2. **h04, una politica que el fix del cierre decidio y el spec no escribe:** en local, la fuente `chats` no
    pesca la ventana de 12 mensajes que el modelo ya tiene ni la pregunta actual, pero SI los mensajes mas
    viejos del mismo chat; en /nube el chat activo queda fuera ENTERO (para que un turno local previo no viaje
