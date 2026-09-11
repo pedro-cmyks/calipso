@@ -12,7 +12,7 @@ import types
 
 import pytest
 
-from calipso import aduana, browser, deps, web
+from calipso import aduana, browser, deps, discovery, github, web
 from test_aduana import cruces_del_libro, libro, quien_de_prueba  # noqa: F401
 
 
@@ -279,3 +279,109 @@ def test_before_after_capture_no_cruza_pero_su_deps_ensure_si(libro, monkeypatch
     assert antes == b"png" and despues == b"png"
     propositos = [c["proposito"] for c in cruces_del_libro(libro)]
     assert propositos == ["instalar dependencia"]     # playwright install, no la captura
+
+
+# --- github.py -----------------------------------------------------------------
+
+def test_default_runner_cruza_cada_gh(libro, monkeypatch):
+    cap = _Captura(stdout='{"login": "pedro"}')
+    monkeypatch.setattr(github, "_which_gh", lambda: "/usr/bin/gh")
+    monkeypatch.setattr(github.subprocess, "run", cap)
+    q = quien_de_prueba(origen="ui", endpoint="/api/github/overview", chat=None,
+                        gesto=None, ruta=None)
+    run = github.default_runner(cwd="/tmp", quien=q)
+    assert run(["gh", "api", "user"]) == (0, '{"login": "pedro"}', "")
+    assert cap.llamadas == [["/usr/bin/gh", "api", "user"]]
+    c, = cruces_del_libro(libro)
+    assert c["quien"] == q.a_dict()
+    assert c["proposito"] == "gh api user"
+    assert c["destino"] == {"host": "api.github.com", "url": None}
+    assert c["carga"] == {"tipo": "consulta", "texto": "gh api user"}
+    assert c["resultado"]["bytes"] == len('{"login": "pedro"}')
+
+
+def test_default_runner_sin_gh_en_path_no_cruza(libro, monkeypatch):
+    monkeypatch.setattr(github, "_which_gh", lambda: None)
+    assert github.default_runner(quien=quien_de_prueba())(["gh", "pr", "list"])[0] == 127
+    assert cruces_del_libro(libro) == []
+
+
+def test_git_runner_con_log_no_cruza_y_con_fetch_si(libro, monkeypatch):
+    cap = _Captura()
+    monkeypatch.setattr(github.shutil, "which", lambda n: "/usr/bin/git")
+    monkeypatch.setattr(github.subprocess, "run", cap)
+    run = github.git_runner(cwd="/tmp", quien=quien_de_prueba())
+    assert run(["log", "-1"])[0] == 0
+    assert run(["remote", "get-url", "origin"])[0] == 0
+    assert run(["-c", "core.pager=cat", "branch", "--show-current"])[0] == 0
+    assert run(["git", "status"])[0] == 0            # un `git` inicial se tolera
+    assert cruces_del_libro(libro) == []
+    assert run(["fetch", "origin", "3f2a9c1e4b7d6a5f8e9c0b1a2d3e4f5a6b7c8d9e"])[0] == 0
+    assert run(["clone", "https://pedro:s3cr3t@github.com/x/y.git"])[0] == 0
+    fetch, clone = cruces_del_libro(libro)
+    assert fetch["proposito"] == "git fetch"
+    assert fetch["carga"]["texto"] == "git fetch origin 3f2a9c1e4b7d6a5f8e9c0b1a2d3e4f5a6b7c8d9e"
+    assert fetch["destino"] == {"host": None, "url": None}
+    assert clone["destino"]["host"] == "github.com"
+    assert "s3cr3t" not in libro.read_text()
+    assert len(cap.llamadas) == 6
+
+
+def test_los_runners_exigen_quien():
+    with pytest.raises(TypeError):
+        github.default_runner(cwd="/tmp")     # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        github.git_runner(cwd="/tmp")         # type: ignore[call-arg]
+
+
+# --- discovery.py ----------------------------------------------------------------
+
+def test_npm_latest_cruza_con_carga_nada(libro, monkeypatch):
+    visto = _urlopen_falso(monkeypatch, discovery, b'{"version": "2.0.1"}')
+    q = quien_de_prueba(origen="ui", endpoint="/api/updates", chat=None, gesto=None, ruta=None)
+    assert discovery._npm_latest("@anthropic-ai/claude-code", q) == "2.0.1"
+    assert visto[0]["url"] == "https://registry.npmjs.org/@anthropic-ai/claude-code/latest"
+    c, = cruces_del_libro(libro)
+    assert c["quien"] == q.a_dict() and c["proposito"] == "version en npm"
+    assert c["destino"]["host"] == "registry.npmjs.org"
+    assert c["carga"] == {"tipo": "nada"}
+    assert c["resultado"]["bytes"] == len('{"version": "2.0.1"}')
+
+
+def test_npm_latest_caido_es_none_y_fallo_en_el_libro(libro, monkeypatch):
+    _urlopen_falso(monkeypatch, discovery, levanta=OSError("sin red"))
+    assert discovery._npm_latest("@openai/codex", quien_de_prueba()) is None
+    assert cruces_del_libro(libro)[0]["resultado"]["error"] == "OSError"
+
+
+def test_updates_pasa_el_quien_a_npm_latest(libro, tmp_path, monkeypatch):
+    monkeypatch.setattr(discovery, "SNAP", tmp_path / "discovered.json")
+    monkeypatch.setattr(discovery, "CALIPSO_HOME", tmp_path)
+    monkeypatch.setattr(discovery, "discover", lambda register=True: {"local": [], "api": [], "added": []})
+    monkeypatch.setattr(discovery, "_cli_version", lambda c: "1.0.0" if c == "claude" else None)
+    vistos = []
+    monkeypatch.setattr(discovery, "_npm_latest", lambda pkg, quien: vistos.append((pkg, quien)) or "1.0.1")
+    q = quien_de_prueba(origen="ui")
+    r = discovery.updates(q)
+    assert vistos == [("@anthropic-ai/claude-code", q)]
+    assert r["clis"]["claude"] == {"installed": "1.0.0", "latest": "1.0.1", "outdated": True}
+    with pytest.raises(TypeError):
+        discovery.updates()                   # type: ignore[call-arg]
+
+
+def test_sin_la_aduana_escribible_deps_github_y_discovery_siguen_igual(libro, monkeypatch):
+    """Spec seccion 12, por enchufe (web ya tiene el suyo arriba): con el
+    libro roto los tres devuelven lo mismo que con el libro sano, el hueco
+    se cuenta en `sin_libro` y no queda linea. Vale la pena porque deps y
+    github tienen `except` propios alrededor del `with`."""
+    monkeypatch.setattr(aduana, "_escribir", lambda linea: (_ for _ in ()).throw(OSError("disco")))
+    monkeypatch.setattr(deps.subprocess, "run", _Captura())
+    monkeypatch.setattr(deps, "_importable", lambda m: True)
+    monkeypatch.setattr(deps, "is_ready", lambda t: True)
+    assert deps.ensure("browser", quien_de_prueba())["ok"] is True      # 1 cruce (playwright install)
+    monkeypatch.setattr(github, "_which_gh", lambda: "/usr/bin/gh")
+    monkeypatch.setattr(github.subprocess, "run", _Captura(stdout="{}"))
+    assert github.default_runner(quien=quien_de_prueba())(["gh", "api", "user"]) == (0, "{}", "")
+    _urlopen_falso(monkeypatch, discovery, b'{"version": "1"}')
+    assert discovery._npm_latest("@openai/codex", quien_de_prueba()) == "1"
+    assert cruces_del_libro(libro) == [] and aduana.sin_libro()["n"] == 3

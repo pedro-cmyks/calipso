@@ -349,3 +349,42 @@ def test_apply_proposal_pasa_el_quien_a_la_captura(libro, tmp_path, monkeypatch)
     assert vistos == [("http://localhost:8000", aduana.Quien(
         origen="gesto", proyecto=tmp_path.name, endpoint="/api/proposals/{change_id}/apply",
         desde={"credencial": "maquina"}))]
+
+
+# --- Task 5: los GET de github y /api/updates --------------------------------------
+
+def test_los_get_de_github_cruzan_como_ui_con_su_endpoint(libro, monkeypatch):
+    vistos: list[tuple] = []
+    monkeypatch.setattr(srv.calipso_github, "available", lambda: True)
+    monkeypatch.setattr(srv.calipso_github, "default_runner",
+                        lambda cwd=None, timeout=15, *, quien: (
+                            vistos.append(("gh", cwd, quien)) or (lambda args: (0, "{}", ""))))
+    monkeypatch.setattr(srv.calipso_github, "git_runner",
+                        lambda cwd=None, timeout=10, *, quien: (
+                            vistos.append(("git", cwd, quien)) or (lambda args: (0, "", ""))))
+    monkeypatch.setattr(srv.calipso_github, "gh_user",
+                        lambda gh: {"authenticated": True, "login": "pedro"})
+    monkeypatch.setattr(srv.calipso_github, "repo_overview", lambda gh, git: {"remote": None})
+    r = _local().get("/api/github/overview")
+    assert r.status_code == 200 and r.json()["authenticated"] is True
+    esperado = aduana.Quien(origen="ui", proyecto=srv.ROOT.name,
+                            endpoint="/api/github/overview", desde={"credencial": "maquina"})
+    assert vistos == [("gh", str(srv.ROOT), esperado), ("git", str(srv.ROOT), esperado)]
+    vistos.clear()
+    monkeypatch.setattr(srv.calipso_github, "list_repos", lambda gh, limit=10: [])
+    assert _local().get("/api/github/repos").status_code == 200
+    assert vistos[0][2].endpoint == "/api/github/repos"
+    vistos.clear()
+    monkeypatch.setattr(srv.calipso_github, "assigned_items",
+                        lambda gh, limit=10: {"issues": [], "prs": []})
+    assert _local().get("/api/github/assigned").status_code == 200
+    assert vistos[0][2].endpoint == "/api/github/assigned"
+
+
+def test_api_updates_cruza_como_ui(libro, monkeypatch):
+    vistos = []
+    monkeypatch.setattr(srv.discovery, "updates", lambda quien: (
+        vistos.append(quien) or {"clis": {}, "new_models": [], "available_models": []}))
+    assert _local().get("/api/updates").status_code == 200
+    assert vistos == [aduana.Quien(origen="ui", proyecto=srv.ROOT.name,
+                                   endpoint="/api/updates", desde={"credencial": "maquina"})]

@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import urllib.request
 
-from calipso import capabilities
+from calipso import aduana, capabilities
 
 CALIPSO_HOME = pathlib.Path(os.environ.get(
     "CALIPSO_HOME", os.path.expanduser("~/.calipso")))
@@ -26,6 +26,9 @@ NPM_PKG = {"claude": "@anthropic-ai/claude-code", "codex": "@openai/codex"}
 
 
 def _get_json(url: str, timeout: float = 2.0):
+    """Solo loopback por construccion (discover_ollama / discover_litellm).
+    `_npm_latest` NO pasa por aca: se traga toda excepcion, y el libro de
+    la aduana nunca podria decir `fallo`."""
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:
             return json.loads(r.read().decode())
@@ -89,12 +92,24 @@ def _cli_version(client: str) -> str | None:
         return None
 
 
-def _npm_latest(pkg: str) -> str | None:
-    data = _get_json(f"https://registry.npmjs.org/{pkg}/latest", timeout=4)
-    return data.get("version") if data else None
+def _npm_latest(pkg: str, quien: aduana.Quien) -> str | None:
+    """La version publicada en npm. El urlopen va inline: el `with` de la
+    aduana vive en la funcion que hace la llamada (spec seccion 3). Carga
+    `nada`: no lleva nada de Pedro."""
+    url = f"https://registry.npmjs.org/{pkg}/latest"
+    try:
+        with aduana.cruzar(quien, "version en npm", destino=url,
+                           carga=None) as cruce:
+            with urllib.request.urlopen(url, timeout=4) as r:
+                crudo = r.read()
+            cruce.entro(len(crudo))
+        data = json.loads(crudo.decode())
+    except Exception:
+        return None
+    return data.get("version") if isinstance(data, dict) else None
 
 
-def updates() -> dict:
+def updates(quien: aduana.Quien) -> dict:
     """Estado de updates: versiones CLI (+ latest npm), modelos nuevos vs snapshot."""
     found = discover(register=True)
     current = ({f"local:{n}" for n in found["local"]}
@@ -116,7 +131,7 @@ def updates() -> dict:
     clis = {}
     for client, pkg in NPM_PKG.items():
         installed = _cli_version(client)
-        latest = _npm_latest(pkg) if installed else None
+        latest = _npm_latest(pkg, quien) if installed else None
         outdated = bool(installed and latest and latest not in installed)
         clis[client] = {"installed": installed, "latest": latest, "outdated": outdated}
     clis["ollama"] = {"installed": _cli_version("ollama"), "latest": None,
@@ -127,4 +142,6 @@ def updates() -> dict:
 
 
 if __name__ == "__main__":
-    print(json.dumps(updates(), indent=2, ensure_ascii=False))
+    print(json.dumps(updates(aduana.Quien(
+        origen="gesto", proyecto="cli", desde={"credencial": "maquina"})),
+        indent=2, ensure_ascii=False))

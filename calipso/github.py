@@ -16,6 +16,7 @@ El runner de `gh`/`git` se inyecta para poder probar sin red ni autenticacion.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -23,8 +24,14 @@ import shutil
 import subprocess
 from typing import Any, Callable
 
+from calipso import aduana
+
 # runner(args) -> (returncode, stdout, stderr)
 Runner = Callable[[list[str]], "tuple[int, str, str]"]
+
+# git cruza SOLO con subcomando de red (spec seccion 7, ruling): rev-parse,
+# log, status, remote get-url, branch son locales y no cruzan.
+GIT_DE_RED = ("fetch", "push", "pull", "clone", "ls-remote")
 
 
 def _which_gh() -> str | None:
@@ -63,19 +70,30 @@ def env_git_blindado(anular_global: bool = True) -> dict:
     return env
 
 
-def default_runner(cwd: str | None = None, timeout: int = 15) -> Runner:
-    """Runner real que ejecuta `gh` (primer arg) buscandolo en PATH."""
+def default_runner(cwd: str | None = None, timeout: int = 15,
+                   *, quien: aduana.Quien) -> Runner:
+    """Runner real que ejecuta `gh` (primer arg) buscandolo en PATH. Todo
+    `gh` que pasa por aca es de red: el `with` de la aduana vive en el
+    closure `run`, y el Quien queda capturado (la firma `Runner` no
+    cambia). Sin `gh` en PATH devuelve 127 sin cruzar: no hubo salida."""
     exe = _which_gh()
     env = env_git_blindado()
 
     def run(args: list[str]) -> tuple[int, str, str]:
         if not exe:
             return (127, "", "gh no esta en PATH")
+        sub = args[1:] if args and args[0] == "gh" else list(args)
         try:
-            proc = subprocess.run(
-                [exe, *args[1:]] if args and args[0] == "gh" else [exe, *args],
-                cwd=cwd, env=env, text=True, capture_output=True,
-                encoding="utf-8", errors="replace", timeout=timeout)
+            # el `except` queda afuera del cruce: la aduana anota `fallo`
+            # (timeout, FileNotFoundError) y re-lanza; aca se traga como hoy
+            with aduana.cruzar(quien, "gh " + " ".join(sub[:2]),
+                               destino="api.github.com",
+                               carga=["gh", *sub]) as cruce:
+                proc = subprocess.run(
+                    [exe, *sub],
+                    cwd=cwd, env=env, text=True, capture_output=True,
+                    encoding="utf-8", errors="replace", timeout=timeout)
+                cruce.entro(len(proc.stdout or "") + len(proc.stderr or ""))
             return (proc.returncode, proc.stdout or "", proc.stderr or "")
         except Exception as e:  # pragma: no cover - depende del entorno
             return (1, "", str(e))
@@ -83,18 +101,52 @@ def default_runner(cwd: str | None = None, timeout: int = 15) -> Runner:
     return run
 
 
-def git_runner(cwd: str | None = None, timeout: int = 10) -> Runner:
+def subcomando_git(args: list[str]) -> str | None:
+    """El subcomando de un argv de git: salta un `git` inicial (produccion
+    no lo pasa; test_seguridad_git_blindado.py si) y las opciones globales
+    `-c k=v` / `-C dir` / `--flag`."""
+    it = iter(args[1:] if args and args[0] == "git" else args)
+    for a in it:
+        if a in ("-c", "-C"):
+            next(it, None)
+            continue
+        if a.startswith("-"):
+            continue
+        return a
+    return None
+
+
+def _destino_git(args: list[str]) -> str | None:
+    """La URL del remoto si viene en el argv (`git clone https://...`); con
+    un nombre (`origin`) el destino no se conoce y queda None."""
+    return next((a for a in args if "://" in a or a.startswith("git@")), None)
+
+
+def git_runner(cwd: str | None = None, timeout: int = 10,
+               *, quien: aduana.Quien) -> Runner:
+    """Cruza SOLO con subcomando de red (`GIT_DE_RED`); lo local corre
+    bajo `contextlib.nullcontext()`. El canario acepta el cruce condicional
+    porque el Call a `aduana.cruzar` esta en el closure."""
     exe = shutil.which("git.exe") or shutil.which("git")
     env = env_git_blindado()
 
     def run(args: list[str]) -> tuple[int, str, str]:
         if not exe:
             return (127, "", "git no esta en PATH")
+        sub = subcomando_git(args)
+        if sub in GIT_DE_RED:
+            cruce = aduana.cruzar(quien, f"git {sub}", destino=_destino_git(args),
+                                  carga=["git", *args])
+        else:
+            cruce = contextlib.nullcontext()
         try:
-            proc = subprocess.run(
-                [exe, *args], cwd=cwd, env=env, text=True,
-                capture_output=True,
-                encoding="utf-8", errors="replace", timeout=timeout)
+            with cruce as c:
+                proc = subprocess.run(
+                    [exe, *args], cwd=cwd, env=env, text=True,
+                    capture_output=True,
+                    encoding="utf-8", errors="replace", timeout=timeout)
+                if c is not None:
+                    c.entro(len(proc.stdout or "") + len(proc.stderr or ""))
             return (proc.returncode, proc.stdout or "", proc.stderr or "")
         except Exception as e:  # pragma: no cover
             return (1, "", str(e))

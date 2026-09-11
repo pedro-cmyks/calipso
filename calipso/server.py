@@ -1690,18 +1690,20 @@ def api_git_diff(path: str | None = None) -> dict:
 # Leer es libre; clonar/branch/fork/PR exigen confirm explicito (SPEC 11).
 # --------------------------------------------------------------------------
 
-def _gh_runner():
-    return calipso_github.default_runner(cwd=str(ROOT))
+def _gh_runner(quien: aduana.Quien):
+    return calipso_github.default_runner(cwd=str(ROOT), quien=quien)
 
 
 @app.get("/api/github/overview")
-def api_github_overview() -> dict:
+def api_github_overview(request: Request) -> dict:
     if not calipso_github.available():
         return {"available": False, "reason": "gh no esta instalado",
                 "user": None, "repo": None}
-    gh = _gh_runner()
+    quien = _quien_http(request, "ui", "/api/github/overview")
+    gh = _gh_runner(quien)
     user = calipso_github.gh_user(gh)
-    overview = calipso_github.repo_overview(gh, calipso_github.git_runner(cwd=str(ROOT)))
+    overview = calipso_github.repo_overview(
+        gh, calipso_github.git_runner(cwd=str(ROOT), quien=quien))
     return {
         "available": True,
         "authenticated": user["authenticated"],
@@ -1711,18 +1713,22 @@ def api_github_overview() -> dict:
 
 
 @app.get("/api/github/repos")
-def api_github_repos(limit: int = 10) -> dict:
+def api_github_repos(request: Request, limit: int = 10) -> dict:
     if not calipso_github.available():
         raise HTTPException(status_code=404, detail="gh no esta instalado")
-    repos = calipso_github.list_repos(_gh_runner(), limit=max(1, min(limit, 50)))
+    repos = calipso_github.list_repos(
+        _gh_runner(_quien_http(request, "ui", "/api/github/repos")),
+        limit=max(1, min(limit, 50)))
     return {"repos": repos}
 
 
 @app.get("/api/github/assigned")
-def api_github_assigned(limit: int = 10) -> dict:
+def api_github_assigned(request: Request, limit: int = 10) -> dict:
     if not calipso_github.available():
         raise HTTPException(status_code=404, detail="gh no esta instalado")
-    return calipso_github.assigned_items(_gh_runner(), limit=max(1, min(limit, 50)))
+    return calipso_github.assigned_items(
+        _gh_runner(_quien_http(request, "ui", "/api/github/assigned")),
+        limit=max(1, min(limit, 50)))
 
 
 @app.post("/api/github/contribute/plan")
@@ -4479,9 +4485,10 @@ async def api_browser_screenshot(url: str, request: Request, full: bool = False)
 
 
 @app.get("/api/updates")
-def api_updates() -> dict:
-    """Versiones de CLIs (+ si hay update en npm) y modelos nuevos descubiertos."""
-    return discovery.updates()
+def api_updates(request: Request) -> dict:
+    """Versiones de CLIs (+ si hay update en npm) y modelos nuevos descubiertos.
+    `ui`: lo dispara index.html:2680 al cargar `/`."""
+    return discovery.updates(_quien_http(request, "ui", "/api/updates"))
 
 
 @app.get("/api/plugins")

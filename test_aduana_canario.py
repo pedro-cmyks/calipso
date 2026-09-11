@@ -43,7 +43,7 @@ EXCEPCIONES: dict[str, str] = {
     "dispatch.py:_http_post_stream": "modelo: idem, stream",
     # --- loopback por config o por construccion ---
     "calipso/server.py:_http_up": "loopback: salud de Ollama/LiteLLM, corre en el LOOP",
-    "calipso/discovery.py:_get_json": "pendiente: Task 5 -- hoy tambien lo usa _npm_latest (registry.npmjs.org, NO loopback); la Task 5 le da a _npm_latest su propio urlopen y esta linea pasa a 'loopback por construccion'",
+    "calipso/discovery.py:_get_json": "loopback por construccion: discover_ollama/discover_litellm; `_npm_latest` ya no pasa por aca (tiene su propio urlopen con el Call)",
     "calipso/discovery.py:_cli_version": "local: `<cli> --version`, sin red",
     "calipso/resource_dispatcher.py:_ollama_get": "loopback: Ollama",
     "calipso/resource_dispatcher.py:ollama_evict": "loopback: Ollama",
@@ -62,8 +62,6 @@ EXCEPCIONES: dict[str, str] = {
     # --- probes declarados en otro lugar (Task 6 lo pasa a `helper:`) ---
     "calipso/server.py:_subscription_probe": "pendiente: Task 6 -- se alcanza desde el loop via _harness_context; el declarado va en el arranque",
     # --- pendientes: cada task de enchufe borra su linea ---
-    "calipso/github.py:default_runner:run": "pendiente: Task 5",
-    "calipso/github.py:git_runner:run": "pendiente: Task 5",
     "calipso/memory.py:reflect": "pendiente: Task 6",
     "calipso/server.py:_cli_probe": "pendiente: Task 6",
 }
