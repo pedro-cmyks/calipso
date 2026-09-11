@@ -217,3 +217,135 @@ def test_desde_de_sesion_y_quien_http():
     q = srv._quien_http(_Req(), "ui", "/api/updates")
     assert q == aduana.Quien(origen="ui", proyecto=srv.ROOT.name, endpoint="/api/updates",
                              desde={"credencial": "maquina"})
+
+
+# --- Task 4: el turno de ws_chat y los endpoints de web/browser/deps -----------
+
+from test_abismo_chat import Harness, chat, de_tipo  # noqa: E402,F401
+
+
+def _research_espia(monkeypatch):
+    vistos: list[tuple] = []
+
+    def research(query, n, read, quien):
+        vistos.append((query, n, read, quien))
+        return {"query": query, "results": [], "pages": []}
+    monkeypatch.setattr(srv.calipso_web, "research", research)
+    return vistos
+
+
+def test_un_web_del_turno_arma_el_quien_con_chat_proyecto_gesto_ruta_y_desde(chat, libro, monkeypatch):
+    vistos = _research_espia(monkeypatch)
+    eventos = chat.turno("/web precio del dolar")
+    assert [e["action"] for e in de_tipo(eventos, "web")] == ["search", "results"]
+    (query, n, read, quien), = vistos
+    assert (query, n, read) == ("precio del dolar", 4, 2)
+    assert quien == aduana.Quien(origen="turno", chat=chat.chat_id, proyecto=srv.ROOT.name,
+                                 gesto="/web", ruta="local", desde={"credencial": "maquina"})
+
+
+def test_una_busqueda_por_heuristica_va_sin_gesto(chat, libro, monkeypatch):
+    vistos = _research_espia(monkeypatch)
+    from test_abismo_chat import _decide_local
+
+    def _decide_con_web(user_msg, last_features=None, last_verdict=None):
+        verdict, features, ranked, d = _decide_local(user_msg, last_features, last_verdict)
+        return verdict, dict(features, needs_web=True), ranked, d
+    monkeypatch.setattr(srv, "_decide", _decide_con_web)
+    chat.turno("precio del dolar hoy")
+    assert vistos[0][3].gesto is None and vistos[0][3].origen == "turno"
+
+
+def test_una_ruta_que_la_aduana_no_conoce_no_rompe_el_turno(chat, libro, monkeypatch):
+    """Invariante 2 (medir jamas rompe el producto): si `_decide` devolviera
+    una ruta que `aduana.RUTAS` no conoce, el Quien la deja en None en vez
+    de reventar el turno con el ValueError de `Quien.__post_init__`. El
+    resto del turno trata una ruta desconocida como local (`_chunks_for`)."""
+    vistos = _research_espia(monkeypatch)
+    from test_abismo_chat import _decide_local
+
+    def _decide_rara(user_msg, last_features=None, last_verdict=None):
+        verdict, features, ranked, d = _decide_local(user_msg, last_features, last_verdict)
+        return dict(verdict, route="rara"), dict(features, needs_web=True), ranked, d
+    monkeypatch.setattr(srv, "_decide", _decide_rara)
+    eventos = chat.turno("precio del dolar hoy")
+    assert [e["type"] for e in eventos].count("done") == 1
+    assert vistos[0][3].ruta is None and vistos[0][3].origen == "turno"
+
+
+def test_en_nube_no_hay_research_y_no_hay_cruce(chat, libro, monkeypatch):
+    from calipso.privacidad import juez
+    # un turno /nube pasa por la compuerta de privacidad: el juez LLM se dobla
+    # (molde test_abismo_nube.py:28-38); el detector real no marca nada aca
+    monkeypatch.setattr(juez.juez_llm, "juzgar_llm", lambda t: {"ok": True, "tramos": []})
+    vistos = _research_espia(monkeypatch)
+    chat.turno("/nube /web precio del dolar")
+    assert vistos == [] and cruces_del_libro(libro) == []
+
+
+def test_un_web_desde_una_sesion_navegador_lleva_el_aparato(chat, libro, monkeypatch):
+    vistos = _research_espia(monkeypatch)
+    remoto = TestClient(srv.app, client=(REMOTO, 4321),
+                        cookies={srv.COOKIE_SESION: _sesion("navegador", "Celular de Pedro")})
+    h = Harness(remoto, chat.chat_id, chat.modelo, chat.memoria, chat.pulso, chat.tmp)
+    h.turno("/web precio del dolar")
+    desde = vistos[0][3].desde
+    assert desde["credencial"] == "sesion" and desde["tipo"] == "navegador"
+    assert desde["aparato"] == "Celular de Pedro" and len(desde["hash"]) == 8
+
+
+def test_gesto_de_reconstruye_el_slash():
+    pd = srv.capabilities.parse_directives
+    assert srv._gesto_de(pd("/web hola")) == "/web"
+    assert srv._gesto_de(pd("/nube hola")) == "/nube"
+    assert srv._gesto_de(pd("/claude hola")) == "/claude"
+    assert srv._gesto_de(pd("/codex hola")) == "/codex"
+    assert srv._gesto_de(pd("/local hola")) == "/local"
+    assert srv._gesto_de(pd("/api hola")) == "/api"
+    assert srv._gesto_de(pd("/plan hola")) == "/plan"
+    assert srv._gesto_de(pd("/model qwen hola")) == "/model qwen"
+    assert srv._gesto_de(pd("/web /claude hola")) == "/web"      # el que abre la web manda
+    assert srv._gesto_de(pd("hola")) is None
+
+
+def test_deps_install_cruza_como_gesto(libro, monkeypatch):
+    vistos = []
+    monkeypatch.setattr(srv.deps, "ensure", lambda tool, quien, run_post=True: (
+        vistos.append((tool, quien)) or {"ok": True, "tool": tool}))
+    r = _local().post("/api/deps/install", json={"tool": "browser"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert vistos == [("browser", aduana.Quien(origen="gesto", proyecto=srv.ROOT.name,
+                                                endpoint="/api/deps/install",
+                                                desde={"credencial": "maquina"}))]
+
+
+def test_screenshot_cruza_como_ui_con_endpoint(libro, monkeypatch):
+    vistos = []
+    monkeypatch.setattr(srv.calipso_browser, "screenshot",
+                        lambda url, path=None, full_page=True, *a, quien, **k: (
+                            vistos.append((url, full_page, quien)) or b"png"))
+    r = _local().get("/api/browser/screenshot", params={"url": "https://example.com", "full": "true"})
+    assert r.status_code == 200 and r.content == b"png"
+    assert vistos == [("https://example.com", True, aduana.Quien(
+        origen="ui", proyecto=srv.ROOT.name, endpoint="/api/browser/screenshot",
+        desde={"credencial": "maquina"}))]
+
+
+def test_apply_proposal_pasa_el_quien_a_la_captura(libro, tmp_path, monkeypatch):
+    monkeypatch.setattr(srv, "ROOT", tmp_path)
+    monkeypatch.setattr(srv.goals, "active", lambda raiz: None)
+    vistos = []
+
+    def captura(url, apply_fn, *a, quien, **k):
+        vistos.append((url, quien))
+        apply_fn()
+        return b"antes", b"despues"
+    monkeypatch.setattr(srv.calipso_browser, "before_after_capture", captura)
+    srv.PENDING_CHANGES["cambio_x"] = {"path": "calipso/web/x.html", "content": "<p>x</p>",
+                                       "source": "test"}
+    r = _local().post("/api/proposals/cambio_x/apply")
+    assert r.status_code == 200, r.text
+    assert (tmp_path / "calipso/web/x.html").read_text() == "<p>x</p>"
+    assert vistos == [("http://localhost:8000", aduana.Quien(
+        origen="gesto", proyecto=tmp_path.name, endpoint="/api/proposals/{change_id}/apply",
+        desde={"credencial": "maquina"}))]

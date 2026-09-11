@@ -13,21 +13,38 @@ import re
 import urllib.parse
 import urllib.request
 
+from calipso import aduana
+
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Calipso/1.0"
 
 
-def _get(url: str, timeout: float = 10.0, data: bytes | None = None) -> str:
+def _get(url: str, quien: aduana.Quien, proposito: str, carga,
+         timeout: float = 10.0, data: bytes | None = None) -> str:
+    """La unica funcion de este modulo que sale a la red: el `with` de la
+    aduana vive aca (spec seccion 3), no en el llamador. `carga` es lo que
+    se va: la consulta (search) o la URL (fetch). `data` es el body del
+    POST a DDG -la misma consulta urlencoded- y no se anota aparte; el
+    header User-Agent jamas se anota (invariante 9.4)."""
     req = urllib.request.Request(url, data=data, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode("utf-8", "replace")
+    with aduana.cruzar(quien, proposito, destino=url, carga=carga) as cruce:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            crudo = r.read()
+        cruce.entro(len(crudo))
+    return crudo.decode("utf-8", "replace")
 
 
-def search(query: str, n: int = 5) -> list[dict]:
+def search(query: str, n: int, quien: aduana.Quien) -> list[dict]:
     """Resultados de búsqueda: [{title, url, snippet}]. [] si falla.
-    DuckDuckGo HTML requiere POST (no GET)."""
+    DuckDuckGo HTML requiere POST (no GET). El `except` queda AFUERA del
+    cruce: la aduana anota `fallo` y re-lanza, y aca se traga como hoy."""
+    # el proposito dice si la busqueda la pidio Pedro (/web) o la decidio
+    # la heuristica `needs_web` de `_decide` (spec seccion 4, fila `gesto`:
+    # sin slash, `gesto` es None y el proposito lo dice)
+    proposito = "buscar en la web" if quien.gesto == "/web" else "busqueda por heuristica"
     try:
         body = urllib.parse.urlencode({"q": query}).encode()
-        page = _get("https://html.duckduckgo.com/html/", data=body)
+        page = _get("https://html.duckduckgo.com/html/", quien,
+                    proposito, query, data=body)
     except Exception:
         return []
     results = []
@@ -51,10 +68,11 @@ def search(query: str, n: int = 5) -> list[dict]:
     return results
 
 
-def fetch(url: str, max_chars: int = 4000) -> str:
-    """Texto legible de una página (sin scripts/estilos/tags). '' si falla."""
+def fetch(url: str, max_chars: int, quien: aduana.Quien) -> str:
+    """Texto legible de una página (sin scripts/estilos/tags). '' si falla.
+    La URL viene del href que devolvio DuckDuckGo: la aduana la sanea."""
     try:
-        raw = _get(url)
+        raw = _get(url, quien, "leer una pagina", url)
     except Exception:
         return ""
     raw = re.sub(r"<(script|style|noscript)[^>]*>.*?</\1>", " ", raw,
@@ -64,21 +82,23 @@ def fetch(url: str, max_chars: int = 4000) -> str:
     return text[:max_chars]
 
 
-def research(query: str, n_results: int = 4, read: int = 2) -> dict:
+def research(query: str, n_results: int, read: int, quien: aduana.Quien) -> dict:
     """Busca y lee los primeros 'read' resultados. Devuelve material para el
     contexto del modelo + lo que vio (para el preview de la UI).
 
     Texto vía urllib (rápido); si una página viene vacía (sitio con JS) y el
-    navegador ya está instalado, cae a Playwright para renderizarla."""
-    results = search(query, n_results)
+    navegador ya está instalado, cae a Playwright para renderizarla. El
+    MISMO `quien` (el del turno) hereda a la busqueda, a cada pagina y al
+    render con Chromium."""
+    results = search(query, n_results, quien)
     pages = []
     for r in results[:read]:
-        body = fetch(r["url"], 2500)
+        body = fetch(r["url"], 2500, quien)
         if not body:
             try:
                 from calipso import deps, browser
                 if deps.is_ready("browser"):
-                    body = browser.render(r["url"], max_chars=2500)
+                    body = browser.render(r["url"], max_chars=2500, quien=quien)
             except Exception:
                 body = ""
         if body:
@@ -99,7 +119,10 @@ def context_block(material: dict) -> str:
 
 
 if __name__ == "__main__":
-    m = research("que dia es hoy noticia", 4, 1)
+    # smoke a mano: sale a internet de verdad y anota en el libro del
+    # CALIPSO_HOME vigente
+    m = research("que dia es hoy noticia", 4, 1, aduana.Quien(
+        origen="gesto", proyecto="smoke", desde={"credencial": "maquina"}))
     print("resultados:", len(m["results"]), "paginas:", len(m["pages"]))
     for r in m["results"][:3]:
         print(" -", r["title"][:60], r["url"][:50])

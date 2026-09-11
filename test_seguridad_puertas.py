@@ -54,8 +54,9 @@ def test_el_endpoint_traduce_el_rechazo_a_400(cliente):
 # --- pip install arbitrario ------------------------------------------------
 
 def test_no_se_instala_un_paquete_arbitrario(cliente):
-    """`deps.ensure_pip` corre `pip install <lo que venga>`. Con el token en
-    la mano eso era ejecucion de codigo remota."""
+    """`deps.ensure_pip` corria `pip install <lo que venga>`; se borro con la
+    aduana y la rama sigue cerrada con 403. Con el token en la mano eso era
+    ejecucion de codigo remota."""
     r = cliente.post("/api/deps/install", params={"token": srv.TOKEN},
                      json={"package": "cualquier-cosa"})
     assert r.status_code == 403

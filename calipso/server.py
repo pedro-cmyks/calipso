@@ -315,6 +315,30 @@ def _quien_http(request: Request, origen: str, endpoint: str, **campos) -> aduan
                         **campos)
 
 
+def _gesto_de(directives: dict) -> str | None:
+    """El slash reconstruido desde `capabilities.parse_directives` (spec
+    seccion 4). Un solo texto: /web manda (es el gesto que abre la web); si
+    no, /nube; si no, el de ruta (/claude /codex /local /api); /plan; o
+    `/model X`. Sin slash, None: el proposito dice que fue por heuristica.
+    `effort` no se reconstruye: lo ponen tanto /fast como la palabra
+    'rapido', y por AST no se distinguen."""
+    if directives.get("force_web"):
+        return "/web"
+    if directives.get("nube"):
+        return "/nube"
+    fr = directives.get("force_route")
+    fm = directives.get("force_model")
+    if fr == "subscription" and fm in ("claude", "codex"):
+        return "/" + fm
+    if fr in ("local", "api"):
+        return "/" + fr
+    if directives.get("force_team"):
+        return "/plan"
+    if fm:
+        return f"/model {fm}"
+    return None
+
+
 # --- freno de fuerza bruta del login (revision de seguridad 2026-09-07, C3)
 # Sin esto, /login (la unica ruta sin guard) aceptaba intentos infinitos de
 # TOTP a velocidad de loopback: ~333k de esperanza para ganar EL token.
@@ -1495,7 +1519,7 @@ def api_proposal_diff(change_id: str) -> dict:
 
 
 @app.post("/api/proposals/{change_id}/apply")
-def api_apply_proposal(change_id: str, verify: bool = False,
+def api_apply_proposal(change_id: str, request: Request, verify: bool = False,
                        command_id: str = "py_compile_core") -> dict:
     item = PENDING_CHANGES.get(change_id)
     if not item:
@@ -1513,8 +1537,10 @@ def api_apply_proposal(change_id: str, verify: bool = False,
         try:
             def _write_file():
                 p.write_text(item["content"], encoding="utf-8", newline="")
+            # la captura es loopback y no cruza; los deps.ensure de adentro si
             before_png, after_png = calipso_browser.before_after_capture(
-                "http://localhost:8000", _write_file)
+                "http://localhost:8000", _write_file,
+                quien=_quien_http(request, "gesto", "/api/proposals/{change_id}/apply"))
             screenshots["before"] = __import__("base64").b64encode(before_png).decode()
             screenshots["after"] = __import__("base64").b64encode(after_png).decode()
         except Exception:
@@ -3601,6 +3627,27 @@ async def ws_chat(ws: WebSocket) -> None:
                     ws, chat_msg, _edit_target, f"{agente_id}:borrador",
                     departamento))
 
+            # el Quien del turno para la aduana (spec seccion 4): chat_id ya
+            # es str (se creo en el bloque de arriba si faltaba), ROOT ya es
+            # el proyecto del chat (`_switch_project` corrio antes), `route`
+            # es la decidida (post-/nube), `sesion` es lo que devolvio
+            # `_ws_autorizado`. Se arma UNA vez por turno: la web y la
+            # vision por SDK lo heredan.
+            quien_turno = aduana.Quien(
+                origen="turno",
+                chat=chat_id,
+                proyecto=ROOT.name,
+                gesto=_gesto_de(directives),
+                # una ruta que la aduana no conoce va como None (la telemetria
+                # del turno la conserva, correlable por chat y ts): el
+                # ValueError de `Quien.__post_init__` jamas mata el turno
+                # (invariante 2: medir no rompe el producto). Hoy `route` solo
+                # vale local/subscription/api; esto cubre el dia que `_decide`
+                # o `ruteo_para_nube` devuelvan una nueva
+                ruta=route if route in aduana.RUTAS else None,
+                desde=_desde_de_sesion(sesion),
+            )
+
             # 1.5) navegación web si la tarea lo pide (grounding + preview)
             web_material = None
             # en /nube se saltea: `calipso_web.research` manda el mensaje
@@ -3609,8 +3656,10 @@ async def ws_chat(ws: WebSocket) -> None:
                     and not directives.get("nube"):
                 await ws.send_json({"type": "web", "action": "search",
                                     "query": chat_msg[:140]})
+                # todo lo de adentro (search, fetch, render, deps.ensure)
+                # corre en este hilo: el flock del libro nunca cae en el loop
                 web_material = await asyncio.to_thread(
-                    calipso_web.research, chat_msg, 4, 2)
+                    calipso_web.research, chat_msg, 4, 2, quien_turno)
                 await ws.send_json({
                     "type": "web", "action": "results",
                     "results": web_material["results"],
@@ -4397,13 +4446,14 @@ async def api_deps_install(request: Request) -> dict:
     except Exception:
         pass
     if body.get("tool"):
-        return await asyncio.to_thread(deps.ensure, body["tool"])
+        quien = _quien_http(request, "gesto", "/api/deps/install")
+        return await asyncio.to_thread(deps.ensure, body["tool"], quien)
     if body.get("package"):
-        # `deps.ensure_pip` corre `pip install <lo que venga>`, o sea ejecucion
-        # de codigo arbitrario para cualquiera que tenga el token. La rama se
-        # cierra: lo que se puede instalar es el catalogo cerrado de
-        # `deps.TOOLS`, y para sumar algo se edita ese catalogo, no se manda
-        # por HTTP.
+        # `deps.ensure_pip` (borrada con la aduana) corria `pip install <lo
+        # que venga>`, o sea ejecucion de codigo arbitrario para cualquiera
+        # que tenga el token. La rama se cierra: lo que se puede instalar es
+        # el catalogo cerrado de `deps.TOOLS`, y para sumar algo se edita
+        # ese catalogo, no se manda por HTTP.
         raise HTTPException(
             status_code=403,
             detail="instalar un paquete arbitrario esta cerrado: usa 'tool' "
@@ -4412,10 +4462,14 @@ async def api_deps_install(request: Request) -> dict:
 
 
 @app.get("/api/browser/screenshot")
-async def api_browser_screenshot(url: str, full: bool = False):
-    """Screenshot real de una URL con el navegador (instala Playwright si falta)."""
+async def api_browser_screenshot(url: str, request: Request, full: bool = False):
+    """Screenshot real de una URL con el navegador (instala Playwright si falta).
+    Para la aduana es `ui`: su unico llamador es un <img src> que la pagina
+    arma sola tras cada /web (index.html:1278), sin click."""
+    quien = _quien_http(request, "ui", "/api/browser/screenshot")
     try:
-        png = await asyncio.to_thread(calipso_browser.screenshot, url, None, full)
+        png = await asyncio.to_thread(calipso_browser.screenshot, url, None, full,
+                                      quien=quien)
     except calipso_browser.UrlNoPermitida as e:
         # 400 y no 502: no es que el sitio fallo, es que no se va a mirar
         raise HTTPException(status_code=400, detail=str(e)) from None
