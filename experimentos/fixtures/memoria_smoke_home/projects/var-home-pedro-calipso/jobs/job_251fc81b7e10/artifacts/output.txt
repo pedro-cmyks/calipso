@@ -1,0 +1,24 @@
+Veo dos capas de cambios recientes:
+
+**Últimos commits (rama feat/abismo-system-podado):**
+
+1. **e924ed9** `spec(aduana)`: Decisión sobre credenciales — nunca salen a destinos no locales; tarea 9 corre detector determinista sobre el bloque del abismo sin /nube
+
+2. **23743a3** `spec(aduana)`: El único punto por el que Calipso sale a internet; spec revisado por cuatro lentes (Claude + Codex); quedan pendientes por ti la regla de credencial y tres defaults
+
+3. **7db81eb** `exp(abismo)`: Medida del portón sobre sistema de producción h05 — ganadora a N=6 (memoria 83, chats 100, proyecto 83, espurias 0, ruteo 88)
+
+4. **446d1be** `spec(abismo)`: Enmienda 2026-09-09 — el fondo del abismo es tu disco de 2 TB, no OneDrive
+
+5. **8827325** `docs`: Estado del proyecto 2026-09-09 (qué hace, qué está apagado, decisiones h05)
+
+**Cambios sin commit (working tree):**
+- `calipso/abismo/contrato.py` — modificado
+- `calipso/prompt_compiler.py` — modificado
+- `calipso/server.py` — modificado
+- Dos docs del proyecto/specs — modificados
+- Tests nuevos/modificados (`test_abismo_contrato_vivo.py`, `test_prompt_compiler.py`, `test_abismo_system_medido.py`)
+
+**Resumen:** El último cambio commiteado es sobre la decisión de aduana/credenciales. Los cambios en progreso tocan contrato, compilador de prompts, server y tests — parece que estás iterando sobre el sistema del abismo.
+
+¿Necesitas profundizar en alguno de estos cambios o hacer diff con main?

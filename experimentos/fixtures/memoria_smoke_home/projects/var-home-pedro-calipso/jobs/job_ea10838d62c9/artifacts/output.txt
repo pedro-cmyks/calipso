@@ -1,0 +1,28 @@
+## Resumen de cambios — rama `feat/abismo-system-podado`
+
+**Estado:** 1 commit adelante de `main` (último commit: `1b2d734`, 2026-09-10)
+
+### Último cambio: El system local podado (h05)
+
+Aterrizó byte a byte la medición de la opción a que elegiste:
+
+- **Identidad corta**: CALIPSO.md cortado a 3000 caracteres como "Constitución" en cada turno (en lugar del documento completo)
+- **Contrato interno**: reducido a 7 líneas clave — las instrucciones que realmente usa el modelo
+- **Bloque del abismo**: con las señales que disparas ("te conté", "acordate", "la otra vez", "lo tenés", "que dejamos")
+- **Test nuevo**: `test_abismo_system_medido.py` que ata byte a byte las tres letras a los archivos medidos — nadie las puede tocar sin re-correr el banco
+- **Spec del abismo**: enmienda — anillos solo en `/nube`; la credencial nunca sale a destinos no locales
+- **Estado del proyecto**: actualizado con la decisión de h05
+
+### Archivos tocados (8)
+| Archivo | Cambio |
+|---------|--------|
+| `calipso/abismo/contrato.py` | 64 líneas reescritas — bloque con señales de Pedro |
+| `calipso/prompt_compiler.py` | 37 líneas podadas — 8 instrucciones redundantes |
+| `calipso/server.py` | 40 líneas — identidad corta en lugar de documento cortado |
+| `test_abismo_system_medido.py` | +98 líneas (nuevo) — test de medición |
+| Docs (2) | estado y specs — actualizadas |
+
+**Total:** 238 inserciones, 71 deleciones.
+
+### Riesgo
+Todo está commiteado y limpio. Los cambios viven en producción (esta sesión usa la letra nueva desde el system prompt).

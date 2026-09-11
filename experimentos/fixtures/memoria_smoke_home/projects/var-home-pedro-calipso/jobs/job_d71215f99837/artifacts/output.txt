@@ -1,0 +1,36 @@
+## Rama `feat/abismo-system-podado` — Resumen de cambios
+
+**Última actualización:** 2026-09-10
+
+### Cambios principales (últimos 5 commits)
+
+La rama trabaja en el **sistema de aduana del abismo** — control de credenciales y salidas a internet de Calipso.
+
+| Commit | Tema | Estado |
+|--------|------|--------|
+| `e924ed9` | **Aduanas**: Credencial nunca sale a destinos no-locales; tarea 9 corre detector sin /nube | ✓ Decisión de Pedro |
+| `23743a3` | **Especificación**: Único punto de salida a internet; brainstorming con Pedro, specs validadas por 4 lentes + Codex | ✓ Quedan 3 defaults por Pedro |
+| `7db81eb` | **Medición**: Pórtico del system PODADO (h05); ganadora con N=6: memoria 83, chats 100, proyecto 83, ruteo 88 | ✓ Decisión para Pedro |
+| `446d1be` | **Arquitectura**: El fondo del abismo es el disco local (2 TB Mac), no OneDrive | ✓ Merged |
+| `8827325` | **Documentación**: Estado del proyecto, qué hace/está apagado, método y ruta actualizada | ✓ AGENTS.md apunta aquí |
+
+### Cambios no commitados (hoy)
+
+**Modificados:**
+- `calipso/abismo/contrato.py` — Lógica de contrato
+- `calipso/prompt_compiler.py` — Compilador de prompts
+- `calipso/server.py` — Servidor principal
+- `test_abismo_contrato_vivo.py`, `test_prompt_compiler.py` — Tests
+- Docs de estado del proyecto y consulta (2026-09-09, 2026-09-07)
+
+**Sin tracks:**
+- `test_abismo_system_medido.py` — Test de medición del sistema
+
+### Estadísticas
+
+- **34 archivos** tocados (últimos 5 commits)
+- **~2.700 inserciones**, 69 deleciones
+- Foco: experimentos/, docs/superpowers/, calipso/abismo/
+- Nuevos: specs de aduanas (2026-09-10), resultados de medición, variantes del system (8 prototipos)
+
+**Próximo paso:** Decidir si commiteamos los cambios vivos o si quedan en WIP para ajustes.

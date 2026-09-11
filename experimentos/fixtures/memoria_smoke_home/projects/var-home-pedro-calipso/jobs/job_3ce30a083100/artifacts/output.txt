@@ -1,0 +1,19 @@
+**Rama:** `feat/abismo-system-podado` — working tree **limpio** ahora (los cambios que estaban sueltos ya se commitearon). El registro de memoria que trae "working tree sucio" está desactualizado: eso era antes del commit `1b2d734`.
+
+**Último commit:** `1b2d734` (hoy, 21:03) — *"el system local podado, aterrizado byte a byte como se midió (h05, opción a de Pedro)"*. Es el commit que consolida todo el trabajo en progreso que había quedado suelto:
+
+- `calipso/abismo/contrato.py` (+64/-lineas) — reescribe el bloque del abismo a la letra "existe con señales" (frases gatillo de Pedro: "te conté", "lo tenés", "acordate", etc.)
+- `calipso/prompt_compiler.py` — poda el contrato interno de 8 instrucciones a 7 renglones
+- `calipso/server.py` — reemplaza `_identity_doc()` (CALIPSO.md cortado) por una identidad corta
+- `test_abismo_system_medido.py` (nuevo, 98 líneas) — ata las tres letras (system, contrato, identidad) a los archivos medidos en `experimentos/variantes/`
+- Docs de estado y spec del abismo actualizados (enmienda: anillos solo en `/nube`, la credencial jamás sale)
+
+**Commits anteriores en la misma rama (orden descendente):**
+1. `e924ed9` — spec(aduana): la credencial jamás sale a destino no local
+2. `23743a3` — spec(aduana): diseño del único punto de salida a internet (mapa + spec revisado por 4 lentes)
+3. `7db81eb` — exp(abismo): medición del pórtico sobre el system podado (h05), ganadora N=6
+4. `446d1be` — spec(abismo): el fondo del abismo es el disco de 2TB del Mac, no OneDrive
+
+**Lectura de conjunto:** es una secuencia coherente de un solo hilo de trabajo — medir variantes del prompt del abismo → decidir la ganadora (h05, opción a) → aterrizarla en producción (`1b2d734`) → en paralelo, especificar la "aduana" (control de salida a internet y credenciales). Todo commiteado, nada pendiente en el working tree.
+
+**Pendiente real (no de código, de decisión):** el spec de aduana deja "tres defaults" explícitamente a criterio de Pedro — no verifiqué cuáles son exactamente; si quieres el detalle está en `docs/superpowers/specs/2026-09-10-aduana-design.md`.

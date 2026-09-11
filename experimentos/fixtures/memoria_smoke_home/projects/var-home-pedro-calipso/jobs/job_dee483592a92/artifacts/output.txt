@@ -1,0 +1,19 @@
+Ya tengo el panorama completo. Reporte para integrar:
+
+**Rama:** `feat/abismo-system-podado` (working tree sucio, no está limpio como decía el handoff viejo).
+
+**Último commit:** `e924ed9` — spec de "aduana" (el único punto de salida a internet de Calipso): decisión de Pedro de que la credencial nunca sale hacia destinos no locales.
+
+**Lo que hay sin commitear** (7 archivos modificados + 1 nuevo, sin stagear) es un cambio coherente, no ruido: **podar el system de producción** según lo medido el 2026-09-10 (h05, opción a de Pedro):
+
+1. **`calipso/server.py`** — mató `_identity_doc()` (CALIPSO.md cortado a 3000 chars como "Constitución de Calipso" en cada turno) y lo reemplazó por un `SYSTEM` corto reescrito. Motivo documentado: ese documento + las 12 instrucciones viejas del contrato interno competían con el bloque del abismo hasta anular su mejora (0 marcas útiles en memoria vs. 30/36 con la letra nueva).
+
+2. **`calipso/prompt_compiler.py`** — podó `internal_contract()`: sacó 8 instrucciones que competían con la marca del abismo ("tipo de tarea inferido", "actúa antes de describir", "separa idea/implementado/verificado", etc.), dejando solo lo que el 7b realmente usa.
+
+3. **`calipso/abismo/contrato.py`** — reescribió el bloque del abismo a la variante **"existe con señales"**: agrega las frases gatillo de Pedro ("te conté", "lo tenés", "acordate", "la otra vez", "que dejamos") que le dicen al modelo que el dato existe. Subió `INDICE_MAX` de 600→1300. Esta es literalmente la letra que tengo cargada en mi propio system prompt ahora mismo — confirma que el experimento ya está en producción en esta sesión.
+
+4. **`test_abismo_system_medido.py`** (nuevo, sin trackear) — test que ata byte a byte esta letra a los archivos medidos en `experimentos/variantes/`, para que nadie la toque sin re-correr el banco.
+
+5. Los dos docs (`estado-del-proyecto...` y `abismo-consulta-design.md`) y los dos tests restantes son actualizaciones de acompañamiento del mismo cambio.
+
+**Riesgo:** todo esto está sin commitear y sin stagear — es trabajo en progreso, no confundir con estado limpio. **Pendiente sugerido:** correr `test_abismo_system_medido.py` y `test_prompt_compiler.py` antes de commitear, ya que ambos dependen de la letra exacta.

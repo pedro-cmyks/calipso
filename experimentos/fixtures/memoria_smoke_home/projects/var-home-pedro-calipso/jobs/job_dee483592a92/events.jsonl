@@ -1,0 +1,17 @@
+{"ts": "2026-09-10T20:59:44", "job_id": "job_dee483592a92", "action": "start", "title": "agente Heraclito", "kind": "subscription_process", "client": "claude", "model": "sonnet", "goal_id": null, "prompt_tokens": 4511}
+{"ts": "2026-09-10T20:59:47", "job_id": "job_dee483592a92", "action": "running", "elapsed": 3, "tokens": 4511}
+{"ts": "2026-09-10T20:59:50", "job_id": "job_dee483592a92", "action": "running", "elapsed": 6, "tokens": 4511}
+{"ts": "2026-09-10T20:59:53", "job_id": "job_dee483592a92", "action": "running", "elapsed": 9, "tokens": 4511}
+{"ts": "2026-09-10T20:59:56", "job_id": "job_dee483592a92", "action": "running", "elapsed": 12, "tokens": 4511}
+{"ts": "2026-09-10T20:59:59", "job_id": "job_dee483592a92", "action": "running", "elapsed": 15, "tokens": 4511}
+{"ts": "2026-09-10T21:00:02", "job_id": "job_dee483592a92", "action": "running", "elapsed": 18, "tokens": 4511}
+{"ts": "2026-09-10T21:00:05", "job_id": "job_dee483592a92", "action": "running", "elapsed": 21, "tokens": 4511}
+{"ts": "2026-09-10T21:00:08", "job_id": "job_dee483592a92", "action": "running", "elapsed": 24, "tokens": 4511}
+{"ts": "2026-09-10T21:00:11", "job_id": "job_dee483592a92", "action": "running", "elapsed": 27, "tokens": 4511}
+{"ts": "2026-09-10T21:00:14", "job_id": "job_dee483592a92", "action": "running", "elapsed": 30, "tokens": 4511}
+{"ts": "2026-09-10T21:00:17", "job_id": "job_dee483592a92", "action": "running", "elapsed": 33, "tokens": 4511}
+{"ts": "2026-09-10T21:00:20", "job_id": "job_dee483592a92", "action": "running", "elapsed": 36, "tokens": 4511}
+{"ts": "2026-09-10T21:00:23", "job_id": "job_dee483592a92", "action": "running", "elapsed": 39, "tokens": 4511}
+{"ts": "2026-09-10T21:00:26", "job_id": "job_dee483592a92", "action": "running", "elapsed": 42, "tokens": 4511}
+{"ts": "2026-09-10T21:00:29", "job_id": "job_dee483592a92", "action": "done", "elapsed": 45}
+{"ts": "2026-09-10T21:00:29", "job_id": "job_dee483592a92", "action": "artifact", "artifact": {"name": "output.txt", "path": "/tmp/claude-1000/-var-home-pedro/ebfda634-eb83-4bb3-ae22-845ab7d0582c/scratchpad/smoke_home/projects/var-home-pedro-calipso/jobs/job_dee483592a92/artifacts/output.txt", "content_type": "text/plain", "size": 2294, "updated_at": "2026-09-10T21:00:29"}}

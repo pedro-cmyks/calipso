@@ -1,0 +1,14 @@
+{
+  "id": "job_ea10838d62c9",
+  "kind": "subscription_process",
+  "title": "agente Ibn Rushd",
+  "status": "done",
+  "created_at": "2026-09-10T21:14:42",
+  "updated_at": "2026-09-10T21:15:09",
+  "client": "claude",
+  "model": "haiku",
+  "goal_id": null,
+  "prompt_tokens": 6161,
+  "elapsed": 27,
+  "tokens": 6545
+}

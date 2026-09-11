@@ -1,0 +1,14 @@
+{
+  "id": "job_d71215f99837",
+  "kind": "subscription_process",
+  "title": "agente Noether",
+  "status": "done",
+  "created_at": "2026-09-10T21:00:50",
+  "updated_at": "2026-09-10T21:01:20",
+  "client": "claude",
+  "model": "haiku",
+  "goal_id": null,
+  "prompt_tokens": 4498,
+  "elapsed": 30,
+  "tokens": 4939
+}

@@ -1,0 +1,10 @@
+{"ts": "2026-09-10T21:13:57", "job_id": "job_3ce30a083100", "action": "start", "title": "agente Heraclito", "kind": "subscription_process", "client": "claude", "model": "sonnet", "goal_id": null, "prompt_tokens": 6174}
+{"ts": "2026-09-10T21:14:00", "job_id": "job_3ce30a083100", "action": "running", "elapsed": 3, "tokens": 6174}
+{"ts": "2026-09-10T21:14:03", "job_id": "job_3ce30a083100", "action": "running", "elapsed": 6, "tokens": 6174}
+{"ts": "2026-09-10T21:14:06", "job_id": "job_3ce30a083100", "action": "running", "elapsed": 9, "tokens": 6174}
+{"ts": "2026-09-10T21:14:09", "job_id": "job_3ce30a083100", "action": "running", "elapsed": 12, "tokens": 6174}
+{"ts": "2026-09-10T21:14:12", "job_id": "job_3ce30a083100", "action": "running", "elapsed": 15, "tokens": 6174}
+{"ts": "2026-09-10T21:14:15", "job_id": "job_3ce30a083100", "action": "running", "elapsed": 18, "tokens": 6174}
+{"ts": "2026-09-10T21:14:18", "job_id": "job_3ce30a083100", "action": "running", "elapsed": 21, "tokens": 6174}
+{"ts": "2026-09-10T21:14:21", "job_id": "job_3ce30a083100", "action": "done", "elapsed": 24}
+{"ts": "2026-09-10T21:14:21", "job_id": "job_3ce30a083100", "action": "artifact", "artifact": {"name": "output.txt", "path": "/tmp/claude-1000/-var-home-pedro/ebfda634-eb83-4bb3-ae22-845ab7d0582c/scratchpad/smoke_home/projects/var-home-pedro-calipso/jobs/job_3ce30a083100/artifacts/output.txt", "content_type": "text/plain", "size": 2142, "updated_at": "2026-09-10T21:14:21"}}

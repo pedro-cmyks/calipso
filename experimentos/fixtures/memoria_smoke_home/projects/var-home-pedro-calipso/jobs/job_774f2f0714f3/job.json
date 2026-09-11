@@ -1,0 +1,14 @@
+{
+  "id": "job_774f2f0714f3",
+  "kind": "subscription_process",
+  "title": "agente Socrates",
+  "status": "done",
+  "created_at": "2026-09-10T21:14:21",
+  "updated_at": "2026-09-10T21:14:42",
+  "client": "claude",
+  "model": "haiku",
+  "goal_id": null,
+  "prompt_tokens": 6172,
+  "elapsed": 21,
+  "tokens": 6484
+}

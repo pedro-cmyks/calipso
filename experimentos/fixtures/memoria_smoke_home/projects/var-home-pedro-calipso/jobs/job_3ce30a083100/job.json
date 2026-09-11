@@ -1,0 +1,14 @@
+{
+  "id": "job_3ce30a083100",
+  "kind": "subscription_process",
+  "title": "agente Heraclito",
+  "status": "done",
+  "created_at": "2026-09-10T21:13:57",
+  "updated_at": "2026-09-10T21:14:21",
+  "client": "claude",
+  "model": "sonnet",
+  "goal_id": null,
+  "prompt_tokens": 6174,
+  "elapsed": 24,
+  "tokens": 6696
+}

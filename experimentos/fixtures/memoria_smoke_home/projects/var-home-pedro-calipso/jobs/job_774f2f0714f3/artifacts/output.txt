@@ -1,0 +1,27 @@
+## Análisis de commits — rama `feat/abismo-system-podado`
+
+**Estado actual:** rama limpia (clean)
+
+**Los últimos cambios (últimos 6 commits)** se concentran en **sistema del abismo** (memoria) y **aduanas** (control de credenciales):
+
+### Último commit (1b2d734) — 2026-09-10
+**`feat(abismo): sistema local podado aterrizado byte a byte`**
+- Identidad corta reemplazó CALIPSO.md cortado
+- Contrato interno reducido a 7 renglones
+- Bloque con señales de Pedro ("te conté", "acordate", etc.)
+- Test que ata las tres letras a archivos medidos (byte a byte)
+- Enmienda del spec: anillos solo en /nube; credencial nunca sale
+
+### Commits anteriores (e924ed9 → 446d1be) — 2026-09-09/2026-09-07
+**Aduanas (credenciales):**
+- e924ed9: decisión — credencial jamas sale a destinos no-locales
+- 23743a3: especificación del punto de salida a internet (brainstorming + validaciones multi-lente)
+
+**Mediciones:**
+- 7db81eb: sistema podado medido (N=6; métrica: memoria 83, chats 100, proyecto 83, espurias 0, ruteo 88)
+
+**Arquitectura:**
+- 446d1be: base del abismo → disco local (2TB Mac), no OneDrive
+
+### Riesgo detectado
+Ninguno técnico; la rama está limpia. **Pendiente:** validar que los tests pasen antes de siguiente ciclo (`test_abismo_system_medido.py`).
