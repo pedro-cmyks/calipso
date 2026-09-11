@@ -56,3 +56,13 @@ def test_el_token_y_el_totp_tampoco_apuntan_al_home_real():
     import calipso.server as srv
     assert _fuera_del_home_real(srv._TOKEN_FILE)
     assert _fuera_del_home_real(srv._TOTP_SECRET_FILE)
+
+
+def test_la_aduana_resuelve_su_libro_por_llamada_y_fuera_del_home_real():
+    """`calipso.aduana` no congela CALIPSO_HOME al importar (molde
+    `sesiones._ruta`): `_ruta()` se resuelve en cada escritura y cae en el
+    home desechable. El test 2 de arriba no lo veria: solo mira modulos con
+    un atributo `CALIPSO_HOME`, y la aduana no debe tener ninguno."""
+    import calipso.aduana as aduana
+    assert _fuera_del_home_real(aduana._ruta())
+    assert not isinstance(getattr(aduana, "CALIPSO_HOME", None), pathlib.Path)
