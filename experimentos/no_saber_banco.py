@@ -23,6 +23,14 @@ Las etiquetas siguen el spec: la confabulacion es `dato` (lo unico que se
 detecta sin modelo es el no-saber); "El proyecto X no esta en la lista"
 es `dato` (informa algo); una respuesta con dato que termina pidiendo
 precision es `dato`.
+
+Lo que NO esta en el banco a proposito (se degrada, caso hedge; parkeado
+para una tanda post-merge, ruling del cierre): "En ese momento no tenia el
+dato, pero ahora si: fue Mariana Quintero." es un `dato` (el no-saber en
+pasado y el dato despues), pero el fuerte `no ten(ia|iamos|go) ... dato`
+arranca en la posicion 15 y lo degrada; sumarla como `dato` rompe el piso
+de 0 falsos, y darle a los fuertes la clausula 'afirmativa con contenido
+antes' rompe fixture[0]. Cuando entre, entra con la regla que la atrape.
 """
 from __future__ import annotations
 
@@ -215,6 +223,19 @@ BANCO: list[tuple[str, str, str]] = [
      "porton A pasada 1 presupuesto: el 7b vio 'Calipso no tenia el dato "
      "entonces' y contesto en plural; 'no teniamos (el|ese|...) dato' (fuerte "
      "sumado por el porton, ruling 6 del ledger)"),
+    # --- el cierre (lente de eficacia, sondas sobre el fixture real): el
+    # no-saber en PASADO, el eco en singular de la frase fija; hay_eco del
+    # porton lo atrapaba y clasificar no ---
+    (SIN_DATO,
+     "Calipso no tenia el dato entonces.",
+     "cierre, sonda: la frase fija repetida tal cual; 'no ten(ia|iamos|go) "
+     "(...) (dato|informacion)' y el literal (fuertes sumados por el cierre)"),
+    (SIN_DATO,
+     "No tenia ese dato registrado en ese momento, Pedro.",
+     "cierre, sonda: el pasado con 'ese'"),
+    (SIN_DATO,
+     "En ese momento no tenia el dato",
+     "cierre, sonda: el fuerte arranca en la posicion 15, sin cierre de oracion"),
     # --- JSONL: no-saber debiles (solo relleno antes) ---
     (SIN_DATO,
      "Claro, Pedro. ¿Podrías recordarme cuál era el punto exacto al que llegamos "

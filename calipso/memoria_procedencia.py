@@ -52,13 +52,20 @@ PATRONES_FUERTES = (
     # disponible sobre su estado"; NO atrapa "no hay informacion adicional
     # disponible sobre este commit", que viene despues de un dato
     r"no hay informacion disponible",
-    # sumado por el porton (ruling 6 del ledger): el 7b vio la frase fija
-    # 'Calipso no tenia el dato entonces' y la parafraseo en plural ("No
-    # teniamos el dato del presupuesto del taller registrado en ese
-    # momento"); sin esto ese eco se guardaba como dato y volvia al turno
-    # siguiente como 'Calipso contesto'. NO atrapa "no tenemos un registro
-    # detallado" (cha-decision, banco: confabula y despues duda)
-    r"no teniamos (el|ese|este|ningun|la) (dato|informacion)",
+    # sumado por el porton (ruling 6 del ledger) y unificado en el cierre:
+    # el 7b vio la frase fija 'Calipso no tenia el dato entonces' y la
+    # parafraseo en plural ("No teniamos el dato del presupuesto del taller
+    # registrado en ese momento") y en singular en pasado ("No tenia ese
+    # dato registrado en ese momento, Pedro."); sin esto el eco se guardaba
+    # como dato y volvia al turno siguiente como 'Calipso contesto'. Cubre
+    # presente, pasado y plural en una sola forma (subsume 'no tengo (ese|
+    # el|ningun) dato' de arriba, que queda porque es la letra del spec).
+    # NO atrapa "no tenemos un registro detallado" (cha-decision, banco:
+    # confabula y despues duda). Y SI degrada el hedge "En ese momento no
+    # tenia el dato, pero ahora si: fue X" (anotado en el banco, parkeado)
+    r"no ten(ia|iamos|go) (el|ese|este|ningun|la|esa|esta) (dato|informacion)",
+    # la frase fija repetida tal cual (el eco puro: SIN_DATO, mas abajo)
+    r"calipso no tenia el dato",
 )
 
 PATRONES_DEBILES = (

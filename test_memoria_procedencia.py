@@ -70,6 +70,29 @@ def test_la_parafrasis_de_la_frase_fija_en_plural_es_un_no_saber():
         "tenemos un registro detallado de esa conversacion.") == "dato"
 
 
+def test_el_no_saber_en_pasado_es_un_no_saber():
+    """El cierre (lente de eficacia con sondas): `hay_eco` del porton atrapa
+    'no tenia el dato' pero `clasificar` no tenia el pasado, asi que el eco
+    en singular de la frase fija se guardaba como dato y volvia como
+    'Calipso contesto'. El fuerte unificado `no ten(ia|iamos|go) (...)
+    (dato|informacion)` y el literal de la frase fija, con la misma regla
+    de posicion."""
+    assert mp.clasificar("Calipso no tenia el dato entonces.") == "sin_dato"
+    assert mp.clasificar("No tenia ese dato registrado en ese momento, Pedro.") == "sin_dato"
+    assert mp.clasificar("En ese momento no tenia el dato") == "sin_dato"
+    assert mp.clasificar("No tenía esa información cuando me preguntaste.") == "sin_dato"
+    # el presente y el plural siguen atrapados por el mismo patron
+    assert mp.clasificar("No tengo ese dato.") == "sin_dato"
+    assert mp.clasificar("No teníamos la información entonces.") == "sin_dato"
+    # la regla de posicion vale igual
+    relleno = "Hay contenido de verdad en esta respuesta. " * 7   # 301 chars
+    assert mp.clasificar(relleno + "Calipso no tenia el dato entonces.") == "dato"
+    # 'no tenemos un registro detallado' (cha-decision) sigue siendo dato
+    assert mp.clasificar(
+        "La ultima discusion se centro en revisar los gastos. Sin embargo, no "
+        "tenemos un registro detallado de esa conversacion.") == "dato"
+
+
 # --- partir y limpiar_gestos ------------------------------------------------
 
 NUEVO = "Pedro pregunto: que libro lei\nCalipso respondio: El nombre de la rosa."
