@@ -207,6 +207,14 @@ BANCO: list[tuple[str, str, str]] = [
      "estado o ramas actuales. ¿Podrías proporcionar más detalles o especificar si "
      "estás interesado en un aspecto particular del repo de Atlas?",
      "pro-estado: 'no hay informacion disponible' (fuerte sumado por el banco)"),
+    # --- el porton (experimentos/porton_memoria_resultados.jsonl): el eco
+    # parafraseado de la frase fija ---
+    (SIN_DATO,
+     "No teníamos el dato del presupuesto del taller registrado en ese momento. "
+     "¿Necesitas que busque más información sobre este tema?",
+     "porton A pasada 1 presupuesto: el 7b vio 'Calipso no tenia el dato "
+     "entonces' y contesto en plural; 'no teniamos (el|ese|...) dato' (fuerte "
+     "sumado por el porton, ruling 6 del ledger)"),
     # --- JSONL: no-saber debiles (solo relleno antes) ---
     (SIN_DATO,
      "Claro, Pedro. ¿Podrías recordarme cuál era el punto exacto al que llegamos "

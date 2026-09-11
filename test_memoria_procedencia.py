@@ -50,6 +50,26 @@ def test_la_respuesta_vacia_es_sin_dato():
     assert mp.clasificar("   \n") == "sin_dato"
 
 
+def test_la_parafrasis_de_la_frase_fija_en_plural_es_un_no_saber():
+    """El eco parafraseado del porton (A, presupuesto, pasada 1): el 7b vio
+    'Calipso no tenia el dato entonces' y contesto en plural. Sin este
+    patron ese eco se guardaba como `dato` y volvia al turno siguiente como
+    'Calipso contesto (...): No teniamos el dato...' (ruling 6 del ledger:
+    se suma como fuerte y se verifica 0 falsos en el banco)."""
+    eco = ("No teníamos el dato del presupuesto del taller registrado en ese "
+           "momento. ¿Necesitas que busque más información sobre este tema?")
+    assert mp.clasificar(eco) == "sin_dato"
+    assert mp.clasificar("No teníamos la información entonces.") == "sin_dato"
+    assert mp.clasificar("No teníamos ningún dato de eso.") == "sin_dato"
+    # la regla de posicion vale igual que para los demas fuertes
+    relleno = "Hay contenido de verdad en esta respuesta. " * 7   # 301 chars
+    assert mp.clasificar(relleno + "No teníamos el dato.") == "dato"
+    # 'no tenemos un registro detallado' (cha-decision, banco) sigue siendo dato
+    assert mp.clasificar(
+        "La ultima discusion se centro en revisar los gastos. Sin embargo, no "
+        "tenemos un registro detallado de esa conversacion.") == "dato"
+
+
 # --- partir y limpiar_gestos ------------------------------------------------
 
 NUEVO = "Pedro pregunto: que libro lei\nCalipso respondio: El nombre de la rosa."

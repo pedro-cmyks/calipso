@@ -52,6 +52,13 @@ PATRONES_FUERTES = (
     # disponible sobre su estado"; NO atrapa "no hay informacion adicional
     # disponible sobre este commit", que viene despues de un dato
     r"no hay informacion disponible",
+    # sumado por el porton (ruling 6 del ledger): el 7b vio la frase fija
+    # 'Calipso no tenia el dato entonces' y la parafraseo en plural ("No
+    # teniamos el dato del presupuesto del taller registrado en ese
+    # momento"); sin esto ese eco se guardaba como dato y volvia al turno
+    # siguiente como 'Calipso contesto'. NO atrapa "no tenemos un registro
+    # detallado" (cha-decision, banco: confabula y despues duda)
+    r"no teniamos (el|ese|este|ningun|la) (dato|informacion)",
 )
 
 PATRONES_DEBILES = (
