@@ -1,4 +1,4 @@
-const CACHE = "calipso-shell-v5";
+const CACHE = "calipso-shell-v6";
 const SHELL = [
   "/",
   "/fabrica",
@@ -25,7 +25,8 @@ const SHELL = [
   "/static/fabrica/permisos.js",
   "/static/fabrica/inbox.js",
   "/static/fabrica/aparatos.js",
-  "/static/fabrica/aduana.js"
+  "/static/fabrica/aduana.js",
+  "/static/fabrica/canarios.js"
 ];
 
 self.addEventListener("install", event => {

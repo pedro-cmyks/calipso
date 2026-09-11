@@ -188,6 +188,16 @@ function montarNavegador() {
     // arranca sin esperarla). El activate tiene que poder resolver
     if (String(url).endsWith("/api/chats")) return new Promise(() => {});
     if (String(url).includes("/activate")) {
+      // un chat guardado con un mensaje de Calipso que trae meta.canarios:
+      // el historial cargado tiene que pintar su pie (spec canarios, 3)
+      if (String(url).includes("c-canario")) {
+        return Promise.resolve({ok: true, json: async () => (
+          {id: "c-canario", title: "canario", messages: [
+            {role: "user", text: "que libro te conte?"},
+            {role: "assistant", text: "una trilogia", meta: {route: "local", canarios: {
+              anclaje: {aplica: true, sin_anclaje: [{tipo: "recuerdo", texto: "una trilogia"}]},
+              degeneracion: [], ventana: []}}}]})});
+      }
       return Promise.resolve({ok: true, json: async () => (
         {id: "c9", title: "otro", messages: [{role: "user", text: "viejo"}]})});
     }
@@ -751,4 +761,52 @@ test("el renglon y el detalle del abismo no se reescriben con cada chunk", () =>
   assert.equal(renglon.textContent,
                "del abismo: chats (40 chars, viajo tapado a la nube: [ID_1])");
   socket.dice({type: "done"});
+});
+
+// --- las marcas del canario: al pie del turno, por textContent, sin rearmar --
+
+test("el canario cuelga un pie del turno de Calipso sin agregar nodos ni reescribir el texto", () => {
+  socket.dice({type: "done"});
+  socket.dice({type: "thinking"});
+  socket.dice({type: "chunk", text: "Recuerdo que te conte <b>algo</b>"});
+  const turno = conversacion.hijos.at(-1);
+  const cuantos = conversacion.hijos.length;
+  const escrituras = turno.escriturasDeTexto();
+  socket.dice({type: "canario", anclaje: {aplica: true, aplica_por: ["senal:te conte"], hechos: [],
+                                          sin_anclaje: [{tipo: "recuerdo", texto: "Recuerdo que te conte <b>algo</b>"}],
+                                          anclado_solo_en_calipso: 0, tapado: false},
+               degeneracion: [{senal: "fuga_de_reentrada", evidencia: "Segui exactamente desde ahi, sin repetir."}],
+               ventana: []});
+  assert.equal(conversacion.hijos.length, cuantos, "el canario se pinto como turno");
+  assert.equal(conversacion.hijos.at(-1), turno);
+  assert.equal(turno.escriturasDeTexto(), escrituras, "el texto del turno se reescribio por el canario");
+  const pie = turno.hijos.at(-1);
+  assert.equal(pie.className, "pie");
+  const [resumen, detalle] = pie.hijos;
+  assert.equal(resumen.textContent, "sin verificar (1) | respuesta rara: fuga de reentrada");
+  assert.equal(detalle.textContent,
+               "recuerdo: Recuerdo que te conte <b>algo</b>\nSegui exactamente desde ahi, sin repetir.");
+  assert.equal(pie.innerHTML, "", "el pie se pinto por innerHTML");
+  socket.dice({type: "done"});
+  assert.equal(turno.hijos.at(-1), pie, "el done rehizo el pie");
+  assert.equal(turno.hijos.length, 1);
+});
+
+test("un veredicto limpio no cuelga nada, y el historial cargado pinta su pie", async () => {
+  socket.dice({type: "thinking"});
+  socket.dice({type: "chunk", text: "todo bien"});
+  const turno = conversacion.hijos.at(-1);
+  socket.dice({type: "canario", anclaje: {aplica: false, sin_anclaje: []}, degeneracion: [], ventana: []});
+  socket.dice({type: "done"});
+  assert.equal(turno.hijos.length, 0);
+  // se abre otro chat desde la lista: el mensaje guardado trae meta.canarios
+  const lista = nav.nodos.get("lista-chats");
+  for (const f of lista.oyentes.get("click") || []) f({target: {dataset: {id: "c-canario"}}});
+  await new Promise(r => setTimeout(r, 0));
+  const cargado = conversacion.hijos.at(-1);
+  assert.equal(cargado.textContent, "una trilogia");
+  const pie = cargado.hijos.at(-1);
+  assert.equal(pie.className, "pie");
+  assert.equal(pie.hijos[0].textContent, "sin verificar (1)");
+  assert.equal(pie.hijos[1].textContent, "recuerdo: una trilogia");
 });

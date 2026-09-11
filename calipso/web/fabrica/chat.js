@@ -22,9 +22,12 @@ export function paquete(texto, chatId, departamento = null) {
 }
 
 export function turnosDeHistorial(mensajes) {
+  // `canarios` viaja SOLO cuando el mensaje guardado lo trae (meta.canarios):
+  // los turnos sin marca siguen siendo {quien, texto, abierto} exactos
   return (mensajes || []).map(m => ({
     quien: m.role === "user" ? "pedro" : "calipso",
-    texto: m.text || "", abierto: false}));
+    texto: m.text || "", abierto: false,
+    ...(m.meta && m.meta.canarios ? {canarios: m.meta.canarios} : {})}));
 }
 
 // Eventos del turno que `cargar()` deja en vuelo: el socket es uno solo y
@@ -35,7 +38,7 @@ export function turnosDeHistorial(mensajes) {
 // el caso de la conexion cortada: el servidor lo manda tambien en medio de
 // un turno normal (ruta local sin fallback) y sigue con cost/done despues.
 const EVENTOS_DEL_STREAM = new Set(["chunk", "done", "meta", "cost", "chat",
-                                     "error", "abismo"]);
+                                     "error", "abismo", "canario"]);
 
 export function aplicarEvento(estado, ev) {
   const e = {...estado, turnos: [...estado.turnos]};
@@ -94,6 +97,18 @@ export function aplicarEvento(estado, ev) {
                     n: estado.abismo ? estado.abismo.n : 1};
       }
       break;                // cualquier otra fase: fallo cerrado, no se toca nada
+    }
+    case "canario": {
+      // el veredicto de los canarios (spec 2026-09-11) llega ANTES del done:
+      // se guarda en el ultimo turno de Calipso, que sigue abierto; no es un
+      // turno aparte. Sin turno abierto de Calipso (respuesta vacia, error)
+      // no se toca nada
+      const ultimo = e.turnos.at(-1);
+      if (ultimo && ultimo.quien === "calipso" && ultimo.abierto) {
+        const {type, ...veredicto} = ev;
+        e.turnos[e.turnos.length - 1] = {...ultimo, canarios: veredicto};
+      }
+      break;
     }
     case "meta":
       if (ev.route) e.ruta = ev.route;

@@ -419,3 +419,48 @@ test("el texto del renglon del abismo", () => {
   assert.equal(textoDeAbismo({fase: "fallo", fuente: "chats", motivo: "solo_hondo"}, 0),
                "el abismo (chats): solo habia hondo");
 });
+
+// --- los canarios: la marca vive en el turno de Calipso, no aparte ------
+
+const VEREDICTO = {anclaje: {aplica: true, aplica_por: ["senal:te conte"], hechos: [],
+                             sin_anclaje: [{tipo: "recuerdo", texto: "Recuerdo que te conte"}],
+                             anclado_solo_en_calipso: 0, tapado: false},
+                   degeneracion: [], ventana: []};
+
+test("canario entre chunk y done se guarda en el ultimo turno de Calipso y no agrega turnos", () => {
+  const e = aplicar([{type: "thinking"}, {type: "chunk", text: "Recuerdo que te conte"},
+                     {type: "canario", ...VEREDICTO}, {type: "done"}]);
+  assert.equal(e.turnos.length, 1);
+  assert.equal(e.turnos[0].texto, "Recuerdo que te conte");
+  assert.equal(e.turnos[0].abierto, false);
+  assert.deepEqual(e.turnos[0].canarios, VEREDICTO);      // sin el `type`
+});
+
+test("un canario sin turno abierto de Calipso no toca nada", () => {
+  const e0 = aplicar([{type: "thinking"}]);
+  assert.deepEqual(aplicar([{type: "canario", ...VEREDICTO}], e0).turnos, e0.turnos);
+  const conError = aplicar([{type: "thinking"}, {type: "error", text: "x"}]);
+  assert.deepEqual(aplicar([{type: "canario", ...VEREDICTO}], conError).turnos, conError.turnos);
+});
+
+test("un canario que llega despues de cargar otro chat se descarta", () => {
+  const {chat, disparar} = wsAbierto();
+  disparar({type: "thinking"});
+  disparar({type: "chunk", text: "empezando"});
+  chat.cargar({id: "c9", messages: [{role: "user", text: "viejo"}, {role: "assistant", text: "resp"}]});
+  const antes = chat.estado().turnos;
+  disparar({type: "canario", ...VEREDICTO});
+  disparar({type: "done"});
+  assert.deepEqual(chat.estado().turnos, antes);
+});
+
+test("el historial cargado lleva meta.canarios al turno, y solo cuando lo trae", () => {
+  const turnos = turnosDeHistorial([
+    {role: "user", text: "hola"},
+    {role: "assistant", text: "que tal", meta: {route: "local", canarios: VEREDICTO}},
+    {role: "assistant", text: "otra", meta: {route: "local"}},
+  ]);
+  assert.deepEqual(turnos[0], {quien: "pedro", texto: "hola", abierto: false});
+  assert.deepEqual(turnos[1].canarios, VEREDICTO);
+  assert.deepEqual(turnos[2], {quien: "calipso", texto: "otra", abierto: false});
+});
