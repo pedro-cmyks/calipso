@@ -10,7 +10,7 @@ import pathlib
 import re
 import sys
 
-from calipso import chats, chronology
+from calipso import chats, chronology, memoria_procedencia
 from calipso.abismo import anillos
 
 CHATS_MAX_FRAGMENTOS = 8
@@ -112,10 +112,16 @@ def memoria(pregunta: str, mem, consolidado: str | None = None,
     libro personal conserva su frontera de zona (spec seccion 6 e invariante
     del spec de proyectos): solo en chats de zona personal."""
     bloques: list[tuple[str, int]] = []
-    hits = [h for h in mem.recall(pregunta, n=RECALL_N)
-            if h.get("score", 0) >= RECALL_UMBRAL][:RECALL_TOP]
-    if hits:
-        lineas = "\n".join(f"- {h['text']}" for h in hits)
+    # con procedencia (spec 2026-09-11): presentar cada hit y recien ahi
+    # cortar a RECALL_TOP, como en server._build_context. El techo del
+    # bloque entero sigue siendo de `consulta.etiquetar`. `con_score=False`:
+    # esta fuente nunca pego el score (solo cuenta en la variante off).
+    recuerdos = memoria_procedencia.presentar_recuerdos(
+        [h for h in mem.recall(pregunta, n=RECALL_N)
+         if h.get("score", 0) >= RECALL_UMBRAL],
+        RECALL_TOP, con_score=False)
+    if recuerdos:
+        lineas = "\n".join(r["text"] for r in recuerdos)
         bloques.append((f"recuerdos:\n{lineas}", anillos.MEDIA_AGUA))
     if (core := _extracto(mem.load_core(), pregunta)):
         bloques.append((f"del core:\n{core}", anillos.HONDO))

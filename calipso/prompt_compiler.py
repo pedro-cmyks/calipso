@@ -220,8 +220,11 @@ def context_sections(system: str, identity: str = "", core: str = "",
         sections.append(("Memoria nucleo", core[:core_limit]))
     sections.append(("Contrato interno", internal_contract(features, base)))
     if recalled:
+        # cada `text` ya viene presentado con procedencia (vineta de dos
+        # lineas, sin score: `memoria_procedencia.presentar_recuerdos`, que
+        # corre en `_build_context` ANTES del corte); aca solo se pegan
         lines = "\n".join(
-            f"- ({item.get('score')}) {item.get('text')}"
+            str(item.get("text"))
             for item in recalled
             if item.get("text"))
         if lines:

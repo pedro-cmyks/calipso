@@ -99,6 +99,7 @@ from calipso import skills  # noqa: E402
 from calipso import telemetry  # noqa: E402
 from calipso import web as calipso_web  # noqa: E402
 from calipso import aduana  # noqa: E402
+from calipso import memoria_procedencia  # noqa: E402
 from calipso import verification  # noqa: E402
 from calipso.tools import commands as calipso_commands  # noqa: E402
 from calipso.memory import EMBED_MODEL, Memory, leer_carta  # noqa: E402
@@ -2953,8 +2954,13 @@ def _build_context(user_msg: str, runtime: str, features: dict | None = None) ->
     core = mem.load_core()
 
     # --- sufijo volátil ---
-    recalled = [r for r in mem.recall(user_msg, n=8)
-                if r["score"] >= RECALL_MIN_SCORE][:RECALL_MAX]
+    # con procedencia (spec 2026-09-11): se pide n=8, se PRESENTA cada hit
+    # (quien dijo que, cuando, por que ruta; el no-saber degradado; el
+    # gesto sin texto saltado) y recien ahi se corta a RECALL_MAX, para que
+    # un salto no achique el bloque. `text` de cada item ya es la vineta.
+    recalled = memoria_procedencia.presentar_recuerdos(
+        [r for r in mem.recall(user_msg, n=8) if r["score"] >= RECALL_MIN_SCORE],
+        RECALL_MAX)
     repo_brief = ""
     if features and features.get("needs_repo"):
         repo_brief = _repo_brief(ROOT)
