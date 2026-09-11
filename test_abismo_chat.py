@@ -56,14 +56,20 @@ class ModeloEspia:
     invocaciones que guiones). Anota cada payload en `llamadas`: ahi se lee
     el system, los messages y las options de cada pasada."""
 
-    def __init__(self, guiones):
+    def __init__(self, guiones, usages=None):
         self.guiones = [list(g) for g in guiones]
+        # `usages[i]`: lo que la invocacion i escribe en su usage ademas de
+        # prompt_tokens=10 / completion_tokens (la ultima se repite); sirve
+        # para simular done_reason="length" o un prompt_eval_count real
+        self.usages = [dict(u) for u in (usages or [])]
         self.llamadas: list[dict] = []
 
     def __call__(self, url, payload, *resto):
         usage = resto[-1] if resto else None
         self.llamadas.append(payload)
-        trozos = self.guiones[min(len(self.llamadas) - 1, len(self.guiones) - 1)]
+        i = len(self.llamadas) - 1
+        trozos = self.guiones[min(i, len(self.guiones) - 1)]
+        extra = self.usages[min(i, len(self.usages) - 1)] if self.usages else {}
 
         def _gen():
             for t in trozos:
@@ -71,6 +77,7 @@ class ModeloEspia:
             if isinstance(usage, dict):
                 usage["prompt_tokens"] = 10
                 usage["completion_tokens"] = len(trozos)
+                usage.update(extra)
         return _gen()
 
 
@@ -707,7 +714,8 @@ def test_el_episodio_del_chat_lleva_la_pregunta_limpia_y_la_procedencia(chat):
     assert texto == "Pedro pregunto: hola\nCalipso respondio: hola Pedro"
     assert scope == "global"
     assert meta == {"route": "local", "kind": "chat", "ruta": "local",
-                    "modelo": "modelo-falso", "chat": chat.chat_id, "procedencia": 1}
+                    "modelo": "modelo-falso", "chat": chat.chat_id, "procedencia": 1,
+                    "degeneracion": 0, "sin_anclaje": 0}
 
 
 def test_tras_un_fallback_la_ruta_guardada_es_la_usada_y_route_la_decidida(chat, monkeypatch):
@@ -734,3 +742,173 @@ def test_con_el_orquestador_la_ruta_guardada_es_orchestrator(chat, monkeypatch):
     texto, scope, meta = chat.memoria.guardados[0]
     assert texto == "Pedro pregunto: libro\nCalipso respondio: sintesis entera"
     assert (meta["route"], meta["ruta"]) == ("local", "orchestrator")
+
+
+# --- los canarios (spec 2026-09-11): el cableado del turno ------------------
+
+def test_la_senal_canario_llega_antes_del_done_y_el_veredicto_va_a_meta_fila_y_remember(chat):
+    eventos = chat.turno("que libro te conte que empece?")
+    tipos = [e["type"] for e in eventos]
+    canario = de_tipo(eventos, "canario")
+    assert len(canario) == 1 and tipos.index("canario") < tipos.index("done")
+    assert tipos.index("canario") > tipos.index("cost")
+    v = canario[0]
+    assert v["anclaje"]["aplica"] is True and v["anclaje"]["aplica_por"] == ["senal:te conte"]
+    assert v["anclaje"]["sin_anclaje"] == [] and v["anclaje"]["tapado"] is False
+    assert v["degeneracion"] == []
+    assert [f["pasada"] for f in v["ventana"]] == [1]
+    # el mismo dict en la fila chat_turn y en el meta del mensaje
+    fila = chat.telemetria("chat_turn")[0]["canarios"]
+    assert fila["anclaje"] == v["anclaje"] and fila["ventana"] == v["ventana"]
+    meta = chat.mensajes()[-1]["meta"]
+    assert meta["canarios"]["anclaje"]["aplica_por"] == ["senal:te conte"]
+    assert meta["route"] == "local"       # lo de antes sigue
+    # y los dos numeros en el remember
+    _, _, meta_mem = chat.memoria.guardados[0]
+    assert (meta_mem["degeneracion"], meta_mem["sin_anclaje"]) == (0, 0)
+
+
+def test_un_invento_con_senal_en_la_pregunta_sale_sin_anclaje_y_una_accion_sin_accion_tambien(chat):
+    chat.modelo.guiones = [["Recuerdo que te conte sobre una trilogia de ciencia ficcion ",
+                            "ambientada en un futuro distopico. Consultando los recuerdos de Pedro..."]]
+    eventos = chat.turno("que libro te conte que empece?")
+    a = de_tipo(eventos, "canario")[0]["anclaje"]
+    assert [s["tipo"] for s in a["sin_anclaje"]] == ["recuerdo", "accion"]
+    assert a["sin_anclaje"][1]["accion"] == "consulto"
+    _, _, meta_mem = chat.memoria.guardados[0]
+    assert meta_mem["sin_anclaje"] == 2 and meta_mem["degeneracion"] == 0
+    # en un turno sin senal ni consulta la medicion corre igual pero no
+    # aplica; y la misma trilogia ahora ANCLA en el historial de Calipso
+    # (el turno anterior la dijo): eso es `anclado_solo_en_calipso`, h07
+    chat.modelo.llamadas.clear()
+    eventos = chat.turno("explicame que es un websocket")
+    a = de_tipo(eventos, "canario")[0]["anclaje"]
+    assert a["aplica"] is False and a["aplica_por"] == []
+    assert [s["tipo"] for s in a["sin_anclaje"]] == ["accion"]
+    assert a["anclado_solo_en_calipso"] == 1
+    assert [h["fuentes"] for h in a["hechos"] if h["tipo"] == "recuerdo"] == [["historial_calipso"]]
+
+
+def test_una_salida_rota_reinyectada_da_senales_de_degeneracion(chat):
+    chat.modelo.guiones = [["Segui exactamente desde ahi, sin repetir."]]
+    eventos = chat.turno("hola")
+    senales = [s["senal"] for s in de_tipo(eventos, "canario")[0]["degeneracion"]]
+    assert senales == ["fuga_de_reentrada"]
+    _, _, meta_mem = chat.memoria.guardados[0]
+    assert meta_mem["degeneracion"] == 1
+    assert chat.telemetria("chat_turn")[0]["canarios"]["degeneracion"][0]["senal"] == "fuga_de_reentrada"
+
+
+def test_la_ventana_se_mide_por_pasada_con_evaluado_y_truncado(chat):
+    """Dos pasadas: la primera se corta en la marca ANTES del done (el
+    generador se cierra: usage_pasada queda vacio, `evaluado` None y
+    `sin medicion`, no 0); la segunda llega al done con un
+    prompt_eval_count al borde del techo y done_reason=length."""
+    _sembrar_chat_viejo(["un libro"])
+    chat.modelo.guiones = [["a ⟦abismo:chats libro⟧"], ["b"]]
+    chat.modelo.usages = [{}, {"prompt_tokens": 7900, "done_reason": "length"}]
+    eventos = chat.turno("libro")
+    v = de_tipo(eventos, "canario")[0]
+    assert [f["pasada"] for f in v["ventana"]] == [1, 2]
+    p1, p2 = v["ventana"]
+    assert p1["ruta"] == "local" and p1["num_ctx"] == srv.CHAT_NUM_CTX and p1["tokenizador"] == "fallback"
+    assert p1["evaluado"] is None and p1["truncado"] == "sin medicion"
+    assert p1["recorte"] == [] and p1["cabe"] is True
+    assert p2["evaluado"] == 7900 and p2["truncado"] is True        # >= 0.95 * 8192
+    assert p2["done_reason"] == "length" and p2["estimado"] > p1["estimado"]
+    assert [s["senal"] for s in v["degeneracion"]] == ["cortada"]
+    assert chat.telemetria("chat_turn")[0]["canarios"]["ventana"] == v["ventana"]
+
+
+def test_un_evaluado_parecido_al_estimado_no_es_truncado(chat):
+    chat.modelo.usages = [{"prompt_tokens": 700}]
+    eventos = chat.turno("hola")
+    fila = de_tipo(eventos, "canario")[0]["ventana"][0]
+    assert fila["evaluado"] == 700 and fila["estimado"] < 700
+    assert fila["truncado"] is False         # ni > num_ctx, ni >= 0.95 del techo, ni < 0.85 del estimado
+    assert fila["done_reason"] is None       # el espia no lo escribe: None, nunca una cadena
+
+
+def test_en_local_el_prompt_que_no_cabe_se_recorta_lo_volatil_y_se_anota(chat, monkeypatch):
+    chats.append(chat.chat_id, "user", "hola")
+    chats.append(chat.chat_id, "assistant", "hola Pedro")
+    # con el fallback de 3.3: system 9 + 5, historial (2+5) + (4+5), mensaje 2 + 5, cierre 3 = 40
+    monkeypatch.setattr(srv, "CHAT_NUM_CTX", 30)
+    eventos = chat.turno("hola")
+    fila = de_tipo(eventos, "canario")[0]["ventana"][0]
+    assert fila["recorte"] == ["historial:2"] and fila["cabe"] is True and fila["no_cabe"] is False
+    assert fila["estimado_sin_recorte"] > 30 >= fila["estimado"]
+    # y el modelo NO vio el historial: lo que viajo es lo recortado
+    assert [m["role"] for m in chat.modelo.llamadas[0]["messages"]] == ["system", "user"]
+    assert chat.modelo.llamadas[0]["options"]["num_ctx"] == 30
+    # el system base no se toco (invariante 8)
+    assert chat.modelo.llamadas[0]["messages"][0]["content"] == "=== Sistema ===\nSISTEMA BASE"
+
+
+def test_si_no_cabe_ni_recortando_se_manda_igual_y_se_marca(chat, monkeypatch):
+    monkeypatch.setattr(srv, "CHAT_NUM_CTX", 5)
+    eventos = chat.turno("hola")
+    fila = de_tipo(eventos, "canario")[0]["ventana"][0]
+    assert fila["no_cabe"] is True and fila["cabe"] is False and fila["recorte"] == []
+    assert texto_visible(eventos) == "hola Pedro"          # se mando igual
+
+
+def test_un_turno_steereado_no_es_cortada(chat, monkeypatch):
+    arranco, liberar = _pausar_el_modelo(chat, monkeypatch, invocacion=1, trozo=2)
+    chat.modelo.usages = [{"done_reason": "length"}]
+    with chat.cliente.websocket_connect("/ws/chat") as ws:
+        ws.send_text(chat.paquete("hola"))
+        assert arranco.wait(5)
+        ws.send_text(chat.paquete("otra"))
+        liberar.set()
+        eventos = chat.recibir(ws, hasta_dones=2)
+    canarios = de_tipo(eventos, "canario")
+    assert len(canarios) == 2
+    assert "cortada" not in [s["senal"] for s in canarios[0]["degeneracion"]]
+    assert canarios[0]["ventana"][0]["truncado"] == "sin medicion"
+
+
+def test_fail_open_si_el_canario_revienta_el_turno_termina_y_la_fila_lo_dice(chat, monkeypatch):
+    def bomba(**k):
+        raise RuntimeError("canario roto")
+    monkeypatch.setattr(srv.canarios, "veredicto", bomba)
+    eventos = chat.turno("hola")
+    tipos = [e["type"] for e in eventos]
+    assert tipos.count("done") == 1 and tipos[-1] == "done"
+    assert texto_visible(eventos) == "hola Pedro"
+    v = de_tipo(eventos, "canario")[0]
+    assert v["error"] == "RuntimeError" and v["anclaje"] is None
+    assert chat.telemetria("chat_turn")[0]["canarios"]["error"] == "RuntimeError"
+    # sin veredicto no hay numeros en el remember (None se descarta), y el
+    # meta del mensaje lleva el fallo
+    _, _, meta_mem = chat.memoria.guardados[0]
+    assert meta_mem["degeneracion"] is None and meta_mem["sin_anclaje"] is None
+    assert chat.mensajes()[-1]["meta"]["canarios"]["error"] == "RuntimeError"
+
+
+def test_el_tope_de_tiempo_del_canario_no_frena_el_turno(chat, monkeypatch):
+    monkeypatch.setattr(srv.canarios, "TOPE_SEGUNDOS", 0.05)
+
+    def lento(**k):
+        time.sleep(0.5)
+        return {"anclaje": {}, "degeneracion": [], "ventana": []}
+    monkeypatch.setattr(srv.canarios, "veredicto", lento)
+    eventos = chat.turno("hola")
+    assert [e["type"] for e in eventos][-1] == "done"
+    assert de_tipo(eventos, "canario")[0]["error"] == "TimeoutError"
+
+
+def test_el_canario_nunca_corre_en_el_event_loop(chat, monkeypatch):
+    import asyncio
+    visto = []
+
+    def espia(**k):
+        try:
+            asyncio.get_running_loop()
+            visto.append("loop")
+        except RuntimeError:
+            visto.append("hilo")
+        return {"anclaje": {"sin_anclaje": []}, "degeneracion": [], "ventana": []}
+    monkeypatch.setattr(srv.canarios, "veredicto", espia)
+    chat.turno("hola")
+    assert visto == ["hilo"]

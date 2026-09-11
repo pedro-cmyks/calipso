@@ -724,3 +724,38 @@ def truncado(estimado: int, evaluado: int | None, num_ctx: int | None):
     if estimado > num_ctx or evaluado >= UMBRALES["truncado_evaluado_alto"] * num_ctx:
         return True
     return evaluado < UMBRALES["truncado_evaluado_bajo"] * estimado
+
+
+# --- el veredicto ----------------------------------------------------------
+
+def veredicto(*, respuesta, secciones, mensajes, mensaje, bloques, features,
+              usages, ventana, hizo, consultas, steered, tapado,
+              texto_crudo=None) -> dict:
+    """Las tres partes, sobre lo que el turno ya tiene. `mensajes` es lo que
+    `_chunks_for` devolvio en la ultima pasada (system + historial + user):
+    de ahi sale el historial que el modelo vio de verdad. En /nube tapado
+    el anclaje corre sobre `texto_crudo`, el texto CRUDO ENTERO del turno
+    (con marcadores, todos los tramos incluida la respuesta de la reentrada;
+    lo arma el server: en streaming `full` ya es crudo, en suscripcion y
+    orquestador acumula lo crudo de cada invocacion) contra el contexto
+    tapado que viajo; nunca sobre el texto repuesto (cada nombre repuesto
+    saldria "sin verificar"). Puro y sincronico: el server lo corre en hilo
+    con tope (`TOPE_SEGUNDOS`) y fail-open."""
+    inicio = time.perf_counter()
+    historial = [m for m in (mensajes or [])[1:-1] if m.get("role") in ("user", "assistant")]
+    texto_anclaje = texto_crudo if (tapado and texto_crudo) else respuesta
+    contexto = contexto_del_turno(secciones, historial, mensaje, bloques)
+    a = anclaje(texto_anclaje, contexto,
+                {"mensaje": mensaje, "consultas": consultas, "hizo": hizo, "tapado": tapado})
+    d = degeneracion(respuesta, secciones, features, usages, {"steered": steered})
+    return {"anclaje": a, "degeneracion": d["senales"], "ventana": list(ventana or []),
+            "ms": round((time.perf_counter() - inicio) * 1000)}
+
+
+def resumen_de_remember(veredicto: dict | None) -> dict:
+    """Los DOS numeros que van a `mem.remember` (spec seccion 2): None si el
+    veredicto fallo (Scope.remember descarta los None)."""
+    if not veredicto or veredicto.get("anclaje") is None:
+        return {"degeneracion": None, "sin_anclaje": None}
+    return {"degeneracion": len(veredicto.get("degeneracion") or []),
+            "sin_anclaje": len(veredicto["anclaje"].get("sin_anclaje") or [])}

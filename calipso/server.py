@@ -3153,6 +3153,33 @@ def _ventana_despues(fila: dict, usage_pasada: dict) -> dict:
     return fila
 
 
+def _contexto_persistido(secciones, mensajes, bloques) -> dict:
+    """SOLO con CANARIOS_PERSISTIR_CONTEXTO=1 (el server desechable del
+    porton y del smoke): la fila `chat_turn` lleva el system, el historial
+    y los bloques que viajaron, para el banco de anclaje y para `sin_dato
+    falso`. En produccion la variable no esta y la fila no lleva nada de
+    esto (invariante 7: lo que el canario extrae no sale de telemetry.jsonl
+    y chats.json; y esto ni siquiera entra ahi)."""
+    if os.environ.get("CANARIOS_PERSISTIR_CONTEXTO") != "1":
+        return {}
+    return {"contexto": {"secciones": [list(s) for s in secciones],
+                         "historial": [m for m in (mensajes or [])[1:-1]],
+                         "bloques": list(bloques)}}
+
+
+async def _veredicto_del_turno(**campos) -> dict:
+    """`canarios.veredicto` en hilo (invariante 4) con tope de tiempo y
+    fail-open (invariante 3): si levanta o se pasa de `TOPE_SEGUNDOS`, el
+    turno se entrega igual y el fallo va a la fila `chat_turn`."""
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(canarios.veredicto, **campos),
+                                      timeout=canarios.TOPE_SEGUNDOS)
+    except Exception as e:      # TimeoutError incluido
+        print(f"[calipso] el canario fallo: {type(e).__name__}: {e}", file=sys.stderr)
+        return {"error": type(e).__name__, "detalle": str(e)[:200], "anclaje": None,
+                "degeneracion": [], "ventana": list(campos.get("ventana") or [])}
+
+
 def _subscription_invocation(client: str, system: str, user_msg: str,
                              model: str | None = None,
                              chat_id: str | None = None) -> tuple[list[str], dict, str | None, str | None]:
@@ -3895,6 +3922,13 @@ async def ws_chat(ws: WebSocket) -> None:
             usages: list[dict] = []
             mensajes_pasada: list[dict] | None = None
             secciones_pasada: list[tuple[str, str]] = secciones
+            steered = False
+            # el texto CRUDO entero del turno (con marcadores, sin marcas)
+            # donde `full` es el REPUESTO: suscripcion y orquestador lo
+            # acumulan invocacion por invocacion; en streaming no hay
+            # reponer y `full` ya es crudo (queda ""). El canario de un
+            # turno tapado ancla sobre esto (decision 18)
+            crudo_total = ""
             try:
                 if _should_orchestrate(features, directives, chat_msg) and not nube_local:
                     runtime = _harness_context(
@@ -3915,6 +3949,7 @@ async def ws_chat(ws: WebSocket) -> None:
                         pending = queued
                     used_route = "orchestrator"
                     usage["completion_tokens"] = len(full.split())
+                    crudo_total = full
                     if mapa is not None:
                         full = redaccion.reponer(full, mapa)
                     # ruta orquestador: fuera del abismo (spec seccion 4).
@@ -3973,6 +4008,10 @@ async def ws_chat(ws: WebSocket) -> None:
                         # lo visible; lo CRUDO es lo que vuelve a la nube
                         visible = (redaccion.reponer(tramo_crudo, mapa)
                                    if mapa is not None else tramo_crudo)
+                        # lo crudo de ESTA invocacion, incluida la ultima (la
+                        # respuesta de la reentrada, que `tramos_crudos` no
+                        # guarda porque no la corta ninguna marca)
+                        crudo_total += abismo_turno.retirar_marcas(tramo_crudo)
                         visible = await emisor.chunk(visible)
                         # el texto llego ENTERO: nada de lo que la tuberia
                         # retenga puede completarse en otra invocacion. Se
@@ -4012,6 +4051,7 @@ async def ws_chat(ws: WebSocket) -> None:
                             # volver a cortar (dejaria una marca pendiente
                             # que nadie consume)
                             resto_crudo = _retirar_con_aviso(texto[len(tramo_crudo):], "posterior")
+                            crudo_total += resto_crudo
                             full += await emisor.chunk(
                                 redaccion.reponer(resto_crudo, mapa)
                                 if mapa is not None else resto_crudo)
@@ -4063,6 +4103,7 @@ async def ws_chat(ws: WebSocket) -> None:
                                                 momento="pesca")
                             await ws.send_json({"type": "steered"})
                             full += " …(interrumpido)"
+                            steered = True
                             if steer and steer.strip() and steer.strip() != "/stop":
                                 pending = steer
                             break
@@ -4101,6 +4142,7 @@ async def ws_chat(ws: WebSocket) -> None:
                                                         momento="reentrada")
                                 await ws.send_json({"type": "steered"})
                                 full += " …(interrumpido)"
+                                steered = True
                                 if steer and steer.strip() and steer.strip() != "/stop":
                                     pending = steer
                                 break
@@ -4199,6 +4241,7 @@ async def ws_chat(ws: WebSocket) -> None:
                                     pending = queued
                                 usage["completion_tokens"] = (usage.get("completion_tokens", 0)
                                                               + len(texto_alterno.split()))
+                                crudo_total += abismo_turno.retirar_marcas(texto_alterno)
                                 if mapa is not None:
                                     texto_alterno = redaccion.reponer(texto_alterno, mapa)
                                 # se SUMA al tramo que Pedro ya leyo (si la
@@ -4260,6 +4303,7 @@ async def ws_chat(ws: WebSocket) -> None:
                                     pass
                                 await ws.send_json({"type": "steered"})
                                 full += " …(interrumpido)"
+                                steered = True
                                 if steer and steer.strip() and steer.strip() != "/stop":
                                     pending = steer
                                 break
@@ -4277,6 +4321,26 @@ async def ws_chat(ws: WebSocket) -> None:
             # lo que el filtro venia reteniendo por si era una marca: si la
             # respuesta termino en un corchete suelto, Pedro tiene que verlo
             full += await emisor.cerrar()
+
+            # 3b) los canarios (spec 2026-09-11): anclaje, degeneracion y
+            # ventana sobre lo que el turno ya tiene, en hilo, con tope y
+            # fail-open. Marcan y miden, no frenan (decision de Pedro). El
+            # veredicto va a la fila `chat_turn`, al meta del mensaje, a la
+            # senal ws (antes del done) y, en dos numeros, al remember.
+            veredicto = await _veredicto_del_turno(
+                respuesta=full, secciones=secciones_pasada, mensajes=mensajes_pasada,
+                mensaje=mensaje_saliente, bloques=list(estado_abismo.bloques),
+                features=features, usages=usages, ventana=ventana,
+                hizo={"consulto": estado_abismo.consultas > 0,
+                      "recordo": bool(full.strip()),
+                      "repo": bool(features.get("needs_repo")),
+                      "web": bool(web_material and (web_material["results"] or web_material["pages"]))},
+                consultas=estado_abismo.consultas, steered=steered,
+                tapado=a_la_nube_tapado,
+                # el texto crudo ENTERO del turno: `crudo_total` donde full
+                # es repuesto (suscripcion, orquestador); en streaming
+                # `full` ya es crudo (decision 18)
+                texto_crudo=crudo_total or full)
 
             # 4) registrar costo/uso, cobrarle al departamento en foco y avisar
             entry = costs.log_usage(
@@ -4323,9 +4387,14 @@ async def ws_chat(ws: WebSocket) -> None:
                 fallbacks=fallbacks,
                 agent_team=agent_team,
                 abismo_consultas=estado_abismo.consultas,
+                canarios=veredicto,
                 latency_ms=round((time.perf_counter() - turn_started) * 1000),
                 cost_usd=entry["cost_usd"],
+                **_contexto_persistido(secciones_pasada, mensajes_pasada, estado_abismo.bloques),
             )
+            # la senal a las dos UIs, ANTES del done: se aplica sobre el
+            # mensaje que se esta cerrando
+            await ws.send_json({"type": "canario", **veredicto})
 
             # 5) recordar el intercambio (episodica)
             #
@@ -4359,13 +4428,16 @@ async def ws_chat(ws: WebSocket) -> None:
             # marca para contar y para la idempotencia del reindex. Lo que
             # sea None lo descarta `Scope.remember`. Se lee con
             # `memoria_procedencia.presentar`, nunca crudo.
+            # Y los canarios (spec 2026-09-11): dos numeros del veredicto,
+            # `degeneracion` y `sin_anclaje` (None si el canario fallo).
             if full.strip():
                 try:
                     await asyncio.to_thread(
                         mem.remember,
                         f"Pedro pregunto: {chat_msg}\nCalipso respondio: {full.strip()}",
                         scope="global", route=verdict["route"], kind="chat",
-                        ruta=used_route, modelo=model, chat=chat_id, procedencia=1)
+                        ruta=used_route, modelo=model, chat=chat_id, procedencia=1,
+                        **canarios.resumen_de_remember(veredicto))
                 except Exception:
                     pass    # recordar no puede voltear un turno ya contestado
             if full.strip():
@@ -4374,6 +4446,7 @@ async def ws_chat(ws: WebSocket) -> None:
                     "model": model,
                     "client": verdict.get("client"),
                     "agent_team": agent_team,
+                    "canarios": veredicto,
                 })
                 current_chat = chats.get(chat_id)
                 if current_chat:

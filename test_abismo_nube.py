@@ -43,13 +43,13 @@ def test_en_nube_el_bloque_viaja_tapado_con_el_mapa_del_mensaje_y_se_ve(chat, mo
     _juez_que_tapa_nombres(monkeypatch)
     # el chat viejo nombra a Ana y NO a Marta: asi el marcador del bloque
     # solo puede salir del mapa que ya tapo el mensaje (ver abajo)
-    _sembrar_chat_viejo(["con Ana hablamos del libro de cocina"])
+    _sembrar_chat_viejo(["con Ana hablamos del libro de cocina el 20 de agosto"])
     # historial previo del MISMO chat: sin el, `_history_messages` devolveria
     # [] igual y la asercion de "sin historial" seria vacua
     chats.append(chat.chat_id, "user", "hola")
     chats.append(chat.chat_id, "assistant", "hola Pedro")
     chat.modelo.guiones = [["Le dije a [ID_1] que ", "⟦abismo:chats libro⟧", " fin"],
-                           ["y seguimos"]]
+                           ["y seguimos: fue el 20 de agosto con [ID_2]"]]
     eventos = _turno_con_un_solo_done(chat, "/nube /api que hablamos con Marta y Ana del libro")
     tapado = [e for e in eventos if e["type"] == "privacidad"][0]
     assert tapado["action"] == "tapado"
@@ -74,6 +74,23 @@ def test_en_nube_el_bloque_viaja_tapado_con_el_mapa_del_mensaje_y_se_ve(chat, mo
     assert "Marta" not in json.dumps(chat.modelo.llamadas)
     assert "Ana" not in json.dumps(chat.modelo.llamadas)
     assert [m["role"] for m in segunda["messages"]] == ["system", "user"]
+    # el canario del turno tapado: corre sobre el texto CRUDO ENTERO (los dos
+    # tramos, con marcadores) contra el contexto tapado que viajo; los
+    # marcadores no son hechos, la fecha que solo dijo el ultimo tramo ancla
+    # en el bloque tapado y nada sale sin anclar
+    v = de_tipo(eventos, "canario")[0]
+    assert v["anclaje"]["tapado"] is True and v["anclaje"]["sin_anclaje"] == []
+    assert not any("[ID_" in h["texto"] for h in v["anclaje"]["hechos"])
+    assert [(h["texto"], h["fuentes"]) for h in v["anclaje"]["hechos"] if h["tipo"] == "fecha"] == [
+        ("20 de agosto", ["bloque"])]
+    assert [f["ruta"] for f in v["ventana"]] == ["api", "api"]
+    assert v["ventana"][0]["num_ctx"] is None and v["ventana"][0]["recorte"] == []
+    # api: se estima y se anota, no se juzga (decision 7): la pasada 1 se
+    # corto en la marca antes del done ("sin medicion"); la 2 llego al done
+    # con prompt_tokens=10 contra un system de cientos de tokens y aun asi
+    # NO es "truncado" (None: sin techo no se compara)
+    assert [f["truncado"] for f in v["ventana"]] == ["sin medicion", None]
+    assert "cocina" not in json.dumps(v)
     assert segunda["messages"][1]["content"].startswith("que hablamos con [ID_1] y [ID_2] del libro")
     assert "Venias diciendo: Le dije a [ID_1] que " in segunda["messages"][1]["content"]
     # ni la marca ni el bloque se persisten, se recuerdan o se telemetrian
