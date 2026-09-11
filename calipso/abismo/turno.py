@@ -19,6 +19,9 @@ VERBOS = {"memoria": "buscando en tu memoria",
           "chats": "buscando en tus chats",
           "proyecto": "mirando el repo"}
 INSTRUCCION_CONTINUAR = "Segui exactamente desde ahi, sin repetir."
+# las letras que el canario `fuga_de_reentrada` caza en la respuesta
+# (canarios.py); la Task 7 suma la letra con bloques
+LETRAS_REENTRADA = (INSTRUCCION_CONTINUAR,)
 
 
 @dataclass

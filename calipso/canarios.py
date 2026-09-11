@@ -495,3 +495,140 @@ def anclaje(respuesta: str, contexto: dict[str, str], turno: dict) -> dict:
             "aplica": bool(aplica_por), "aplica_por": aplica_por,
             "anclado_solo_en_calipso": solo_calipso,
             "tapado": bool(turno.get("tapado"))}
+
+
+# --- degeneracion (spec 2.2) -----------------------------------------------
+
+def _es_latina(ch: str) -> bool:
+    try:
+        return "LATIN" in unicodedata.name(ch)
+    except ValueError:
+        return False
+
+
+def _alfabeto(respuesta: str) -> dict | None:
+    letras = [c for c in respuesta if c.isalpha()]
+    if not letras:
+        return None
+    no_latinas = sum(1 for c in letras if not _es_latina(c))
+    # la corrida LAXA: solo una letra latina o un digito la corta; la
+    # puntuacion (incluida la CJK) y los espacios no
+    mejor, actual, inicio, mejor_desde = 0, 0, 0, 0
+    for i, c in enumerate(respuesta):
+        if c.isalpha() and not _es_latina(c):
+            if actual == 0:
+                inicio = i
+            actual += 1
+            if actual > mejor:
+                mejor, mejor_desde = actual, inicio
+        elif c.isalpha() or c.isdigit():
+            actual = 0
+    fraccion = no_latinas / len(letras)
+    if mejor >= UMBRALES["alfabeto_corrida"] or fraccion > UMBRALES["alfabeto_fraccion"]:
+        return {"senal": "alfabeto", "evidencia": respuesta[mejor_desde:mejor_desde + 40],
+                "corrida": mejor, "fraccion": round(fraccion, 3)}
+    return None
+
+
+def _repeticion(respuesta: str) -> dict | None:
+    n, veces = UMBRALES["repeticion_ngrama"], UMBRALES["repeticion_veces"]
+    palabras = _palabras(normalizar(respuesta))
+    cuentas: dict[tuple, int] = {}
+    for i in range(len(palabras) - n + 1):
+        g = tuple(palabras[i:i + n])
+        cuentas[g] = cuentas.get(g, 0) + 1
+        if cuentas[g] >= veces:
+            return {"senal": "repeticion", "evidencia": " ".join(g), "veces": cuentas[g]}
+    lineas = [l.strip() for l in respuesta.split("\n") if l.strip()]
+    seguidas = UMBRALES["repeticion_lineas_seguidas"]
+    for i in range(len(lineas) - seguidas + 1):
+        if len(set(lineas[i:i + seguidas])) == 1:
+            return {"senal": "repeticion", "evidencia": lineas[i][:80], "veces": seguidas}
+    return None
+
+
+def _fuga_del_contrato(respuesta_norm: str, secciones) -> dict | None:
+    n = UMBRALES["fuga_contrato_palabras"]
+    palabras_resp = _palabras(respuesta_norm)
+    if len(palabras_resp) < n:
+        return None
+    ngramas_resp = {tuple(palabras_resp[i:i + n]) for i in range(len(palabras_resp) - n + 1)}
+    for titulo, cuerpo in secciones:
+        if titulo not in SECCIONES_INSTRUCCION:
+            continue
+        palabras = _palabras(normalizar(cuerpo))
+        for i in range(len(palabras) - n + 1):
+            g = tuple(palabras[i:i + n])
+            if g in ngramas_resp:
+                return {"senal": "fuga_del_contrato", "evidencia": " ".join(g),
+                        "seccion": titulo}
+    return None
+
+
+_ECO = (re.compile(r"pedro dijo \("), re.compile(r"calipso contesto \("),
+        re.compile(r"pedro pregunto:"), re.compile(r"calipso respondio:"),
+        re.compile(r"\[anillo"), re.compile(r"=== lo que subio"),
+        re.compile(r"(?:^|[\n.!?]\s*)\[[^\]\n]{1,60} \d{4}-\d{2}-\d{2}\]"))
+_TEMPLATE = re.compile(r"(?:^|\n)\s*(user|assistant|system)\s*(?:\n|$)|<\|im_(?:start|end)\|>")
+_SOLO_PUNTUACION = re.compile(r"^[\s\W_]*$")
+
+
+def _formato_no_pedido(respuesta: str, features: dict | None) -> dict | None:
+    if (features or {}).get("type") in TIPOS_CON_CODIGO:
+        return None
+    r = (respuesta or "").strip()
+    try:
+        entero = json.loads(r)
+    except (ValueError, TypeError):
+        entero = None
+    if isinstance(entero, (dict, list)):
+        return {"senal": "formato_no_pedido", "evidencia": r[:60], "forma": "json_entero"}
+    if "```json" in r:
+        return {"senal": "formato_no_pedido", "evidencia": "```json", "forma": "fence_json"}
+    i = r.find("{")
+    if i >= 0:
+        claves = re.findall(r'"[^"\n]+"\s*:', r[i:])
+        if len(claves) >= UMBRALES["formato_claves"]:
+            return {"senal": "formato_no_pedido", "evidencia": " ".join(claves[:3]),
+                    "forma": "objeto"}
+    return None
+
+
+def degeneracion(respuesta: str, secciones, features, usages, turno) -> dict:
+    """{"senales": [...]} con evidencia; `usages` son los usage por pasada,
+    `turno` = {steered: bool}."""
+    senales = []
+    r = respuesta or ""
+    norm = normalizar(r)
+    # el eco del molde de chats se busca al inicio de un parrafo: sobre la
+    # forma que conserva los saltos (`normalizar` los colapsa y la
+    # alternativa `\n` del ultimo patron de _ECO nunca matcheaba: un
+    # 'Entendido\n\n[Charla con Mariana 2026-08-20] ...' sin punto antes
+    # pasaba limpio)
+    norm_saltos = normalizar(r, conservar_saltos=True)
+    for s in (_repeticion(r), _alfabeto(r), _fuga_del_contrato(norm, secciones)):
+        if s:
+            senales.append(s)
+    # la letra mas larga primero: la corta es prefijo de la larga
+    letras = sorted(abismo_turno.LETRAS_REENTRADA, key=len, reverse=True) + ["Venias diciendo:"]
+    for letra in letras:
+        if normalizar(letra) in norm:
+            senales.append({"senal": "fuga_de_reentrada", "evidencia": letra})
+            break
+    for p in _ECO:
+        m = p.search(norm_saltos)
+        if m:
+            senales.append({"senal": "eco_de_episodio", "evidencia": m.group(0).strip()})
+            break
+    s = _formato_no_pedido(r, features)
+    if s:
+        senales.append(s)
+    if not turno.get("steered"):
+        cortada = any((u or {}).get("done_reason") == "length" for u in (usages or []))
+        if cortada or _SOLO_PUNTUACION.match(r):
+            senales.append({"senal": "cortada",
+                            "evidencia": "done_reason=length" if cortada else "respuesta vacia"})
+    m = _TEMPLATE.search(r)
+    if m:
+        senales.append({"senal": "fuga_de_template", "evidencia": m.group(0).strip()})
+    return {"senales": senales}
