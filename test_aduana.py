@@ -419,6 +419,45 @@ def test_las_tres_lineas_de_un_cuerpo_pasan_por_el_detector(libro):
     assert "PRIVATE KEY" not in lineas and "[SECRETO]" in lineas
 
 
+# --- lo que urlsplit no puede parsear (fail-open del saneo) --------------------
+
+def test_una_url_malformada_no_frena_el_cruce_y_va_tapada(libro):
+    """`urlsplit("http://[::1/x")` levanta ValueError ('Invalid IPv6 URL').
+    La aduana no frena (invariante 2): el bloque corre y la linea se escribe;
+    la URL que no se pudo sanear no se anota cruda (invariante 9)."""
+    corrio = False
+    with aduana.cruzar(quien_de_prueba(), "x", "http://[::1/x?pwd=abc") as cruce:
+        corrio = True
+        cruce.entro(1)
+    assert corrio
+    lineas = cruces_del_libro(libro)
+    assert len(lineas) == 1
+    assert lineas[0]["destino"] == {"host": None, "url": "[SECRETO]"}
+    assert lineas[0]["resultado"]["estado"] == "ok"
+    assert aduana.sin_libro()["n"] == 0
+    assert "abc" not in json.dumps(lineas[0])
+
+
+def test_sanear_url_malformada_devuelve_secreto():
+    assert aduana.sanear_url("http://[::1/x") == "[SECRETO]"
+    assert aduana.sanear_url("//[::1/x?pwd=abc") == "[SECRETO]"
+
+
+def test_una_carga_str_malformada_no_se_anota_cruda(libro):
+    with aduana.cruzar(quien_de_prueba(), "x", None, carga="http://[::1/x?pwd=abc"):
+        pass
+    assert cruces_del_libro(libro)[0]["carga"] == {"tipo": "consulta",
+                                                   "texto": "[SECRETO]"}
+
+
+def test_una_frase_de_pedro_con_una_url_adentro_sigue_por_el_detector_completo():
+    """Decision 2 del plan: solo un str que PARSEA como URL http(s) va por
+    `sanear_url`; una frase de Pedro que menciona una URL es una consulta y
+    va por el detector completo (spec 9.3), no se tapa entera."""
+    texto = "mira https://x.com/?q=hola que raro"
+    assert aduana._carga(texto)["texto"] == texto
+
+
 # --- el lector ----------------------------------------------------------------
 
 def test_leer_devuelve_hoy_con_totales_y_cuenta_las_lineas_rotas(libro, monkeypatch):

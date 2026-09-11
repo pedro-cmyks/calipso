@@ -262,19 +262,30 @@ def _tapar_valores(query: str) -> str:
         lambda m: "=" + SECRETO if m.group(1) else "=", query)
 
 
-def _es_url(texto: str) -> bool:
+def _parsear(url: str) -> urllib.parse.SplitResult | None:
+    """`urlsplit` fail-open: None si no puede parsear (`http://[::1/x`
+    levanta ValueError, 'Invalid IPv6 URL'). Lo que no parsea no es una URL
+    saneable: quien llama lo tapa entero, jamas lo anota crudo, y el cruce
+    no se frena por eso (invariante 2)."""
     try:
-        p = urllib.parse.urlsplit(texto)
+        return urllib.parse.urlsplit(url)
     except ValueError:
-        return False
-    return p.scheme in ("http", "https") and bool(p.netloc)
+        return None
+
+
+def _es_url(texto: str) -> bool:
+    p = _parsear(texto)
+    return p is not None and p.scheme in ("http", "https") and bool(p.netloc)
 
 
 def sanear_url(url: str) -> str:
     """userinfo -> [SECRETO]; VALORES de query y fragmento -> [SECRETO]
     (nombres conservados; un fragmento sin `=` es un valor entero); sobre
-    host y path solo las lexicas."""
-    p = urllib.parse.urlsplit(url)
+    host y path solo las lexicas. Una URL que urlsplit no parsea vuelve
+    como [SECRETO] entero: no se pudo sanear, no se anota cruda."""
+    p = _parsear(url)
+    if p is None:
+        return SECRETO
     hostport = p.netloc.rsplit("@", 1)[-1]
     netloc = _tapar_lexicas(hostport)
     if "@" in p.netloc:
@@ -296,10 +307,8 @@ def _destino(destino: str | None) -> dict:
     if not destino:
         return {"host": None, "url": None}
     if "://" in destino:
-        try:
-            host = urllib.parse.urlsplit(destino).hostname
-        except ValueError:
-            host = None
+        p = _parsear(destino)
+        host = p.hostname if p is not None else None
         return {"host": _tapar_lexicas(host) if host else None,
                 "url": sanear_url(destino)}
     return {"host": _tapar_lexicas(destino), "url": None}
@@ -308,10 +317,12 @@ def _destino(destino: str | None) -> dict:
 def _carga(carga) -> dict:
     """El recorte y el saneo los hace la aduana, no el sitio (spec 5):
     None -> nada; list[str] -> consulta (argv: lexicas); str URL -> consulta
-    (saneo de URL); str -> consulta (detector completo, viene de Pedro);
-    Cuerpo -> tamano + sha256[:12] + tres lineas (detector completo).
-    Se sanea ANTES de recortar: un tope no puede partir un token por la
-    mitad y dejarlo pasar."""
+    (saneo de URL); str que urlsplit no parsea -> consulta [SECRETO] entera
+    (un `?pwd=` ahi no pasaria por el saneo de valores); str -> consulta
+    (detector completo, viene de Pedro; una frase que menciona una URL es
+    una frase, no una URL); Cuerpo -> tamano + sha256[:12] + tres lineas
+    (detector completo). Se sanea ANTES de recortar: un tope no puede
+    partir un token por la mitad y dejarlo pasar."""
     if carga is None:
         return {"tipo": "nada"}
     if isinstance(carga, Cuerpo):
@@ -323,6 +334,8 @@ def _carga(carga) -> dict:
                 "lineas": "\n".join(lineas)[:CUERPO_LINEAS_MAX]}
     if isinstance(carga, (list, tuple)):
         texto = _tapar_lexicas(" ".join(str(a) for a in carga))
+    elif _parsear(str(carga)) is None:
+        texto = SECRETO
     elif _es_url(str(carga)):
         texto = sanear_url(str(carga))
     else:
