@@ -371,3 +371,20 @@ def test_el_agente_de_equipo_no_publica_la_marca_del_abismo_al_pulso(monkeypatch
     # "se ignoran CON aviso": una fila por retiro, con la cantidad
     retiradas = [f for f in filas if f["kind"] == "abismo" and f.get("evento") == "retirada"]
     assert [(f["clase"], f["cantidad"]) for f in retiradas] == [("agente", 1)]
+
+
+def test_en_suscripcion_sin_nube_el_bloque_viaja_con_destino_afuera(chat, cli_falso):
+    """Task 9 del plan de la aduana (spec 13 y 15.1): un turno /claude sin
+    /nube no es `local` para el abismo. El bloque viaja entero (anillo 3
+    incluido) con destino `afuera`, donde corre el detector determinista;
+    el server lo deriva de `route` y la senal y la telemetria lo dicen. El
+    bloque de este chat no tiene secretos, asi que viaja."""
+    _sembrar_chat_viejo(["empece El nombre de la rosa, es un libro alucinante"])
+    cli_falso.guion([{"partes": ["Dejame ver ⟦abismo:chats libro⟧ nada"], "pausa": 0},
+                     {"partes": ["y sigo"], "pausa": 0}])
+    eventos = chat.turno("/claude que libro lei")
+    abismo = de_tipo(eventos, "abismo")
+    assert [a["fase"] for a in abismo] == ["pondering", "pescado"]
+    assert abismo[1]["viaje"] == {"destino": "afuera"}
+    assert "El nombre de la rosa" in cli_falso.llamadas()[1]["sistema"]
+    assert chat.telemetria("abismo")[0]["destino"] == "afuera"

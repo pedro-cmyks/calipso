@@ -118,3 +118,52 @@ def test_lo_humano_se_tapa_con_el_mapa_compartido_de_la_conversacion(monkeypatch
 def test_sin_bloques_es_vacio(monkeypatch):
     _juez_prohibido(monkeypatch)
     assert viaje.preparar_viaje([("  ", 1)], "nube", MapaMarcadores())["motivo"] == "vacio"
+
+
+def test_una_credencial_no_viaja_a_ningun_destino_que_no_sea_local(monkeypatch):
+    """Las dos politicas juntas (spec de la aduana, secciones 13 y 15.1):
+    sin /nube el anillo 3 viaja (arriba, `test_destino_local_es_transparente...`)
+    PERO una credencial falla cerrado el envio entero en TODO destino que no
+    sea local (`afuera` = suscripcion o API sin /nube; `nube`), con el
+    detector determinista de verdad y sin que el juez LLM corra. Al modelo
+    local no se le corta nada: el spec lo exime."""
+    def bomba(*a, **k):
+        raise AssertionError("el juez LLM no debe correr")
+    monkeypatch.setattr(juez.juez_llm, "juzgar_llm", bomba)
+    con_credencial = BLOQUES + [("token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123",
+                                 anillos.ORILLA)]
+    for destino in ("afuera", "nube"):
+        r = viaje.preparar_viaje(con_credencial, destino, MapaMarcadores(),
+                                 fuente="chats")
+        assert r == {"estado": "fallo", "texto": "", "tapados": [],
+                     "motivo": "credencial"}, destino
+    r = viaje.preparar_viaje(con_credencial, "local", MapaMarcadores(), fuente="chats")
+    assert r["estado"] == "viaja" and "ghp_" in r["texto"]   # 15.1 exime al destino local
+
+
+def test_afuera_la_credencial_la_corta_el_detector_no_el_juez(monkeypatch):
+    """Con el juez de dos capas prohibido, destino `afuera` sigue fallando
+    cerrado: es el detector solo, sin anillos ni juez. Y el anillo 3 sin
+    llave sigue viajando afuera, entero (la otra mitad de la decision: "los
+    modelos ven todo")."""
+    _juez_prohibido(monkeypatch)
+    hondo_con_llave = [("del core:\n- llave eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV",
+                        anillos.HONDO)]
+    r = viaje.preparar_viaje(hondo_con_llave, "afuera", MapaMarcadores())
+    assert r["estado"] == "fallo" and r["motivo"] == "credencial"
+    assert r["texto"] == ""
+    r = viaje.preparar_viaje(BLOQUES[2:], "afuera", MapaMarcadores())
+    assert r["estado"] == "viaja" and "[anillo 3]" in r["texto"] and r["tapados"] == []
+
+
+def test_en_local_el_detector_no_corre_y_un_sha_no_corta(monkeypatch):
+    """Lo que motivo el destino `afuera` (control negativo, pasa hoy y tiene
+    que seguir pasando): el detector marca SHAs de commit, rutas con fecha
+    y URLs largas (sondeado 2026-09-10). En local NO corre, porque el spec
+    exime al modelo de la maquina y el abismo no puede quedar ciego en los
+    turnos mas comunes de Pedro."""
+    _juez_prohibido(monkeypatch)
+    con_sha = [("del core:\n- el commit 3f2a9c1e4b7d6a5f8e9c0b1a2d3e4f5a6b7c8d9e rompio el login",
+                anillos.HONDO)]
+    r = viaje.preparar_viaje(con_sha, "local", MapaMarcadores())
+    assert r["estado"] == "viaja" and "3f2a9c1e" in r["texto"]

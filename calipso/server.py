@@ -3830,7 +3830,13 @@ async def ws_chat(ws: WebSocket) -> None:
                     # despues de la marca vale, sin marcas (seccion 8.4).
                     system_base = system
                     mensaje_turno = mensaje_saliente
-                    destino = "nube" if a_la_nube_tapado else "local"
+                    # el destino del abismo (viaje.py): "nube" = el gesto
+                    # /nube (anillos + juez); "local" = el modelo de la
+                    # maquina (transparente); "afuera" = suscripcion o API
+                    # sin /nube (los modelos ven todo, pero la credencial
+                    # jamas sale: spec de la aduana 13 y 15.1)
+                    destino = ("nube" if a_la_nube_tapado
+                               else "local" if route == "local" else "afuera")
                     etiqueta = f"{verdict.get('persona') or verdict['client']} via {verdict['client']}"
                     while True:
                         texto, queued = await _run_subscription_text_live(
@@ -3917,7 +3923,13 @@ async def ws_chat(ws: WebSocket) -> None:
                     # `_sistema_del_turno` (recall, economia bajo candado).
                     system_base = system
                     mensaje_turno = mensaje_saliente
-                    destino = "nube" if a_la_nube_tapado else "local"
+                    # el destino del abismo (viaje.py): "nube" = el gesto
+                    # /nube (anillos + juez); "local" = el modelo de la
+                    # maquina (transparente); "afuera" = suscripcion o API
+                    # sin /nube (los modelos ven todo, pero la credencial
+                    # jamas sale: spec de la aduana 13 y 15.1)
+                    destino = ("nube" if a_la_nube_tapado
+                               else "local" if route == "local" else "afuera")
                     while True:
                         if estado_abismo.sintetica and not inbox.empty():
                             # el steer de Pedro gana (spec seccion 10): llego
@@ -7881,7 +7893,7 @@ async def _pescar_abismo(ws, m, estado, *, destino: str, mapa,
                             latencia_ms=ms)
         return False
     estado.bloques.append(v["texto"])
-    viaje_info = ({"destino": "local"} if destino == "local" else
+    viaje_info = ({"destino": destino} if destino != "nube" else
                   {"destino": "nube", "tapados": v["tapados"],
                    "texto_tapado": v["texto"]})
     await ws.send_json(abismo_turno.senal("pescado", m.fuente,
