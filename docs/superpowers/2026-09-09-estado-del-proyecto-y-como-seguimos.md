@@ -9,13 +9,13 @@ no nombra la economia, el plantel, el mapa, el abismo, la privacidad, el composi
 ## 0. Lo primero al volver (diez minutos)
 
 1. Leer este documento entero. Despues, si vas a tocar un frente, su spec y su plan (seccion 8).
-2. Reiniciar el server real con main: `cd ~/calipso && .venv/bin/python calipso/server.py` (o `./calipso.sh`).
-   Hoy esta APAGADO, y cuando corria lo hacia con codigo anterior a la capa de sesion y al abismo 1b.
-3. Rotar el token (paso de despliegue de la capa de sesion, todavia pendiente): borrar `~/.calipso/token` y
-   reiniciar; el navegador y la PWA piden TOTP una vez. Sin esto, cookies-token viejas de un ano siguen valiendo
-   desde loopback (desde afuera ya no valen).
-4. Decidir h05 (seccion 5): es la unica decision que cambia lo que se construye despues.
-5. Decir "sigamos con calipso" a una sesion nueva: la memoria del agente apunta aca.
+2. ~~Reiniciar el server real con main~~ **HECHO el 2026-09-10** (corre main `446d1be`+; log en
+   `~/.calipso/logs/server.out.log`). Si esta apagado: `cd ~/calipso && .venv/bin/python calipso/server.py`.
+3. ~~Rotar el token~~ **HECHO el 2026-09-10** (borrado y regenerado en 0600; el navegador y la PWA piden TOTP una vez).
+4. ~~Decidir h05~~ **DECIDIDO el 2026-09-10: opcion (a), medido y aterrizado** (seccion 5.1). Lo que sigue es
+   la aduana (seccion 6, item 3) y su plan.
+5. Decir "sigamos con calipso" a una sesion nueva: la memoria del agente apunta aca. Adenda del 2026-09-10 al
+   final de este documento (seccion 9).
 
 ## 1. Que es Calipso hoy, en una pagina
 
@@ -105,17 +105,15 @@ y `docs/superpowers/2026-09-08-cierre-abismo-1b/`. Los README de ambas empiezan 
 
 ## 5. Decisiones que solo Pedro puede tomar
 
-1. **h05, la decision de la seccion 12 del spec del abismo (la que manda).** El 7b local no emite la marca
-   del abismo por su cuenta con el system de PRODUCCION: cero marcas en seis turnos naturales del smoke, y en
-   uno confabulo. El porton v2 del dia 7 midio el contrato SOLO (junto a una identidad de dos renglones);
-   dentro del system real de ocho secciones no pasa en ninguna posicion (240 llamadas reales, N=2; evidencia en
-   `experimentos/consulta_abismo_posicion*.{py,md,jsonl}`). Ademas la metrica del porton contaba como legible
-   la copia literal del molde (22 de 34 marcas del control). Con marca explicita en el mensaje la pesca
-   funciona de punta a punta; en /nube por suscripcion el modelo de nube consulta solo. Nada se rompe mientras
-   tanto (sin marca el filtro es transparente), pero el contrato suma ~600 chars al system de cada turno local.
-   Opciones: (a) podar el system de produccion y re-medir el porton SOBRE ese system, excluyendo la copia
-   literal; (b) cablear la consulta solo en rutas grandes (suscripcion/API) y sacar el contrato del system
-   local; (c) aceptar el regimen actual hasta la rebanada 2 (el fondo: el disco del Mac), que cambia las fuentes.
+1. ~~**h05, la decision de la seccion 12 del spec del abismo (la que manda).**~~ **DECIDIDA Y ATERRIZADA el
+   2026-09-10 (opcion a).** El porton re-medido SOBRE el system de produccion, contando solo marcas utiles,
+   mostro que el v2 nunca habia pasado en memoria (copia literal del molde). Se podo el system local
+   (identidad corta en vez de CALIPSO.md; contrato interno de 7 renglones) y la letra del bloque paso a
+   "existe con senales" (`INDICE_MAX` 1300). A N=6: memoria 83%, chats 100%, proyecto 83%, espurias 0; ruteo
+   88% (dos items deterministas, Pedro acepto la excepcion). Smoke en vivo: el 7b emite la marca solo en
+   turnos naturales (5 de 12 contra 0 de 6). Evidencia: `experimentos/consulta_abismo_system_resultados.md`,
+   `docs/superpowers/2026-09-10-smoke-abismo-system-podado.md`. Hallazgo nuevo para Pedro (h06): la fuente
+   `memoria` le devuelve al modelo sus propias respuestas anteriores como recuerdos (seccion 9).
 2. **h04, una politica que el fix del cierre decidio y el spec no escribe:** en local, la fuente `chats` no
    pesca la ventana de 12 mensajes que el modelo ya tiene ni la pregunta actual, pero SI los mensajes mas
    viejos del mismo chat; en /nube el chat activo queda fuera ENTERO (para que un turno local previo no viaje
@@ -227,3 +225,28 @@ fabrica viva.
   `project_calipso_ruteo_fase2.md`, `project_calipso_worktrees.md`, mas los feedbacks (sin emojis, modelo antes
   que parametros, no poner techos). Apuntan a este documento.
 - **El lector:** `~/calipso-lector/BRIEF.md` (fuera de git; respaldo del 09-08 en el scratchpad de esa sesion).
+
+## 9. Adenda 2026-09-10: lo que paso en la sesion siguiente
+
+- **Despliegue hecho:** server real con main, token rotado (seccion 0).
+- **h05 cerrado, opcion (a):** el porton se re-midio SOBRE el system de produccion con la metrica corregida
+  (la copia literal del molde no cuenta) y descubrio que el porton v2 nunca habia pasado en memoria. Se podo
+  el system local (identidad corta en vez de CALIPSO.md; contrato interno de 7 renglones) y se re-escribio
+  la letra del bloque con las SENALES de Pedro ("te conte", "lo tenes", "acordate", "la otra vez", "que
+  dejamos"). A N=6: memoria 83%, chats 100%, proyecto 83%, espurias 0, cero copias literales; ruteo 88% (dos
+  items deterministas; Pedro acepto la excepcion). Evidencia: `experimentos/consulta_abismo_system_resultados.md`;
+  la letra de produccion esta atada a lo medido por `test_abismo_system_medido.py`. Rama `feat/abismo-system-podado`.
+- **Dos decisiones de Pedro sobre el abismo:** los anillos gobiernan solo /nube ("los modelos ven todo,
+  incluido el anillo 3"); la credencial jamas sale, en ningun destino no local (hueco conocido en
+  `viaje.py:51-53` sin /nube; lo cierra la tarea 9 del plan de la aduana).
+- **La aduana (nueva, spec en main):** `docs/superpowers/specs/2026-09-10-aduana-design.md`, sobre el mapa
+  verificado `docs/superpowers/2026-09-10-mapa-salidas-al-exterior.md`. Idea de Pedro: "la unica puerta al
+  internet", afinada a "los modelos ven todo; los queries a internet se miden" (cuantos, quien, que se va; sin
+  frenar). Es la mitad que MIDE de la frontera de salida del 08-24; publicar/correo/gasto real siguen siendo
+  compuertas obligatorias del motor de permisos. Siguiente paso: el plan (writing-plans) y su ejecucion SDD.
+- **Metodo nuevo que funciono:** Codex headless (`codex exec -m gpt-5.5 -s read-only --output-schema`) como
+  lente adversaria independiente, a pedido de Pedro, en la refutacion del mapa (10 veredictos) y en la revision
+  del spec. El modelo `astra` no esta disponible con cuenta ChatGPT.
+- **Ruido del home real visto de paso (de Pedro):** la meta de prueba `goal_ff4b5cd203f0` (junio) sigue activa y
+  entra en cada turno; el recall trae recuerdos "-q" con acentos rotos. Y `.claude/launch.json:7` arranca
+  uvicorn en `0.0.0.0` (el default loopback solo rige bajo `__main__`).

@@ -29,14 +29,17 @@ def main() -> int:
     check("incluye sistema", "Eres Calipso." in ctx, fails)
     check("incluye memoria nucleo", "Pedro prefiere comunicacion directa." in ctx, fails)
     check("incluye contrato interno", "Lenguaje interno de Calipso" in ctx, fails)
-    check("contrato trata memoria como editable", "no como verdad absoluta" in ctx, fails)
+    check("contrato prioriza lo nuevo sobre el perfil", "prioriza lo nuevo" in ctx, fails)
+    check("contrato lleva el bloque del abismo al final", "=== El abismo ===" in ctx, fails)
     check("incluye recuerdos", "Atlas es importante" in ctx, fails)
     check("incluye repo/meta/runtime", all(x in ctx for x in (
         "branch main", "Meta: terminar Calipso", "local listo")), fails)
     check("orden estable antes de volatil", ctx.index("Memoria nucleo") < ctx.index("Recuerdos relevantes"), fails)
 
     contract = prompt_compiler.internal_contract({"needs_repo": True, "needs_web": True})
-    check("marca repo y web", "Repo requerido: si. Web requerida: si." in contract, fails)
+    # podado el 2026-09-10 (h05): las instrucciones que competian con la marca
+    # del abismo no vuelven; `features` ya no cambia el texto
+    check("contrato podado: sin repo/web requerida", "Repo requerido" not in contract, fails)
     check("contrato multilingue", "idioma" in contract and "mismo idioma" in contract, fails)
     brief = prompt_compiler.agent_brief({
         "role": "revisor",

@@ -2016,12 +2016,25 @@ HELP_TEXT = (
     "Si no pones nada, Calipso decide solo (modelo + intensidad) por la tarea."
 )
 
+# La identidad corta: lo que CALIPSO.md dice de QUIEN es Calipso, escrito
+# para el modelo y no para un humano. Reemplaza al par SYSTEM + seccion
+# "Constitucion de Calipso" (CALIPSO.md cortado a 3000 chars) que entraba en
+# cada turno local: la medicion del 2026-09-10 (h05, opcion a de Pedro) mostro
+# que ese documento, mas las doce instrucciones del contrato interno,
+# competian con el contrato del abismo hasta borrarle la mejora entera (0
+# marcas utiles en memoria con el system real; 30/36 con este). CALIPSO.md
+# sigue siendo el documento de identidad del repo; al 7b no le llega.
+# LETRA MEDIDA: no cambiarla sin re-correr experimentos/consulta_abismo_system.py
+# (test_abismo_system_medido.py la ata byte a byte a variantes/system-podada.txt).
 SYSTEM = (
-    "Eres Calipso, el asistente personal local de Pedro. Respondes en espanol, "
-    "directo y util. No dices que eres Alibaba, OpenAI, Anthropic, Claude, Codex "
-    "ni Ollama: eres Calipso usando un backend. Si te preguntan que modelo o ruta "
-    "usas, respondes solo con el estado real que recibes en el contexto. Si no "
-    "sabes algo o una conexion no esta configurada, lo dices sin inventar."
+    "Eres Calipso, el asistente personal local de Pedro. Pedro habla siempre "
+    "con Calipso: Claude, Codex, las APIs y los modelos locales son "
+    "herramientas internas tuyas, nunca tu identidad. No digas que eres "
+    "Alibaba, OpenAI, Anthropic, Claude, Codex ni Ollama. Si Pedro pregunta "
+    "que modelo o ruta usas, responde solo con el estado real que recibes en "
+    "el contexto. Eres honesto sobre tu estado: si no sabes algo, una "
+    "conexion no esta configurada o un dato te falta, lo dices sin inventar. "
+    "Prefieres entregar menos, pero real, antes que un relleno bonito."
 )
 
 
@@ -2608,24 +2621,14 @@ def _harness_context(verdict: dict, used_route: str, model: str, note: str | Non
 # Economía de contexto (context engineering de Anthropic + prompt caching):
 # estable al inicio (cacheable -> 90% descuento en sub/api), volátil al final,
 # presupuestado, y just-in-time (no precargar archivos del repo).
-CONTEXT_CONST_MAX = int(os.environ.get("CALIPSO_CONST_MAX", "3000"))
 CONTEXT_CORE_MAX = int(os.environ.get("CALIPSO_CORE_MAX", "3000"))
 RECALL_MIN_SCORE = float(os.environ.get("CALIPSO_RECALL_MIN", "0.30"))
 RECALL_MAX = int(os.environ.get("CALIPSO_RECALL_MAX", "4"))
 REPO_BRIEF_MAX = int(os.environ.get("CALIPSO_REPO_BRIEF_MAX", "4500"))
 
 
-def _identity_doc() -> str:
-    """Solo la constitución (CALIPSO.md). NO el handoff técnico (AGENTS.md,
-    CLAUDE.md, etc.): eso es para agentes de código, no para responderle a Pedro;
-    volcarlo cada turno era puro gasto de tokens."""
-    p = ROOT / "CALIPSO.md"
-    if not (p.exists() and p.is_file()):
-        return ""
-    try:
-        return p.read_text(encoding="utf-8").strip()[:CONTEXT_CONST_MAX]
-    except UnicodeDecodeError:
-        return ""
+# `_identity_doc` (CALIPSO.md cortado a 3000 chars como seccion
+# "Constitucion de Calipso") murio el 2026-09-10: ver el comentario de SYSTEM.
 
 
 def _repo_brief(raiz: pathlib.Path) -> str:
@@ -2770,7 +2773,6 @@ def _build_context(user_msg: str, runtime: str, features: dict | None = None) ->
     `_ficha_y_cuenta` y `_cobrar_turno`.
     """
     # --- prefijo estable (cacheable) ---
-    ident = _identity_doc()
     core = mem.load_core()
 
     # --- sufijo volátil ---
@@ -2797,7 +2799,7 @@ def _build_context(user_msg: str, runtime: str, features: dict | None = None) ->
     # la primera vez de la vida del catastro); no toma ningun candado.
     proyectos = prompt_compiler.proyectos_brief(ROOT)
     return prompt_compiler.compile_context(
-        SYSTEM, identity=ident, core=core, recalled=recalled,
+        SYSTEM, core=core, recalled=recalled,
         repo_brief=repo_brief, goal_block=goal_block, runtime=runtime,
         economia=economia, proyectos=proyectos, features=features,
         core_limit=CONTEXT_CORE_MAX, base=_ECO_BASE)

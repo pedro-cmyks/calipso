@@ -165,6 +165,28 @@ Umbrales provisorios: se pueden revisar AL ARMAR el banco, pero cualquier cambio
 - **Plan 1a:** el paquete `calipso/abismo/` completo y probado en aislado + el contrato/indice + el banco + el porton corrido. Entregable: los numeros para Pedro.
 - **Plan 1b:** el cableado a `ws_chat` (filtro compuesto, estado del turno, reentrada sintetica, la etapa de viaje y el turno /nube, senal, UIs, pulso). Arranca solo despues de que Pedro vea los numeros (vistos el 2026-09-07: porton v2 PASA). Si el 7b no pasa el piso, las salidas son refinar el indice o cablear la consulta solo en rutas grandes (suscripcion/API) -- decision de Pedro con los numeros en la mano, y el costo de suscripcion (dos invocaciones por consulta) sobre la mesa.
 
+**Enmienda 2026-09-10 (h05, la decision de la seccion 12 con numeros de produccion).** El porton v2
+midio el contrato SOLO y su metrica contaba como legible la copia literal del molde: re-puntuado, el 7b
+NUNCA habia pasado en memoria (0/36 marcas utiles; las 30 "legibles" eran `⟦abismo:memoria pregunta⟧`
+textual). Dentro del system de produccion no pasaba en ninguna fuente. Pedro eligio la opcion (a):
+**podar el system de produccion y re-medir el porton SOBRE ese system, contando solo marcas utiles**, y
+decidio que la Constitucion (CALIPSO.md) deja de entrar textual en cada turno local: la reemplaza una
+identidad corta escrita para el modelo. Resultado (`experimentos/consulta_abismo_system_resultados.md`):
+identidad corta + contrato interno podado (7 renglones en vez de 14) + la letra "existe con senales" del
+bloque pasan a N=6 memoria 30/36, chats 36/36, proyecto 30/36, espurias 0/72, cero copias literales;
+**el ruteo queda en 84/96 (88%) contra el piso de 90 por dos items deterministas de la ambiguedad
+memoria/chats**, y una ronda que quiso cerrarlo tocando las lineas de las fuentes empeoro proyecto y el
+ruteo global. **Pedro decidio aterrizar tal cual (2026-09-10, noche) y el ruteo 88 queda como excepcion
+conocida** (la consulta desviada llega a `memoria`, que tambien pesca lo episodico por recall). La letra
+de produccion esta atada byte a byte a lo medido por `test_abismo_system_medido.py`; la regla del porton
+pasa a ser: **medir SOBRE el system de produccion y contar solo marcas que no copian el molde**.
+
+**Enmienda 2026-09-10 (aduana, seccion 13 de su spec): los anillos gobiernan solo /nube.** Pedro decidio
+que "los modelos ven todo, incluido el anillo 3": en un turno de suscripcion o API sin /nube el bloque
+viaja entero. La fila "Credencial" de la seccion 6 SOBREVIVE para todo destino no local: la credencial
+jamas sale (decision del 2026-09-02 reafirmada); hoy `viaje.py:51-53` no la cumple sin /nube y la tarea 9
+del plan de la aduana lo cierra con el detector determinista.
+
 ## 13. Invariantes
 
 1. **El resolvedor de la consulta es 100% local siempre.** Tambien en /nube: pesca local, y solo viaja lo que el viaje deja (seccion 8).

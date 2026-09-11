@@ -32,7 +32,7 @@ def test_el_contrato_interno_ensena_la_marca_del_abismo_con_los_repos(tmp_path, 
     _catastro(tmp_path, monkeypatch, ["calipso", "atlas"])
     texto = prompt_compiler.internal_contract({}, base=tmp_path)
     assert texto.endswith(contrato.bloque_contrato(["calipso", "atlas"]))
-    assert f"{marca.ABRE}abismo:proyecto nombre{marca.CIERRA} -- repo: calipso, atlas." in texto
+    assert f"{marca.ABRE}abismo:proyecto <nombre del repo>{marca.CIERRA} -- repo: calipso, atlas." in texto
     assert "⟦foco:<nombre>⟧" in texto          # el de foco sigue ahi, antes
 
 

@@ -62,36 +62,33 @@ _CACHE_REGISTRO: dict[tuple, list[str]] = {}
 
 def internal_contract(features: dict[str, Any] | None = None,
                       base: pathlib.Path | str | None = None) -> str:
-    features = features or {}
-    task_type = features.get("type") or "chat"
-    needs_repo = bool(features.get("needs_repo"))
-    needs_web = bool(features.get("needs_web"))
+    # El contrato interno PODADO (2026-09-10, h05 opcion a de Pedro): quedan
+    # las instrucciones que el modelo local usa de verdad (prioridad de lo
+    # nuevo, foco, idioma, tono, sin razonamiento visible, confirmacion) y el
+    # bloque del abismo al final. Se fueron las siete que competian con la
+    # marca -- "tipo de tarea inferido", "traduce el pedido a una tarea",
+    # "memoria como contexto probabilistico", "una sola voz" (ya esta en
+    # SYSTEM), "actua antes de describir", "ante un roadblock valida", "separa
+    # idea/implementado/verificado" y "repo/web requerida" -- porque con ellas
+    # el 7b seguia OTRA instruccion al pie de la letra en vez de consultar
+    # (experimentos/consulta_abismo_system_resultados.md, ronda 1). `features`
+    # se conserva en la firma por los llamadores; hoy no cambia el texto.
+    # LETRA MEDIDA: no cambiarla sin re-correr el banco
+    # (test_abismo_system_medido.py la ata a variantes/system-podada.txt).
+    del features
     return "\n".join([
         "=== Lenguaje interno de Calipso ===",
-        f"Tipo de tarea inferido: {task_type}.",
-        "Traduce el pedido natural de Pedro a una tarea clara antes de responder.",
-        "Usa memoria como contexto probabilistico y editable, no como verdad absoluta.",
         "Si un dato del perfil de Pedro esta desactualizado o contradicho por Pedro, prioriza lo nuevo.",
-        "Manten una sola voz visible: Pedro habla con Calipso, no con cada backend.",
         _linea_foco(departamentos_conocidos(base)),
         "Detecta el idioma de cada turno y responde SIEMPRE en ese mismo idioma, aunque el resto del sistema este en español. Si el mensaje mezcla idiomas en la misma oracion, usa el idioma dominante.",
         "Tono: directo, natural, cercano. Como un colega de confianza que conoce bien a Pedro. "
         "Para chat conversacional: sin headers, sin listas innecesarias, sin frases de apertura como 'Claro,' o 'Por supuesto,'. "
         "Para tareas tecnicas: conciso, especifico, con evidencia cuando aplique.",
-        "Actua antes de describir: si una tarea es directamente ejecutable, ejecutala. "
-        "No describas el plan antes de actuar a menos que sea complejo o irreversible.",
-        "Ante un roadblock tecnico: valida primero que hay disponible (que CLI esta instalado, "
-        "que modelo responde, que dep existe), prueba alternativas si las hay, y reporta el "
-        "resultado real — nunca digas 'depende de que X tengas' sin haber verificado primero.",
         "No muestres razonamiento interno; muestra decisiones, evidencia y pendientes cuando importen.",
         "Pide confirmacion antes de escribir, gastar, publicar, borrar o promover memoria sensible.",
-        "Para cambios operativos, separa idea, implementado, verificado y pendiente.",
-        f"Repo requerido: {'si' if needs_repo else 'no'}. Web requerida: {'si' if needs_web else 'no'}.",
-        # El abismo (spec 2026-09-07, seccion 5): la sintaxis de la marca y
-        # el indice de lo consultable, como bloque FINAL de esta seccion.
-        # La letra esta medida (porton v2) y no se toca; lo unico que decide
-        # este archivo es DONDE va: cuarta seccion de diez, no al final del
-        # system como en el banco. Queda anotado, no se re-mide.
+        # El abismo (spec 2026-09-07, seccion 5; letra re-medida el 2026-09-10
+        # SOBRE este system): la sintaxis de la marca y el indice de lo
+        # consultable, como bloque FINAL de esta seccion.
         abismo_contrato.bloque_contrato(catastro.nombres()),
     ])
 
