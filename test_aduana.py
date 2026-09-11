@@ -455,6 +455,17 @@ def test_un_argv_con_sha_queda_intacto():
      "https://host.com/[SECRETO]"),
     ("https://host.com/eyJhbGciOi.eyJzdWIiOiIx.SflKxwRJSMeKKF2",
      "https://host.com/[SECRETO]"),
+    # la query sin `=`: un token pelado no tiene nombre que conservar. Uno
+    # alfanumerico corto (`?raw`, `?v2`) queda; el resto se tapa entero
+    ("https://host.com/x?ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123", "https://host.com/x?[SECRETO]"),
+    ("https://host.com/x?a=1&deadbeefdeadbeefdeadbeefdeadbeef",
+     "https://host.com/x?a=[SECRETO]&[SECRETO]"),
+    ("https://host.com/x?eyJhbGciOi.eyJzdWIiOiIx.SflKxwRJSMeKKF2&q=1",
+     "https://host.com/x?[SECRETO]&q=[SECRETO]"),
+    ("https://host.com/x?raw&v2&q=hola", "https://host.com/x?raw&v2&q=[SECRETO]"),
+    ("https://host.com/x?p%40ss.w0rd", "https://host.com/x?[SECRETO]"),
+    ("https://host.com/x#a=1&deadbeefdeadbeefdeadbeefdeadbeef",
+     "https://host.com/x#a=[SECRETO]&[SECRETO]"),
 ])
 def test_positivos_tapados_en_la_url(url, esperado):
     assert aduana.sanear_url(url) == esperado
@@ -464,7 +475,23 @@ def test_un_argv_de_gh_tapa_solo_lo_lexico():
     argv = ["gh", "auth", "login", "--with-token", "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"]
     assert aduana._carga(argv)["texto"] == "gh auth login --with-token [SECRETO]"
     conn = ["git", "clone", "https://pedro:s3cr3t@github.com/x/y.git"]
-    assert "[SECRETO]" in aduana._carga(conn)["texto"] and "s3cr3t" not in aduana._carga(conn)["texto"]
+    assert aduana._carga(conn)["texto"] == "git clone https://[SECRETO]@github.com/x/y.git"
+
+
+@pytest.mark.parametrize("argv,esperado", [
+    # un token del argv que es URL http(s) pasa por `sanear_url`: la query y
+    # el fragmento no van enteros (antes `gh api 'https://x/y?token=abc'`
+    # guardaba la query completa)
+    (["gh", "api", "https://api.github.com/repos/x/y?token=abc&per_page=5"],
+     "gh api https://api.github.com/repos/x/y?token=[SECRETO]&per_page=[SECRETO]"),
+    (["curl", "https://x.com/cb#access_token=abc"], "curl https://x.com/cb#access_token=[SECRETO]"),
+    (["git", "fetch", "https://[::1/x?pwd=abc"], "git fetch [SECRETO]"),
+    # el resto del argv sigue por las lexicas, sin `_HEX` ni `_TOKEN`
+    (["git", "push", "https://github.com/x/y.git", "3f2a9c1e4b7d6a5f8e9c0b1a2d3e4f5a6b7c8d9e"],
+     "git push https://github.com/x/y.git 3f2a9c1e4b7d6a5f8e9c0b1a2d3e4f5a6b7c8d9e"),
+])
+def test_un_argv_con_url_sanea_la_url_y_deja_el_resto_lexico(argv, esperado):
+    assert aduana._carga(argv)["texto"] == esperado
 
 
 def test_una_consulta_de_pedro_pasa_por_el_detector_completo():
@@ -480,6 +507,46 @@ def test_las_tres_lineas_de_un_cuerpo_pasan_por_el_detector(libro):
         pass
     lineas = cruces_del_libro(libro)[0]["carga"]["lineas"]
     assert "PRIVATE KEY" not in lineas and "[SECRETO]" in lineas
+
+
+# --- proposito, motivo y quien.gesto no van crudos (invariante 9) --------------
+
+def test_un_motivo_con_url_va_saneado_y_uno_normal_queda(libro):
+    q = quien_de_prueba(origen="arranque", chat=None, gesto=None, ruta=None)
+    aduana.declarar(q, "modelo fuera de la maquina", destino="http://u:p@host/x",
+                    motivo="http://u:p@host/x?k=v")
+    aduana.declarar(q, "modelo de embeddings", destino="huggingface.co",
+                    motivo="all-MiniLM-L6-v2")
+    aduana.declarar(q, "x", destino=None, motivo="http://[::1/x?pwd=abc")
+    a, b, c = cruces_del_libro(libro)
+    assert a["motivo"] == "http://[SECRETO]@host/x?k=[SECRETO]"
+    assert a["destino"]["url"] == "http://[SECRETO]@host/x"
+    assert b["motivo"] == "all-MiniLM-L6-v2"
+    assert c["motivo"] == "[SECRETO]"
+    assert "u:p@" not in libro.read_text() and "abc" not in libro.read_text()
+
+
+def test_un_gesto_con_token_va_tapado(libro):
+    q = quien_de_prueba(gesto="/model ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123")
+    with aduana.cruzar(q, "x", None):
+        pass
+    c, = cruces_del_libro(libro)
+    assert c["quien"]["gesto"] == "/model [SECRETO]"
+    assert c["quien"]["origen"] == "turno" and c["quien"]["chat"] == "chat_x"
+    assert "ghp_" not in libro.read_text()
+
+
+def test_un_proposito_pasa_por_las_lexicas_y_se_acota_a_120(libro):
+    with aduana.cruzar(quien_de_prueba(), "gh " + "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV", None):
+        pass
+    with aduana.cruzar(quien_de_prueba(), "palabra " * 40, None):
+        pass
+    with aduana.cruzar(quien_de_prueba(), "https://x.com/a?b=1", None):
+        pass
+    a, b, c = cruces_del_libro(libro)
+    assert a["proposito"] == "gh [SECRETO]"
+    assert len(b["proposito"]) == 120
+    assert c["proposito"] == "https://x.com/a?b=[SECRETO]"
 
 
 # --- lo que urlsplit no puede parsear (fail-open del saneo) --------------------

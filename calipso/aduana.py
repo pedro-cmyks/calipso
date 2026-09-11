@@ -78,6 +78,10 @@ SECRETO = "[SECRETO]"
 # commit, una ruta de GitHub o un id de Google Docs no son secretos.
 LEXICAS = (detector._PREFIJOS, detector._JWT, detector._PEM, detector._CONN)
 _VALOR_DE_QUERY = re.compile(r"=([^&]*)")
+# un segmento de query SIN `=` que se conserva: alfanumerico y corto
+# (`?raw`, `?v2`, `?download`). Mas largo o con otros caracteres, se tapa.
+_SUELTO_CORTO = re.compile(r"[A-Za-z0-9_\-]{1,12}")
+PROPOSITO_MAX = 120
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -288,9 +292,20 @@ def _tapar_todo(texto: str) -> str:
 
 def _tapar_valores(query: str) -> str:
     """`a=1&token=abc` -> `a=[SECRETO]&token=[SECRETO]`: los nombres se
-    conservan, todo valor no vacio se tapa."""
-    return _VALOR_DE_QUERY.sub(
-        lambda m: "=" + SECRETO if m.group(1) else "=", query)
+    conservan, todo valor no vacio se tapa. Un segmento SIN `=` (`?ghp_...`,
+    `?a=1&deadbeef...`) no tiene nombre que conservar: pasa por las lexicas
+    y, si no es un token alfanumerico corto, se tapa entero."""
+    partes: list[str] = []
+    for seg in query.split("&"):
+        if "=" in seg:
+            partes.append(_VALOR_DE_QUERY.sub(
+                lambda m: "=" + SECRETO if m.group(1) else "=", seg))
+        elif not seg:
+            partes.append(seg)
+        else:
+            suelto = _tapar_lexicas(seg)
+            partes.append(suelto if _SUELTO_CORTO.fullmatch(suelto) else SECRETO)
+    return "&".join(partes)
 
 
 def _parsear(url: str) -> urllib.parse.SplitResult | None:
@@ -345,15 +360,40 @@ def _destino(destino: str | None) -> dict:
     return {"host": _tapar_lexicas(destino), "url": None}
 
 
+def _texto_de_sitio(texto: str) -> str:
+    """Un texto que viene del SITIO de llamada, no de Pedro (un token de
+    argv, un proposito, un motivo, el gesto): una URL http(s) pasa por
+    `sanear_url` (userinfo, query y fragmento tapados); lo que urlsplit no
+    parsea se tapa entero (un `?pwd=` ahi no pasaria por el saneo de
+    valores); el resto solo por las lexicas (invariante 9: sin `_HEX` ni
+    `_TOKEN`, un SHA o una ruta de GitHub no son secretos)."""
+    if _parsear(texto) is None:
+        return SECRETO
+    if _es_url(texto):
+        return sanear_url(texto)
+    return _tapar_lexicas(texto)
+
+
+def _texto_seguro(texto, tope: int | None = None) -> str | None:
+    """`proposito`, `motivo` y `quien.gesto` al armar el registro: None
+    queda None; el resto por `_texto_de_sitio` y, si hay tope, recortado
+    DESPUES de sanear (un `/model ghp_...` no va crudo al libro)."""
+    if texto is None:
+        return None
+    limpio = _texto_de_sitio(str(texto))
+    return limpio[:tope] if tope else limpio
+
+
 def _carga(carga) -> dict:
     """El recorte y el saneo los hace la aduana, no el sitio (spec 5):
-    None -> nada; list[str] -> consulta (argv: lexicas); str URL -> consulta
-    (saneo de URL); str que urlsplit no parsea -> consulta [SECRETO] entera
-    (un `?pwd=` ahi no pasaria por el saneo de valores); str -> consulta
-    (detector completo, viene de Pedro; una frase que menciona una URL es
-    una frase, no una URL); Cuerpo -> tamano + sha256[:12] + tres lineas
-    (detector completo). Se sanea ANTES de recortar: un tope no puede
-    partir un token por la mitad y dejarlo pasar."""
+    None -> nada; list[str] -> consulta (argv: cada token URL por el saneo
+    de URL, el resto por las lexicas); str URL -> consulta (saneo de URL);
+    str que urlsplit no parsea -> consulta [SECRETO] entera (un `?pwd=` ahi
+    no pasaria por el saneo de valores); str -> consulta (detector
+    completo, viene de Pedro; una frase que menciona una URL es una frase,
+    no una URL); Cuerpo -> tamano + sha256[:12] + tres lineas (detector
+    completo). Se sanea ANTES de recortar: un tope no puede partir un token
+    por la mitad y dejarlo pasar."""
     if carga is None:
         return {"tipo": "nada"}
     if isinstance(carga, Cuerpo):
@@ -364,11 +404,9 @@ def _carga(carga) -> dict:
                 "sha256": hashlib.sha256(crudo).hexdigest()[:12],
                 "lineas": "\n".join(lineas)[:CUERPO_LINEAS_MAX]}
     if isinstance(carga, (list, tuple)):
-        texto = _tapar_lexicas(" ".join(str(a) for a in carga))
-    elif _parsear(str(carga)) is None:
-        texto = SECRETO
-    elif _es_url(str(carga)):
-        texto = sanear_url(str(carga))
+        texto = " ".join(_texto_de_sitio(str(a)) for a in carga)
+    elif _parsear(str(carga)) is None or _es_url(str(carga)):
+        texto = _texto_de_sitio(str(carga))     # [SECRETO] entera, o la URL saneada
     else:
         texto = _tapar_todo(str(carga))
     return {"tipo": "consulta", "texto": texto[:CONSULTA_MAX]}
@@ -380,8 +418,10 @@ def _registro(quien: Quien, proposito: str, destino: str | None,
               carga, declarado: bool) -> dict:
     if not isinstance(quien, Quien):
         raise TypeError("cruzar/declarar exigen un aduana.Quien")
+    q = quien.a_dict()
+    q["gesto"] = _texto_seguro(q.get("gesto"))
     return {"ts": _ahora(), "id": f"cr_{uuid.uuid4().hex[:12]}",
-            "quien": quien.a_dict(), "proposito": str(proposito),
+            "quien": q, "proposito": _texto_seguro(proposito, PROPOSITO_MAX),
             "destino": _destino(destino), "carga": _carga(carga),
             "resultado": None, "declarado": declarado}
 
@@ -415,7 +455,7 @@ def declarar(quien: Quien, proposito: str, destino: str | None,
     decidio contar sin medir: una linea con `declarado: true`, sin bytes ni
     resultado."""
     registro = _registro(quien, proposito, destino, None, declarado=True)
-    registro["motivo"] = motivo
+    registro["motivo"] = _texto_seguro(motivo)
     _anotar(registro)
 
 
