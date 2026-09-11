@@ -26,9 +26,12 @@ NPM_PKG = {"claude": "@anthropic-ai/claude-code", "codex": "@openai/codex"}
 
 
 def _get_json(url: str, timeout: float = 2.0):
-    """Solo loopback por construccion (discover_ollama / discover_litellm).
-    `_npm_latest` NO pasa por aca: se traga toda excepcion, y el libro de
-    la aduana nunca podria decir `fallo`."""
+    """Loopback por default: `discover_ollama` / `discover_litellm` aceptan
+    cualquier `base`, pero los llamadores de produccion (`discover`,
+    `resource_dispatcher.ollama_installed_models`) usan el por defecto
+    (localhost). Un llamador con otro `base` no cruza: limite conocido,
+    listado en el canario. `_npm_latest` NO pasa por aca: se traga toda
+    excepcion, y el libro de la aduana nunca podria decir `fallo`."""
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:
             return json.loads(r.read().decode())

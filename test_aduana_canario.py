@@ -41,9 +41,9 @@ EXCEPCIONES: dict[str, str] = {
     "dispatch.py:run_subscription": "modelo: el CLI suelto de dispatch.py no mide",
     "dispatch.py:_http_post_json": "modelo: LiteLLM/Ollama por config; base_url no loopback se DECLARA al cargar la config",
     "dispatch.py:_http_post_stream": "modelo: idem, stream",
-    # --- loopback por config o por construccion ---
+    # --- loopback por config, por default o por construccion ---
     "calipso/server.py:_http_up": "loopback: salud de Ollama/LiteLLM, corre en el LOOP",
-    "calipso/discovery.py:_get_json": "loopback por construccion: discover_ollama/discover_litellm; `_npm_latest` ya no pasa por aca (tiene su propio urlopen con el Call)",
+    "calipso/discovery.py:_get_json": "loopback por default: los llamadores de produccion (`discover`, `resource_dispatcher.ollama_installed_models`) llaman a discover_ollama/discover_litellm con el `base` por defecto (localhost); un llamador con otro `base` no cruza: limite conocido (el modelo fuera de la maquina lo cubre el declarado del arranque). `_npm_latest` no pasa por aca (tiene su propio urlopen con el Call)",
     "calipso/discovery.py:_cli_version": "local: `<cli> --version`, sin red",
     "calipso/resource_dispatcher.py:_ollama_get": "loopback: Ollama",
     "calipso/resource_dispatcher.py:ollama_evict": "loopback: Ollama",
@@ -54,7 +54,7 @@ EXCEPCIONES: dict[str, str] = {
     # --- git local ---
     "calipso/catastro.py:_git": "git local: rev-parse/log/status sobre el catastro",
     "calipso/server.py:_git": "git local: /api/git/* sobre ROOT",
-    "calipso/tools/commands.py:run": "comandos locales de la allowlist (py_compile, git status...)",
+    "calipso/tools/commands.py:run": "subprocesos de la allowlist: git local y tests; `test_memory` sale a la red desde OTRO proceso (test_memory.py construye Memory() -> huggingface.co y llama reflect -> `claude -p`), fuera de la aduana: limite conocido, como los CLIs agentes",
     # --- muertos en Linux ---
     "calipso/server.py:api_connector_action": "muerto en Linux: Popen con CREATE_NEW_CONSOLE (solo Windows); cuando se arregle cruza como gesto",
     "calipso/server.py:api_subscription_install": "muerto en Linux: idem",
