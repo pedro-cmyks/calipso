@@ -164,9 +164,15 @@ Mariana Quintero te lo prestó al finalizar tu charla en agosto...". Server apag
 
 - Banco al cierre de la Task 5 (`c31e8dd`): `no-saber: 26/27 atrapados (96%); datos: 0/24 falsos` (el que se
   escapa es `cha-decision`, declarado). Tras la ola de fix del cierre (el patron de la parafrasis y su fila):
-  `no-saber: 27/28 atrapados (96%); datos: 0/24 falsos` (el mismo que se escapa).
+  `no-saber: 27/28 atrapados (96%); datos: 0/24 falsos` (el mismo que se escapa). Tras la segunda ola (el
+  no-saber en pasado: el fuerte unificado `no ten(ia|iamos|go) (...) (dato|informacion)` y el literal
+  `calipso no tenia el dato`, 3 filas nuevas): `no-saber: 30/31 atrapados (97%); datos: 0/24 falsos` (el
+  mismo que se escapa; el hedge "En ese momento no tenia el dato, pero ahora si: fue X" NO entro como `dato`
+  porque el fuerte lo degrada y rompe el piso: anotado en el docstring del banco, parkeado).
 - Suite completa (`.venv/bin/python -m pytest -q --ignore=test_chat_live.py; echo EXIT=$?`) al cierre de la
   Task 5: `1690 passed, 4 warnings`, `0 failed`, `EXIT=0`. Tras la ola de fix del cierre (7 tests nuevos): `1697 passed, 4 warnings`, `0 failed`, `EXIT=0`.
+  Tras la segunda ola (la variante `off` muerta, el no-saber en pasado, `partir` con espacio inicial, la
+  adenda del spec; 3 tests nuevos, los 2 de `off` reescritos): `1700 passed, 4 warnings`, `0 failed`, `EXIT=0`.
 
 ## 4. Lo que queda para Pedro
 
