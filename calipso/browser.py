@@ -116,6 +116,24 @@ def screenshot(url: str, path: str | None = None, full_page: bool = True,
 _UI_EXTS = {".html", ".css", ".js"}
 
 
+def _es_loopback(url: str) -> bool:
+    """http(s) a `localhost` o a una IP de loopback (127.0.0.0/8, ::1). Lo
+    que urlsplit no parsea, o no tiene host, no es loopback demostrado."""
+    try:
+        partes = urllib.parse.urlsplit(url)
+        host = partes.hostname
+    except ValueError:
+        return False
+    if partes.scheme not in ("http", "https") or not host:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def is_ui_file(file_path: str) -> bool:
     """True si el archivo afecta la UI de Calipso (web/)."""
     p = pathlib.Path(file_path)
@@ -138,10 +156,13 @@ def before_after_capture(
     Devuelve (before_png, after_png).
 
     La captura NO cruza: la unica llamada (server.api_apply_proposal) es a
-    http://localhost:8000, loopback por construccion. Lo que SI cruza son
-    los dos caminos a `deps.ensure` (pip / playwright install), con el
-    Quien del endpoint.
+    http://localhost:8000, y ACA se verifica que la URL sea loopback (un
+    guard de programador, ValueError: no es un cruce, y la excepcion del
+    canario descansa en esto). Lo que SI cruza son los dos caminos a
+    `deps.ensure` (pip / playwright install), con el Quien del endpoint.
     """
+    if not _es_loopback(url):
+        raise ValueError("before_after_capture solo captura loopback")
     import time as _time
     _ensure(quien)
     from playwright.sync_api import sync_playwright

@@ -281,6 +281,32 @@ def test_before_after_capture_no_cruza_pero_su_deps_ensure_si(libro, monkeypatch
     assert propositos == ["instalar dependencia"]     # playwright install, no la captura
 
 
+@pytest.mark.parametrize("url", [
+    "http://example.com/", "http://192.168.1.66:8000", "http://[::1:8000/x",
+    "ftp://localhost/x", "localhost:8000", "",
+])
+def test_before_after_capture_rechaza_lo_que_no_es_loopback(libro, monkeypatch, url):
+    """La excepcion del canario para la captura descansa en "loopback por
+    construccion": ahora se verifica al entrar. Es un guard de programador
+    (ValueError), no un cruce: ni playwright ni deps se tocan."""
+    def bomba(*a, **k):
+        raise AssertionError("no debe llegar a deps/playwright")
+    monkeypatch.setattr(deps, "is_ready", bomba)
+    with pytest.raises(ValueError, match="solo captura loopback"):
+        browser.before_after_capture(url, lambda: None, quien=quien_de_prueba())
+    assert cruces_del_libro(libro) == []
+
+
+@pytest.mark.parametrize("url", ["http://localhost:8000", "http://127.0.0.1:8000/",
+                                 "http://[::1]:8000", "https://localhost/x"])
+def test_before_after_capture_acepta_loopback(libro, monkeypatch, url):
+    _playwright_falso(monkeypatch)
+    monkeypatch.setattr(deps, "is_ready", lambda t: True)
+    antes, despues = browser.before_after_capture(url, lambda: None, settle_ms=0,
+                                                  quien=quien_de_prueba())
+    assert antes == b"png" and despues == b"png"
+
+
 # --- github.py -----------------------------------------------------------------
 
 def test_default_runner_cruza_cada_gh(libro, monkeypatch):
