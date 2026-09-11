@@ -41,6 +41,7 @@ import json
 import os
 import pathlib
 import re
+import threading
 import time
 import urllib.parse
 import uuid
@@ -59,9 +60,17 @@ CONSULTA_MAX = 500
 CUERPO_LINEAS = 3
 CUERPO_LINEAS_MAX = 200
 
-# el candado: no bloqueante con reintento acotado (spec seccion 6)
+# el candado: no bloqueante con reintento acotado (spec seccion 6), para el
+# flock AJENO (otro proceso). Entre HILOS del mismo proceso serializa
+# `_ENTRE_HILOS`: `candado(no_bloquear=True)` tambien levanta ErrorCandado al
+# instante si otro hilo tiene el RLock, y dos cruces simultaneos del
+# threadpool perdian el segundo. Una escritura son microsegundos: esperar
+# entre hilos no cuelga nada. El mismo Lock cubre los contadores de modulo
+# (`SIN_LIBRO`, `_DECLARADOS`). NO lo toma `leer()`: bajo el candado
+# bloqueante, un .lock ajeno colgado dejaria colgados a los escritores.
 REINTENTOS = 3
 ESPERA_S = 0.05
+_ENTRE_HILOS = threading.Lock()
 
 SECRETO = "[SECRETO]"
 # las regex LEXICAS del detector: las unicas que corren sobre host, path y
@@ -168,19 +177,22 @@ def _append(ruta: pathlib.Path, linea: str) -> None:
 
 
 def _escribir(linea: str) -> None:
-    """Bajo el candado del libro, no bloqueante, 3 x 50 ms. Levanta lo que
-    haya pasado: quien decide que hacer con el fallo es `_anotar`."""
+    """Serializada entre hilos por `_ENTRE_HILOS` y, adentro, bajo el candado
+    del libro no bloqueante, 3 x 50 ms (solo el proceso ajeno lo hace
+    fallar). Levanta lo que haya pasado: quien decide que hacer con el
+    fallo es `_anotar`."""
     ruta = _ruta()
     ultimo: Exception | None = None
-    for intento in range(REINTENTOS):
-        try:
-            with candado(ruta, no_bloquear=True):
-                _append(ruta, linea)
-            return
-        except ErrorCandado as exc:
-            ultimo = exc
-            if intento < REINTENTOS - 1:
-                time.sleep(ESPERA_S)
+    with _ENTRE_HILOS:
+        for intento in range(REINTENTOS):
+            try:
+                with candado(ruta, no_bloquear=True):
+                    _append(ruta, linea)
+                return
+            except ErrorCandado as exc:
+                ultimo = exc
+                if intento < REINTENTOS - 1:
+                    time.sleep(ESPERA_S)
     assert ultimo is not None
     raise ultimo
 
@@ -194,19 +206,25 @@ _DECLARADOS: set[str] = set()
 
 
 def sin_libro() -> dict:
-    return dict(SIN_LIBRO)
+    with _ENTRE_HILOS:
+        return dict(SIN_LIBRO)
 
 
 def _reset_para_tests() -> None:
-    SIN_LIBRO.update({"n": 0, "desde": None, "ultimo_error": None})
-    _DECLARADOS.clear()
+    with _ENTRE_HILOS:
+        SIN_LIBRO.update({"n": 0, "desde": None, "ultimo_error": None})
+        _DECLARADOS.clear()
 
 
-def _contar_hueco(error: str) -> None:
-    SIN_LIBRO["n"] += 1
-    SIN_LIBRO["ultimo_error"] = error[:200]
-    if SIN_LIBRO["desde"] is None:
-        SIN_LIBRO["desde"] = _ahora()
+def _contar_hueco(error: str) -> int:
+    """Suma el hueco bajo el Lock y devuelve el n resultante (para el aviso
+    de telemetria, sin releer el contador fuera del Lock)."""
+    with _ENTRE_HILOS:
+        SIN_LIBRO["n"] += 1
+        SIN_LIBRO["ultimo_error"] = error[:200]
+        if SIN_LIBRO["desde"] is None:
+            SIN_LIBRO["desde"] = _ahora()
+        return SIN_LIBRO["n"]
 
 
 def _en_el_loop() -> bool:
@@ -223,18 +241,17 @@ def _anotar(registro: dict) -> None:
     origen = registro.get("quien", {}).get("origen")
     proposito = registro.get("proposito")
     if _en_el_loop():
-        _contar_hueco("aduana_en_loop")
+        n = _contar_hueco("aduana_en_loop")
         telemetry.log_event("aduana_en_loop", origen=origen,
-                            proposito=proposito, n=SIN_LIBRO["n"])
+                            proposito=proposito, n=n)
         return
     try:
         _escribir(json.dumps(registro, ensure_ascii=False))
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
-        _contar_hueco(error)
+        n = _contar_hueco(error)
         telemetry.log_event("aduana_sin_libro", error=error[:200],
-                            origen=origen, proposito=proposito,
-                            n=SIN_LIBRO["n"])
+                            origen=origen, proposito=proposito, n=n)
 
 
 # --- el saneo (invariante 9) --------------------------------------------------
@@ -390,12 +407,14 @@ def declarar(quien: Quien, proposito: str, destino: str | None,
 
 def declarar_una_vez(clave: str, quien: Quien, proposito: str,
                      destino: str | None, motivo: str | None = None) -> bool:
-    """`declarar` con bandera por proceso: la bandera se evalua ANTES de
-    tocar el candado (un no-op nunca toma el flock). Devuelve True si
-    declaro, False si ya estaba declarado."""
-    if clave in _DECLARADOS:
-        return False
-    _DECLARADOS.add(clave)
+    """`declarar` con bandera por proceso: la bandera se evalua y se marca
+    bajo `_ENTRE_HILOS` (dos hilos no declaran dos veces) y ANTES de tocar
+    el candado (un no-op nunca toma el flock). Devuelve True si declaro,
+    False si ya estaba declarado."""
+    with _ENTRE_HILOS:
+        if clave in _DECLARADOS:
+            return False
+        _DECLARADOS.add(clave)
     declarar(quien, proposito, destino, motivo)
     return True
 

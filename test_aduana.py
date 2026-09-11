@@ -17,6 +17,8 @@ import pathlib
 import stat
 import subprocess
 import sys
+import threading
+import time
 
 import pytest
 
@@ -266,6 +268,57 @@ def test_candado_tomado_por_otro_proceso_es_fail_open_con_aviso(libro):
     with aduana.cruzar(quien_de_prueba(), "y", None):
         pass
     assert [c["proposito"] for c in cruces_del_libro(libro)] == ["y"]
+
+
+def test_n_hilos_escribiendo_a_la_vez_dejan_n_lineas_sin_hueco(libro, monkeypatch):
+    """El candado no bloqueante con 3 x 50 ms es para el flock AJENO (otro
+    proceso: fail-hang), pero `candado(no_bloquear=True)` tambien levanta
+    ErrorCandado al instante si OTRO HILO del proceso tiene el RLock: con un
+    disco lento y dos cruces del threadpool a la vez, el segundo se perdia
+    (sin_libro). Un Lock de modulo serializa `_escribir` entre hilos ANTES
+    del candado (una escritura son microsegundos: esperar entre hilos no
+    cuelga nada); el no bloqueante queda solo para el proceso ajeno."""
+    original = aduana._append
+
+    def lento(ruta, linea):
+        time.sleep(0.2)             # mas que los 3 x 50 ms del reintento
+        original(ruta, linea)
+    monkeypatch.setattr(aduana, "_append", lento)
+    n = 4
+    barrera = threading.Barrier(n)
+
+    def cruce(i):
+        barrera.wait()
+        with aduana.cruzar(quien_de_prueba(), f"hilo {i}", None):
+            pass
+    hilos = [threading.Thread(target=cruce, args=(i,)) for i in range(n)]
+    for h in hilos:
+        h.start()
+    for h in hilos:
+        h.join()
+    assert sorted(c["proposito"] for c in cruces_del_libro(libro)) == [
+        f"hilo {i}" for i in range(n)]
+    assert aduana.sin_libro()["n"] == 0
+    assert libro.telemetria.de("aduana_sin_libro") == []
+
+
+def test_declarar_una_vez_desde_n_hilos_declara_una_sola(libro):
+    """La bandera de `declarar_una_vez` se evalua y se marca bajo el mismo
+    Lock entre hilos (los contadores sin lock, parkeados, los cubre este)."""
+    n = 6
+    barrera = threading.Barrier(n)
+    resultados: list[bool] = []
+
+    def una_vez():
+        barrera.wait()
+        resultados.append(aduana.declarar_una_vez(
+            "memoria", quien_de_prueba(origen="arranque"), "modelo", "huggingface.co"))
+    hilos = [threading.Thread(target=una_vez) for _ in range(n)]
+    for h in hilos:
+        h.start()
+    for h in hilos:
+        h.join()
+    assert resultados.count(True) == 1 and len(cruces_del_libro(libro)) == 1
 
 
 def test_enospc_simulado_es_fail_open_con_aviso(libro, monkeypatch):
