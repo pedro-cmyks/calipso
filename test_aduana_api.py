@@ -468,6 +468,54 @@ def test_un_modelo_fuera_de_la_maquina_se_declara_y_uno_loopback_no(libro, monke
     assert b["destino"]["host"] == "api.deepseek.com" and b["motivo"] == "api"
 
 
+def test_un_base_url_no_parseable_se_declara_como_fuera_sin_reventar(libro, monkeypatch):
+    """`urlsplit("http://[::1:11434/x")` levanta ValueError ('Invalid IPv6
+    URL'). Sin try, el arranque perdia en silencio la declaracion de la
+    memoria, los probes y `_backend_availability`, y PUT /api/config daba
+    500 DESPUES de guardar. Fail-open: el host no parseable se trata como
+    modelo fuera de la maquina, con destino=url (la aduana lo sanea) y el
+    motivo lo dice."""
+    q = quien_de_prueba(origen="arranque", chat=None, gesto=None, ruta=None)
+    monkeypatch.setattr(srv.dispatch, "CONFIG", {
+        "local": {"base_url": "http://localhost:11434/api/generate"},
+        "api": {"base_url": "http://127.0.0.1:4000/v1/chat/completions"},
+        "classifier": {"base_url": "http://[::1:11434/x?pwd=abc"}})
+    assert srv._declarar_modelos_fuera(q) == 1
+    c, = cruces_del_libro(libro)
+    assert c["proposito"] == "modelo fuera de la maquina" and c["declarado"] is True
+    assert c["destino"] == {"host": None, "url": "[SECRETO]"}
+    assert c["motivo"] == "classifier: base_url no parseable"
+    assert "abc" not in libro.read_text()
+
+
+def test_put_config_con_base_url_malformado_devuelve_200_y_declara(libro, monkeypatch):
+    monkeypatch.setattr(srv.calipso_config, "save_config", lambda data: {"guardado": True})
+    monkeypatch.setattr(srv.calipso_config, "dispatch_config", lambda: {
+        "subscription": {}, "api": {"base_url": "http://localhost:4000/v1"},
+        "local": {"base_url": "http://[::1:11434/x"},
+        "classifier": {"base_url": "http://localhost:11434/api/generate"}})
+    viejo = srv.dispatch.CONFIG
+    try:
+        r = _local().put("/api/config", json={"local": {"base_url": "http://[::1:11434/x"}})
+    finally:
+        srv.dispatch.CONFIG = viejo
+    assert r.status_code == 200, r.text
+    c, = cruces_del_libro(libro)
+    assert c["motivo"] == "local: base_url no parseable" and c["quien"]["origen"] == "gesto"
+
+
+def test_calentar_probes_termina_con_un_base_url_malformado(libro, monkeypatch):
+    monkeypatch.setattr(srv.dispatch, "CONFIG", {
+        "local": {"base_url": "http://[::1:11434/x"},
+        "api": {"base_url": "http://127.0.0.1:4000/v1"},
+        "classifier": {"base_url": "http://localhost:11434/api/generate"}})
+    monkeypatch.setattr(srv, "_backend_availability", lambda: {"ok": True})
+    assert srv._calentar_probes() == {"ok": True}
+    propositos = [c["proposito"] for c in cruces_del_libro(libro)]
+    assert propositos == ["modelo de embeddings", "modelo fuera de la maquina",
+                          "probes claude/codex: --version, auth status, login status"]
+
+
 def test_put_config_declara_en_hilo_como_gesto(libro, monkeypatch):
     monkeypatch.setattr(srv.calipso_config, "save_config", lambda data: {"guardado": True})
     monkeypatch.setattr(srv.calipso_config, "dispatch_config", lambda: {
@@ -586,6 +634,27 @@ def test_startup_warm_calienta_los_probes_en_hilo(libro, monkeypatch):
     assert vistos == [False], "los probes se declararon EN el loop"
     assert llamadas == ["_asegurar_rutina_catastro", "_asegurar_rutina_cierre",
                         "_asegurar_rutina_consumo", "_routines_ticker"]   # el resto de _startup_warm sigue vivo
+
+
+def test_un_fallo_de_discover_no_se_lleva_los_probes(libro, monkeypatch):
+    """Los dos `to_thread` del arranque tienen cada uno su try: un
+    `discovery.discover` que levanta no deja sin declarar la memoria ni sin
+    calentar los probes (y viceversa)."""
+    vistos = []
+    monkeypatch.setattr(srv, "_calentar_probes", lambda: vistos.append("probes") or {})
+
+    def revienta(register=True):
+        raise RuntimeError("ollama caido")
+    monkeypatch.setattr(srv.discovery, "discover", revienta)
+    for nombre in ("_asegurar_rutina_catastro", "_asegurar_rutina_cierre",
+                   "_asegurar_rutina_consumo"):
+        monkeypatch.setattr(srv, nombre, lambda: None)
+
+    async def _nada():
+        return None
+    monkeypatch.setattr(srv, "_routines_ticker", lambda: _nada())
+    asyncio.run(srv._startup_warm())
+    assert vistos == ["probes"]
 
 
 class _AmbitoFalso:

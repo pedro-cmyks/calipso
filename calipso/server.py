@@ -2133,9 +2133,21 @@ def _declarar_modelos_fuera(quien: aduana.Quien) -> int:
     n = 0
     for boca in ("local", "api", "classifier"):
         url = (dispatch.CONFIG.get(boca) or {}).get("base_url") or ""
-        host = urllib.parse.urlsplit(url).hostname or ""
+        if not url:
+            continue
+        try:
+            host = urllib.parse.urlsplit(url).hostname or ""
+            motivo = boca
+        except ValueError:
+            # `http://[::1:11434/x` ('Invalid IPv6 URL'): fail-open. Un
+            # host que no se puede leer no es loopback demostrado: se
+            # declara como fuera, con destino=url (la aduana lo sanea) y el
+            # motivo lo dice. Sin esto el arranque perdia en silencio la
+            # memoria, los probes y `_backend_availability`, y PUT
+            # /api/config daba 500 DESPUES de guardar la config.
+            host, motivo = "?", f"{boca}: base_url no parseable"
         if host and host not in _LOOPBACK_HOSTS:
-            aduana.declarar(quien, "modelo fuera de la maquina", destino=url, motivo=boca)
+            aduana.declarar(quien, "modelo fuera de la maquina", destino=url, motivo=motivo)
             n += 1
     return n
 
@@ -8126,10 +8138,15 @@ def _calentar_probes() -> dict:
 
 @app.on_event("startup")
 async def _startup_warm() -> None:
+    # cada paso con su try: un `discover` que levanta (Ollama caido, una
+    # config rara) no se lleva la declaracion de la memoria ni los probes
     try:
         found = await asyncio.to_thread(discovery.discover, True)
         if found["added"]:
             print(f"[calipso] modelos descubiertos: {found['added']}")
+    except Exception:
+        pass
+    try:
         await asyncio.to_thread(_calentar_probes)  # declara la memoria y los probes, pre-calienta el cache
     except Exception:
         pass
