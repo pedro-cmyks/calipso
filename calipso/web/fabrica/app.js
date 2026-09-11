@@ -24,6 +24,7 @@ import {textoDePermisos, contadorPendientes} from "./permisos.js";
 import {textoDeInbox, contadorDeInbox} from "./inbox.js";
 import {textoDeAparatos, contadorDeAparatos,
         alcanceDe} from "./aparatos.js";
+import {textoDeAduana} from "./aduana.js";
 
 const lienzo = document.getElementById("mapa");
 const sinFabrica = document.getElementById("sin-fabrica");
@@ -792,6 +793,50 @@ async function pintarInbox() {
   }
 }
 
+// --- Aduana: lo que salio a internet hoy, y quien lo disparo ----------------
+//
+// La sexta sub-pestana (spec de la aduana, seccion 9). Sin badge: la aduana
+// no le pide nada a Pedro. Sin intervalo ni pintado en el arranque: esos
+// dos existen para alimentar badges "sin buscarlo", y aca no hay ninguno;
+// se pinta al entrar a la pestana, y asi nadie lee el libro bajo candado
+// cada 60 s desde cada pestana abierta.
+const cajaAduana = document.getElementById("aduana");
+let datosAduana = null;
+let filtrosAduana = {};
+
+async function pintarAduana() {
+  // misma guarda que cajaAparatos: arranque.test.js monta un DOM de mentira
+  // y "aduana" no esta entre sus ids.
+  if (!cajaAduana) return;
+  const sinLibro = texto => {
+    cajaAduana.innerHTML = `<div class="vacio">${texto}</div>`;
+  };
+  try {
+    const r = await fetch("/api/aduana");
+    if (!r.ok) {
+      // 401/403 no es una falla: es un lector, que no ve la fabrica
+      sinLibro(r.status === 401 || r.status === 403
+        ? "Solo desde la Ally, un navegador o un tablero."
+        : "No se pudo leer el libro de la aduana.");
+      return;
+    }
+    datosAduana = await r.json();
+    cajaAduana.innerHTML = textoDeAduana(datosAduana, filtrosAduana);
+  } catch (_) {
+    sinLibro("No se pudo leer el libro de la aduana.");
+  }
+}
+
+cajaAduana?.addEventListener("change", evento => {
+  const select = evento.target.closest("select[data-filtro]");
+  if (!select) return;
+  // el filtro vive afuera del DOM: el repintado reemplaza el HTML entero y
+  // el select nuevo nace con lo que diga `filtrosAduana`. Se repinta con
+  // los datos que ya vinieron: filtrar no pide el libro de nuevo.
+  filtrosAduana = {...filtrosAduana, [select.dataset.filtro]: select.value};
+  cajaAduana.innerHTML = textoDeAduana(datosAduana, filtrosAduana);
+});
+
 for (const boton of document.querySelectorAll("#submesa button")) {
   boton.addEventListener("click", () => {
     const vista = boton.dataset.vista;
@@ -804,6 +849,7 @@ for (const boton of document.querySelectorAll("#submesa button")) {
     cajaPerillas?.classList.toggle("oculto", vista !== "plata");
     cajaPermisos?.classList.toggle("oculto", vista !== "permisos");
     cajaAparatos?.classList.toggle("oculto", vista !== "aparatos");
+    cajaAduana?.classList.toggle("oculto", vista !== "aduana");
     // igual que la pestana global de "Mesa" (spec seccion 9): sin esto,
     // tocar una sub-pestana muestra la foto del momento en que cargo la
     // pagina.
@@ -811,6 +857,7 @@ for (const boton of document.querySelectorAll("#submesa button")) {
     if (vista === "plata") pintarPerillas();
     if (vista === "permisos") pintarPermisos();
     if (vista === "aparatos") pintarAparatos();
+    if (vista === "aduana") pintarAduana();
   });
 }
 
