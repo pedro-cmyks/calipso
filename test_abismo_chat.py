@@ -912,3 +912,23 @@ def test_el_canario_nunca_corre_en_el_event_loop(chat, monkeypatch):
     monkeypatch.setattr(srv.canarios, "veredicto", espia)
     chat.turno("hola")
     assert visto == ["hilo"]
+
+
+def test_la_fila_lleva_el_contexto_solo_en_el_server_desechable(chat, monkeypatch):
+    """CANARIOS_PERSISTIR_CONTEXTO=1 (el porton y el smoke): la fila chat_turn
+    lleva el system, el historial y los bloques que viajaron; sin la
+    variable (produccion), no (invariante 7)."""
+    _sembrar_chat_viejo(["empece un libro: El nombre de la rosa"])
+    chats.append(chat.chat_id, "user", "hola")
+    chats.append(chat.chat_id, "assistant", "hola Pedro")
+    chat.modelo.guiones = [["a ⟦abismo:chats libro⟧"], ["b"]]
+    chat.turno("libro")
+    assert "contexto" not in chat.telemetria("chat_turn")[0]
+    monkeypatch.setenv("CANARIOS_PERSISTIR_CONTEXTO", "1")
+    chat.modelo.llamadas.clear()
+    chat.turno("libro otra vez")
+    ctx = chat.telemetria("chat_turn")[1]["contexto"]
+    assert ctx["secciones"][0] == ["Sistema", "SISTEMA BASE"]
+    assert ctx["secciones"][-1][0] == "Lo que subio del abismo (fuente: chats)"
+    assert "El nombre de la rosa" in ctx["bloques"][0]
+    assert ctx["historial"][0] == {"role": "user", "content": "hola"}

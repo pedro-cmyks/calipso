@@ -66,6 +66,10 @@ PATRONES_FUERTES = (
     r"no ten(ia|iamos|go) (el|ese|este|ningun|la|esa|esta) (dato|informacion)",
     # la frase fija repetida tal cual (el eco puro: SIN_DATO, mas abajo)
     r"calipso no tenia el dato",
+    # la frase que induce la letra nueva de la reentrada (spec canarios
+    # 2026-09-11, seccion 4: "si lo que subio no trae el dato, decilo con
+    # esas palabras"): banco, 0 falsos
+    r"no trae (el|ese|este) dato",
 )
 
 PATRONES_DEBILES = (
