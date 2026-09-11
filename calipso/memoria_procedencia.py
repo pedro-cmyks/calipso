@@ -148,10 +148,13 @@ def clasificar(respuesta: str) -> str:
 #
 # Lo viejo no siempre dice "Pedro pregunto:": de junio a agosto se guardo con
 # acentos rotos (una A con tilde donde iba la o; en el ambito de proyecto por
-# scope="auto"). `\S*` se come cualquier cola hasta los dos puntos.
+# scope="auto"). `\S*` se come cualquier cola hasta los dos puntos. El
+# `^\s*` tolera un salto o un espacio adelante (minor del cierre): un
+# documento asi es un par igual, no un 'Registro (chat, ...)' con el
+# no-saber crudo adentro.
 
 _PAR = re.compile(
-    r"^Pedro pregunt\S*:\s*(.*?)\nCalipso respondi\S*:\s*(.*)\Z", re.DOTALL)
+    r"^\s*Pedro pregunt\S*:\s*(.*?)\nCalipso respondi\S*:\s*(.*)\Z", re.DOTALL)
 
 
 def partir(texto: str) -> tuple[str, str] | None:

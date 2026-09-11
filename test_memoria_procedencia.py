@@ -111,6 +111,21 @@ def test_partir_tolera_saltos_en_la_pregunta_y_en_la_respuesta():
     assert mp.partir(texto) == ("linea 1\nlinea 2", "a\n\nb")
 
 
+def test_partir_tolera_espacio_inicial_y_el_no_saber_se_degrada():
+    """Un documento kind=chat con un salto de linea (o espacio) adelante es
+    un par igual: sin esto `partir` daba None, `presentar` lo pegaba como
+    'Registro (chat, ...)' con el no-saber crudo adentro y el reindex lo
+    contaba como 'kind=chat que NO parsea' (minor del cierre)."""
+    con_salto = ("\nPedro pregunto: quien me presto el libro rosa?\n"
+                 "Calipso respondio: No tengo registros de eso.")
+    assert mp.partir(con_salto) == ("quien me presto el libro rosa?", "No tengo registros de eso.")
+    assert mp.partir("  \n " + NUEVO) == mp.partir(NUEVO)
+    assert mp.presentar(con_salto, META, variante="A") == (
+        "- Pedro dijo (2026-09-10): quien me presto el libro rosa?\n"
+        "  Calipso no tenia el dato entonces (local, 2026-09-10).")
+    assert "Registro" not in mp.presentar(con_salto, META, variante="A")
+
+
 def test_partir_devuelve_none_para_lo_que_no_es_un_par():
     assert mp.partir("Pedro definio una meta: X\nCalipso creo Goal Mode: g1") is None
     assert mp.partir("hecho 0") is None
