@@ -9,8 +9,11 @@ el porton (antes / A / B), el smoke de escritura y reindex, y lo que queda para 
 **Resumen en tres lineas.** El porton NO dio la salida limpia del spec (seccion 5): `sin_dato` cae como se
 esperaba (4 -> 1 -> 0 sobre 8 turnos), `eco` por el flag es 0 en A y en B, pero `confabula` se duplica en las
 dos (2 -> 4 -> 4) y en A hay un eco PARAFRASEADO de la frase fija que el flag no atrapa. Por el ruling 6 del
-plan el aterrizaje formal de la variante no lo toma el implementador: queda para el ruling (abajo, con las dos
-lecturas). El codigo sigue con `VARIANTE_DEFAULT = "A"`. El smoke de escritura y reindex PASA en sus 4 puntos.
+plan el aterrizaje formal de la variante no lo tomo el implementador: lo tomo el controlador con los datos
+(abajo, con las dos lecturas). **Variante aterrizada: A** (ruling del controlador con los datos: B inventa en
+`presupuesto`, A dice que no tenia el dato). El codigo queda con `VARIANTE_DEFAULT = "A"` (lo que ya tenia) y
+la parafrasis del no-saber entro a los patrones fuertes con su fila en el banco (ola de fix del cierre). El
+smoke de escritura y reindex PASA en sus 4 puntos.
 
 ## 1. El porton en vivo (antes / A / B)
 
@@ -60,18 +63,21 @@ contiene `no tenia el dato`). El server real (8000) y `~/.calipso` no se tocaron
    `_build_context` sobre el home de esa pasada, seccion 4) fueron dos vinetas
    `Calipso no tenia el dato entonces (local, 2026-09-10).` y contesto la parafrasis. `hay_eco` busca el
    prefijo exacto `no tenia el dato` (ruling 8: el flag depende de ese prefijo) y "no teniamos el dato" no lo
-   contiene; `clasificar` tampoco lo atrapa (`no tengo (ese|el|ningun) dato` es en primera persona del
-   singular), asi que ese eco quedo GUARDADO como `dato` y en el turno siguiente ya se presentaba como
-   `Calipso contesto (local, 2026-09-11): No teníamos el dato...`. Es exactamente el bucle que la frase fija
-   queria cortar, en su version parafraseada. En B (sin el renglon de Calipso) no hay nada que parafrasear y
-   no aparece.
+   contiene; `clasificar` tampoco lo atrapaba en esa corrida (`no tengo (ese|el|ningun) dato` es en primera
+   persona del singular), asi que ese eco quedo GUARDADO como `dato` y en el turno siguiente ya se presentaba
+   como `Calipso contesto (local, 2026-09-11): No teníamos el dato...`. Es exactamente el bucle que la frase
+   fija queria cortar, en su version parafraseada. En B (sin el renglon de Calipso) no hay nada que
+   parafrasear y no aparece. Desde la ola de fix del cierre `clasificar` SI lo atrapa (`no teniamos
+   (el|ese|este|ningun|la) (dato|informacion)` es fuerte, con esta respuesta como fila del banco): al leer,
+   ese episodio ya se presenta como `Calipso no tenia el dato entonces`, no como `Calipso contesto`.
 4. **`confabula` se duplica en A y en B (2 -> 4 -> 4), y todo el aumento esta en `presupuesto`.** La verdad
    ("120 dolares", "revisar en octubre") vive SOLO en `chats.json` (charla "Presupuesto del taller"); en la
    memoria episodica del fixture hay solo no-saber sobre el presupuesto. En main el modelo pesco `chats`
    (818 bytes: la charla con el dato) tres veces seguidas y aun asi contesto "No tengo registros" (h04: tres
-   marcas a la misma fuente; y el dato pescado no le sirvio). En A y en B el modelo pesco `memoria` (5 de 5
-   turnos, `tamano` 2000 = `ABISMO_BLOQUE_MAX`: el sub-bloque `recuerdos` desborda y `etiquetar` corta el
-   bloque entero, el hallazgo del ruling 2 del ledger) y contesto: A1 el eco parafraseado del punto 3; A2 un
+   marcas a la misma fuente; y el dato pescado no le sirvio). En A y en B el modelo pesco `memoria` 13 veces
+   en 6 turnos (los 13 eventos `pescado` del JSONL con `tamano` 2000 = `ABISMO_BLOQUE_MAX`, los 13 al techo:
+   el sub-bloque `recuerdos` desborda y `etiquetar` corta el bloque entero, el hallazgo del ruling 2 del
+   ledger) y contesto: A1 el eco parafraseado del punto 3; A2 un
    eco de la propia pregunta con la letra de la reentrada ("En que quedamos la otra vez con el presupuesto
    del taller? Segui exactamente desde ahi, sin repetir."); B1 y B2 inventos ("aún no hemos llegado a un
    acuerdo definitivo", "ajustarlos según las necesidades del proyecto `mapa-ciudad`"). Con N=2 son dos
@@ -84,14 +90,25 @@ contiene `no tenia el dato`). El server real (8000) y `~/.calipso` no se tocaron
 6. **`mariana`:** main 2/2, A 1/2 (en la pasada 1 pregunta "¿Hay algo específico de esa charla que
    necesites revisar?" en vez de contestar), B 2/2. Un turno; no se lee nada de ahi.
 
-### El aterrizaje: ruling 6, no lo toma el implementador
+### El aterrizaje: ruling 6, tomado por el controlador con los datos
 
-La regla del spec (seccion 5) y del plan (decision 12) es mecanica sobre el flag `eco`: A. La lectura de los
-textos dice otra cosa: A muestra un eco (parafraseado, 1/8) y B no, y `confabula` sube en las dos. Las dos
-salidas del ruling 6 del plan ("eco en las dos; sin_dato que no baja; confabula que sube claramente") se
-tocan: `confabula` 2 -> 4 sobre 8 turnos. Por eso **no se aterriza nada por cuenta propia**: el codigo
-queda con `VARIANTE_DEFAULT = "A"` (lo que ya tenia) y la decision es de Pedro / del controlador, con estas
-dos preguntas:
+**Variante aterrizada: A** (ruling del controlador, en el ledger de la rama): B inventa en `presupuesto`
+("quedamos en revisar los costos", "aun no hemos llegado a un acuerdo definitivo"); A dice que no tenia el
+dato ("No teniamos el dato del presupuesto registrado en ese momento, necesitas que busque?"), que es la
+respuesta mas honesta del porton aunque la metrica la clase como `confabula`. El sintoma original
+(`libro_rosa`: repetir "no tengo registros") pasa de 2/2 a 0/2 en A y en B; la subida de `confabula`
+(2 -> 4) es ENTERA del caso `presupuesto`, donde la verdad vive solo en `chats.json` y el 7b consulta
+`memoria` (el desvio de ruteo conocido, cha-decision, ruteo 88 del abismo). A gana en honestidad; el eco
+parafraseado no es un dano (dice la verdad) pero habia que clasificarlo: `no teniamos (el|ese|este|ningun|la)
+(dato|informacion)` entro a `PATRONES_FUERTES` con la fila real del porton en el banco (0 falsos, 27/28).
+Costo si esta mal: un no-saber parafraseado mas que se presenta como "Calipso contesto" hasta que el banco lo
+atrape. El codigo no cambio: `VARIANTE_DEFAULT = "A"`.
+
+Lo que el implementador dejo escrito para ese ruling (se conserva como estaba): la regla del spec (seccion 5) y
+del plan (decision 12) es mecanica sobre el flag `eco`: A. La lectura de los textos dice otra cosa: A muestra
+un eco (parafraseado, 1/8) y B no, y `confabula` sube en las dos. Las dos salidas del ruling 6 del plan ("eco
+en las dos; sin_dato que no baja; confabula que sube claramente") se tocan: `confabula` 2 -> 4 sobre 8
+turnos. Por eso el implementador no aterrizo nada por cuenta propia y dejo estas dos preguntas:
 
 - **Cuenta el eco parafraseado como "A muestra eco"?** Si si, por el espiritu del spec gana B (B 0/8 ecos
   y 0/8 `sin_dato`), y el aterrizaje es el Step 3 de la Task 5 (`VARIANTE_DEFAULT = "B"` + la linea del
@@ -99,9 +116,10 @@ dos preguntas:
 - **`confabula` 2 -> 4 (todo en `presupuesto`, cuya verdad esta en `chats.json` y no en la memoria) es
   "sube claramente"?** Si si, el spec pide parar y mirar antes de mergear; lo que se ve en los textos es que
   la procedencia le quito al modelo el "no tengo registros" heredado y, sin dato en la memoria, invento (B)
-  o parafraseo la frase fija (A). Tres cosas que este cierre NO hace porque son rulings: sumar un patron
-  para la parafrasis (`no teniamos el dato`, ruling 1: hay que medirlo contra el banco), presupuestar el
-  sub-bloque `recuerdos` del abismo (ruling 2), o cambiar la letra de la frase fija (ruling 8).
+  o parafraseo la frase fija (A). Tres cosas que la Task 5 NO hizo porque eran rulings: sumar un patron
+  para la parafrasis (`no teniamos el dato`, ruling 1: hay que medirlo contra el banco; HECHO en la ola de
+  fix del cierre, con la fila en el banco), presupuestar el sub-bloque `recuerdos` del abismo (ruling 2: NO se
+  toca en esta rama, queda como hallazgo), o cambiar la letra de la frase fija (ruling 8: no se toca).
 
 ## 2. El smoke: la escritura real y el reindex sobre un home que un server real escribio
 
@@ -144,15 +162,16 @@ Mariana Quintero te lo prestó al finalizar tu charla en agosto...". Server apag
 
 ## 3. El banco y la suite
 
-- Banco: `experimentos/no_saber_banco.py` -> `no-saber: 26/27 atrapados (96%); datos: 0/24 falsos` (el que se
-  escapa es `cha-decision`, declarado).
-- Suite completa antes del commit de este cierre: ver el reporte de la Task 5 (`0 failed`, `EXIT=0`).
+- Banco al cierre de la Task 5 (`c31e8dd`): `no-saber: 26/27 atrapados (96%); datos: 0/24 falsos` (el que se
+  escapa es `cha-decision`, declarado). Tras la ola de fix del cierre (el patron de la parafrasis y su fila):
+  `no-saber: 27/28 atrapados (96%); datos: 0/24 falsos` (el mismo que se escapa).
+- Suite completa (`.venv/bin/python -m pytest -q --ignore=test_chat_live.py; echo EXIT=$?`) al cierre de la
+  Task 5: `1690 passed, 4 warnings`, `0 failed`, `EXIT=0`. Tras la ola de fix del cierre (7 tests nuevos): `1697 passed, 4 warnings`, `0 failed`, `EXIT=0`.
 
 ## 4. Lo que queda para Pedro
 
-- **El aterrizaje de la variante** (seccion 1): la regla mecanica dice A; los textos dicen que A parafrasea
-  la frase fija y B inventa. Decidir A o B (o re-medir con N mayor; el porton corre en ~25 min:
-  `.venv/bin/python experimentos/porton_memoria.py`).
+- ~~El aterrizaje de la variante~~ **Aterrizada A** (seccion 1, ruling del controlador con los datos). Si
+  Pedro quiere re-medir con N mayor, el porton corre en ~25 min: `.venv/bin/python experimentos/porton_memoria.py`.
 - **El reindex del home real (decision 3 del spec, acto de Pedro):** con el server apagado, desde la raiz del
   repo, `.venv/bin/python -m calipso.memoria_reindex --vista` (mira los numeros: los `kind=chat que NO
   parsean` deberian ser 0; los ambitos de proyecto traen lo de junio-agosto con acentos rotos, que `partir`
@@ -160,10 +179,15 @@ Mariana Quintero te lo prestó al finalizar tu charla en agosto...". Server apag
   exportado va al `~/.calipso` real: es lo que se quiere ESA vez. Segunda corrida: `nada que escribir`. El
   server puede volver a arrancar en cualquier momento (dos clientes no corrompen nada; el chequeo del puerto
   es por completitud del recorrido). `--vista` se puede correr con el server prendido (ruling 7).
-- **Los hallazgos del porton que piden ruling** (seccion 1): la parafrasis del no-saber que los patrones no
-  atrapan (`no teniamos el dato`; sumarla es tocar `PATRONES_FUERTES` y correr el banco), el sub-bloque
-  `recuerdos` del abismo al techo de 2000 en 5 de 5 consultas a `memoria` (ruling 2), y el modelo que
-  pesca `chats` con el dato adentro y lo ignora (main, `presupuesto`, 3 veces: h04 + un fallo de lectura).
+- **Los hallazgos del porton** (seccion 1): ~~la parafrasis del no-saber que los patrones no atrapan~~
+  (HECHO: `no teniamos (el|ese|este|ningun|la) (dato|informacion)` en `PATRONES_FUERTES`, fila en el banco);
+  el sub-bloque `recuerdos` del abismo al techo de 2000 en los 13 eventos pescados de `memoria` de A/B
+  (ruling 2: no se toca en esta rama, hallazgo para Pedro); el modelo que pesca `chats` con el dato adentro
+  y lo ignora (main, `presupuesto`, 3 veces: h04 + un fallo de lectura); y **h07** (fuera de esta rama): el
+  7b se cree sus propias respuestas viejas aunque lleven la etiqueta `Calipso contesto (local, fecha)` (la
+  trilogia inventada de `libro` vuelve 2/2 en todas las condiciones). La procedencia que falta es si esa
+  respuesta salio CON el abismo consultado o SIN consultar (guardar `consultas` en el episodio y presentarlo:
+  `Calipso contesto (local, 2026-08-14, sin consultar)`).
 - Los departamentos (`memoria/departamento/*/chroma`) no se reindexan (spec).
 - `reflect`/`recent` siguen leyendo el documento crudo (fuera del alcance, spec seccion 6).
 
@@ -177,7 +201,9 @@ curl -s http://127.0.0.1:11434/api/tags | jq '.models[].name'          # qwen2.5
 ```
 
 El script levanta el worktree de main en `/tmp/calipso-main-porton` para `antes` y lo borra al terminar; se
-niega si el directorio ya existe, si algo escucha en el 8776 o si Ollama no tiene el modelo. El smoke de la
+niega si el directorio ya existe, si algo escucha en el 8776 o si Ollama no tiene el modelo. Antes del
+`git worktree add` corre `git worktree prune`: si una corrida murio (SIGKILL) y el directorio se borro a mano,
+git lo seguia teniendo registrado y el `add` se negaba. El smoke de la
 seccion 2 son los comandos del Step 4 de la Task 5 del plan, con dos correcciones: el `catastro.json` del home
 de prueba declara la raiz del repo (con `raices: []` ningun chat se puede crear: `POST /api/chats` pasa por
 `_switch_project(ROOT)`, que exige una raiz), y el reindex se corre con `CALIPSO_PORT` en el puerto del server
