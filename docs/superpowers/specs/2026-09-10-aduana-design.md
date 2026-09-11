@@ -349,12 +349,11 @@ anillo 3 incluido, porque **"los modelos ven todo"** (Pedro, 2026-09-10). El cod
 (`server.py:3573, 3650, 3737`; `viaje.py:51-53`); lo que cambia es la letra del spec y un test que fije la
 politica para que un fix futuro no la "arregle" al reves.
 
-**Lo que esta enmienda NO decide sola:** la misma seccion del spec del abismo tiene la fila "Credencial:
-el envio ENTERO falla cerrado, sin condicion", anclada a la decision de Pedro del 2026-09-02 (ruteo
-:247-253: "la credencial jamas sale"). La decision de hoy fue sobre el anillo 3, no sobre credenciales.
-Tal como esta el codigo (`viaje.py:51-53`, destino `local` = transparente), una credencial pescada por el
-abismo viaja en un turno de suscripcion sin /nube. Es la pregunta 15.1; el test de la ultima tarea fija la
-opcion que Pedro elija. No bloquea el resto del plan.
+**Y lo que la enmienda NO toca (decidido, 15.1):** la fila "Credencial: el envio ENTERO falla cerrado,
+sin condicion" de esa misma seccion, anclada a la decision de Pedro del 2026-09-02, sigue valiendo para
+todo destino no local. "Los modelos ven todo" es sobre lo de Pedro (memoria, chats, repos), no sobre las
+llaves de la maquina. El codigo de hoy (`viaje.py:51-53`) no la cumple sin /nube; la tarea 9 lo cierra
+con el detector determinista y un test que fija las dos politicas a la vez.
 
 ## 14. Corte
 
@@ -369,12 +368,15 @@ del abismo con su test (segun 15.1), smoke en vivo, cierre.
 
 ## 15. Lo que queda para Pedro
 
-1. **Credencial en suscripcion sin /nube (bloquea solo la tarea 9).** (a) "los modelos ven todo" incluye
-   una credencial detectada por el detector: se enmienda tambien el ruteo del 09-02 con nombre; o (b) la
-   regla de credencial sobrevive en TODO destino que no sea local (suscripcion y API sin /nube incluidos):
-   `viaje.py:51-53` queda anotado como hueco conocido y su arreglo (correr el detector determinista, que
-   es gratis, sobre el bloque antes de cualquier destino no local) va en la tarea 9. **Recomendacion: (b).**
-   Un token de maquina no es "sus archivos"; es la llave de la casa, y el detector cuesta nada.
+1. **Credencial en suscripcion sin /nube: DECIDIDO por Pedro (2026-09-10, noche): (b) "la credencial
+   jamas sale".** La regla del 2026-09-02 sobrevive en TODO destino que no sea local (suscripcion y API sin
+   /nube incluidos). `viaje.py:51-53` es hoy un hueco conocido: con destino `local` (= sin /nube) devuelve
+   el bloque sin correr el detector, asi que una credencial pescada por el abismo viajaria al CLI de
+   suscripcion. La tarea 9 lo arregla: el detector determinista (`privacidad/detector.py`, gratis, sin
+   modelo) corre sobre el bloque ante cualquier destino no local y, si marca, el envio ENTERO del bloque
+   falla cerrado como en /nube (el turno sigue sin el bloque, con la senal `fallo` y su motivo); los anillos
+   y el juez LLM siguen siendo solo de /nube. El test fija las dos cosas: anillo 3 viaja sin /nube; una
+   credencial no viaja a ningun destino no local.
 2. **Vision-SDK y reflect declarados** (seccion 2): default si; Pedro puede vetar.
 3. **¿El tablero (y la APK del lector, que es tipo tablero) deberia ver la carga de los cruces?** Default:
    no (ve totales, origen, host, proposito, estado).
