@@ -1,6 +1,7 @@
 """El estado del turno y las piezas puras de la reentrada (spec seccion 4)."""
 import pytest
 
+from calipso import prompt_compiler
 from calipso.abismo import anillos, consulta, fuentes, marca, turno, viaje
 from calipso.privacidad import juez
 from calipso.privacidad.redaccion import MapaMarcadores
@@ -25,18 +26,25 @@ def test_puede_cortar_bajo_el_tope_y_encendida():
 
 
 def test_el_prompt_de_reentrada_lleva_bloques_mensaje_y_venias_diciendo():
-    system, usuario = turno.prompt_reentrada(
-        "SISTEMA", ["=== bloque uno ===", "=== bloque dos ==="],
+    """Los bloques entran como secciones (titulo pelado de su `=== ===`) y
+    el render es byte a byte el append de antes."""
+    secciones, usuario = turno.prompt_reentrada(
+        [("Sistema", "SISTEMA")],
+        ["=== bloque uno ===\n[anillo 1]\nuno", "=== bloque dos ===\n[anillo 2]\ndos"],
         ["Dejame ver ", "que dije "], "que libro lei")
-    assert system == "SISTEMA\n\n=== bloque uno ===\n\n=== bloque dos ==="
+    assert secciones == [("Sistema", "SISTEMA"), ("bloque uno", "[anillo 1]\nuno"),
+                         ("bloque dos", "[anillo 2]\ndos")]
+    assert prompt_compiler.render_context(secciones) == (
+        "=== Sistema ===\nSISTEMA\n\n=== bloque uno ===\n[anillo 1]\nuno"
+        "\n\n=== bloque dos ===\n[anillo 2]\ndos")
     assert usuario.startswith("que libro lei\n\n")
     assert "Venias diciendo: Dejame ver que dije \n" in usuario
     assert usuario.endswith(turno.INSTRUCCION_CONTINUAR)
 
 
 def test_sin_bloques_el_system_no_cambia():
-    system, _ = turno.prompt_reentrada("SISTEMA", [], ["a"], "m")
-    assert system == "SISTEMA"
+    secciones, _ = turno.prompt_reentrada([("Sistema", "SISTEMA")], [], ["a"], "m")
+    assert secciones == [("Sistema", "SISTEMA")]
 
 
 def test_la_senal_lleva_los_campos_fijos_de_cada_fase():

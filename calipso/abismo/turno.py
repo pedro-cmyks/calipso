@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from calipso import prompt_compiler
 from calipso.abismo import marca
 
 ABISMO_CONSULTAS_MAX = 3          # consultas por turno (spec seccion 4)
@@ -55,19 +56,25 @@ class EstadoTurno:
         return not self.apagada and self.consultas < ABISMO_CONSULTAS_MAX
 
 
-def prompt_reentrada(system_base: str, bloques: list[str],
-                     tramos_crudos: list[str], mensaje: str) -> tuple[str, str]:
-    """(system, mensaje de usuario) de la pasada sintetica. Los bloques van
-    como append post-compile del system base del turno (construido UNA vez:
-    no se re-corre recall ni economia). El parcial viaja por UNA sola via,
-    el "venias diciendo" del mensaje, nunca como mensaje assistant. El
-    mensaje original tambien viaja: `_history_messages` descarta el ultimo
-    mensaje del chat (el de Pedro), asi que sin esto la reentrada no sabria
-    que se le pregunto."""
-    system = system_base + "".join("\n\n" + b for b in bloques if b)
+def prompt_reentrada(secciones_base: list[tuple[str, str]], bloques: list[str],
+                     tramos_crudos: list[str], mensaje: str,
+                     ) -> tuple[list[tuple[str, str]], str]:
+    """(secciones del system, mensaje de usuario) de la pasada sintetica.
+    Los bloques van como SECCIONES detras de las del system base del turno
+    (construido UNA vez: no se re-corre recall ni economia); cada bloque
+    trae su encabezado `=== Lo que subio del abismo (fuente: X) ===` y
+    `seccion_de_bloque` lo vuelve (titulo, cuerpo), asi el render es byte a
+    byte el append de antes y el recorte de la ventana puede sacar el
+    bloque mas viejo sin partir texto (spec canarios 2.3). El parcial viaja
+    por UNA sola via, el "venias diciendo" del mensaje, nunca como mensaje
+    assistant. El mensaje original tambien viaja: `_history_messages`
+    descarta el ultimo mensaje del chat (el de Pedro), asi que sin esto la
+    reentrada no sabria que se le pregunto."""
+    secciones = list(secciones_base) + [prompt_compiler.seccion_de_bloque(b)
+                                        for b in bloques if b]
     venia = "".join(tramos_crudos)
     usuario = f"{mensaje}\n\nVenias diciendo: {venia}\n{INSTRUCCION_CONTINUAR}"
-    return system, usuario
+    return secciones, usuario
 
 
 def senal(fase: str, fuente: str, **campos) -> dict:

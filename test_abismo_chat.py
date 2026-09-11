@@ -205,7 +205,7 @@ def chat(tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "_http_up", lambda url, timeout=1.5: True)
     monkeypatch.setattr(srv, "_decide", _decide_local)
     monkeypatch.setattr(srv, "_build_context",
-                        lambda user_msg, runtime, features=None: "SISTEMA BASE")
+                        lambda user_msg, runtime, features=None: [("Sistema", "SISTEMA BASE")])
     monkeypatch.setattr(srv, "_harness_context", lambda *a, **k: "estado")
     monkeypatch.setattr(srv, "_extract_edit_target", lambda *a, **k: None)
     # la fuente `proyecto` recibe `catastro.obtener`, que sin catastro.json

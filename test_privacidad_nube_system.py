@@ -19,9 +19,11 @@ def test_a_la_nube_tapado_usa_el_system_minimo_y_no_toca_build_context(monkeypat
 
     # desde el abismo el system de nube es el minimo MAS el contrato sin
     # nombres y la linea de marcadores (spec seccion 8.1): sigue sin tocar
-    # _build_context
-    assert resultado == srv._sistema_nube()
-    assert resultado.startswith(srv._SISTEMA_NUBE_MINIMO)
+    # _build_context. Desde los canarios viaja como UNA seccion cruda
+    # (titulo vacio) que `render_context` rinde tal cual
+    assert resultado == [("", srv._sistema_nube())]
+    assert srv.prompt_compiler.render_context(resultado) == srv._sistema_nube()
+    assert srv._sistema_nube().startswith(srv._SISTEMA_NUBE_MINIMO)
     assert llamado == [], "no debe llamar a _build_context en /nube tapado"
 
 

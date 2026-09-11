@@ -749,9 +749,10 @@ def test_la_ruta_local_del_chat_ejecuta_en_ollama_no_en_claude(monkeypatch):
     monkeypatch.setattr(srv, "_http_up", lambda url, timeout=1.5: True)
     monkeypatch.setattr(srv.subprocess, "run", subprocess_prohibido)
 
-    gen, modelo = srv._chunks_for("local", "SOY EL SISTEMA", "hola", {},
-                                  chat_id=None)
+    gen, modelo, mensajes = srv._chunks_for("local", "SOY EL SISTEMA", "hola", {},
+                                            chat_id=None)
     salida = "".join(gen)
+    assert mensajes == llamado["messages"]      # lo que devuelve es lo que viajo
     assert "respuesta de ollama" in salida
     assert modelo == srv.dispatch.CONFIG["local"]["model"]
     # el system viaja: el bug viejo lo tiraba
@@ -768,8 +769,9 @@ def test_la_ruta_local_con_ollama_caido_falla_cerrado_y_no_llama_claude(monkeypa
     monkeypatch.setattr(srv, "_http_up", lambda url, timeout=1.5: False)
     monkeypatch.setattr(srv.subprocess, "run", subprocess_prohibido)
 
-    gen, modelo = srv._chunks_for("local", "sys", "hola", {}, chat_id=None)
+    gen, modelo, mensajes = srv._chunks_for("local", "sys", "hola", {}, chat_id=None)
     salida = "".join(gen)
+    assert mensajes[0] == {"role": "system", "content": "sys"}    # lo que HABRIA viajado
     assert "no" in salida.lower() and "local" in salida.lower()
     assert modelo != "claude"
 

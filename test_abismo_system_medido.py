@@ -81,7 +81,7 @@ def test_el_contrato_interno_de_produccion_es_el_podado(tmp_path, monkeypatch):
 def test_el_system_local_no_lleva_la_constitucion(tmp_path, monkeypatch):
     """Ni la seccion ni el texto de CALIPSO.md entran al system local."""
     monkeypatch.setenv("CALIPSO_HOME", str(tmp_path))
-    texto = srv._build_context("hola", "runtime", {"type": "chat"})
+    texto = prompt_compiler.render_context(srv._build_context("hola", "runtime", {"type": "chat"}))
     assert "=== Constitucion de Calipso ===" not in texto
     assert "Los modelos no son la identidad de Calipso" not in texto
     assert texto.startswith("=== Sistema ===\n" + srv.SYSTEM)

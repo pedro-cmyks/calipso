@@ -243,7 +243,23 @@ def context_sections(system: str, identity: str = "", core: str = "",
 
 
 def render_context(sections: list[tuple[str, str]]) -> str:
-    return "\n\n".join(f"=== {title} ===\n{body}" for title, body in sections)
+    """El system plano: `=== titulo ===` + cuerpo, unidos con una linea en
+    blanco. Una seccion con titulo vacio es CRUDA: va el cuerpo solo (el
+    system minimo de /nube y el aviso de imagen sin vision viajan asi;
+    spec canarios 2.3, la estructura se conserva hasta el payload)."""
+    return "\n\n".join(f"=== {title} ===\n{body}" if title else body
+                       for title, body in sections)
+
+
+def seccion_de_bloque(bloque: str) -> tuple[str, str]:
+    """(titulo, cuerpo) de un bloque que ya trae su encabezado `=== X ===`
+    en la primera linea (adjuntos, departamento en foco, resultados web,
+    lo que subio del abismo): `render_context` lo vuelve a rendir byte a
+    byte. Sin encabezado, es una seccion cruda ("", bloque)."""
+    primera, sep, resto = bloque.partition("\n")
+    if primera.startswith("=== ") and primera.endswith(" ===") and len(primera) > 8:
+        return primera[4:-4], resto
+    return "", bloque
 
 
 def agent_brief(agent: dict[str, Any], request: str | None = None) -> str:

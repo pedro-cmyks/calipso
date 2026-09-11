@@ -2928,19 +2928,56 @@ def _sistema_nube() -> str:
 
 
 def _sistema_del_turno(chat_msg: str, runtime: str, features: dict,
-                       a_la_nube_tapado: bool) -> str:
-    """El system del turno. Si el turno va a la nube tapado (/nube), NO se
-    arma el contexto completo (recuerdos, economia, catastro) porque llevaria
-    datos sensibles sin tapar a la nube: se usa el system minimo de nube, que
-    desde el abismo lleva el contrato sin nombres (`_sistema_nube`). Si no,
-    el contexto de siempre."""
+                       a_la_nube_tapado: bool) -> list[tuple[str, str]]:
+    """Las SECCIONES del system del turno (titulo, cuerpo); el string plano
+    lo arma `prompt_compiler.render_context` recien al armar el payload
+    (spec canarios 2.3: la estructura se conserva para poder recortar y
+    para que el canario sepa que seccion es que). Si el turno va a la nube
+    tapado (/nube), NO se arma el contexto completo (recuerdos, economia,
+    catastro) porque llevaria datos sensibles sin tapar a la nube: se usa
+    el system minimo de nube, que desde el abismo lleva el contrato sin
+    nombres (`_sistema_nube`), como UNA seccion cruda (titulo vacio: se
+    rinde tal cual, byte a byte lo de antes). Si no, el contexto de
+    siempre."""
     if a_la_nube_tapado:
-        return _sistema_nube()
+        return [("", _sistema_nube())]
     return _build_context(chat_msg, runtime, features)
 
 
-def _build_context(user_msg: str, runtime: str, features: dict | None = None) -> str:
-    """Contexto ordenado para caché (estable -> volátil) y presupuestado.
+def _secciones_del_turno(secciones_base: list[tuple[str, str]], *,
+                         vision_text: str = "", aviso_imagen: bool = False,
+                         attachment_context: str = "", bloque_dep: str = "",
+                         web_material: dict | None = None,
+                         a_la_nube_tapado: bool = False) -> list[tuple[str, str]]:
+    """Las secciones de `_sistema_del_turno` mas las que el server suma:
+    vision, el aviso de imagen sin vision (cruda: no tenia titulo), los
+    adjuntos, el departamento en foco y los resultados web. Los tres
+    ultimos ya traen su `=== X ===` adentro y `seccion_de_bloque` lo
+    vuelve titulo, asi `render_context` da byte a byte el system de antes
+    (test_turno_secciones.py lo fija). En /nube-a-la-nube adjuntos y
+    departamento no van: son crudos (no pasan por la compuerta de
+    redaccion) y podrian llevar datos sensibles; `web_material` ya queda
+    en None en /nube (canal de web salteado antes)."""
+    secciones = list(secciones_base)
+    if vision_text:
+        secciones.append(("Vision de imagen adjunta", vision_text))
+    elif aviso_imagen:
+        secciones.append(("", "[Imagen adjunta registrada. Para análisis visual automático: "
+                              "instala 'ollama pull moondream' o configura ANTHROPIC_API_KEY.]"))
+    if attachment_context and not a_la_nube_tapado:
+        secciones.append(prompt_compiler.seccion_de_bloque(attachment_context))
+    if bloque_dep and not a_la_nube_tapado:
+        secciones.append(prompt_compiler.seccion_de_bloque(bloque_dep))
+    if web_material and (web_material["results"] or web_material["pages"]):
+        secciones.append(prompt_compiler.seccion_de_bloque(calipso_web.context_block(web_material)))
+    return secciones
+
+
+def _build_context(user_msg: str, runtime: str, features: dict | None = None,
+                   ) -> list[tuple[str, str]]:
+    """Contexto ordenado para caché (estable -> volátil) y presupuestado,
+    como lista de SECCIONES (titulo, cuerpo) de `context_sections`; el
+    string es `prompt_compiler.render_context(...)` (spec canarios 2.3).
 
     Estable (prefijo, se cachea en sub/api): identidad + memoria núcleo.
     Volátil (sufijo): recuerdos relevantes (podados por score) + estado real.
@@ -2981,7 +3018,7 @@ def _build_context(user_msg: str, runtime: str, features: dict | None = None) ->
     # leerlos. `cargar()` solo lee catastro.json (o escanea una vez si es
     # la primera vez de la vida del catastro); no toma ningun candado.
     proyectos = prompt_compiler.proyectos_brief(ROOT)
-    return prompt_compiler.compile_context(
+    return prompt_compiler.context_sections(
         SYSTEM, core=core, recalled=recalled,
         repo_brief=repo_brief, goal_block=goal_block, runtime=runtime,
         economia=economia, proyectos=proyectos, features=features,
@@ -3028,22 +3065,28 @@ def _history_messages(chat_id: str | None, limit: int = _HISTORY_TURNS) -> list[
 
 def _chunks_for(route: str, system: str, user_msg: str, usage: dict,
                 model: str | None = None, effort: int | None = None,
-                chat_id: str | None = None):
-    """Devuelve (generador, modelo) segun la ruta con historial de conversacion."""
-    history = _history_messages(chat_id)
+                chat_id: str | None = None, history: list[dict] | None = None):
+    """Devuelve (generador, modelo, messages) segun la ruta con historial de
+    conversacion. `history` prearmado (la ventana lo recorta por pasada,
+    spec canarios 2.3); sin el, se lee del chat como siempre. `messages` es
+    exactamente lo que viajo (system + historial + user), para que el
+    canario compare contra eso y no contra una reconstruccion; con Ollama
+    caido es lo que HABRIA viajado."""
+    if history is None:
+        history = _history_messages(chat_id)
+    messages = [{"role": "system", "content": system}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": user_msg})
 
     if route == "api":
         cfg = dispatch.CONFIG["api"]
         mdl = model or cfg["model"]
-        messages = [{"role": "system", "content": system}]
-        messages.extend(history)
-        messages.append({"role": "user", "content": user_msg})
         payload = {"model": mdl, "stream": True,
                    "stream_options": {"include_usage": True}, "messages": messages}
         if effort is not None:
             payload["output_config"] = {"effort": capabilities.EFFORT_PARAM[effort]}
         headers = {"Authorization": f"Bearer {cfg['api_key']}"}
-        return dispatch._sse_text_chunks(cfg["base_url"], payload, headers, usage), mdl
+        return dispatch._sse_text_chunks(cfg["base_url"], payload, headers, usage), mdl, messages
 
     # LA RUTA LOCAL ES LOCAL: transmite desde el Ollama que ya corre, con el
     # mismo `messages` que la rama api de arriba. El bug viejo corria
@@ -3064,13 +3107,10 @@ def _chunks_for(route: str, system: str, user_msg: str, usage: dict,
         def _local_caido():
             yield ("[Calipso] no puedo contestar esto con el modelo local: "
                    "Ollama no esta disponible. No lo mando a la nube.")
-        return _local_caido(), mdl
-    messages = [{"role": "system", "content": system}]
-    messages.extend(history)
-    messages.append({"role": "user", "content": user_msg})
+        return _local_caido(), mdl, messages
     payload = {"model": mdl, "messages": messages, "stream": True,
                "options": {"num_ctx": CHAT_NUM_CTX}}
-    return dispatch._ollama_chat_chunks(cfg["base_url"], payload, usage), mdl
+    return dispatch._ollama_chat_chunks(cfg["base_url"], payload, usage), mdl, messages
 
 def _subscription_invocation(client: str, system: str, user_msg: str,
                              model: str | None = None,
@@ -3587,7 +3627,7 @@ async def ws_chat(ws: WebSocket) -> None:
                 # se degrada a la nube (ver comentario de la compuerta de
                 # privacidad mas abajo).
                 try:
-                    gen_b, model_b = _chunks_for(
+                    gen_b, model_b, _ = _chunks_for(
                         "local", system_b, user_b, usage_b,
                         _route_model_name("local"), chat_id=None)
                     while True:
@@ -3779,37 +3819,31 @@ async def ws_chat(ws: WebSocket) -> None:
             # local), el system tiene que ser minimo: `_build_context` trae
             # recuerdos y contexto personal sin tapar, y saldria crudo.
             a_la_nube_tapado = bool(directives.get("nube")) and route != "local"
-            system = await asyncio.to_thread(
+            secciones_base = await asyncio.to_thread(
                 _sistema_del_turno, chat_msg, runtime, features, a_la_nube_tapado)
             # vision: describir imágenes antes de inyectar contexto de adjuntos.
             # en /nube se saltea: `vision_describe` puede mandar la imagen mas
             # el mensaje crudo (chat_msg) a Anthropic -- ante la duda (no hay
             # certeza de un camino local sin fuga), saltear es lo seguro.
+            vision_text, aviso_imagen = "", False
             if attachments.has_images(str(ROOT), attachment_ids) \
                     and not directives.get("nube"):
                 vision_text = await asyncio.to_thread(
                     attachments.vision_describe, str(ROOT), attachment_ids, chat_msg,
                     quien=quien_turno)
-                if vision_text:
-                    system += "\n\n=== Vision de imagen adjunta ===\n" + vision_text
-                else:
+                if not vision_text:
                     vm = attachments.ollama_vision_model()
-                    if not vm and not os.environ.get("ANTHROPIC_API_KEY"):
-                        system += (
-                            "\n\n[Imagen adjunta registrada. Para análisis visual automático: "
-                            "instala 'ollama pull moondream' o configura ANTHROPIC_API_KEY.]"
-                        )
+                    aviso_imagen = not vm and not os.environ.get("ANTHROPIC_API_KEY")
             attachment_context = attachments.context_block(str(ROOT), attachment_ids)
-            # en /nube-a-la-nube estos bloques no se agregan: son crudos (no
-            # pasan por la compuerta de redaccion) y podrian llevar datos
-            # sensibles. `web_material` ya queda en None en /nube (canal de
-            # web salteado mas arriba), asi que no hace falta gatearlo aca.
-            if attachment_context and not a_la_nube_tapado:
-                system += "\n\n" + attachment_context
-            if bloque_dep and not a_la_nube_tapado:
-                system += "\n\n" + bloque_dep
-            if web_material and (web_material["results"] or web_material["pages"]):
-                system += "\n\n" + calipso_web.context_block(web_material)
+            # las secciones que el server suma (adjuntos y departamento no
+            # van en /nube-a-la-nube: ver `_secciones_del_turno`); el string
+            # plano se rinde recien para el payload, y en la ruta local con
+            # streaming se rinde POR PASADA (la ventana recorta antes)
+            secciones = _secciones_del_turno(
+                secciones_base, vision_text=vision_text, aviso_imagen=aviso_imagen,
+                attachment_context=attachment_context, bloque_dep=bloque_dep,
+                web_material=web_material, a_la_nube_tapado=a_la_nube_tapado)
+            system = prompt_compiler.render_context(secciones)
             usage: dict = {}
             used_route = route
             full = ""
@@ -3819,14 +3853,12 @@ async def ws_chat(ws: WebSocket) -> None:
                     runtime = _harness_context(
                         verdict, "orchestrator", model,
                         f"equipo dinamico sobre ruta base {route}")
-                    system = await asyncio.to_thread(
-                        _sistema_del_turno, chat_msg, runtime, features, a_la_nube_tapado)
-                    if attachment_context and not a_la_nube_tapado:
-                        system += "\n\n" + attachment_context
-                    if bloque_dep and not a_la_nube_tapado:
-                        system += "\n\n" + bloque_dep
-                    if web_material and (web_material["results"] or web_material["pages"]):
-                        system += "\n\n" + calipso_web.context_block(web_material)
+                    secciones = _secciones_del_turno(
+                        await asyncio.to_thread(
+                            _sistema_del_turno, chat_msg, runtime, features, a_la_nube_tapado),
+                        attachment_context=attachment_context, bloque_dep=bloque_dep,
+                        web_material=web_material, a_la_nube_tapado=a_la_nube_tapado)
+                    system = prompt_compiler.render_context(secciones)
                     full, agent_team, queued = await _run_dynamic_team(
                         ws, inbox, mensaje_saliente, features, system, verdict,
                         approval_required=bool(directives.get("force_team")),
@@ -3854,7 +3886,7 @@ async def ws_chat(ws: WebSocket) -> None:
                     # probe pasivo de consumo las ve). Si la consulta falla,
                     # o el steer gana, no se reinvoca: lo que el CLI escribio
                     # despues de la marca vale, sin marcas (seccion 8.4).
-                    system_base = system
+                    secciones_base = secciones
                     mensaje_turno = mensaje_saliente
                     # el destino del abismo (viaje.py): "nube" = el gesto
                     # /nube (anillos + juez); "local" = el modelo de la
@@ -3930,9 +3962,10 @@ async def ws_chat(ws: WebSocket) -> None:
                                 redaccion.reponer(resto_crudo, mapa)
                                 if mapa is not None else resto_crudo)
                             break
-                        system, mensaje_turno = abismo_turno.prompt_reentrada(
-                            system_base, estado_abismo.bloques,
+                        secciones, mensaje_turno = abismo_turno.prompt_reentrada(
+                            secciones_base, estado_abismo.bloques,
                             estado_abismo.tramos_crudos, mensaje_saliente)
+                        system = prompt_compiler.render_context(secciones)
                         estado_abismo.sintetica = True
                         telemetry.log_event("abismo", evento="reinvocacion_suscripcion",
                                             client=verdict["client"],
@@ -3947,8 +3980,14 @@ async def ws_chat(ws: WebSocket) -> None:
                     # sintetica, gratis por construccion. El system base del
                     # turno se guarda una vez: la reentrada NO re-corre
                     # `_sistema_del_turno` (recall, economia bajo candado).
-                    system_base = system
+                    secciones_base = secciones
                     mensaje_turno = mensaje_saliente
+                    # el historial se arma UNA vez por turno (antes se releia
+                    # chats.json en cada pasada; es el mismo: el mensaje de
+                    # Pedro ya esta persistido y el de Calipso recien al
+                    # final) y viaja prearmado a `_chunks_for`, que devuelve
+                    # los messages que mando (spec canarios 2.3)
+                    historial = _history_messages(chat_id_nube)
                     # el destino del abismo (viaje.py): "nube" = el gesto
                     # /nube (anillos + juez); "local" = el modelo de la
                     # maquina (transparente); "afuera" = suscripcion o API
@@ -3979,9 +4018,10 @@ async def ws_chat(ws: WebSocket) -> None:
                         # (llega en el chunk final): en api es una
                         # subfacturacion real, declarada (invariante 5).
                         usage_pasada: dict = {}
-                        gen, model = _chunks_for(route, system, mensaje_turno, usage_pasada,
-                                                 model, verdict.get("effort"),
-                                                 chat_id=chat_id_nube)
+                        gen, model, mensajes_pasada = _chunks_for(
+                            route, prompt_compiler.render_context(secciones), mensaje_turno,
+                            usage_pasada, model, verdict.get("effort"),
+                            chat_id=chat_id_nube, history=historial)
                         marca_pendiente = None
                         desde = len(full)
                         while True:
@@ -4043,8 +4083,8 @@ async def ws_chat(ws: WebSocket) -> None:
                                              departamento=departamento,
                                              agente_id=agente_id, inbox=inbox,
                                              chat_id=chat_id)
-                        system, mensaje_turno = abismo_turno.prompt_reentrada(
-                            system_base, estado_abismo.bloques,
+                        secciones, mensaje_turno = abismo_turno.prompt_reentrada(
+                            secciones_base, estado_abismo.bloques,
                             estado_abismo.tramos_crudos, mensaje_saliente)
                         estado_abismo.sintetica = True
             except Exception as e:  # p.ej. LiteLLM apagado en ruta api
@@ -4081,13 +4121,12 @@ async def ws_chat(ws: WebSocket) -> None:
                                 # siendo un envio a la nube, mismo criterio.
                                 a_la_nube_tapado = (bool(directives.get("nube"))
                                                      and used_route != "local")
-                                system = await asyncio.to_thread(
-                                    _sistema_del_turno, chat_msg, runtime, features,
-                                    a_la_nube_tapado)
-                                if attachment_context and not a_la_nube_tapado:
-                                    system += "\n\n" + attachment_context
-                                if bloque_dep and not a_la_nube_tapado:
-                                    system += "\n\n" + bloque_dep
+                                system = prompt_compiler.render_context(_secciones_del_turno(
+                                    await asyncio.to_thread(
+                                        _sistema_del_turno, chat_msg, runtime, features,
+                                        a_la_nube_tapado),
+                                    attachment_context=attachment_context, bloque_dep=bloque_dep,
+                                    a_la_nube_tapado=a_la_nube_tapado))
                                 estado_abismo.apagada = True   # un turno que cayo al fallback no consulta
                                 texto_alterno, queued = await _run_subscription_text_live(
                                     ws, inbox, alternate, system, mensaje_saliente, None,
@@ -4135,15 +4174,16 @@ async def ws_chat(ws: WebSocket) -> None:
                         # False y el contexto completo de siempre aplica.
                         a_la_nube_tapado = (bool(directives.get("nube"))
                                              and used_route != "local")
-                        system = await asyncio.to_thread(
-                            _sistema_del_turno, chat_msg, runtime, features,
-                            a_la_nube_tapado)
-                        if attachment_context and not a_la_nube_tapado:
-                            system += "\n\n" + attachment_context
-                        if bloque_dep and not a_la_nube_tapado:
-                            system += "\n\n" + bloque_dep
+                        secciones = _secciones_del_turno(
+                            await asyncio.to_thread(
+                                _sistema_del_turno, chat_msg, runtime, features,
+                                a_la_nube_tapado),
+                            attachment_context=attachment_context, bloque_dep=bloque_dep,
+                            a_la_nube_tapado=a_la_nube_tapado)
                         estado_abismo.apagada = True   # un turno que cayo al fallback no consulta
-                        gen, model = _chunks_for("local", system, chat_msg, usage, chat_id=chat_id)
+                        gen, model, mensajes_pasada = _chunks_for(
+                            "local", prompt_compiler.render_context(secciones), chat_msg, usage,
+                            chat_id=chat_id)
                         while True:
                             if not inbox.empty():  # steering en el fallback local
                                 steer = inbox.get_nowait()

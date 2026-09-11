@@ -38,7 +38,9 @@ def test_el_contrato_interno_ensena_la_marca_del_abismo_con_los_repos(tmp_path, 
 
 def test_el_system_de_nube_lleva_el_contrato_sin_nombres(tmp_path, monkeypatch):
     _catastro(tmp_path, monkeypatch, ["calipso", "atlas"])
-    nube = srv._sistema_del_turno("hola", "runtime", {}, True)
+    # desde los canarios el system de /nube es UNA seccion cruda: se rinde
+    # para mirarlo como el string que viaja
+    nube = srv.prompt_compiler.render_context(srv._sistema_del_turno("hola", "runtime", {}, True))
     assert nube.startswith(srv._SISTEMA_NUBE_MINIMO)
     assert contrato.bloque_contrato(()) in nube
     assert "calipso" not in nube and "atlas" not in nube
