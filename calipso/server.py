@@ -305,12 +305,20 @@ def _desde_de_sesion(sesion) -> dict:
     return {"credencial": "maquina"}
 
 
+def _proyecto() -> str:
+    """El `proyecto` del Quien (spec seccion 4): el nombre de ROOT en este
+    momento (ROOT es global y conmutable: se lee al armar el Quien, nunca
+    se cachea). `pathlib.Path("/").name` es "" y `Quien.__post_init__`
+    levanta 'proyecto vacio': con ROOT en la raiz se caia el websocket en
+    cada turno. UNICO sitio que deriva el proyecto de ROOT."""
+    return ROOT.name or str(ROOT)
+
+
 def _quien_http(request: Request, origen: str, endpoint: str, **campos) -> aduana.Quien:
     """El Quien de un endpoint: `ui` (lo dispara la pagina sola, un GET al
     cargar) o `gesto` (un click, un POST), con `endpoint`, `desde` y el
-    proyecto de ROOT en este momento (ROOT es global y conmutable: se lee
-    al armar el Quien, nunca se cachea)."""
-    return aduana.Quien(origen=origen, proyecto=ROOT.name, endpoint=endpoint,
+    proyecto de ROOT en este momento (`_proyecto()`)."""
+    return aduana.Quien(origen=origen, proyecto=_proyecto(), endpoint=endpoint,
                         desde=_desde_de_sesion(getattr(request.state, "sesion", None)),
                         **campos)
 
@@ -2146,7 +2154,7 @@ def _declarar_arranque() -> None:
     (`aduana_en_loop`), y la memoria quedaria sin declarar. Se llama desde
     `_calentar_probes`, en `to_thread` desde `_startup_warm`, donde el
     candado se puede tomar. Con `python calipso/server.py` daria igual."""
-    quien = aduana.Quien(origen="arranque", proyecto=ROOT.name,
+    quien = aduana.Quien(origen="arranque", proyecto=_proyecto(),
                          desde={"credencial": "maquina"})
     aduana.declarar_una_vez("memoria", quien, "modelo de embeddings",
                             destino="huggingface.co", motivo=EMBED_MODEL)
@@ -3715,7 +3723,7 @@ async def ws_chat(ws: WebSocket) -> None:
             quien_turno = aduana.Quien(
                 origen="turno",
                 chat=chat_id,
-                proyecto=ROOT.name,
+                proyecto=_proyecto(),
                 gesto=_gesto_de(directives),
                 # una ruta que la aduana no conoce va como None (la telemetria
                 # del turno la conserva, correlable por chat y ts): el
@@ -4284,7 +4292,7 @@ def _routine_handlers() -> dict:
         if r.get("quien"):
             quien = aduana.Quien(**r["quien"])
         else:
-            quien = aduana.Quien(origen="rutina", proyecto=ROOT.name,
+            quien = aduana.Quien(origen="rutina", proyecto=_proyecto(),
                                  rutina={"kind": r["kind"], "id": r["id"]},
                                  desde={"credencial": "maquina"})
         mem.reflect(quien)
@@ -8110,7 +8118,7 @@ def _calentar_probes() -> dict:
     en cada turno, y ahi el candado no se puede tomar (spec seccion 3)."""
     _declarar_arranque()
     aduana.declarar_una_vez(
-        "probes", aduana.Quien(origen="arranque", proyecto=ROOT.name,
+        "probes", aduana.Quien(origen="arranque", proyecto=_proyecto(),
                                desde={"credencial": "maquina"}),
         "probes claude/codex: --version, auth status, login status", destino=None)
     return _backend_availability()

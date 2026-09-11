@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import json
+import pathlib
 import subprocess
 import threading
 
@@ -218,6 +219,39 @@ def test_desde_de_sesion_y_quien_http():
     q = srv._quien_http(_Req(), "ui", "/api/updates")
     assert q == aduana.Quien(origen="ui", proyecto=srv.ROOT.name, endpoint="/api/updates",
                              desde={"credencial": "maquina"})
+
+
+def test_con_root_en_la_raiz_el_proyecto_no_queda_vacio(libro, monkeypatch):
+    """`pathlib.Path("/").name` es "": `Quien.__post_init__` levanta
+    'proyecto vacio', y `quien_turno` se arma en TODO turno antes del try
+    (el websocket se caia en cada mensaje; los endpoints daban 500). El
+    helper `_proyecto()` (`ROOT.name or str(ROOT)`) es el UNICO sitio que
+    deriva el proyecto de ROOT."""
+    monkeypatch.setattr(srv, "ROOT", pathlib.Path("/"))
+    assert srv._proyecto() == "/"
+
+    class _Req:
+        class state:
+            pass
+    q = srv._quien_http(_Req(), "ui", "/api/updates")
+    assert q.proyecto == "/"
+    # los otros sitios que arman un Quien desde ROOT tampoco revientan
+    srv._declarar_arranque()
+    monkeypatch.setattr(srv, "_backend_availability", lambda: {"ok": True})
+    srv._calentar_probes()
+    assert {c["quien"]["proyecto"] for c in cruces_del_libro(libro)} == {"/"}
+    # y con un ROOT normal, sigue siendo el nombre
+    monkeypatch.setattr(srv, "ROOT", pathlib.Path("/tmp/proyectos/calipso"))
+    assert srv._proyecto() == "calipso"
+
+
+def test_ningun_sitio_del_server_deriva_el_proyecto_por_su_cuenta():
+    """Guardia de texto: `proyecto=ROOT.name` no vuelve a aparecer; todo
+    Quien del server pasa por `_proyecto()` (_quien_http, _declarar_arranque,
+    quien_turno, el handler _reflect del ticker, _calentar_probes)."""
+    fuente = pathlib.Path(srv.__file__).read_text(encoding="utf-8")
+    assert "proyecto=ROOT.name" not in fuente
+    assert fuente.count("proyecto=_proyecto()") >= 5
 
 
 # --- Task 4: el turno de ws_chat y los endpoints de web/browser/deps -----------
