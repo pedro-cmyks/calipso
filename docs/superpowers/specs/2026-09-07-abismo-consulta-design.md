@@ -184,8 +184,15 @@ pasa a ser: **medir SOBRE el system de produccion y contar solo marcas que no co
 **Enmienda 2026-09-10 (aduana, seccion 13 de su spec): los anillos gobiernan solo /nube.** Pedro decidio
 que "los modelos ven todo, incluido el anillo 3": en un turno de suscripcion o API sin /nube el bloque
 viaja entero. La fila "Credencial" de la seccion 6 SOBREVIVE para todo destino no local: la credencial
-jamas sale (decision del 2026-09-02 reafirmada); hoy `viaje.py:51-53` no la cumple sin /nube y la tarea 9
-del plan de la aduana lo cierra con el detector determinista.
+jamas sale (decision del 2026-09-02 reafirmada). **HECHO en la rama de la aduana (2026-09-11):** el viaje
+tiene ahora TRES destinos: `local` (Ollama, sin /nube: transparente, anillo 3 incluido; el spec exime al
+modelo de la maquina), **`afuera`** (suscripcion o API sin /nube: el bloque viaja ENTERO sin anillos ni
+juez LLM, pero el detector determinista corre sobre el texto y, si marca, el envio entero falla cerrado
+con motivo `credencial`) y `nube` (/nube: anillos + juez + redaccion, como siempre). El server deriva el
+destino de la ruta real en las dos ramas de `ws_chat`, `viaje.preparar_viaje` lo distingue, y
+`viaje.destino` viaja en la senal `pescado` y en la telemetria. Costo conocido y aceptado (ruling del
+cierre): el detector completo marca tambien un SHA de 40 hex o una URL de alta entropia, y en `afuera` eso
+corta la consulta, igual que en /nube hoy; afinar el detector es otra tanda, con banco.
 
 ## 13. Invariantes
 

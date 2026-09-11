@@ -243,7 +243,12 @@ fabrica viva.
   verificado `docs/superpowers/2026-09-10-mapa-salidas-al-exterior.md`. Idea de Pedro: "la unica puerta al
   internet", afinada a "los modelos ven todo; los queries a internet se miden" (cuantos, quien, que se va; sin
   frenar). Es la mitad que MIDE de la frontera de salida del 08-24; publicar/correo/gasto real siguen siendo
-  compuertas obligatorias del motor de permisos. Siguiente paso: el plan (writing-plans) y su ejecucion SDD.
+  compuertas obligatorias del motor de permisos. **CONSTRUIDA y mergeada el 2026-09-11** (rama `feat/aduana`,
+  9 tasks por SDD: 24 agentes, 3 rondas de fix; cierre con revision final + 3 lentes con sondas + Codex + una
+  ola de fix; smoke en vivo `docs/superpowers/2026-09-10-smoke-aduana.md`, 8/8). `calipso/aduana.py`,
+  `aduana.jsonl` 0600, `test_aduana_canario.py`, `GET /api/aduana`, la sub-pestana Aduana. AGENTS.md
+  "Seguridad actual" la resume. Tanda B (cerrar las puertas inutiles: HF offline, npm a pedido, Monaco y
+  fuentes locales) y la familia `red` del motor de permisos (frenar) quedan como siguientes, si Pedro quiere.
 - **Metodo nuevo que funciono:** Codex headless (`codex exec -m gpt-5.5 -s read-only --output-schema`) como
   lente adversaria independiente, a pedido de Pedro, en la refutacion del mapa (10 veredictos) y en la revision
   del spec. El modelo `astra` no esta disponible con cuenta ChatGPT.

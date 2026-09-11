@@ -238,6 +238,27 @@ La autoridad es el spec de la capa de sesion,
   aparato), nace 0600, no se respalda y esta bajo el NUNCA del motor de permisos
   (`calipso/permisos/acciones.py`, `es_credencial_del_servidor`). Ilegible = se
   renombra y se avisa, jamas se pisa.
+- **La aduana (2026-09-11, `calipso/aduana.py`; spec
+  `docs/superpowers/specs/2026-09-10-aduana-design.md`):** toda salida a internet
+  del server que no sea un modelo (DuckDuckGo y las paginas, Chromium, `gh`,
+  `git` de red, npm, pip, `playwright install`, el registry de npm) pasa por
+  `with aduana.cruzar(quien, proposito, destino, carga)` en la funcion que hace
+  la llamada, y lo que sale desde adentro de una libreria (huggingface.co al
+  arrancar, whisper, los probes de los CLIs, vision por SDK, `reflect`) se
+  `declara`. Cada cruce es una linea en `~/.calipso/aduana.jsonl` (0600,
+  append-only, fail-open con aviso) con QUIEN lo disparo (origen, chat, proyecto,
+  gesto, ruta, rutina, endpoint, `desde` = maquina o sesion) y que se fue (la
+  consulta hasta 500 chars, o tamano + hash + 3 lineas de un cuerpo), saneado
+  (userinfo y valores de query -> `[SECRETO]`; ghp_/JWT/PEM/conexiones tapados).
+  NO frena, no cobra, no mide el contenido que ven los modelos (Pedro: "los
+  modelos ven todo"). `test_aduana_canario.py` marca por AST toda llamada de red
+  y todo subprocess sin aduana, salvo la lista `EXCEPCIONES` con motivo: una
+  puerta nueva rompe la suite. `GET /api/aduana` y la sub-pestana `Aduana` de
+  `/fabrica`; el `tablero` la ve sin carga ni chat; el `lector` no.
+- **El bloque del abismo hacia afuera:** tres destinos (`local` Ollama:
+  transparente; `afuera` suscripcion/API sin /nube: viaja entero pero el detector
+  determinista falla cerrado ante una credencial; `nube`: anillos + juez).
+
 - El servidor se ata a `127.0.0.1` por defecto (`_host()` en `calipso/server.py`;
   el default se cerro el 2026-08-31). Abrirlo hay que pedirlo con `CALIPSO_HOST`,
   y para remoto seguro solo a la IP de Tailscale. Nunca abrir el puerto a internet.
