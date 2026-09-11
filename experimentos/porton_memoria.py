@@ -154,9 +154,14 @@ def _git(raiz: pathlib.Path, *args: str) -> str:
 def worktree_main_crear() -> pathlib.Path:
     """El codigo de main, tal cual, en un worktree aparte (ruling 11): de ahi
     se levanta el server de la condicion `antes`. Se niega si el directorio
-    ya existe: no se pisa nada que no haya creado este script."""
+    ya existe: no se pisa nada que no haya creado este script. `prune`
+    antes del `add`: si una corrida anterior murio (SIGKILL) y el directorio
+    se borro a mano, git lo sigue teniendo registrado y el `add` se niega
+    ("missing but already registered worktree"); `prune` suelta ese huerfano
+    y nada mas (solo toca registros cuyo directorio ya no existe)."""
     if WORKTREE_MAIN.exists():
         sys.exit(f"{WORKTREE_MAIN} ya existe: borralo (git worktree remove) antes de correr")
+    _git(RAIZ, "worktree", "prune")
     _git(RAIZ, "worktree", "add", "--detach", str(WORKTREE_MAIN), "main")
     print(f"[antes] worktree de main en {WORKTREE_MAIN} ({_git(WORKTREE_MAIN, 'rev-parse', '--short', 'HEAD')})",
           flush=True)
