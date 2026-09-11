@@ -146,6 +146,21 @@ def test_sin_gguf_el_contador_es_el_fallback_de_3_3(monkeypatch, tmp_path):
     assert tokenizador.blob_del_modelo("qwen2.5:7b") is None
 
 
+def test_el_fallback_del_tokenizador_es_el_de_canarios_y_sigue_a_umbrales(monkeypatch, tmp_path):
+    """El 3.3 vive en UMBRALES (canarios) y en ningun otro lado: el contador
+    que el server usa sin GGUF es la MISMA funcion que `presupuesto` usa
+    sin contador, y recalibrar UMBRALES mueve a los dos (fix round 1)."""
+    assert tokenizador.contar_fallback is c.contar_fallback
+    monkeypatch.setenv("OLLAMA_MODELS", str(tmp_path / "no-hay"))
+    monkeypatch.setattr(tokenizador, "_cache", {})
+    contar, origen = tokenizador.contador("qwen2.5:7b")
+    assert origen == "fallback" and contar is c.contar_fallback
+    monkeypatch.setitem(c.UMBRALES, "fallback_chars_por_token", 11)
+    assert contar("x" * 33) == 3
+    secs = [("Sistema", "S" * 22)]
+    assert c.presupuesto(secs, [], "x" * 33) == c.presupuesto(secs, [], "x" * 33, contar=contar)
+
+
 def test_el_manifest_de_ollama_lleva_al_blob_del_modelo(monkeypatch, tmp_path):
     raiz = tmp_path / "manifests" / "registry.ollama.ai" / "library" / "qwen2.5"
     raiz.mkdir(parents=True)

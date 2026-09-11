@@ -2,11 +2,12 @@
 2026-09-11, seccion 2.3): `tokenizers` esta en el venv y el header del GGUF
 trae vocab, merges y tipos de token; el `tokenizer.json` se genera UNA vez
 por blob (clave: el digest del blob, que ya esta en su nombre) bajo
-`CALIPSO_HOME/tokenizador/` y se regenera si cambia el modelo. Fallback 3.3
-chars/token (medido: mediana 3.50 sobre systems, contratos e historial
-reales; 4.1 en respuestas; 2.96 con chino; 1.2 en adjuntos de codigo, que
-es donde el fallback subestima) cuando no hay GGUF, el `pre` no es `qwen2`
-o la libreria falla.
+`CALIPSO_HOME/tokenizador/` y se regenera si cambia el modelo. Fallback
+por chars/token (`canarios.contar_fallback`, el numero vive SOLO en
+`canarios.UMBRALES["fallback_chars_por_token"]`; medido: mediana 3.50 sobre
+systems, contratos e historial reales; 4.1 en respuestas; 2.96 con chino;
+1.2 en adjuntos de codigo, que es donde el fallback subestima) cuando no
+hay GGUF, el `pre` no es `qwen2` o la libreria falla.
 
 Toca el disco (lee `~/.ollama`, escribe el cache): por eso vive aparte de
 `canarios.py`, que es puro. El home se resuelve POR LLAMADA (`home()`),
@@ -23,13 +24,15 @@ parsea a mano.
 from __future__ import annotations
 
 import json
-import math
 import os
 import pathlib
 import struct
 import threading
 
-FALLBACK_CHARS_POR_TOKEN = 3.3
+# el fallback es el MISMO de `canarios.presupuesto` (una sola definicion,
+# un solo numero en UMBRALES); canarios es puro y no importa este modulo
+from calipso.canarios import contar_fallback
+
 _TIPOS = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i", 6: "f", 7: "?", 10: "Q", 11: "q", 12: "d"}
 _PATRON_QWEN2 = (r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|"
                  r"\s*[\r\n]+|\s+(?!\S)|\s+")
@@ -136,10 +139,6 @@ def cargar(nombre: str):
             tok = None
         _cache[nombre] = tok
         return tok
-
-
-def contar_fallback(texto: str) -> int:
-    return math.ceil(len(texto or "") / FALLBACK_CHARS_POR_TOKEN)
 
 
 def contador(nombre: str):
