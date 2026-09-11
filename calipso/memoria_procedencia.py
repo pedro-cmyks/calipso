@@ -209,17 +209,27 @@ def presentar(texto: str, meta: dict | None = None, *,
     Lo que no parsea como par (metas, fichas): nunca el crudo sin etiqueta:
         - Registro (goal, 2026-08-14): Pedro definio una meta: ...
     Pregunta que era solo un gesto ('/local'): '' -- el lector la salta.
+    Texto vacio (o solo espacio): '' en las tres variantes, como main lo
+    saltaba (`if item.get("text")` en prompt_compiler).
 
     `meta` tolera None y claves ausentes (los dobles de los tests pasan hits
     sin meta): fecha '?' y ruta '?'. La ruta sale de `ruta` (la usada, lo
     nuevo) o de `route` (la decidida, lo viejo).
 
+    `variante` explicita solo si es una de VARIANTES (la letra exacta);
+    cualquier otra cosa (None, '', 'C', 'a') cae a `variante_activa()`, o
+    sea al entorno o a la default. Se elige caer y no levantar ValueError
+    porque el lector nunca debe voltear un turno por una letra mal puesta.
+
     Variante `off` (solo para medir el 'antes' del porton): el crudo de
     main, `- (score) texto` si llega `score` (el system: prompt_compiler
     pegaba el score) y `- texto` si no (el abismo: fuentes.memoria nunca lo
     pego). Quien decide si viaja el score es `presentar_recuerdos`."""
+    if not (texto or "").strip():
+        return ""
     meta = meta or {}
-    variante = variante or variante_activa()
+    if variante not in VARIANTES:
+        variante = variante_activa()
     if variante == "off":
         return f"- ({score}) {texto}" if score is not None else f"- {texto}"
     fecha = str(meta.get("ts") or "")[:10] or "?"
@@ -253,7 +263,11 @@ def presentar_recuerdos(hits: list[dict], tope: int, *,
 
     `con_score` solo importa en la variante `off`: el system de main pegaba
     `- (score) texto` (con_score=True, `_build_context`) y el abismo `- texto`
-    (con_score=False, `fuentes.memoria`). En A y B el score nunca se ve."""
+    (con_score=False, `fuentes.memoria`). En A y B el score nunca se ve.
+
+    `tope <= 0` es 'ningun recuerdo': devuelve [] sin presentar nada."""
+    if tope <= 0:
+        return []
     salida = []
     for h in hits:
         texto = presentar(h.get("text") or "", h.get("meta"),
