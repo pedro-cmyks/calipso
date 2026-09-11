@@ -51,6 +51,7 @@ EXCEPCIONES: dict[str, str] = {
     "launch_calipso.py:_port_open": "loopback: el lanzador espera al propio server",
     "launch_calipso.py:_wait_ready": "loopback: idem",
     "launch_calipso.py:main": "local: lanza uvicorn/el navegador, no sale a internet",
+    "calipso/memoria_reindex.py:_server_prendido": "loopback: el reindex (acto de Pedro, fuera del server) pregunta si el server escucha en CALIPSO_PORT antes de recorrer el chroma; no sale de la maquina",
     # --- git local ---
     "calipso/catastro.py:_git": "git local: rev-parse/log/status sobre el catastro",
     "calipso/server.py:_git": "git local: /api/git/* sobre ROOT",

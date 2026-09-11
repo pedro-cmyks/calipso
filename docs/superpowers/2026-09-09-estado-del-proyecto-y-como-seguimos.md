@@ -255,3 +255,24 @@ fabrica viva.
 - **Ruido del home real visto de paso (de Pedro):** la meta de prueba `goal_ff4b5cd203f0` (junio) sigue activa y
   entra en cada turno; el recall trae recuerdos "-q" con acentos rotos. Y `.claude/launch.json:7` arranca
   uvicorn en `0.0.0.0` (el default loopback solo rige bajo `__main__`).
+- **Memoria con procedencia (2026-09-11):** lo que dijo Calipso es contexto, no evidencia. Rama
+  `feat/memoria-procedencia` mergeada. Guardar todo, decidir al leer: los dos lectores (system del turno y
+  fuente `memoria` del abismo) presentan cada episodio como `Pedro dijo (fecha): ...` / `Calipso contesto
+  (ruta, fecha): ...`, el no-saber se degrada al leer con patrones fijos medidos contra un banco de 52
+  respuestas reales (`experimentos/no_saber_banco.py`, 0 falsos, 27/28), el gesto solo se salta antes del
+  corte; el `remember` del chat guarda la pregunta limpia y `ruta` usada / `modelo` / `chat` / `procedencia=1`;
+  `python -m calipso.memoria_reindex` marca lo viejo. **Variante aterrizada: A** (ruling del controlador con
+  los datos: B inventa en `presupuesto`, A dice que no tenia el dato). El porton no dio la salida limpia
+  (`experimentos/porton_memoria_resultados.md`: antes = main exacto desde un worktree / A / B sobre el fixture
+  restaurado, N=2: sin_dato 4 -> 1 / 0, eco por el flag 0 / 0, pero A parafrasea la frase fija 1 vez
+  ("No teníamos el dato ... en ese momento") y confabula sube 2 -> 4 / 4, todo en `presupuesto`, cuya verdad
+  esta en `chats.json` y no en la memoria); con los textos leidos, A es la respuesta honesta y la parafrasis
+  entro a los patrones fuertes (`no teniamos (el|ese|este|ningun|la) (dato|informacion)`, fila real en el
+  banco). Spec `docs/superpowers/specs/2026-09-11-memoria-con-procedencia-design.md`; cierre
+  `docs/superpowers/2026-09-11-cierre-memoria-procedencia.md` (las dos lecturas, el ruling y los hallazgos).
+  **Pendiente de Pedro:** (1) el reindex del home real, con el server apagado y desde la raiz del repo:
+  `.venv/bin/python -m calipso.memoria_reindex --vista` y, si los numeros cierran, `--aplicar` (idempotente;
+  `reflect`/`recent` y los departamentos quedan fuera, spec seccion 6); (2) el hallazgo h07 (otra tanda): el
+  7b se cree sus propias respuestas viejas aunque lleven la etiqueta `Calipso contesto (local, fecha)`; la
+  procedencia que falta es si esa respuesta salio con el abismo consultado o sin consultar; y el sub-bloque
+  `recuerdos` del abismo al techo de 2000 en los 13 eventos pescados de `memoria` del porton (ruling 2).

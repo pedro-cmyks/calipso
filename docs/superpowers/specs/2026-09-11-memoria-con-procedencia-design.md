@@ -114,9 +114,10 @@ sin `None`). Lo que agrega a lo viejo: `procedencia=1` y `ruta` (= `route` decid
 cuantos ya tienen `procedencia`, cuantos parsean como chat, **cuantos `kind="chat"` NO parsean** (esperado
 0; si no, Pedro lo ve antes de aplicar), cuantos quedarian como `sin_dato` y cuantos como basura; no escribe
 nada. Idempotente por el merge (la segunda corrida no cambia nada y lo dice). Exige que el server este
-apagado: chequea `CALIPSO_PORT` (default 8000) y se niega si responde, salvo `--forzar`; *(ruling: dos
-`PersistentClient` sobre el mismo directorio no corrompen nada, sondeado; el chequeo es por completitud
-del recorrido, no por integridad, y el mensaje lo dice)*. Al terminar vuelve a contar y avisa si `count`
+apagado para `--aplicar`: chequea `CALIPSO_PORT` (default 8000) y se niega si responde, salvo `--forzar`;
+`--vista` se permite con el server prendido *(ruling 7, seccion 8; ruling: dos `PersistentClient` sobre el
+mismo directorio no corrompen nada, sondeado; el chequeo es por completitud del recorrido, no por
+integridad, y el mensaje lo dice)*. Al terminar vuelve a contar y avisa si `count`
 cambio durante la corrida. Un episodio con metadatos raros se salta y se cuenta, jamas se pisa.
 
 ## 4. Invariantes
@@ -124,13 +125,13 @@ cambio durante la corrida. Un episodio con metadatos raros se salta y se cuenta,
 1. **Nada se borra ni se reescribe en disco al leer.** La degradacion y el salto viven en `presentar`.
 2. **Todo lo que el modelo ve de un episodio lleva procedencia:** quien lo dijo, cuando, y por que ruta si
    fue Calipso; lo que no es un par de chat lleva `Registro (<kind>, <fecha>)`. No existe mas el par crudo
-   en ningun prompt.
+   en ningun prompt de turno ni del abismo *(acotada en el cierre, seccion 8: `reflect` queda para otra rama)*.
 3. **Un no-saber jamas se presenta como dato.** Se reemplaza por la frase fija; la respuesta cruda sigue en
    disco.
 4. **La clasificacion es pura y determinista,** sin modelo, medida contra el banco; los patrones estan en un
    solo lugar.
 5. **El reindexado conserva id, documento y cantidad;** solo agrega metadatos por merge; es idempotente y
-   se niega con el server prendido (salvo `--forzar`).
+   se niega para `--aplicar` con el server prendido (salvo `--forzar`); `--vista` se permite (ruling 7).
 6. **Lo viejo y lo nuevo se leen con la misma funcion** (`partir` + `presentar`).
 7. **`Memory.recall`, `recent` y `reflect` no cambian de contrato.**
 
@@ -180,3 +181,53 @@ Una rama `feat/memoria-procedencia`, 5 tasks: (1) `calipso/memoria_procedencia.p
 nuevos y la pregunta limpia (server) + test por harness; (3) los dos lectores usan `presentar` antes del
 corte + tests; (4) `memoria_reindex` + tests; (5) el porton en vivo (antes / A / B), aterrizaje de A o B, smoke
 y cierre.
+
+## 8. Rulings posteriores (2026-09-11, ejecucion y cierre)
+
+Lo que se decidio durante la ejecucion del plan (`docs/superpowers/plans/2026-09-11-memoria-procedencia.md`)
+y el cierre de la rama, incorporado aca para que el spec diga lo que el codigo hace. El ledger con las
+razones y los costos: `.superpowers/sdd/2026-09-11-memoria-procedencia/progress.md`.
+
+- **(a) Ruling 7: `--vista` SE PERMITE con el server prendido; solo `--aplicar` se niega (salvo `--forzar`).**
+  La vista es de solo lectura, dos clientes sobre el mismo directorio no corrompen (sondeado), y Pedro
+  necesita ver los conteos sin apagar el server. Costo aceptado: un conteo de la vista que no incluya un
+  episodio que el server escribe en ese instante. La seccion 3 y la invariante 5 se corrigieron en el cierre
+  (antes decian "se niega con el server prendido" sin distinguir modos).
+- **(b) Ruling 11: la condicion `antes` del porton es MAIN EXACTO,** medida con un server desechable levantado
+  desde un worktree de main (`git worktree add --detach /tmp/calipso-main-porton main`, borrado al terminar),
+  no con esta rama y una variante que reproduzca los lectores de main. Por eso no hay variante `off` (ver g).
+- **(c) Ruling 6: la variante aterrizada es A** (`VARIANTE_DEFAULT = "A"`: la frase fija con ruta y fecha), por
+  el controlador con los datos del porton: el sintoma original (repetir "no tengo registros") pasa de 2/2 a
+  0/2 en A y en B; la subida de `confabula` es entera del caso `presupuesto`, donde la verdad vive solo en
+  `chats.json` y el 7b consulta `memoria`; ahi B inventa ("quedamos en revisar los costos") y A parafrasea la
+  frase fija ("no teniamos el dato ... registrado en ese momento"), que es la respuesta mas honesta aunque
+  la metrica la clase como confabula. Pedro puede ratificar o cambiar a B: es `VARIANTE_DEFAULT` mas una linea
+  de test (`test_la_variante_activa_sale_del_entorno_y_sin_variable_es_la_default`). La regla de aterrizaje de
+  la seccion 5 ("si A muestra eco y B no, se aterriza B") no se dio: `eco` fue 0 en A y en B.
+- **(d) Decision 2 del plan: el fixture tiene 5 no-saber, no 7.** La seccion 5 dice "7 de ellos no-saber, 4
+  confabulaciones" sobre los 16 episodios; medido con los patrones da 5 no-saber (`[0] [1] [2] [9] [10]`), 5
+  confabulaciones (`dato` por el ruling de este spec), 4 datos genuinos y 2 parciales del orquestador (`dato`:
+  informan rama y commits reales). `--vista` sobre el fixture reporta `5 sin_dato` y los tests lo fijan.
+- **(e) Decision 6 del plan: la frase fija lleva (ruta, fecha):** `Calipso no tenia el dato entonces (local,
+  2026-09-10).` La invariante 2 pide la ruta tambien para el no-saber; el flag `eco` del porton busca el
+  prefijo `no tenia el dato`, que queda intacto.
+- **(f) Invariante 2 acotada:** "no existe mas el par crudo en ningun prompt de TURNO ni del ABISMO". `reflect`
+  (`Memory.reflect`, la destilacion con `claude -p`) sigue mandando los episodios crudos: esta fuera de este
+  spec (invariante 7: no cambia de contrato) y queda para otra rama.
+- **(g) La variante `off` murio en el cierre.** Existia solo para medir el `antes` sobre esta misma rama
+  (`MEMORIA_PRESENTAR=off`: los dos lectores de main byte a byte); con el ruling 11 el porton no la usa, y
+  quedaba como un interruptor muerto que volvia a pegar el par crudo en produccion si alguien exportaba la
+  variable (contradice la invariante 2). `VARIANTES = ("A", "B")`; `presentar` ya no recibe `score` ni
+  `presentar_recuerdos` `con_score`; `off` en el entorno vale como ausente; el porton no pasa
+  `MEMORIA_PRESENTAR` al server de main.
+- **(h) `partir` tolera espacio inicial** (`^\s*Pedro pregunt\S*:`, seccion 2): un documento `kind="chat"` con
+  un salto de linea adelante es un par igual (se presenta y se degrada), no un `Registro (chat, ...)` con el
+  no-saber crudo adentro.
+- **(i) Patrones sumados por el porton y el cierre** (la lista de la seccion 2 se afina contra el banco, como
+  el spec permite): el fuerte `no ten(ia|iamos|go) (el|ese|este|ningun|la|esa|esta) (dato|informacion)`
+  (el eco de la frase fija parafraseado en plural, "no teniamos el dato ... registrado en ese momento", y en
+  singular en pasado, "no tenia ese dato registrado en ese momento"), y el literal `calipso no tenia el
+  dato`. Banco al cierre: 30/31 no-saber atrapados, 0/24 falsos. Parkeado con fila anotada en el banco (no
+  como `dato`, porque rompe el piso): el hedge "En ese momento no tenia el dato, pero ahora si: fue X", que el
+  fuerte degrada; los fuertes NO reciben la clausula "afirmativa con contenido antes" porque rompe
+  fixture[0] ("Estare encantado de ayudarte... Actualmente no tengo ese dato").

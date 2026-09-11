@@ -99,6 +99,7 @@ from calipso import skills  # noqa: E402
 from calipso import telemetry  # noqa: E402
 from calipso import web as calipso_web  # noqa: E402
 from calipso import aduana  # noqa: E402
+from calipso import memoria_procedencia  # noqa: E402
 from calipso import verification  # noqa: E402
 from calipso.tools import commands as calipso_commands  # noqa: E402
 from calipso.memory import EMBED_MODEL, Memory, leer_carta  # noqa: E402
@@ -2953,8 +2954,13 @@ def _build_context(user_msg: str, runtime: str, features: dict | None = None) ->
     core = mem.load_core()
 
     # --- sufijo volátil ---
-    recalled = [r for r in mem.recall(user_msg, n=8)
-                if r["score"] >= RECALL_MIN_SCORE][:RECALL_MAX]
+    # con procedencia (spec 2026-09-11): se pide n=8, se PRESENTA cada hit
+    # (quien dijo que, cuando, por que ruta; el no-saber degradado; el
+    # gesto sin texto saltado) y recien ahi se corta a RECALL_MAX, para que
+    # un salto no achique el bloque. `text` de cada item ya es la vineta.
+    recalled = memoria_procedencia.presentar_recuerdos(
+        [r for r in mem.recall(user_msg, n=8) if r["score"] >= RECALL_MIN_SCORE],
+        RECALL_MAX)
     repo_brief = ""
     if features and features.get("needs_repo"):
         repo_brief = _repo_brief(ROOT)
@@ -4233,12 +4239,24 @@ async def ws_chat(ws: WebSocket) -> None:
             #    (reflect, el bibliotecario, el jefe de departamento).
             # 3. Corria sobre el event loop, a diferencia del `remember` de
             #    la meta ocho lineas mas arriba (:2377), que ya va por hilo.
+            #
+            # Y la procedencia (spec 2026-09-11, seccion 2): el par sigue
+            # siendo el documento (el embedding no cambia), pero la pregunta
+            # es la LIMPIA (`chat_msg`, sin el `/local` de adelante) y los
+            # metadatos dicen quien contesto de verdad: `ruta` es la USADA
+            # (`used_route`: local tras un fallback, orchestrator con equipo,
+            # subscription con el alterno; `route` sigue siendo la decidida),
+            # `modelo` el que contesto, `chat` el id y `procedencia=1` la
+            # marca para contar y para la idempotencia del reindex. Lo que
+            # sea None lo descarta `Scope.remember`. Se lee con
+            # `memoria_procedencia.presentar`, nunca crudo.
             if full.strip():
                 try:
                     await asyncio.to_thread(
                         mem.remember,
-                        f"Pedro pregunto: {user_msg}\nCalipso respondio: {full.strip()}",
-                        scope="global", route=verdict["route"], kind="chat")
+                        f"Pedro pregunto: {chat_msg}\nCalipso respondio: {full.strip()}",
+                        scope="global", route=verdict["route"], kind="chat",
+                        ruta=used_route, modelo=model, chat=chat_id, procedencia=1)
                 except Exception:
                     pass    # recordar no puede voltear un turno ya contestado
             if full.strip():

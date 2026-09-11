@@ -26,11 +26,15 @@ from calipso.mapa import pulso as p
 
 
 class MemoriaFalsa:
-    """Doble de `Memory`: lo que el turno usa (recall, load_core, remember)."""
+    """Doble de `Memory`: lo que el turno usa (recall, load_core, remember).
+    `recordado` son los textos (lo que los tests viejos asertan);
+    `guardados` es cada llamada entera: (texto, scope, meta), para mirar la
+    procedencia que el turno escribe (spec 2026-09-11)."""
 
     def __init__(self, core: str = ""):
         self.core = core
         self.recordado: list[str] = []
+        self.guardados: list[tuple[str, str, dict]] = []
 
     def recall(self, query, n=5, ambitos=None):
         return []
@@ -40,6 +44,7 @@ class MemoriaFalsa:
 
     def remember(self, text, scope="auto", **meta):
         self.recordado.append(text)
+        self.guardados.append((text, scope, dict(meta)))
         return "id-falso"
 
 
@@ -683,3 +688,43 @@ def test_la_senal_del_abismo_se_publica_al_pulso(chat):
     fallidos = [e for e in chat.pulso.desde(cursor)[1] if e["evento"] == "abismo"]
     assert [(e["fase"], e.get("motivo")) for e in fallidos] == [
         ("pondering", None), ("fallo", "vacio")]
+
+
+# --- la procedencia del episodio (spec 2026-09-11, seccion 2) ---------------
+
+def test_el_episodio_del_chat_lleva_la_pregunta_limpia_y_la_procedencia(chat):
+    """Lo que se guarda: el par con `chat_msg` (sin el gesto) y los metadatos
+    de quien contesto de verdad."""
+    chat.turno("/local hola")
+    assert len(chat.memoria.guardados) == 1
+    texto, scope, meta = chat.memoria.guardados[0]
+    assert texto == "Pedro pregunto: hola\nCalipso respondio: hola Pedro"
+    assert scope == "global"
+    assert meta == {"route": "local", "kind": "chat", "ruta": "local",
+                    "modelo": "modelo-falso", "chat": chat.chat_id, "procedencia": 1}
+
+
+def test_tras_un_fallback_la_ruta_guardada_es_la_usada_y_route_la_decidida(chat, monkeypatch):
+    def api_que_revienta(url, payload, *resto):
+        raise RuntimeError("litellm se cayo")
+    monkeypatch.setattr(srv.dispatch, "_sse_text_chunks", api_que_revienta)
+    chat.modelo.guiones = [["desde local"]]
+    eventos = chat.turno("/api libro")
+    assert [m.get("note") for m in de_tipo(eventos, "meta")] == [None, "fallback a local"]
+    texto, scope, meta = chat.memoria.guardados[0]
+    assert texto.startswith("Pedro pregunto: libro\n")
+    assert (meta["route"], meta["ruta"]) == ("api", "local")
+    assert meta["modelo"] == srv._route_model_name("local")
+    assert meta["chat"] == chat.chat_id and meta["procedencia"] == 1
+
+
+def test_con_el_orquestador_la_ruta_guardada_es_orchestrator(chat, monkeypatch):
+    monkeypatch.setattr(srv, "_should_orchestrate", lambda *a, **k: True)
+
+    async def equipo(ws, inbox, chat_msg, features, system, verdict, **kw):
+        return "sintesis entera", None, None
+    monkeypatch.setattr(srv, "_run_dynamic_team", equipo)
+    chat.turno("libro")
+    texto, scope, meta = chat.memoria.guardados[0]
+    assert texto == "Pedro pregunto: libro\nCalipso respondio: sintesis entera"
+    assert (meta["route"], meta["ruta"]) == ("local", "orchestrator")
