@@ -7,9 +7,20 @@ a `aduana.cruzar` / `aduana.declarar` / `aduana.declarar_una_vez`, o (b)
 sumar una sea un diff visible. Una excepcion `helper: <archivo:funcion>`
 exige que ESE llamador tenga el Call.
 
+Se marca tanto el Call directo (`subprocess.run(cmd)`) como la salida pasada
+por referencia, sin llamarla, en un argumento o keyword de otro Call
+(`asyncio.to_thread(subprocess.run, cmd)`, `loop.run_in_executor(None,
+urlopen, url)`, `functools.partial(subprocess.run, ...)`): es el idioma que
+empuja la invariante 8 (nunca en el loop) y sin esto seria un escape.
+
 Limite honesto: no ve lo que sale desde adentro de una libreria (chromadb,
 sentence_transformers, el SDK de Anthropic) ni `page.goto` de Chromium. Para
-eso estan `declarar` y la tabla de la seccion 7 del spec.
+eso estan `declarar` y la tabla de la seccion 7 del spec. Tampoco resuelve un
+rebinding a variable (`run = subprocess.run; run(cmd)`) ni las formas fuera
+de la lista del spec (`os.system`, `asyncio.create_subprocess_*`,
+`http.client`, `socket.socket()`); hoy ninguna existe en el arbol (sondeado
+por grep el 2026-09-10) y si aparece una, se suma a la regla, no a
+EXCEPCIONES.
 """
 from __future__ import annotations
 
@@ -147,17 +158,27 @@ def hallazgos_de(ruta: pathlib.Path, raiz: pathlib.Path = RAIZ) -> list[dict]:
     rel = str(ruta.relative_to(raiz)) if raiz in ruta.parents else ruta.name
     out: list[dict] = []
 
+    def marcar(n: ast.Call, pila: list[ast.AST]) -> None:
+        nombre = ":".join(f.name for f in pila) or "<modulo>"
+        out.append({
+            "sitio": f"{rel}:{nombre}", "linea": n.lineno,
+            "llamada": ast.unparse(n)[:120],
+            "salvado": any(_tiene_aduana(f, al) for f in pila)})
+
     def visitar(n, pila: list[ast.AST]):
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
             pila = pila + [n]
         if isinstance(n, ast.Call):
-            c = _canon(n.func, al)
-            if _es_salida(c):
-                nombre = ":".join(f.name for f in pila) or "<modulo>"
-                out.append({
-                    "sitio": f"{rel}:{nombre}", "linea": n.lineno,
-                    "llamada": ast.unparse(n)[:120],
-                    "salvado": any(_tiene_aduana(f, al) for f in pila)})
+            if _es_salida(_canon(n.func, al)):
+                marcar(n, pila)
+            else:
+                # la salida pasada por referencia, sin llamarla:
+                # `to_thread(subprocess.run, cmd)`, `partial(urlopen, url)`,
+                # `algo(runner=subprocess.run)`. Se marca el Call que la recibe.
+                pasados = list(n.args) + [k.value for k in n.keywords]
+                if any(isinstance(a, (ast.Name, ast.Attribute))
+                       and _es_salida(_canon(a, al)) for a in pasados):
+                    marcar(n, pila)
         for h in ast.iter_child_nodes(n):
             visitar(h, pila)
     visitar(tree, [])
@@ -192,6 +213,21 @@ def _sin_aduana(archivos, excepciones: dict[str, str], raiz=RAIZ) -> list[str]:
     return list(dict.fromkeys(fallas))      # sin repetir (tres calls, un aviso)
 
 
+def _excepciones_viejas(hallazgos: list[dict], excepciones: dict[str, str]) -> list[str]:
+    """Las excepciones que sobran (decision 13): las huerfanas (ningun hallazgo
+    con ese sitio) y las que cubren un sitio que YA tiene el Call a la aduana
+    (un `pendiente:` que sobrevivio a su task). Una `helper:` no sobra por eso:
+    el cruce que declara vive en el llamador, no en el sitio."""
+    sitios = {h["sitio"] for h in hallazgos}
+    salvados = {h["sitio"] for h in hallazgos if h["salvado"]}
+    viejas = [f"{s}  sin sitio: ningun hallazgo matchea (borrarla)"
+              for s in sorted(set(excepciones) - sitios)]
+    viejas += [f"{s}  ya cruza: el sitio tiene el Call a la aduana (borrarla)"
+               for s in sorted(set(excepciones) & salvados)
+               if not excepciones[s].startswith("helper:")]
+    return viejas
+
+
 def test_toda_salida_del_proceso_cruza_o_se_declara():
     fallas = _sin_aduana(_archivos(), EXCEPCIONES)
     assert not fallas, "salidas sin aduana:\n" + "\n".join(fallas)
@@ -205,13 +241,8 @@ def test_las_excepciones_apuntan_a_sitios_que_existen_y_que_no_cruzan_ya():
     (decision 13: sin este guardia, la lista de pendientes deja el canario
     verde sobre main sin un solo enchufe)."""
     hallazgos = [h for ruta in _archivos() for h in hallazgos_de(ruta)]
-    sitios = {h["sitio"] for h in hallazgos}
-    huerfanas = sorted(set(EXCEPCIONES) - sitios)
-    assert not huerfanas, f"excepciones sin sitio: {huerfanas}"
-    salvados = {h["sitio"] for h in hallazgos if h["salvado"]}
-    sobrantes = sorted(s for s in set(EXCEPCIONES) & salvados
-                       if not EXCEPCIONES[s].startswith("helper:"))
-    assert not sobrantes, f"excepciones sobre sitios que ya cruzan (borrarlas): {sobrantes}"
+    viejas = _excepciones_viejas(hallazgos, EXCEPCIONES)
+    assert not viejas, "excepciones viejas (borrarlas):\n" + "\n".join(viejas)
 
 
 # --- controles positivos ------------------------------------------------------
@@ -290,3 +321,67 @@ def test_el_alias_local_de_urllib_se_resuelve(tmp_path):
                 return _j.loads(r.read())
     """)
     assert len(_sin_aduana([p], {}, raiz=tmp_path)) == 1
+
+
+def test_control_positivo_referencia_pasada_a_to_thread(tmp_path):
+    """La salida pasada como referencia, sin llamarla (`to_thread(subprocess.run,
+    cmd)`, `run_in_executor(None, urlopen, url)`, un keyword), es el idioma que
+    empuja la invariante 8 (nunca en el loop): se marca igual que el Call."""
+    p = _archivo(tmp_path, "suelto.py", """
+        import asyncio
+        import subprocess
+        import urllib.request
+        async def correr(cmd):
+            return await asyncio.to_thread(subprocess.run, cmd, capture_output=True)
+        async def traer(loop, url):
+            return await loop.run_in_executor(None, urllib.request.urlopen, url)
+        def con_runner(cmd):
+            return _ejecutar(cmd, runner=subprocess.run)
+    """)
+    fallas = _sin_aduana([p], {}, raiz=tmp_path)
+    assert len(fallas) == 3, fallas
+    assert "suelto.py:6" in fallas[0] and "correr" in fallas[0] and "subprocess.run" in fallas[0]
+    assert "suelto.py:8" in fallas[1] and "traer" in fallas[1] and "urlopen" in fallas[1]
+    assert "suelto.py:10" in fallas[2] and "con_runner" in fallas[2]
+
+
+def test_una_referencia_pasada_tambien_se_salva_con_el_cruce(tmp_path):
+    p = _archivo(tmp_path, "con_aduana.py", """
+        import asyncio
+        import subprocess
+        from calipso import aduana
+        async def correr(quien, cmd):
+            with aduana.cruzar(quien, "gh", "api.github.com", carga=cmd):
+                return await asyncio.to_thread(subprocess.run, cmd)
+    """)
+    assert _sin_aduana([p], {}, raiz=tmp_path) == []
+
+
+# --- controles positivos del guardia de la decision 13 -------------------------
+
+def test_una_excepcion_sin_sitio_es_huerfana(tmp_path):
+    p = _archivo(tmp_path, "x.py", """
+        import subprocess
+        def algo(cmd):
+            return subprocess.run(cmd)
+    """)
+    viejas = _excepciones_viejas(hallazgos_de(p, raiz=tmp_path),
+                                 {"x.py:nada": "pendiente: Task 9"})
+    assert len(viejas) == 1 and "x.py:nada" in viejas[0] and "sin sitio" in viejas[0]
+
+
+def test_una_excepcion_sobre_un_sitio_que_ya_cruza_sobra(tmp_path):
+    """Un `pendiente:` que sobrevivio a su task: el sitio ya tiene el Call y la
+    excepcion tiene que caer, para que el verde nunca sea por inercia."""
+    p = _archivo(tmp_path, "x.py", """
+        import subprocess
+        from calipso import aduana
+        def algo(quien, cmd):
+            aduana.declarar(quien, "probes", None)
+            return subprocess.run(cmd)
+    """)
+    hallazgos = hallazgos_de(p, raiz=tmp_path)
+    viejas = _excepciones_viejas(hallazgos, {"x.py:algo": "pendiente: Task 9"})
+    assert len(viejas) == 1 and "x.py:algo" in viejas[0] and "ya cruza" in viejas[0]
+    # una `helper:` sobre ese sitio no sobra: el cruce que declara vive en el llamador
+    assert _excepciones_viejas(hallazgos, {"x.py:algo": "helper: x.py:otro"}) == []
