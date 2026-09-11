@@ -89,9 +89,12 @@ def test_build_context_honra_la_variante_del_porton(monkeypatch):
     system = srv._build_context("hola", "runtime", {"type": "chat"})
     assert "Pedro dijo (2026-09-10): quien me presto el libro rosa?" in system
     assert "no tenia el dato" not in system
+    # `off` murio en el cierre (ruling 11): exportada, vale como ausente y
+    # el par crudo con score de main no vuelve a ningun prompt
     monkeypatch.setenv("MEMORIA_PRESENTAR", "off")
     system = srv._build_context("hola", "runtime", {"type": "chat"})
-    assert f"- (0.9) {NO_SABER}" in system
+    assert f"- (0.9) {NO_SABER}" not in system and "Pedro pregunto:" not in system
+    assert "Calipso no tenia el dato entonces (local, 2026-09-10)." in system
 
 
 # --- fuentes.memoria --------------------------------------------------------
@@ -140,14 +143,14 @@ def test_fuentes_memoria_tolera_hits_sin_meta(tmp_path, monkeypatch):
     assert texto == "recuerdos:\n- Registro (episodio, ?): hecho 0"
 
 
-def test_fuentes_memoria_off_es_el_bloque_crudo_de_main_sin_score(tmp_path, monkeypatch):
-    """La condicion `antes` del porton: con MEMORIA_PRESENTAR=off la fuente
-    del abismo pega `- texto` SIN score, como fuentes.py:118 de main (el
-    score solo lo pegaba el system). Pasa en main y tiene que seguir
-    pasando: es el control de que `off` reproduce el abismo byte a byte."""
+def test_fuentes_memoria_con_off_exportada_presenta_igual(tmp_path, monkeypatch):
+    """`off` murio en el cierre: la fuente del abismo no tiene mas un camino
+    al par crudo de main. Con la variable exportada en `off` presenta como
+    sin variable (la default), y el no-saber sigue degradado."""
     monkeypatch.setattr(chronology, "CALIPSO_HOME", tmp_path)
     monkeypatch.setenv("MEMORIA_PRESENTAR", "off")
-    bloques = fuentes.memoria("que libro lei", _MemoriaConHits([_hit(_par(1), 0.9)]))
+    bloques = fuentes.memoria("que libro lei", _MemoriaConHits([_hit(NO_SABER, 0.9)]))
     texto = [t for t, a in bloques if a == anillos.MEDIA_AGUA][0]
-    assert texto == "recuerdos:\n- " + _par(1)
-    assert "0.9" not in texto
+    assert texto == ("recuerdos:\n- Pedro dijo (2026-09-10): quien me presto el libro rosa?\n"
+                     "  Calipso no tenia el dato entonces (local, 2026-09-10).")
+    assert "Pedro pregunto:" not in texto and "No tengo registros" not in texto

@@ -37,3 +37,20 @@ def test_el_worktree_de_main_se_niega_si_el_directorio_ya_existe(monkeypatch, tm
     with pytest.raises(SystemExit):
         porton.worktree_main_crear()
     assert llamadas == []   # no toca git si el directorio esta ahi
+
+
+def test_la_condicion_antes_no_pasa_memoria_presentar_y_a_b_si(monkeypatch, tmp_path):
+    """`antes` es main exacto (ruling 11): el server de esa condicion no
+    recibe MEMORIA_PRESENTAR (main no la lee, y la variante `off` que se le
+    pasaba murio en el cierre); tampoco hereda la que Pedro tenga exportada.
+    A y B la reciben con su letra."""
+    monkeypatch.setenv("MEMORIA_PRESENTAR", "B")   # lo exportado no viaja
+    assert "off" not in porton.CONDICIONES.values()
+    env = porton.entorno_server(tmp_path, tmp_path / "raiz", "tok", porton.CONDICIONES["antes"])
+    assert "MEMORIA_PRESENTAR" not in env
+    assert env["CALIPSO_HOME"] == str(tmp_path)
+    assert env["CALIPSO_ROOT"] == str(tmp_path / "raiz")
+    assert env["CALIPSO_TOKEN"] == "tok" and env["CALIPSO_NO_TOTP"] == "1"
+    for condicion in ("A", "B"):
+        env = porton.entorno_server(tmp_path, tmp_path, "tok", porton.CONDICIONES[condicion])
+        assert env["MEMORIA_PRESENTAR"] == condicion

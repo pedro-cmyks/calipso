@@ -134,13 +134,22 @@ def test_la_variante_b_omite_el_renglon_de_calipso_en_el_no_saber():
     assert mp.presentar(NUEVO, META, variante="B") == mp.presentar(NUEVO, META, variante="A")
 
 
-def test_la_variante_off_es_el_par_crudo_de_antes():
-    assert mp.presentar(NUEVO, META, variante="off") == f"- {NUEVO}"
-    assert mp.presentar(NUEVO, META, score=0.91, variante="off") == f"- (0.91) {NUEVO}"
-    # por presentar_recuerdos: el system de main pegaba el score, el abismo no
+def test_no_existe_la_variante_off_ni_el_par_crudo(monkeypatch):
+    """La variante `off` (el par crudo de main, solo para medir el 'antes'
+    sobre la misma rama) murio en el cierre: el porton mide `antes` contra
+    main exacto (ruling 11) y un interruptor que vuelve a pegar el par crudo
+    en produccion contradice la invariante 2. `off` en el entorno o como
+    variante explicita cae a la default; `score` y `con_score` ya no
+    existen."""
+    import inspect
+    monkeypatch.delenv("MEMORIA_PRESENTAR", raising=False)
+    assert mp.VARIANTES == ("A", "B")
+    assert "score" not in inspect.signature(mp.presentar).parameters
+    assert "con_score" not in inspect.signature(mp.presentar_recuerdos).parameters
+    assert mp.presentar(NUEVO, META, variante="off") == mp.presentar(NUEVO, META, variante="A")
+    assert "Pedro pregunto:" not in mp.presentar(NUEVO, META, variante="off")
     hit = {"text": NUEVO, "meta": META, "score": 0.91, "scope": "global"}
-    assert mp.presentar_recuerdos([hit], 8, variante="off")[0]["text"] == f"- (0.91) {NUEVO}"
-    assert mp.presentar_recuerdos([hit], 8, variante="off", con_score=False)[0]["text"] == f"- {NUEVO}"
+    assert "0.91" not in mp.presentar_recuerdos([hit], 8, variante="off")[0]["text"]
 
 
 def test_la_variante_activa_sale_del_entorno_y_sin_variable_es_la_default(monkeypatch):
@@ -150,21 +159,25 @@ def test_la_variante_activa_sale_del_entorno_y_sin_variable_es_la_default(monkey
     assert mp.variante_activa() == "B"
     monkeypatch.setenv("MEMORIA_PRESENTAR", "cualquiera")
     assert mp.variante_activa() == mp.VARIANTE_DEFAULT
+    monkeypatch.setenv("MEMORIA_PRESENTAR", "off")   # murio en el cierre
+    assert mp.variante_activa() == mp.VARIANTE_DEFAULT
 
 
 def test_una_variante_explicita_invalida_cae_a_la_activa_del_entorno(monkeypatch):
-    """`variante="C"` no es ninguna de las tres: se comporta como
+    """`variante="C"` no es ninguna de las dos: se comporta como
     `variante_activa()` (la del entorno, o la default sin variable), no como
-    B por accidente (el minor de la Task 1: cualquier letra que no fuera A ni
-    off omitia el renglon de Calipso)."""
+    B por accidente (el minor de la Task 1: cualquier letra que no fuera A
+    omitia el renglon de Calipso)."""
     no_saber = ("Pedro pregunto: quien me presto el libro?\n"
                 "Calipso respondio: No tengo registros de eso.")
+    solo_pedro = "- Pedro dijo (2026-09-10): quien me presto el libro?"
     monkeypatch.delenv("MEMORIA_PRESENTAR", raising=False)
     assert mp.presentar(no_saber, META, variante="C") == mp.presentar(no_saber, META, variante="A")
     assert "Calipso no tenia el dato entonces" in mp.presentar(no_saber, META, variante="C")
-    monkeypatch.setenv("MEMORIA_PRESENTAR", "off")
-    assert mp.presentar(no_saber, META, variante="") == f"- {no_saber}"
-    assert mp.presentar(no_saber, META, variante="a") == f"- {no_saber}"   # la letra es exacta
+    monkeypatch.setenv("MEMORIA_PRESENTAR", "B")
+    assert mp.presentar(no_saber, META, variante="") == solo_pedro
+    assert mp.presentar(no_saber, META, variante="a") == solo_pedro   # la letra es exacta
+    assert mp.presentar(no_saber, META, variante="C") == solo_pedro
 
 
 def test_el_enganche_del_entorno_llega_a_presentar_sin_variante_explicita(monkeypatch):
@@ -181,10 +194,12 @@ def test_el_enganche_del_entorno_llega_a_presentar_sin_variante_explicita(monkey
     monkeypatch.setenv("MEMORIA_PRESENTAR", "B")
     assert mp.presentar(no_saber, META) == "- Pedro dijo (2026-09-10): quien me presto el libro?"
     assert mp.presentar_recuerdos([hit], 8)[0]["text"] == mp.presentar(no_saber, META, variante="B")
+    monkeypatch.setenv("MEMORIA_PRESENTAR", "A")
+    assert mp.presentar_recuerdos([hit], 8)[0]["text"] == mp.presentar(no_saber, META, variante="A")
+    # `off` murio en el cierre: en el entorno vale lo mismo que ausente
     monkeypatch.setenv("MEMORIA_PRESENTAR", "off")
-    assert mp.presentar(no_saber, META) == f"- {no_saber}"
-    assert mp.presentar_recuerdos([hit], 8)[0]["text"] == f"- (0.91) {no_saber}"
-    assert mp.presentar_recuerdos([hit], 8, con_score=False)[0]["text"] == f"- {no_saber}"
+    assert mp.presentar_recuerdos([hit], 8)[0]["text"] == mp.presentar(no_saber, META, variante="A")
+    assert "Pedro pregunto:" not in mp.presentar(no_saber, META)
 
 
 def test_la_ruta_usada_manda_sobre_la_decidida_y_sin_ninguna_es_interrogante():
@@ -222,19 +237,18 @@ def test_el_gesto_sin_texto_es_la_unica_basura_y_da_vacio():
     assert mp.presentar(VIEJO_1, META, variante="A").startswith("- Pedro dijo (2026-09-10): -q")
 
 
-def test_el_texto_vacio_da_vacio_en_las_tres_variantes():
+def test_el_texto_vacio_da_vacio_en_las_dos_variantes():
     """Main saltaba los hits sin texto (`if item.get("text")` en
-    prompt_compiler); `presentar` los devuelve vacios en A, B y tambien en
-    off (antes off daba '- ' y A '- Registro (episodio, ?): '), y
-    `presentar_recuerdos` los salta como a la basura."""
-    for variante in ("A", "B", "off"):
+    prompt_compiler); `presentar` los devuelve vacios en A y en B (antes A
+    daba '- Registro (episodio, ?): '), y `presentar_recuerdos` los salta
+    como a la basura."""
+    for variante in mp.VARIANTES:
         assert mp.presentar("", META, variante=variante) == ""
         assert mp.presentar("  \n ", None, variante=variante) == ""
-        assert mp.presentar("", META, score=0.9, variante=variante) == ""
     hits = [{"text": "", "score": 0.9, "scope": "global"},
             {"text": "hecho 0", "score": 0.8, "scope": "global"}]
     assert [h["score"] for h in mp.presentar_recuerdos(hits, 8, variante="A")] == [0.8]
-    assert [h["score"] for h in mp.presentar_recuerdos(hits, 8, variante="off")] == [0.8]
+    assert [h["score"] for h in mp.presentar_recuerdos(hits, 8, variante="B")] == [0.8]
 
 
 def test_lo_que_no_parsea_lleva_registro_con_kind_y_fecha():
@@ -299,5 +313,5 @@ def test_presentar_recuerdos_con_tope_cero_o_negativo_devuelve_vacio():
     hits = [_hit(f"Pedro pregunto: q{i}\nCalipso respondio: r{i}", 0.9) for i in range(3)]
     assert mp.presentar_recuerdos(hits, 0, variante="A") == []
     assert mp.presentar_recuerdos(hits, -1, variante="A") == []
-    assert mp.presentar_recuerdos(hits, 0, variante="off") == []
+    assert mp.presentar_recuerdos(hits, 0, variante="B") == []
     assert len(mp.presentar_recuerdos(hits, 1, variante="A")) == 1

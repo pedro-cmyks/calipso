@@ -21,9 +21,11 @@ La condicion `antes` es MAIN EXACTO (ruling 11 del plan, tomado por Pedro el
 2026-09-11): el server de esa condicion se levanta desde un worktree de
 main (`git worktree add --detach /tmp/calipso-main-porton main`, borrado al
 terminar), con cwd y CALIPSO_ROOT en ese worktree, asi que corren el
-escritor y los lectores de main, no los de esta rama. `MEMORIA_PRESENTAR`
-viaja igual en el entorno (`off`) pero main no la lee: es inerte ahi. Las
-condiciones A y B corren desde esta rama (cwd = la raiz del repo).
+escritor y los lectores de main, no los de esta rama. A ese server NO se le
+pasa `MEMORIA_PRESENTAR` (main no la lee, y la variante `off` que se le
+pasaba murio en el cierre: no existe mas en memoria_procedencia); tampoco
+hereda la que este exportada en la shell. Las condiciones A y B corren desde
+esta rama (cwd = la raiz del repo) con `MEMORIA_PRESENTAR=A|B`.
 """
 from __future__ import annotations
 
@@ -66,9 +68,9 @@ PREGUNTAS = [
     ("mariana", "/local retoma lo que dejamos sobre mariana, la charla de agosto",
      ("mariana", "libro")),
 ]
-# el valor de MEMORIA_PRESENTAR por condicion (en `antes` es inerte: main no
-# la lee; lo que hace a `antes` es el worktree de main)
-CONDICIONES = {"antes": "off", "A": "A", "B": "B"}
+# el valor de MEMORIA_PRESENTAR por condicion: None es 'no se pasa' (`antes`:
+# lo que hace a esa condicion es el worktree de main, no una variante)
+CONDICIONES = {"antes": None, "A": "A", "B": "B"}
 
 
 def _sin_acentos(texto: str) -> str:
@@ -175,19 +177,32 @@ def worktree_main_borrar() -> None:
         _git(RAIZ, "worktree", "remove", "--force", str(WORKTREE_MAIN))
 
 
+def entorno_server(home: pathlib.Path, raiz: pathlib.Path, token: str,
+                   variante: str | None) -> dict:
+    """El entorno del server desechable. `MEMORIA_PRESENTAR` viaja solo si
+    la condicion trae variante (A, B); con None (`antes`) no se pasa, y la
+    que este exportada en la shell no se hereda: el server de main no la
+    lee, y el de esta rama no tiene que recibir una letra ajena a la
+    condicion que se mide."""
+    env = {**os.environ, "CALIPSO_HOME": str(home), "CALIPSO_ROOT": str(raiz),
+           "CALIPSO_TOKEN": token, "CALIPSO_NO_TOTP": "1"}
+    env.pop("MEMORIA_PRESENTAR", None)
+    if variante is not None:
+        env["MEMORIA_PRESENTAR"] = variante
+    return env
+
+
 class Server:
     """Un uvicorn desechable en PUERTO con el codigo de `raiz` (cwd y
     CALIPSO_ROOT: `python -m` importa `calipso` desde el cwd, y el paquete
     no esta instalado en el .venv)."""
 
-    def __init__(self, home: pathlib.Path, variante: str, raiz: pathlib.Path = RAIZ):
+    def __init__(self, home: pathlib.Path, variante: str | None, raiz: pathlib.Path = RAIZ):
         self.home = home
         self.raiz = raiz
         self.codigo = _git(raiz, "rev-parse", "--short", "HEAD")
         self.token = secrets.token_urlsafe(24)
-        env = {**os.environ, "CALIPSO_HOME": str(home), "CALIPSO_ROOT": str(raiz),
-               "CALIPSO_TOKEN": self.token, "CALIPSO_NO_TOTP": "1",
-               "MEMORIA_PRESENTAR": variante}
+        env = entorno_server(home, raiz, self.token, variante)
         self.log = open(home / "server.log", "w", encoding="utf-8")
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "calipso.server:app",

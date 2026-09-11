@@ -114,12 +114,12 @@ def memoria(pregunta: str, mem, consolidado: str | None = None,
     bloques: list[tuple[str, int]] = []
     # con procedencia (spec 2026-09-11): presentar cada hit y recien ahi
     # cortar a RECALL_TOP, como en server._build_context. El techo del
-    # bloque entero sigue siendo de `consulta.etiquetar`. `con_score=False`:
-    # esta fuente nunca pego el score (solo cuenta en la variante off).
+    # bloque entero sigue siendo de `consulta.etiquetar`. La vineta nunca
+    # lleva el score (esta fuente tampoco lo pegaba en main).
     recuerdos = memoria_procedencia.presentar_recuerdos(
         [h for h in mem.recall(pregunta, n=RECALL_N)
          if h.get("score", 0) >= RECALL_UMBRAL],
-        RECALL_TOP, con_score=False)
+        RECALL_TOP)
     if recuerdos:
         lineas = "\n".join(r["text"] for r in recuerdos)
         bloques.append((f"recuerdos:\n{lineas}", anillos.MEDIA_AGUA))

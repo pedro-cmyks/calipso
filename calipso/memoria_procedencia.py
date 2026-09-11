@@ -174,11 +174,14 @@ TOPE_RESPUESTA = 400
 SIN_DATO = "Calipso no tenia el dato entonces"
 
 # La variante la fija el porton (spec seccion 5): A = frase fija; B = se
-# omite el renglon de Calipso cuando es sin_dato; off = el par crudo de antes
-# (solo para medir el 'antes' sobre la misma rama). En produccion la variable
-# no esta puesta y vale VARIANTE_DEFAULT.
+# omite el renglon de Calipso cuando es sin_dato. En produccion la variable
+# no esta puesta y vale VARIANTE_DEFAULT (A: ruling 6 del ledger, aterrizada
+# con los datos del porton). No hay variante `off`: existio para medir el
+# 'antes' sobre esta misma rama, pero el porton mide `antes` contra main
+# exacto desde un worktree (ruling 11), y un interruptor que vuelve a pegar
+# el par crudo en produccion contradice la invariante 2; murio en el cierre.
 VARIANTE_DEFAULT = "A"
-VARIANTES = ("A", "B", "off")
+VARIANTES = ("A", "B")
 
 
 def variante_activa() -> str:
@@ -196,7 +199,6 @@ def _recortar(texto: str, tope: int) -> str:
 def presentar(texto: str, meta: dict | None = None, *,
               tope_pregunta: int = TOPE_PREGUNTA,
               tope_respuesta: int = TOPE_RESPUESTA,
-              score: float | None = None,
               variante: str | None = None) -> str:
     """Lo que el modelo ve de un episodio: una vineta con procedencia.
 
@@ -209,7 +211,7 @@ def presentar(texto: str, meta: dict | None = None, *,
     Lo que no parsea como par (metas, fichas): nunca el crudo sin etiqueta:
         - Registro (goal, 2026-08-14): Pedro definio una meta: ...
     Pregunta que era solo un gesto ('/local'): '' -- el lector la salta.
-    Texto vacio (o solo espacio): '' en las tres variantes, como main lo
+    Texto vacio (o solo espacio): '' en las dos variantes, como main lo
     saltaba (`if item.get("text")` en prompt_compiler).
 
     `meta` tolera None y claves ausentes (los dobles de los tests pasan hits
@@ -217,21 +219,15 @@ def presentar(texto: str, meta: dict | None = None, *,
     nuevo) o de `route` (la decidida, lo viejo).
 
     `variante` explicita solo si es una de VARIANTES (la letra exacta);
-    cualquier otra cosa (None, '', 'C', 'a') cae a `variante_activa()`, o
-    sea al entorno o a la default. Se elige caer y no levantar ValueError
+    cualquier otra cosa (None, '', 'C', 'a', 'off') cae a `variante_activa()`,
+    o sea al entorno o a la default. Se elige caer y no levantar ValueError
     porque el lector nunca debe voltear un turno por una letra mal puesta.
-
-    Variante `off` (solo para medir el 'antes' del porton): el crudo de
-    main, `- (score) texto` si llega `score` (el system: prompt_compiler
-    pegaba el score) y `- texto` si no (el abismo: fuentes.memoria nunca lo
-    pego). Quien decide si viaja el score es `presentar_recuerdos`."""
+    El par crudo de main no sale de aca por ningun camino (invariante 2)."""
     if not (texto or "").strip():
         return ""
     meta = meta or {}
     if variante not in VARIANTES:
         variante = variante_activa()
-    if variante == "off":
-        return f"- ({score}) {texto}" if score is not None else f"- {texto}"
     fecha = str(meta.get("ts") or "")[:10] or "?"
     par = partir(texto)
     if par is None:
@@ -253,26 +249,20 @@ def presentar(texto: str, meta: dict | None = None, *,
 
 
 def presentar_recuerdos(hits: list[dict], tope: int, *,
-                        variante: str | None = None,
-                        con_score: bool = True) -> list[dict]:
+                        variante: str | None = None) -> list[dict]:
     """Los dos lectores (el system del turno y la fuente `memoria` del
     abismo) pasan por aca: presentar cada hit, SALTAR los vacios y recien
     ahi cortar a `tope` (spec: presentar ANTES del corte, para que un salto
     no achique el bloque). Devuelve los hits con `text` ya presentado (el
-    resto del hit -score, meta, scope- viaja intacto).
-
-    `con_score` solo importa en la variante `off`: el system de main pegaba
-    `- (score) texto` (con_score=True, `_build_context`) y el abismo `- texto`
-    (con_score=False, `fuentes.memoria`). En A y B el score nunca se ve.
+    resto del hit -score, meta, scope- viaja intacto; el score nunca se ve
+    en la vineta: el `- (score) texto` de main murio con la variante off).
 
     `tope <= 0` es 'ningun recuerdo': devuelve [] sin presentar nada."""
     if tope <= 0:
         return []
     salida = []
     for h in hits:
-        texto = presentar(h.get("text") or "", h.get("meta"),
-                          score=h.get("score") if con_score else None,
-                          variante=variante)
+        texto = presentar(h.get("text") or "", h.get("meta"), variante=variante)
         if not texto:
             continue
         salida.append({**h, "text": texto})
