@@ -11,6 +11,7 @@ via `httpx.ASGITransport`, sesion viva sin pasar por el alta); el harness
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import subprocess
 import threading
@@ -687,13 +688,14 @@ def test_los_filtros_del_querystring(libro, monkeypatch):
 
 def test_sin_libro_viene_de_memoria_sin_tocar_el_disco(libro, monkeypatch):
     def bomba(ruta, linea):
-        raise OSError("disco lleno")
+        raise OSError(errno.ENOSPC, "disco lleno", str(ruta))
     monkeypatch.setattr(aduana, "_append", bomba)
     with aduana.cruzar(quien_de_prueba(), "x", None):
         pass
     d = _local().get("/api/aduana").json()
     assert d["cruces"] == [] and d["ilegibles"] == 0
-    assert d["sin_libro"]["n"] == 1 and "disco lleno" in d["sin_libro"]["ultimo_error"]
+    assert d["sin_libro"]["n"] == 1 and d["sin_libro"]["ultimo_error"] == "OSError: disco lleno"
+    assert str(libro) not in d["sin_libro"]["ultimo_error"]     # sin la ruta del disco
 
 
 def test_navegador_ve_todo_tablero_recortado_lector_403(libro, monkeypatch):

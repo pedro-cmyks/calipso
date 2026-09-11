@@ -155,7 +155,7 @@ def test_un_fallo_del_libro_no_reemplaza_la_excepcion_del_bloque(libro, monkeypa
         with aduana.cruzar(quien_de_prueba(), "x", None):
             raise KeyError("la del bloque")
     assert aduana.sin_libro()["n"] == 1
-    assert "ENOSPC" in aduana.sin_libro()["ultimo_error"] or "sin espacio" in aduana.sin_libro()["ultimo_error"]
+    assert aduana.sin_libro()["ultimo_error"] == "OSError: sin espacio"
 
 
 def test_la_aduana_no_altera_el_valor_del_bloque(libro):
@@ -260,9 +260,14 @@ def test_candado_tomado_por_otro_proceso_es_fail_open_con_aviso(libro):
         proc.wait(timeout=10)
     assert not libro.exists() or cruces_del_libro(libro) == []
     hueco = aduana.sin_libro()
-    assert hueco["n"] == 1 and hueco["desde"] and "ErrorCandado" in hueco["ultimo_error"]
+    assert hueco["n"] == 1 and hueco["desde"]
+    # solo el nombre de la clase: el mensaje de ErrorCandado lleva la ruta
+    # absoluta del .lock, y ultimo_error sale por GET /api/aduana y por
+    # telemetry.jsonl (0644)
+    assert hueco["ultimo_error"] == "ErrorCandado"
     avisos = libro.telemetria.de("aduana_sin_libro")
     assert len(avisos) == 1 and avisos[0]["n"] == 1
+    assert avisos[0]["error"] == "ErrorCandado" and lock not in json.dumps(avisos)
     assert "destino" not in avisos[0] and "carga" not in avisos[0]
     # y despues de la contencion, el libro vuelve a escribirse
     with aduana.cruzar(quien_de_prueba(), "y", None):
@@ -330,7 +335,7 @@ def test_enospc_simulado_es_fail_open_con_aviso(libro, monkeypatch):
     with aduana.cruzar(quien_de_prueba(), "y", None):
         pass
     assert aduana.sin_libro()["n"] == 2
-    assert "No space left" in aduana.sin_libro()["ultimo_error"]
+    assert aduana.sin_libro()["ultimo_error"] == "OSError: No space left on device"
     assert [e["n"] for e in libro.telemetria.de("aduana_sin_libro")] == [1, 2]
 
 
@@ -346,7 +351,12 @@ def test_sin_permisos_es_fail_open_con_aviso(libro, tmp_path, monkeypatch):
     finally:
         cerrado.chmod(0o700)
     assert aduana.sin_libro()["n"] == 1
-    assert "PermissionError" in aduana.sin_libro()["ultimo_error"]
+    error = aduana.sin_libro()["ultimo_error"]
+    assert error == "PermissionError: Permission denied"
+    # la ruta absoluta del disco (OSError.filename) NO va ni al contador ni
+    # a la telemetria
+    assert str(cerrado) not in error
+    assert str(cerrado) not in json.dumps(libro.telemetria.de("aduana_sin_libro"))
 
 
 def test_desde_el_loop_no_toma_el_candado_y_avisa(libro, monkeypatch):

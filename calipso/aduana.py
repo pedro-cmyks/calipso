@@ -235,6 +235,20 @@ def _en_el_loop() -> bool:
         return False
 
 
+def _error_sin_ruta(exc: BaseException) -> str:
+    """El texto del hueco SIN la ruta del disco: `OSError.filename` y el
+    mensaje de ErrorCandado llevan la ruta absoluta del libro o del .lock,
+    y `ultimo_error` sale por GET /api/aduana y por telemetry.jsonl (0644).
+    ErrorCandado -> solo la clase; OSError -> clase + strerror; el resto ->
+    clase + mensaje (un TypeError de json.dumps no lleva rutas)."""
+    nombre = type(exc).__name__
+    if isinstance(exc, ErrorCandado):
+        return nombre
+    if isinstance(exc, OSError):
+        return f"{nombre}: {exc.strerror}" if exc.strerror else nombre
+    return f"{nombre}: {exc}"
+
+
 def _anotar(registro: dict) -> None:
     """Escribe la linea o cuenta el hueco. JAMAS levanta (invariantes 2 y 3).
     La telemetria va SIN destino ni carga: telemetry.jsonl es 0644."""
@@ -248,7 +262,7 @@ def _anotar(registro: dict) -> None:
     try:
         _escribir(json.dumps(registro, ensure_ascii=False))
     except Exception as exc:
-        error = f"{type(exc).__name__}: {exc}"
+        error = _error_sin_ruta(exc)
         n = _contar_hueco(error)
         telemetry.log_event("aduana_sin_libro", error=error[:200],
                             origen=origen, proposito=proposito, n=n)
