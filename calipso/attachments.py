@@ -16,6 +16,8 @@ import pathlib
 import uuid
 from typing import Any
 
+from calipso import aduana
+
 IMAGE_MIMES = {
     "image/png", "image/jpeg", "image/jpg", "image/gif",
     "image/webp", "image/bmp", "image/tiff",
@@ -234,10 +236,13 @@ def ollama_vision_model() -> str | None:
 
 
 def vision_describe(project_root: str | None, ids: list[str],
-                    question: str = "Describe en detalle lo que ves en esta imagen.") -> str | None:
+                    question: str = "Describe en detalle lo que ves en esta imagen.",
+                    *, quien: aduana.Quien) -> str | None:
     """Describe imagen(es) con el motor de visión disponible.
     Prioridad: SDK Anthropic (ANTHROPIC_API_KEY) > Ollama vision model.
-    Devuelve texto con la descripción, o None si no hay capacidad de visión."""
+    Devuelve texto con la descripción, o None si no hay capacidad de visión.
+    `quien` (keyword-only, sin default) es el Quien del turno: la via SDK se
+    declara en la aduana; la via Ollama es loopback y no."""
     image_ids = [aid for aid in ids
                  if (m := load(project_root, aid)) and is_image(m.get("mime"))]
     if not image_ids:
@@ -245,7 +250,7 @@ def vision_describe(project_root: str | None, ids: list[str],
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if api_key:
-        return _vision_anthropic(project_root, image_ids, question, api_key)
+        return _vision_anthropic(project_root, image_ids, question, api_key, quien)
 
     vm = ollama_vision_model()
     if vm:
@@ -255,7 +260,7 @@ def vision_describe(project_root: str | None, ids: list[str],
 
 
 def _vision_anthropic(project_root: str | None, image_ids: list[str],
-                      question: str, api_key: str) -> str | None:
+                      question: str, api_key: str, quien: aduana.Quien) -> str | None:
     try:
         import anthropic as _ant
         client = _ant.Anthropic(api_key=api_key)
@@ -274,6 +279,11 @@ def _vision_anthropic(project_root: str | None, image_ids: list[str],
         if not content:
             return None
         content.append({"type": "text", "text": question})
+        # la imagen y el mensaje salen por el SDK (api.anthropic.com), sin un
+        # urlopen que el canario vea: se DECLARA por llamada (spec seccion 7;
+        # Pedro puede vetar). Ni la imagen ni la pregunta van al libro.
+        aduana.declarar(quien, "vision por SDK", destino="api.anthropic.com",
+                        motivo="claude-opus-4-5")
         msg = client.messages.create(
             model="claude-opus-4-5",
             max_tokens=1024,

@@ -59,11 +59,8 @@ EXCEPCIONES: dict[str, str] = {
     "calipso/server.py:api_connector_action": "muerto en Linux: Popen con CREATE_NEW_CONSOLE (solo Windows); cuando se arregle cruza como gesto",
     "calipso/server.py:api_subscription_install": "muerto en Linux: idem",
     "calipso/server.py:api_subscription_login": "muerto en Linux: idem",
-    # --- probes declarados en otro lugar (Task 6 lo pasa a `helper:`) ---
-    "calipso/server.py:_subscription_probe": "pendiente: Task 6 -- se alcanza desde el loop via _harness_context; el declarado va en el arranque",
-    # --- pendientes: cada task de enchufe borra su linea ---
-    "calipso/memory.py:reflect": "pendiente: Task 6",
-    "calipso/server.py:_cli_probe": "pendiente: Task 6",
+    # --- probes declarados en otro lugar ---
+    "calipso/server.py:_subscription_probe": "helper: calipso/server.py:_calentar_probes -- se alcanza desde el loop via _harness_context; el declarado vive en el arranque",
 }
 
 _RED = {"urlopen", "urlretrieve"}
@@ -379,3 +376,11 @@ def test_una_excepcion_sobre_un_sitio_que_ya_cruza_sobra(tmp_path):
     assert len(viejas) == 1 and "x.py:algo" in viejas[0] and "ya cruza" in viejas[0]
     # una `helper:` sobre ese sitio no sobra: el cruce que declara vive en el llamador
     assert _excepciones_viejas(hallazgos, {"x.py:algo": "helper: x.py:otro"}) == []
+
+
+def test_no_quedan_pendientes():
+    """Los `pendiente: Task N` fueron el andamio de las Tasks 2-6 (decision
+    13): al cerrar la Task 6 no queda ninguno, y la lista es la de la
+    seccion 8 del spec."""
+    pendientes = sorted(s for s, m in EXCEPCIONES.items() if m.startswith("pendiente"))
+    assert not pendientes, f"sitios que el spec exige enchufar y siguen exceptuados: {pendientes}"

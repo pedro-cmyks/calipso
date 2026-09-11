@@ -54,7 +54,9 @@ def main() -> int:
     ]:
         m.project.remember(ex, kind="chat")
 
-    promoted = m.reflect()
+    from calipso import aduana
+    promoted = m.reflect(aduana.Quien(origen="gesto", proyecto="prueba",
+                                      desde={"credencial": "maquina"}))
     print(f"[reflect] promovidos {len(promoted)} hechos:")
     for p in promoted:
         print(f"     [{p.get('scope')}] {p.get('fact')}")

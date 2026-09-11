@@ -451,3 +451,36 @@ def test_sin_la_aduana_escribible_deps_github_y_discovery_siguen_igual(libro, mo
     _urlopen_falso(monkeypatch, discovery, b'{"version": "1"}')
     assert discovery._npm_latest("@openai/codex", quien_de_prueba()) == "1"
     assert cruces_del_libro(libro) == [] and aduana.sin_libro()["n"] == 3
+
+
+# --- attachments.py: vision por SDK, declarada por llamada --------------------------
+
+from calipso import attachments  # noqa: E402
+
+
+def test_vision_por_sdk_se_declara_por_llamada_sin_la_imagen(libro, monkeypatch, tmp_path):
+    llamadas = []
+
+    class _Mensajes:
+        def create(self, **kw):
+            llamadas.append(kw)
+            return types.SimpleNamespace(content=[types.SimpleNamespace(text="una foto")])
+
+    class _Anthropic:
+        def __init__(self, api_key):
+            self.messages = _Mensajes()
+    monkeypatch.setitem(sys.modules, "anthropic", types.SimpleNamespace(Anthropic=_Anthropic))
+    monkeypatch.setattr(attachments, "image_bytes_b64", lambda root, aid: ("QUJDREVG", "image/png"))
+    q = quien_de_prueba(gesto=None)
+    assert attachments._vision_anthropic(str(tmp_path), ["att_1"], "que ves", "sk-ant-x", q) == "una foto"
+    assert len(llamadas) == 1
+    c, = cruces_del_libro(libro)
+    assert c["declarado"] is True and c["quien"] == q.a_dict()
+    assert c["proposito"] == "vision por SDK" and c["destino"]["host"] == "api.anthropic.com"
+    assert c["motivo"] == "claude-opus-4-5" and c["carga"] == {"tipo": "nada"}
+    assert "QUJDREVG" not in libro.read_text() and "sk-ant" not in libro.read_text()
+
+
+def test_vision_describe_exige_quien(tmp_path):
+    with pytest.raises(TypeError):
+        attachments.vision_describe(str(tmp_path), [])        # type: ignore[call-arg]

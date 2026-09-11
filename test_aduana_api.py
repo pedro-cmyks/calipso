@@ -388,3 +388,253 @@ def test_api_updates_cruza_como_ui(libro, monkeypatch):
     assert _local().get("/api/updates").status_code == 200
     assert vistos == [aduana.Quien(origen="ui", proyecto=srv.ROOT.name,
                                    endpoint="/api/updates", desde={"credencial": "maquina"})]
+
+
+# --- Task 6: los declarados ---------------------------------------------------------
+
+import sys  # noqa: E402
+import types  # noqa: E402
+
+
+def test_el_arranque_declara_la_memoria_una_vez(libro, monkeypatch):
+    """`_declarar_arranque()` NO corre al importar el server: la llama
+    `_calentar_probes` en hilo desde `_startup_warm` (con `uvicorn
+    calipso.server:app` el import del modulo corre ADENTRO del loop y la
+    aduana no escribiria). Aca se la llama directo, dos veces, con el libro
+    limpio: una sola linea."""
+    srv._declarar_arranque()
+    srv._declarar_arranque()
+    c, = cruces_del_libro(libro)
+    assert c["declarado"] is True and c["resultado"] is None
+    assert c["quien"] == {"origen": "arranque", "chat": None, "proyecto": srv.ROOT.name,
+                          "gesto": None, "ruta": None, "rutina": None, "departamento": None,
+                          "endpoint": None, "desde": {"credencial": "maquina"}}
+    assert c["proposito"] == "modelo de embeddings"
+    assert c["destino"] == {"host": "huggingface.co", "url": None}
+    assert c["motivo"] == srv.EMBED_MODEL
+    assert libro.telemetria.de("aduana_en_loop") == []
+
+
+def test_un_modelo_fuera_de_la_maquina_se_declara_y_uno_loopback_no(libro, monkeypatch):
+    q = quien_de_prueba(origen="arranque", chat=None, gesto=None, ruta=None)
+    monkeypatch.setattr(srv.dispatch, "CONFIG", {
+        "local": {"base_url": "http://localhost:11434/api/generate"},
+        "api": {"base_url": "http://127.0.0.1:4000/v1/chat/completions"},
+        "classifier": {"base_url": "http://[::1]:11434/api/generate"}})
+    assert srv._declarar_modelos_fuera(q) == 0 and cruces_del_libro(libro) == []
+    monkeypatch.setattr(srv.dispatch, "CONFIG", {
+        "local": {"base_url": "http://192.168.1.50:11434/api/generate"},
+        "api": {"base_url": "https://api.deepseek.com/v1/chat/completions"},
+        "classifier": {"base_url": "http://localhost:11434/api/generate"}})
+    assert srv._declarar_modelos_fuera(q) == 2
+    a, b = cruces_del_libro(libro)
+    assert a["proposito"] == "modelo fuera de la maquina" and a["declarado"] is True
+    assert a["destino"]["host"] == "192.168.1.50" and a["motivo"] == "local"
+    assert b["destino"]["host"] == "api.deepseek.com" and b["motivo"] == "api"
+
+
+def test_put_config_declara_en_hilo_como_gesto(libro, monkeypatch):
+    monkeypatch.setattr(srv.calipso_config, "save_config", lambda data: {"guardado": True})
+    monkeypatch.setattr(srv.calipso_config, "dispatch_config", lambda: {
+        "subscription": {}, "api": {"base_url": "http://localhost:4000/v1"},
+        "local": {"base_url": "http://10.0.0.7:11434/api/generate"},
+        "classifier": {"base_url": "http://localhost:11434/api/generate"}})
+    viejo = srv.dispatch.CONFIG
+    try:
+        r = _local().put("/api/config", json={"local": {"base_url": "http://10.0.0.7:11434/api/generate"}})
+    finally:
+        srv.dispatch.CONFIG = viejo
+    assert r.status_code == 200 and r.json() == {"guardado": True}
+    c, = cruces_del_libro(libro)
+    assert c["quien"]["origen"] == "gesto" and c["quien"]["endpoint"] == "/api/config"
+    assert c["destino"]["host"] == "10.0.0.7" and c["declarado"] is True
+    assert libro.telemetria.de("aduana_en_loop") == []       # fue en to_thread
+
+
+def test_cli_probe_declara_una_vez_por_proceso(libro, monkeypatch):
+    espia = _RunEspia(stdout="gh version 2.0")
+    monkeypatch.setattr(srv.subprocess, "run", espia)
+    monkeypatch.setattr(srv, "_cmd_exe", lambda n: "/usr/bin/gh")
+    q = aduana.Quien(origen="ui", proyecto=srv.ROOT.name, endpoint="/api/connectors",
+                     desde={"credencial": "maquina"})
+    assert srv._cli_probe("github", q)["ready"] is True
+    assert srv._cli_probe("github", q)["installed"] is True
+    assert len(espia.llamadas) == 4                       # dos probes por llamada
+    c, = cruces_del_libro(libro)                           # una sola declaracion
+    assert c["declarado"] is True and c["quien"] == q.a_dict()
+    assert c["proposito"] == "probe gh: --version y auth status"
+    assert c["destino"] == {"host": "api.github.com", "url": None}
+
+
+def test_api_connectors_pasa_el_quien_ui(libro, monkeypatch):
+    vistos = []
+    monkeypatch.setattr(srv, "_cli_probe", lambda name, quien: (
+        vistos.append((name, quien)) or {"installed": False, "ready": False}))
+    assert _local().get("/api/connectors").status_code == 200
+    assert vistos == [("github", aduana.Quien(origen="ui", proyecto=srv.ROOT.name,
+                                              endpoint="/api/connectors",
+                                              desde={"credencial": "maquina"}))]
+
+
+def test_whisper_se_declara_una_vez_dentro_del_hilo(libro, monkeypatch):
+    construidos = []
+
+    class _WhisperModel:
+        def __init__(self, *a, **k):
+            construidos.append((a, k))
+    monkeypatch.setitem(sys.modules, "faster_whisper",
+                        types.SimpleNamespace(WhisperModel=_WhisperModel))
+    monkeypatch.setattr(srv, "_whisper_model", None)
+    monkeypatch.setattr(srv, "_whisper_lock", asyncio.Lock())
+    q = aduana.Quien(origen="gesto", proyecto=srv.ROOT.name, endpoint="/api/transcribe",
+                     desde={"credencial": "maquina"})
+
+    async def dos_veces():
+        await srv._get_whisper(q)
+        await srv._get_whisper(q)
+    asyncio.run(dos_veces())
+    assert len(construidos) == 1 and construidos[0][0] == ("tiny",)
+    c, = cruces_del_libro(libro)
+    assert c["declarado"] is True and c["quien"] == q.a_dict()
+    assert c["proposito"] == "modelo whisper" and c["destino"]["host"] == "huggingface.co"
+    assert c["motivo"] == "Systran/faster-whisper-tiny"
+    assert libro.telemetria.de("aduana_en_loop") == []
+
+
+def test_los_probes_se_declaran_una_vez_al_calentar(libro, monkeypatch):
+    """`_calentar_probes` es el unico lugar del arranque que escribe en el
+    libro: primero `_declarar_arranque` (la memoria; los modelos fuera de la
+    maquina, cero con la config de la suite), despues los probes. Dos
+    llamadas, dos lineas: las banderas `una vez` valen por proceso."""
+    monkeypatch.setattr(srv, "_backend_availability", lambda: {"ok": True})
+    assert srv._calentar_probes() == {"ok": True}
+    assert srv._calentar_probes() == {"ok": True}
+    memoria, probes = cruces_del_libro(libro)
+    assert memoria["proposito"] == "modelo de embeddings" and memoria["declarado"] is True
+    c = probes
+    assert c["declarado"] is True and c["quien"]["origen"] == "arranque"
+    assert c["proposito"] == "probes claude/codex: --version, auth status, login status"
+    assert c["destino"] == {"host": None, "url": None}
+
+
+def test_startup_warm_calienta_los_probes_en_hilo(libro, monkeypatch):
+    vistos = []
+
+    def calentar():
+        try:
+            asyncio.get_running_loop()
+            vistos.append(True)
+        except RuntimeError:
+            vistos.append(False)
+        return {}
+    monkeypatch.setattr(srv, "_calentar_probes", calentar)
+    monkeypatch.setattr(srv.discovery, "discover",
+                        lambda register=True: {"added": [], "local": [], "api": []})
+    # los dobles REGISTRAN: si el implementador reemplaza `_startup_warm`
+    # entera por el bloque `try/except` del plan y pierde las seis lineas
+    # que siguen (rutinas + ticker), este test se pone en rojo
+    llamadas = []
+    for nombre in ("_asegurar_rutina_catastro", "_asegurar_rutina_cierre",
+                   "_asegurar_rutina_consumo"):
+        monkeypatch.setattr(srv, nombre, lambda n=nombre: llamadas.append(n))
+
+    async def _nada():
+        return None
+
+    def ticker():
+        # se anota al CREAR la corutina (sincrono, garantizado), no al
+        # correrla: `asyncio.run` puede cancelar la task antes de su primer paso
+        llamadas.append("_routines_ticker")
+        return _nada()
+    monkeypatch.setattr(srv, "_routines_ticker", ticker)
+    asyncio.run(srv._startup_warm())
+    assert vistos == [False], "los probes se declararon EN el loop"
+    assert llamadas == ["_asegurar_rutina_catastro", "_asegurar_rutina_cierre",
+                        "_asegurar_rutina_consumo", "_routines_ticker"]   # el resto de _startup_warm sigue vivo
+
+
+class _AmbitoFalso:
+    name = "global"
+
+    def __init__(self, episodios):
+        self.episodios, self.core = episodios, []
+
+    def recent(self, limit):
+        return self.episodios[:limit]
+
+    def append_core(self, kind, fact):
+        self.core.append((kind, fact))
+        return True
+
+
+def test_reflect_se_declara_por_llamada_antes_del_claude(libro, monkeypatch):
+    from calipso import memory as memoria
+    monkeypatch.setattr(memoria.shutil, "which", lambda n: "/usr/bin/claude")
+    espia = _RunEspia(stdout='{"facts": [{"scope": "global", "fact": "Pedro es musico"}]}')
+    monkeypatch.setattr(memoria.subprocess, "run", espia)
+    yo = types.SimpleNamespace(project=None, glob=_AmbitoFalso(["ep uno", "ep dos"]))
+    q = quien_de_prueba(origen="rutina", chat=None, gesto=None, ruta=None,
+                        rutina={"kind": "reflect", "id": "rt_1"})
+    assert srv.Memory.reflect(yo, q) == [{"scope": "global", "fact": "Pedro es musico"}]
+    assert espia.llamadas[0]["args"][:2] == ["/usr/bin/claude", "-p"]
+    c, = cruces_del_libro(libro)
+    assert c["declarado"] is True and c["quien"]["rutina"] == {"kind": "reflect", "id": "rt_1"}
+    assert c["proposito"] == "reflect" and c["motivo"] == "2 episodios a claude -p"
+    assert c["destino"]["host"] == "api.anthropic.com"
+    assert "ep uno" not in libro.read_text()
+
+
+def test_reflect_sin_claude_no_declara_nada(libro, monkeypatch):
+    from calipso import memory as memoria
+    monkeypatch.setattr(memoria.shutil, "which", lambda n: None)
+    yo = types.SimpleNamespace(project=None, glob=_AmbitoFalso(["ep"]))
+    assert srv.Memory.reflect(yo, quien_de_prueba())[0]["error"].startswith("claude no instalado")
+    assert cruces_del_libro(libro) == []
+
+
+def test_el_handler_de_reflect_arma_el_quien_de_rutina_o_usa_el_del_boton(libro, monkeypatch):
+    vistos = []
+    monkeypatch.setattr(srv, "mem", types.SimpleNamespace(
+        reflect=lambda quien, limit=20: vistos.append(quien) or []))
+    handler = srv._routine_handlers()["reflect"]
+    handler({"id": "rt_abc", "kind": "reflect", "enabled": True})            # el ticker
+    assert vistos[-1] == aduana.Quien(origen="rutina", proyecto=srv.ROOT.name,
+                                      rutina={"kind": "reflect", "id": "rt_abc"},
+                                      desde={"credencial": "maquina"})
+    q = aduana.Quien(origen="gesto", proyecto=srv.ROOT.name, endpoint="/api/routines/{id}/run",
+                     rutina={"kind": "reflect", "id": "rt_abc"}, desde={"credencial": "maquina"})
+    handler({"id": "rt_abc", "kind": "reflect", "quien": q.a_dict()})       # el boton
+    assert vistos[-1] == q
+
+
+def test_post_reflect_y_routines_run_declaran_como_gesto(libro, monkeypatch):
+    vistos = []
+    monkeypatch.setattr(srv, "mem", types.SimpleNamespace(
+        reflect=lambda quien, limit=20: vistos.append(quien) or []))
+    assert _local().post("/api/reflect").status_code == 200
+    assert vistos[-1] == aduana.Quien(origen="gesto", proyecto=srv.ROOT.name,
+                                      endpoint="/api/reflect", desde={"credencial": "maquina"})
+    monkeypatch.setattr(srv.calipso_routines, "get",
+                        lambda rid: {"id": rid, "kind": "reflect", "enabled": False})
+    monkeypatch.setattr(srv.calipso_routines, "mark_run", lambda *a, **k: None)
+    r = _local().post("/api/routines/rt_abc/run")
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert vistos[-1] == aduana.Quien(origen="gesto", proyecto=srv.ROOT.name,
+                                      endpoint="/api/routines/{id}/run",
+                                      rutina={"kind": "reflect", "id": "rt_abc"},
+                                      desde={"credencial": "maquina"})
+
+
+def test_la_vision_del_turno_hereda_el_quien_del_turno(chat, libro, monkeypatch):
+    vistos = []
+    monkeypatch.setattr(srv.attachments, "has_images", lambda root, ids: True)
+    monkeypatch.setattr(srv.attachments, "vision_describe",
+                        lambda root, ids, question, *, quien: vistos.append(quien) or None)
+    # el paquete del ws lleva `attachment_ids` (server.py:3284); el id no
+    # existe en disco: `context_block` lo saltea y `has_images` esta doblado
+    with chat.cliente.websocket_connect("/ws/chat") as ws:
+        ws.send_text(json.dumps({"text": "que ves", "chat_id": chat.chat_id,
+                                 "attachment_ids": ["att_1"]}))
+        chat.recibir(ws, 1)
+    assert vistos and vistos[0].origen == "turno" and vistos[0].chat == chat.chat_id
+    assert vistos[0].gesto is None and vistos[0].ruta == "local"

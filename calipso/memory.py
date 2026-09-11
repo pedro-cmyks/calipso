@@ -33,6 +33,8 @@ import re as _re
 import shutil
 import subprocess
 
+from calipso import aduana
+
 import chromadb
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 
@@ -233,8 +235,12 @@ class Memory:
         return target.remember(text, **meta)
 
     # --- evolución (reflection / consolidación) ---
-    def reflect(self, limit: int = 20) -> list[dict]:
-        """Promueve hechos duraderos de lo episódico reciente al core curado."""
+    def reflect(self, quien, limit: int = 20) -> list[dict]:
+        """Promueve hechos duraderos de lo episódico reciente al core curado.
+        Manda hasta `limit` episodios a `claude -p` (fuera del proceso, sin
+        juez): se DECLARA en la aduana por llamada, con el Quien de quien lo
+        disparo (la rutina, el boton o POST /api/reflect). Los episodios no
+        van al libro."""
         source = self.project or self.glob
         episodes = source.recent(limit)
         if not episodes:
@@ -253,6 +259,8 @@ class Memory:
             # (revision de seguridad 2026-09-07, punto 2)
             env.pop("CALIPSO_TOKEN", None)
             env.pop("LITELLM_MASTER_KEY", None)
+            aduana.declarar(quien, "reflect", destino="api.anthropic.com",
+                            motivo=f"{len(episodes)} episodios a claude -p")
             result = subprocess.run(
                 [exe, "-p", prompt],
                 capture_output=True, text=True, timeout=120, env=env
