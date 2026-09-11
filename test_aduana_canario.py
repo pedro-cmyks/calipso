@@ -62,8 +62,6 @@ EXCEPCIONES: dict[str, str] = {
     # --- probes declarados en otro lugar (Task 6 lo pasa a `helper:`) ---
     "calipso/server.py:_subscription_probe": "pendiente: Task 6 -- se alcanza desde el loop via _harness_context; el declarado va en el arranque",
     # --- pendientes: cada task de enchufe borra su linea ---
-    "calipso/server.py:api_github_contribute_run": "pendiente: Task 3",
-    "calipso/server.py:api_updates_run": "pendiente: Task 3",
     "calipso/web.py:_get": "pendiente: Task 4",
     "calipso/deps.py:_run": "pendiente: Task 4",
     "calipso/github.py:default_runner:run": "pendiente: Task 5",

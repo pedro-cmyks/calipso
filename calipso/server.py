@@ -98,6 +98,7 @@ from calipso import sessions  # noqa: E402
 from calipso import skills  # noqa: E402
 from calipso import telemetry  # noqa: E402
 from calipso import web as calipso_web  # noqa: E402
+from calipso import aduana  # noqa: E402
 from calipso import verification  # noqa: E402
 from calipso.tools import commands as calipso_commands  # noqa: E402
 from calipso.memory import Memory, leer_carta  # noqa: E402
@@ -290,6 +291,28 @@ def _es_loopback(host: str | None) -> bool:
     ese valor no puede llegar por red real (no es una IP)."""
     return (host or "") in ("127.0.0.1", "::1", "::ffff:127.0.0.1",
                             "localhost", "testclient")
+
+
+def _desde_de_sesion(sesion) -> dict:
+    """`desde` del Quien (spec seccion 4) a partir de `_ws_autorizado` (ws:
+    dict | True) o de `getattr(request.state, "sesion", None)` (http: dict |
+    None). El guard solo puebla `request.state.sesion` en la rama de cookie
+    de sesion; con el token de loopback no hay atributo: eso ES maquina."""
+    if isinstance(sesion, dict):
+        return {"credencial": "sesion", "tipo": sesion.get("tipo"),
+                "aparato": sesion.get("aparato"),
+                "hash": (sesion.get("hash_id") or "")[:8]}
+    return {"credencial": "maquina"}
+
+
+def _quien_http(request: Request, origen: str, endpoint: str, **campos) -> aduana.Quien:
+    """El Quien de un endpoint: `ui` (lo dispara la pagina sola, un GET al
+    cargar) o `gesto` (un click, un POST), con `endpoint`, `desde` y el
+    proyecto de ROOT en este momento (ROOT es global y conmutable: se lee
+    al armar el Quien, nunca se cachea)."""
+    return aduana.Quien(origen=origen, proyecto=ROOT.name, endpoint=endpoint,
+                        desde=_desde_de_sesion(getattr(request.state, "sesion", None)),
+                        **campos)
 
 
 # --- freno de fuerza bruta del login (revision de seguridad 2026-09-07, C3)
@@ -1685,6 +1708,40 @@ async def api_github_contribute_plan(request: Request) -> dict:
     return calipso_github.plan_contribution(action, opts)
 
 
+def _correr_contribucion(run_cmd: list[str], action: str, opts: dict,
+                         quien: aduana.Quien) -> subprocess.CompletedProcess:
+    """Sincrona, en `to_thread`: el subprocess (hasta 120 s) y el flock del
+    libro fuera del loop (invariante 8; hasta hoy corria inline en el
+    `async def` y bloqueaba el loop). Por accion (spec seccion 7):
+    `branch` es `git checkout -b`, local, no cruza; `pr` cruza con el
+    cuerpo: `aduana.Cuerpo(titulo + '\\n' + body)` desde `opts`, y la aduana
+    se queda con las TRES primeras lineas del cuerpo (spec seccion 5), o sea
+    el titulo y las dos primeras del body (decision 15 del plan); nunca el
+    argv que lo lleva entero. `clone`/`fork` cruzan con el argv como
+    consulta."""
+    if action == "branch":
+        cruce = contextlib.nullcontext()
+    elif action == "pr":
+        cruce = aduana.cruzar(quien, "gh pr create", destino="api.github.com",
+                              carga=aduana.Cuerpo(f"{opts.get('title', '')}\n"
+                                                  f"{opts.get('body', '')}"))
+    else:
+        cruce = aduana.cruzar(quien, f"gh repo {action}",
+                              destino="github.com" if action == "clone" else "api.github.com",
+                              carga=["gh", *run_cmd[1:]])
+    with cruce as c:
+        # env blindado: este ejecutor corre git/gh sobre ROOT (conmutable a
+        # un repo ajeno) y un `git checkout -b` dispara el core.fsmonitor
+        # del repo -- verificado (revision de seguridad 2026-09-07, C1).
+        proc = subprocess.run(
+            run_cmd, cwd=str(ROOT), env=calipso_github.env_git_blindado(),
+            text=True, capture_output=True,
+            encoding="utf-8", errors="replace", timeout=120)
+        if c is not None:
+            c.entro(len(proc.stdout or "") + len(proc.stderr or ""))
+    return proc
+
+
 @app.post("/api/github/contribute/run")
 async def api_github_contribute_run(request: Request) -> dict:
     """Ejecuta una accion de contribucion solo con confirm=True (SPEC 11)."""
@@ -1706,14 +1763,9 @@ async def api_github_contribute_run(request: Request) -> dict:
     else:
         raise HTTPException(status_code=400, detail="ejecutable no permitido")
     run_cmd = [exe, *argv[1:]]
+    quien = _quien_http(request, "gesto", "/api/github/contribute/run")
     try:
-        # env blindado: este ejecutor corre git/gh sobre ROOT (conmutable a
-        # un repo ajeno) y un `git checkout -b` dispara el core.fsmonitor
-        # del repo -- verificado (revision de seguridad 2026-09-07, C1).
-        proc = subprocess.run(
-            run_cmd, cwd=str(ROOT), env=calipso_github.env_git_blindado(),
-            text=True, capture_output=True,
-            encoding="utf-8", errors="replace", timeout=120)
+        proc = await asyncio.to_thread(_correr_contribucion, run_cmd, action, opts, quien)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return {
@@ -4403,6 +4455,25 @@ async def api_plugins_install(request: Request) -> dict:
     return await asyncio.to_thread(calipso_plugins.install, name)
 
 
+def _correr_actualizacion(cmd: list[str], quien: aduana.Quien) -> dict:
+    """Sincrona, en `to_thread` (invariante 8). Cruza con el paquete como
+    consulta (`cmd[-1]`, p.ej. `@anthropic-ai/claude-code@latest`) y el
+    registry de npm como destino nominal. El `except` se conserva: un npm
+    caido es `{ok: False}`, no un 500, y el libro dice `fallo`."""
+    try:
+        with aduana.cruzar(quien, "npm install -g", destino="registry.npmjs.org",
+                           carga=cmd[-1]) as cruce:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            cruce.entro(len(result.stdout or "") + len(result.stderr or ""))
+        return {
+            "ok": result.returncode == 0,
+            "stdout": result.stdout[-1000:],
+            "stderr": result.stderr[-500:],
+        }
+    except Exception as e:
+        return {"ok": False, "stderr": str(e)}
+
+
 @app.post("/api/updates/run")
 async def api_updates_run(request: Request) -> dict:
     """Ejecuta el comando de instalación para actualizar un CLI (claude o codex)."""
@@ -4414,15 +4485,8 @@ async def api_updates_run(request: Request) -> dict:
     cmd = connector.get("install")
     if not cmd:
         raise HTTPException(status_code=400, detail="sin comando de instalación")
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        return {
-            "ok": result.returncode == 0,
-            "stdout": result.stdout[-1000:],
-            "stderr": result.stderr[-500:],
-        }
-    except Exception as e:
-        return {"ok": False, "stderr": str(e)}
+    quien = _quien_http(request, "gesto", "/api/updates/run")
+    return await asyncio.to_thread(_correr_actualizacion, cmd, quien)
 
 
 @app.post("/api/learn")
