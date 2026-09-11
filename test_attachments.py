@@ -107,7 +107,9 @@ def main() -> int:
     # vision_describe sin backend disponible devuelve None (sin API key ni modelo local)
     import os as _os
     _orig_key = _os.environ.pop("ANTHROPIC_API_KEY", None)
-    desc = attachments.vision_describe(_ROOT, [img["id"]])
+    from calipso import aduana
+    desc = attachments.vision_describe(_ROOT, [img["id"]], quien=aduana.Quien(
+        origen="gesto", proyecto="prueba", desde={"credencial": "maquina"}))
     if _orig_key:
         _os.environ["ANTHROPIC_API_KEY"] = _orig_key
     check("vision_describe sin backend retorna None", desc is None)

@@ -9,7 +9,7 @@ navegador de Playwright) y deja la capacidad lista.
 
 Uso típico desde una herramienta:
     from calipso import deps
-    deps.ensure("browser")      # instala si hace falta; idempotente
+    deps.ensure("browser", quien)   # instala si hace falta; idempotente
     from playwright.sync_api import sync_playwright
 """
 from __future__ import annotations
@@ -18,6 +18,8 @@ import importlib
 import pathlib
 import subprocess
 import sys
+
+from calipso import aduana
 
 # Capacidades conocidas: qué hay que instalar para habilitar cada una.
 TOOLS: dict[str, dict] = {
@@ -65,20 +67,47 @@ def status() -> dict:
             for name, spec in TOOLS.items()}
 
 
-def _run(cmd: list[str], log: list[str], timeout: int = 600) -> bool:
+class InstalacionFallida(Exception):
+    """`returncode != 0`: se levanta ADENTRO del cruce para que el libro diga
+    `fallo` (un pip que falla no es un cruce `ok`), y se traga en `_run`."""
+
+
+def _destino_de(cmd: list[str]) -> str | None:
+    """Nominal: lo que el sitio sabe, no el host resuelto (pip y playwright
+    deciden solos a donde van)."""
+    if "pip" in cmd:
+        return "pypi.org"
+    if "playwright" in cmd:
+        return "cdn.playwright.dev"
+    return None
+
+
+def _run(cmd: list[str], log: list[str], quien: aduana.Quien,
+         timeout: int = 600) -> bool:
+    """La unica funcion de este modulo que ejecuta: el `with` de la aduana
+    vive aca. `carga` es el argv (saneo lexico); los bytes son lo unico
+    medible, stdout + stderr."""
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                           encoding="utf-8", errors="replace")
-        tail = (r.stdout or "")[-300:] + (r.stderr or "")[-300:]
-        log.append(f"$ {' '.join(cmd)}\n{tail.strip()}")
-        return r.returncode == 0
+        with aduana.cruzar(quien, "instalar dependencia",
+                           destino=_destino_de(cmd), carga=cmd) as cruce:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                               encoding="utf-8", errors="replace")
+            cruce.entro(len(r.stdout or "") + len(r.stderr or ""))
+            tail = (r.stdout or "")[-300:] + (r.stderr or "")[-300:]
+            log.append(f"$ {' '.join(cmd)}\n{tail.strip()}")
+            if r.returncode != 0:
+                raise InstalacionFallida(r.returncode)
+        return True
+    except InstalacionFallida:
+        return False
     except Exception as e:
         log.append(f"$ {' '.join(cmd)}\nERROR: {e}")
         return False
 
 
-def ensure(tool: str, run_post: bool = True) -> dict:
-    """Garantiza que la capacidad esté lista. Instala si falta. Idempotente."""
+def ensure(tool: str, quien: aduana.Quien, run_post: bool = True) -> dict:
+    """Garantiza que la capacidad esté lista. Instala si falta. Idempotente.
+    `quien` es el de la operacion que la necesito (el turno, el gesto)."""
     spec = TOOLS.get(tool)
     if not spec:
         return {"ok": False, "tool": tool, "error": "herramienta desconocida"}
@@ -88,26 +117,14 @@ def ensure(tool: str, run_post: bool = True) -> dict:
     ok = True
     if not already:
         ok = _run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
-                   *spec["pip"]], log)
+                   *spec["pip"]], log, quien)
     # pasos post (descargar navegador, etc.) — idempotentes, se corren igual
     if ok and run_post:
         for cmd in spec.get("post", []):
-            ok = _run(cmd, log) and ok
+            ok = _run(cmd, log, quien) and ok
     ready = is_ready(tool)
     return {"ok": ok and ready, "tool": tool, "already": already,
             "ready": ready, "log": log}
-
-
-def ensure_pip(package: str, module: str | None = None) -> dict:
-    """Instala un paquete pip arbitrario (módulo opcional para verificar)."""
-    module = module or package.split("[")[0].replace("-", "_")
-    if _importable(module):
-        return {"ok": True, "already": True, "package": package}
-    log: list[str] = []
-    ok = _run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
-               package], log)
-    return {"ok": ok and _importable(module), "already": False,
-            "package": package, "log": log}
 
 
 if __name__ == "__main__":

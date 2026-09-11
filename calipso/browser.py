@@ -17,7 +17,7 @@ import re
 import socket
 import urllib.parse
 
-from calipso import deps
+from calipso import aduana, deps
 
 
 class UrlNoPermitida(Exception):
@@ -59,9 +59,11 @@ def exigir_url_publica(url: str) -> str:
     return url
 
 
-def _ensure() -> None:
+def _ensure(quien: aduana.Quien) -> None:
+    """El primer camino a `deps.ensure`: hereda el Quien de la operacion
+    que necesito el navegador."""
     if not deps.is_ready("browser"):
-        deps.ensure("browser")
+        deps.ensure("browser", quien)
 
 
 def _needs_browser_install(exc: Exception) -> bool:
@@ -74,21 +76,29 @@ def _needs_browser_install(exc: Exception) -> bool:
 
 
 def screenshot(url: str, path: str | None = None, full_page: bool = True,
-               width: int = 1280, height: int = 900, timeout: int = 25000) -> bytes:
+               width: int = 1280, height: int = 900, timeout: int = 25000,
+               *, quien: aduana.Quien) -> bytes:
+    """`quien` es keyword-only y sin default: un cruce sin Quien no compila.
+    Un cruce por captura (los dos `page.goto` van adentro del mismo); lo
+    que Chromium cargue como sub-recurso el server no lo ve (limite
+    honesto, spec seccion 8)."""
     exigir_url_publica(url)   # la defensa vive aca, no solo en el endpoint
-    _ensure()
+    _ensure(quien)
     from playwright.sync_api import sync_playwright
 
     def capture() -> bytes:
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            page = browser.new_page(viewport={"width": width, "height": height})
-            try:
-                page.goto(url, wait_until="networkidle", timeout=timeout)
-            except Exception:
-                page.goto(url, timeout=timeout)  # reintento sin esperar networkidle
-            png = page.screenshot(full_page=full_page)
-            browser.close()
+        with aduana.cruzar(quien, "captura con Chromium", destino=url,
+                           carga=url) as cruce:
+            with sync_playwright() as p:
+                browser = p.chromium.launch()
+                page = browser.new_page(viewport={"width": width, "height": height})
+                try:
+                    page.goto(url, wait_until="networkidle", timeout=timeout)
+                except Exception:
+                    page.goto(url, timeout=timeout)  # reintento sin esperar networkidle
+                png = page.screenshot(full_page=full_page)
+                browser.close()
+            cruce.entro(len(png))
             return png
 
     try:
@@ -96,7 +106,7 @@ def screenshot(url: str, path: str | None = None, full_page: bool = True,
     except Exception as exc:
         if not _needs_browser_install(exc):
             raise
-        deps.ensure("browser", run_post=True)
+        deps.ensure("browser", quien, run_post=True)
         png = capture()
     if path:
         pathlib.Path(path).write_bytes(png)
@@ -104,6 +114,24 @@ def screenshot(url: str, path: str | None = None, full_page: bool = True,
 
 
 _UI_EXTS = {".html", ".css", ".js"}
+
+
+def _es_loopback(url: str) -> bool:
+    """http(s) a `localhost` o a una IP de loopback (127.0.0.0/8, ::1). Lo
+    que urlsplit no parsea, o no tiene host, no es loopback demostrado."""
+    try:
+        partes = urllib.parse.urlsplit(url)
+        host = partes.hostname
+    except ValueError:
+        return False
+    if partes.scheme not in ("http", "https") or not host:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def is_ui_file(file_path: str) -> bool:
@@ -119,14 +147,24 @@ def before_after_capture(
     height: int = 900,
     timeout: int = 20000,
     settle_ms: int = 800,
+    *,
+    quien: aduana.Quien,
 ) -> tuple[bytes, bytes]:
     """Captura before/after de la UI al aplicar un cambio.
 
     apply_fn() escribe el archivo a disco. La URL debe estar corriendo antes de llamar.
     Devuelve (before_png, after_png).
+
+    La captura NO cruza: la unica llamada (server.api_apply_proposal) es a
+    http://localhost:8000, y ACA se verifica que la URL sea loopback (un
+    guard de programador, ValueError: no es un cruce, y la excepcion del
+    canario descansa en esto). Lo que SI cruza son los dos caminos a
+    `deps.ensure` (pip / playwright install), con el Quien del endpoint.
     """
+    if not _es_loopback(url):
+        raise ValueError("before_after_capture solo captura loopback")
     import time as _time
-    _ensure()
+    _ensure(quien)
     from playwright.sync_api import sync_playwright
 
     def _snap(page) -> bytes:
@@ -152,25 +190,30 @@ def before_after_capture(
     except Exception as exc:
         if not _needs_browser_install(exc):
             raise
-        deps.ensure("browser", run_post=True)
+        deps.ensure("browser", quien, run_post=True)
         return _run()
 
 
-def render(url: str, timeout: int = 25000, max_chars: int = 6000) -> str:
-    """Texto de la pagina ya renderizada, con JS ejecutado."""
-    _ensure()
+def render(url: str, timeout: int = 25000, max_chars: int = 6000,
+           *, quien: aduana.Quien) -> str:
+    """Texto de la pagina ya renderizada, con JS ejecutado. Un cruce por
+    render, con el Quien del turno que llego por `web.research`."""
+    _ensure(quien)
     from playwright.sync_api import sync_playwright
 
     def capture_text() -> str:
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            page = browser.new_page()
-            try:
-                page.goto(url, wait_until="networkidle", timeout=timeout)
-            except Exception:
-                page.goto(url, timeout=timeout)
-            text = page.inner_text("body")
-            browser.close()
+        with aduana.cruzar(quien, "renderizar con Chromium", destino=url,
+                           carga=url) as cruce:
+            with sync_playwright() as p:
+                browser = p.chromium.launch()
+                page = browser.new_page()
+                try:
+                    page.goto(url, wait_until="networkidle", timeout=timeout)
+                except Exception:
+                    page.goto(url, timeout=timeout)
+                text = page.inner_text("body")
+                browser.close()
+            cruce.entro(len(text))
             return text
 
     try:
@@ -178,11 +221,15 @@ def render(url: str, timeout: int = 25000, max_chars: int = 6000) -> str:
     except Exception as exc:
         if not _needs_browser_install(exc):
             raise
-        deps.ensure("browser", run_post=True)
+        deps.ensure("browser", quien, run_post=True)
         text = capture_text()
     return re.sub(r"\n\s*\n+", "\n", text).strip()[:max_chars]
 
 
 if __name__ == "__main__":
-    png = screenshot("https://example.com", "/tmp/calipso_browser_test.png")
+    # smoke a mano: sale a internet de verdad y anota en el libro del
+    # CALIPSO_HOME vigente
+    png = screenshot("https://example.com", "/tmp/calipso_browser_test.png",
+                     quien=aduana.Quien(origen="gesto", proyecto="smoke",
+                                        desde={"credencial": "maquina"}))
     print(f"screenshot OK: {len(png)} bytes")

@@ -47,13 +47,18 @@ def test_env_blindado_pares_clave_valor():
                      "core.pager": "cat"}
 
 
-def test_los_dos_runners_de_github_llevan_el_env(monkeypatch):
+def test_los_dos_runners_de_github_llevan_el_env(monkeypatch, tmp_path):
+    from calipso import aduana
+    # el cruce del gh escribe en el libro: a tmp_path, no al home de la suite
+    monkeypatch.setattr(aduana, "_ruta", lambda: tmp_path / "aduana.jsonl")
+    quien = aduana.Quien(origen="ui", proyecto="prueba", endpoint="/api/github/overview",
+                         desde={"credencial": "maquina"})
     cap = _Captura()
     monkeypatch.setattr(github, "_which_gh", lambda: "gh")
     monkeypatch.setattr(github.subprocess, "run", cap)
-    github.default_runner(cwd="/tmp")(["gh", "pr", "list"])
+    github.default_runner(cwd="/tmp", quien=quien)(["gh", "pr", "list"])
     assert cap.kwargs["env"].get("GIT_CONFIG_COUNT") == "3"
-    github.git_runner(cwd="/tmp")(["git", "branch", "--show-current"])
+    github.git_runner(cwd="/tmp", quien=quien)(["branch", "--show-current"])
     assert cap.kwargs["env"].get("GIT_CONFIG_COUNT") == "3"
 
 

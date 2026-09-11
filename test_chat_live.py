@@ -2,6 +2,13 @@
 """
 Prueba de chat en vivo contra el servidor corriendo.
 Autentica via token, abre WebSocket, manda un mensaje y muestra la respuesta.
+
+Es un SCRIPT MANUAL, no un test de la suite: solo corre bajo
+`if __name__ == "__main__"`. Importarlo (o que pytest lo recolecte) no
+manda nada: antes, `asyncio.run(main())` corria al importar y un
+`pytest -q test_chat_live.py` le mandaba "-q" al server REAL de Pedro,
+dejando un turno basura en chats.json, un episodio en la memoria y una fila
+en costs.jsonl (paso el 2026-09-11 durante la revision de la aduana).
 """
 import asyncio
 import json
@@ -10,16 +17,20 @@ import httpx
 import websockets
 
 import os, pathlib
-# el token NO se escribe aca: este archivo esta en git
-TOKEN = (os.environ.get("CALIPSO_TOKEN")
-         or pathlib.Path.home().joinpath(".calipso/token")
-                        .read_text(encoding="utf-8").strip())
+
 BASE   = "http://localhost:8000"
 WS     = "ws://localhost:8000/ws/chat"
-MSG    = sys.argv[1] if len(sys.argv) > 1 else "hola, di solo 'Calipso operativo en Linux' y nada mas"
 
 
-async def main():
+def _token() -> str:
+    # el token NO se escribe aca: este archivo esta en git. Se lee solo al
+    # correr a mano, nunca al importar.
+    return (os.environ.get("CALIPSO_TOKEN")
+            or pathlib.Path.home().joinpath(".calipso/token")
+                           .read_text(encoding="utf-8").strip())
+
+
+async def main(TOKEN: str, MSG: str):
     # 1. Autenticar con el token para obtener la cookie de sesion
     async with httpx.AsyncClient() as http:
         r = await http.get(f"{BASE}/?token={TOKEN}", follow_redirects=True)
@@ -81,4 +92,6 @@ async def main():
                 print(f"\n[telemetria:{t}] {json.dumps(pkt)[:120]}", flush=True)
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    MSG = sys.argv[1] if len(sys.argv) > 1 else "hola, di solo 'Calipso operativo en Linux' y nada mas"
+    asyncio.run(main(_token(), MSG))

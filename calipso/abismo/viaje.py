@@ -14,13 +14,19 @@ conversacion, y devuelve que viaja. Tres pasos, en este orden y no en otro:
    persona en el mensaje, en el bloque y en la respuesta, y el reponer de
    siempre restaura todo.
 
-Con destino `local` es transparente: todo pasa, nada se tapa, el juez no
-corre. Un solo camino para todas las rutas.
+Con destino `local` (el modelo de la maquina) es transparente: todo pasa,
+nada se tapa, ningun detector ni juez corre. Con destino `afuera`
+(suscripcion o API sin /nube) el bloque viaja igual de ENTERO, anillo 3
+incluido -"los modelos ven todo" (Pedro, 2026-09-10; enmienda del spec)-,
+sin anillos ni juez LLM, pero corre el detector determinista de secretos
+de maquina: la credencial jamas sale de la maquina (decision 15.1 del spec
+de la aduana, la regla del 2026-09-02 reafirmada), y si marca, el envio
+ENTERO del bloque falla cerrado con motivo `credencial`, como en /nube.
 """
 from __future__ import annotations
 
 from calipso.abismo import anillos, consulta
-from calipso.privacidad import juez, redaccion
+from calipso.privacidad import detector, juez, redaccion
 
 
 def etiquetar(fuente: str, bloques: list[tuple[str, int]]) -> str:
@@ -51,6 +57,16 @@ def preparar_viaje(bloques: list[tuple[str, int]], destino: str, mapa,
     if destino == "local":
         return {"estado": "viaja", "texto": etiquetar(fuente, bloques),
                 "tapados": [], "motivo": ""}
+    if destino == "afuera":
+        texto = etiquetar(fuente, bloques)
+        # sin anillos ni juez LLM, pero la credencial jamas sale (15.1): el
+        # detector es gratis, sin modelo, y falla cerrado el envio entero.
+        # Al modelo local (arriba) no se le corta nada: el spec lo exime, y
+        # el detector marca rutas con fecha, SHAs y URLs largas (sondeado
+        # 2026-09-10): en local dejaria ciego al abismo
+        if detector.detectar_secretos(texto):
+            return _fallo("credencial")
+        return {"estado": "viaja", "texto": texto, "tapados": [], "motivo": ""}
     viajan = [(t, a) for t, a in bloques if anillos.puede_viajar(a, destino)]
     if not viajan:
         return _fallo("solo_hondo")

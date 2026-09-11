@@ -173,10 +173,10 @@ parametro desde el llamador nombrado.
 | sitio (archivo:linea hoy) | llamador que arma el Quien | quien | carga |
 |---|---|---|---|
 | `calipso/web.py:19-23` `_get` (urlopen: POST a html.duckduckgo.com desde `search`, GET a cada pagina desde `fetch`) | `ws_chat` 3554-3559 via `research` | `turno` + gesto `/web` o heuristica, ruta, chat, proyecto, desde | consulta: la query (`search`) o la URL (`fetch`) |
-| `calipso/browser.py:87-89, :169-171` `page.goto` en `screenshot` y `render` (Chromium) | `ws_chat` via `web.research` (render); `POST /api/browser/screenshot` 4361-4364 (screenshot, `gesto`) | `turno` o `gesto` + endpoint | consulta: la URL |
+| `calipso/browser.py:87-89, :169-171` `page.goto` en `screenshot` y `render` (Chromium) | `ws_chat` via `web.research` (render); `GET /api/browser/screenshot` 4363 (screenshot, `ui`: lo arma un <img src> de index.html:1278 tras cada /web) | `turno` o `ui` + endpoint | consulta: la URL |
 | `calipso/deps.py:68-70` `_run` (pip install, `playwright install chromium`) | `POST /api/deps/install` 4346 (`gesto`, catalogo); los cuatro caminos de `browser.py` a `deps.ensure` (:64, :99, :155, :181) heredan el Quien de su operacion | `gesto` o `turno` | consulta: el comando |
-| `calipso/github.py:71-79` closure `run` de `default_runner` (gh) y `:90-100` de `git_runner` (git) | endpoints de github 1645-1673 (`ui`/`gesto` + endpoint) | `ui` o `gesto` | consulta: el argv saneado. **git cruza SOLO con subcomando de red** (`fetch`, `push`, `pull`, `clone`, `ls-remote`); `rev-parse`, `log`, `status`, `remote get-url`, `branch` son locales y no cruzan *(ruling; cierra la pregunta 15.2 de la version anterior)* |
-| `calipso/server.py:1713-1716` `contribute/run` (gh/git con `confirm:true`), **pasado a `to_thread` primero** | el propio endpoint | `gesto` + endpoint + desde | por accion: `pr` -> cuerpo (titulo + 3 lineas del body); `clone`/`fork` -> consulta (argv); `branch` -> no cruza (`git checkout -b`, local) |
+| `calipso/github.py:71-79` closure `run` de `default_runner` (gh) y `:90-100` de `git_runner` (git) | endpoints de github 1645-1673 (`ui`/`gesto` + endpoint) | `ui` o `gesto` | consulta: el argv saneado. **git cruza SOLO con subcomando de red**: la lista negra honesta de `github.GIT_DE_RED` (`fetch`, `push`, `pull`, `clone`, `ls-remote`, `submodule`, `svn`, `lfs`, `p4`, `request-pull`, `send-email`, `imap-send`, `fetch-pack`, `send-pack`, `http-fetch`, `http-push`), `remote update|prune|show|set-head` y `archive --remote`; `rev-parse`, `log`, `status`, `remote get-url`, `branch`, `checkout -b` son locales y no cruzan *(ruling; cierra la pregunta 15.2 de la version anterior; la lista se extendio en la ejecucion cuando la revision encontro falsos negativos, y el controlador la ratifico: la tupla original era una enumeracion, no una politica)* |
+| `calipso/server.py:1713-1716` `contribute/run` (gh/git con `confirm:true`), **pasado a `to_thread` primero** | el propio endpoint | `gesto` + endpoint + desde | por accion: `pr` -> cuerpo (titulo + las 2 primeras lineas del body: tres lineas en total, como manda la seccion 5; si Pedro quiere las tres del body, el titulo pasa al proposito); `clone`/`fork` -> consulta (argv); `branch` -> no cruza (`git checkout -b`, local) |
 | `calipso/discovery.py:92-96` `_npm_latest` (registry.npmjs.org; `_get_json` es helper) | `GET /api/updates` 4373-4376 (carga de `/`) | `ui` + endpoint | nada |
 | `calipso/server.py:4416` `updates/run` (`npm install -g`), **pasado a `to_thread` primero** | el propio endpoint | `gesto` + endpoint | consulta: el paquete |
 
@@ -193,7 +193,7 @@ candado):
   `GET /api/connectors` (que dispara `index.html`): `ui` + endpoint, una vez por proceso.
 - **Modelo fuera de la maquina:** al cargar la config (`dispatch.load_config` en el arranque) y en
   `PUT /api/config`, si el host de `local`/`api`/`classifier` no es loopback, UN `declarar(origen=
-  arranque|ui, proposito="modelo fuera de la maquina", destino=host)` por proceso y por cambio de config.
+  arranque|gesto, proposito="modelo fuera de la maquina", destino=host)` por proceso y por cambio de config.
   *(Ruling: la version anterior cruzaba por turno dentro de `dispatch._http_post_*`; eso choca con 18
   fakes que fijan esas firmas, con el stream lazy que cerraria el `with` antes de leer nada, y con la
   carga `nada` para un turno entero. El dia uno el caso es cero.)*

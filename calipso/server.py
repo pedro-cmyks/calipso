@@ -98,9 +98,10 @@ from calipso import sessions  # noqa: E402
 from calipso import skills  # noqa: E402
 from calipso import telemetry  # noqa: E402
 from calipso import web as calipso_web  # noqa: E402
+from calipso import aduana  # noqa: E402
 from calipso import verification  # noqa: E402
 from calipso.tools import commands as calipso_commands  # noqa: E402
-from calipso.memory import Memory, leer_carta  # noqa: E402
+from calipso.memory import EMBED_MODEL, Memory, leer_carta  # noqa: E402
 
 # RaÃƒÂ­z del proyecto que Calipso muestra/edita. Por defecto, el cwd.
 ROOT = pathlib.Path(os.environ.get("CALIPSO_ROOT", os.getcwd())).resolve()
@@ -290,6 +291,60 @@ def _es_loopback(host: str | None) -> bool:
     ese valor no puede llegar por red real (no es una IP)."""
     return (host or "") in ("127.0.0.1", "::1", "::ffff:127.0.0.1",
                             "localhost", "testclient")
+
+
+def _desde_de_sesion(sesion) -> dict:
+    """`desde` del Quien (spec seccion 4) a partir de `_ws_autorizado` (ws:
+    dict | True) o de `getattr(request.state, "sesion", None)` (http: dict |
+    None). El guard solo puebla `request.state.sesion` en la rama de cookie
+    de sesion; con el token de loopback no hay atributo: eso ES maquina."""
+    if isinstance(sesion, dict):
+        return {"credencial": "sesion", "tipo": sesion.get("tipo"),
+                "aparato": sesion.get("aparato"),
+                "hash": (sesion.get("hash_id") or "")[:8]}
+    return {"credencial": "maquina"}
+
+
+def _proyecto() -> str:
+    """El `proyecto` del Quien (spec seccion 4): el nombre de ROOT en este
+    momento (ROOT es global y conmutable: se lee al armar el Quien, nunca
+    se cachea). `pathlib.Path("/").name` es "" y `Quien.__post_init__`
+    levanta 'proyecto vacio': con ROOT en la raiz se caia el websocket en
+    cada turno. UNICO sitio que deriva el proyecto de ROOT."""
+    return ROOT.name or str(ROOT)
+
+
+def _quien_http(request: Request, origen: str, endpoint: str, **campos) -> aduana.Quien:
+    """El Quien de un endpoint: `ui` (lo dispara la pagina sola, un GET al
+    cargar) o `gesto` (un click, un POST), con `endpoint`, `desde` y el
+    proyecto de ROOT en este momento (`_proyecto()`)."""
+    return aduana.Quien(origen=origen, proyecto=_proyecto(), endpoint=endpoint,
+                        desde=_desde_de_sesion(getattr(request.state, "sesion", None)),
+                        **campos)
+
+
+def _gesto_de(directives: dict) -> str | None:
+    """El slash reconstruido desde `capabilities.parse_directives` (spec
+    seccion 4). Un solo texto: /web manda (es el gesto que abre la web); si
+    no, /nube; si no, el de ruta (/claude /codex /local /api); /plan; o
+    `/model X`. Sin slash, None: el proposito dice que fue por heuristica.
+    `effort` no se reconstruye: lo ponen tanto /fast como la palabra
+    'rapido', y por AST no se distinguen."""
+    if directives.get("force_web"):
+        return "/web"
+    if directives.get("nube"):
+        return "/nube"
+    fr = directives.get("force_route")
+    fm = directives.get("force_model")
+    if fr == "subscription" and fm in ("claude", "codex"):
+        return "/" + fm
+    if fr in ("local", "api"):
+        return "/" + fr
+    if directives.get("force_team"):
+        return "/plan"
+    if fm:
+        return f"/model {fm}"
+    return None
 
 
 # --- freno de fuerza bruta del login (revision de seguridad 2026-09-07, C3)
@@ -1062,6 +1117,27 @@ async def aparatos_revocar(hash_id: str, request: Request):
     return {"ok": True}
 
 
+@app.get("/api/aduana")
+def api_aduana(request: Request, desde: str | None = None, hasta: str | None = None,
+               origen: str | None = None) -> dict:
+    """Los cruces del libro (por defecto hoy) con totales, el hueco en
+    memoria (`sin_libro`, sin tocar el disco) y las lineas rotas contadas,
+    nunca escondidas (spec seccion 9). `def` y no `async def`: lee bajo el
+    candado del libro, en el threadpool (invariante 8).
+
+    Alcance por sesion (ruling 15.3, default seguro): loopback con el token
+    y una sesion `navegador` ven todo; `tablero` -y cualquier tipo que no
+    sea navegador- recibe los cruces SIN `carga`, SIN `quien.chat` y SIN
+    `destino.url`: la carga de un /web es el mensaje crudo de Pedro, y el
+    tablero por decision previa no ve chats. `lector` no llega: el guard lo
+    rebota con 403 por ALCANCES."""
+    respuesta = aduana.leer(desde=desde, hasta=hasta, origen=origen)
+    ses = getattr(request.state, "sesion", None)
+    if ses and ses.get("tipo") != "navegador":
+        return aduana.recortar_para_tablero(respuesta)
+    return respuesta
+
+
 # Defensa en profundidad de _safe (revision de seguridad 2026-09-07, C2):
 # aunque ROOT quedara siendo ancestro de estas carpetas (una raiz de catastro
 # rara, un symlink), las credenciales de Pedro y el estado de Calipso no se
@@ -1472,7 +1548,7 @@ def api_proposal_diff(change_id: str) -> dict:
 
 
 @app.post("/api/proposals/{change_id}/apply")
-def api_apply_proposal(change_id: str, verify: bool = False,
+def api_apply_proposal(change_id: str, request: Request, verify: bool = False,
                        command_id: str = "py_compile_core") -> dict:
     item = PENDING_CHANGES.get(change_id)
     if not item:
@@ -1490,8 +1566,10 @@ def api_apply_proposal(change_id: str, verify: bool = False,
         try:
             def _write_file():
                 p.write_text(item["content"], encoding="utf-8", newline="")
+            # la captura es loopback y no cruza; los deps.ensure de adentro si
             before_png, after_png = calipso_browser.before_after_capture(
-                "http://localhost:8000", _write_file)
+                "http://localhost:8000", _write_file,
+                quien=_quien_http(request, "gesto", "/api/proposals/{change_id}/apply"))
             screenshots["before"] = __import__("base64").b64encode(before_png).decode()
             screenshots["after"] = __import__("base64").b64encode(after_png).decode()
         except Exception:
@@ -1641,18 +1719,20 @@ def api_git_diff(path: str | None = None) -> dict:
 # Leer es libre; clonar/branch/fork/PR exigen confirm explicito (SPEC 11).
 # --------------------------------------------------------------------------
 
-def _gh_runner():
-    return calipso_github.default_runner(cwd=str(ROOT))
+def _gh_runner(quien: aduana.Quien):
+    return calipso_github.default_runner(cwd=str(ROOT), quien=quien)
 
 
 @app.get("/api/github/overview")
-def api_github_overview() -> dict:
+def api_github_overview(request: Request) -> dict:
     if not calipso_github.available():
         return {"available": False, "reason": "gh no esta instalado",
                 "user": None, "repo": None}
-    gh = _gh_runner()
+    quien = _quien_http(request, "ui", "/api/github/overview")
+    gh = _gh_runner(quien)
     user = calipso_github.gh_user(gh)
-    overview = calipso_github.repo_overview(gh, calipso_github.git_runner(cwd=str(ROOT)))
+    overview = calipso_github.repo_overview(
+        gh, calipso_github.git_runner(cwd=str(ROOT), quien=quien))
     return {
         "available": True,
         "authenticated": user["authenticated"],
@@ -1662,18 +1742,22 @@ def api_github_overview() -> dict:
 
 
 @app.get("/api/github/repos")
-def api_github_repos(limit: int = 10) -> dict:
+def api_github_repos(request: Request, limit: int = 10) -> dict:
     if not calipso_github.available():
         raise HTTPException(status_code=404, detail="gh no esta instalado")
-    repos = calipso_github.list_repos(_gh_runner(), limit=max(1, min(limit, 50)))
+    repos = calipso_github.list_repos(
+        _gh_runner(_quien_http(request, "ui", "/api/github/repos")),
+        limit=max(1, min(limit, 50)))
     return {"repos": repos}
 
 
 @app.get("/api/github/assigned")
-def api_github_assigned(limit: int = 10) -> dict:
+def api_github_assigned(request: Request, limit: int = 10) -> dict:
     if not calipso_github.available():
         raise HTTPException(status_code=404, detail="gh no esta instalado")
-    return calipso_github.assigned_items(_gh_runner(), limit=max(1, min(limit, 50)))
+    return calipso_github.assigned_items(
+        _gh_runner(_quien_http(request, "ui", "/api/github/assigned")),
+        limit=max(1, min(limit, 50)))
 
 
 @app.post("/api/github/contribute/plan")
@@ -1683,6 +1767,40 @@ async def api_github_contribute_plan(request: Request) -> dict:
     action = data.get("action", "")
     opts = data.get("opts") or {}
     return calipso_github.plan_contribution(action, opts)
+
+
+def _correr_contribucion(run_cmd: list[str], action: str, opts: dict,
+                         quien: aduana.Quien) -> subprocess.CompletedProcess:
+    """Sincrona, en `to_thread`: el subprocess (hasta 120 s) y el flock del
+    libro fuera del loop (invariante 8; hasta hoy corria inline en el
+    `async def` y bloqueaba el loop). Por accion (spec seccion 7):
+    `branch` es `git checkout -b`, local, no cruza; `pr` cruza con el
+    cuerpo: `aduana.Cuerpo(titulo + '\\n' + body)` desde `opts`, y la aduana
+    se queda con las TRES primeras lineas del cuerpo (spec seccion 5), o sea
+    el titulo y las dos primeras del body (decision 15 del plan); nunca el
+    argv que lo lleva entero. `clone`/`fork` cruzan con el argv como
+    consulta."""
+    if action == "branch":
+        cruce = contextlib.nullcontext()
+    elif action == "pr":
+        cruce = aduana.cruzar(quien, "gh pr create", destino="api.github.com",
+                              carga=aduana.Cuerpo(f"{opts.get('title', '')}\n"
+                                                  f"{opts.get('body', '')}"))
+    else:
+        cruce = aduana.cruzar(quien, f"gh repo {action}",
+                              destino="github.com" if action == "clone" else "api.github.com",
+                              carga=["gh", *run_cmd[1:]])
+    with cruce as c:
+        # env blindado: este ejecutor corre git/gh sobre ROOT (conmutable a
+        # un repo ajeno) y un `git checkout -b` dispara el core.fsmonitor
+        # del repo -- verificado (revision de seguridad 2026-09-07, C1).
+        proc = subprocess.run(
+            run_cmd, cwd=str(ROOT), env=calipso_github.env_git_blindado(),
+            text=True, capture_output=True,
+            encoding="utf-8", errors="replace", timeout=120)
+        if c is not None:
+            c.entro(len(proc.stdout or "") + len(proc.stderr or ""))
+    return proc
 
 
 @app.post("/api/github/contribute/run")
@@ -1706,14 +1824,9 @@ async def api_github_contribute_run(request: Request) -> dict:
     else:
         raise HTTPException(status_code=400, detail="ejecutable no permitido")
     run_cmd = [exe, *argv[1:]]
+    quien = _quien_http(request, "gesto", "/api/github/contribute/run")
     try:
-        # env blindado: este ejecutor corre git/gh sobre ROOT (conmutable a
-        # un repo ajeno) y un `git checkout -b` dispara el core.fsmonitor
-        # del repo -- verificado (revision de seguridad 2026-09-07, C1).
-        proc = subprocess.run(
-            run_cmd, cwd=str(ROOT), env=calipso_github.env_git_blindado(),
-            text=True, capture_output=True,
-            encoding="utf-8", errors="replace", timeout=120)
+        proc = await asyncio.to_thread(_correr_contribucion, run_cmd, action, opts, quien)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return {
@@ -1740,6 +1853,10 @@ async def api_config_save(request: Request) -> dict:
     data = await request.json()
     cfg = calipso_config.save_config(data)
     dispatch.CONFIG = calipso_config.dispatch_config()
+    # un modelo fuera de la maquina se declara por cambio de config
+    # (invariante 7); en hilo: el declarar toma el candado del libro
+    await asyncio.to_thread(_declarar_modelos_fuera,
+                            _quien_http(request, "gesto", "/api/config"))
     return cfg
 
 
@@ -1925,12 +2042,14 @@ def api_subscriptions() -> dict:
 
 
 @app.get("/api/connectors")
-def api_connectors() -> dict:
+def api_connectors(request: Request) -> dict:
+    """`ui`: lo dispara index.html:1531 al cargar."""
+    quien = _quien_http(request, "ui", "/api/connectors")
     return {
         "cli": {
             name: {
                 "docs": connector["docs"],
-                "state": _cli_probe(name),
+                "state": _cli_probe(name, quien),
             }
             for name, connector in CLI_CONNECTORS.items()
         }
@@ -2000,6 +2119,59 @@ def api_subscription_login(client: str) -> dict:
 # --------------------------------------------------------------------------
 # CHAT  (memoria + router + streaming)  Ã¢â‚¬â€ el corazÃƒÂ³n de Calipso
 # --------------------------------------------------------------------------
+
+_LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
+
+
+def _declarar_modelos_fuera(quien: aduana.Quien) -> int:
+    """Un `declarar` por boca (local/api/classifier) cuyo `base_url` no sea
+    loopback (invariante 7: la aduana no conoce a los modelos; un modelo
+    fuera de la maquina se declara al cargar la config y al cambiarla, no
+    se cruza por turno). Devuelve cuantos declaro. El dia uno: cero.
+    Sincrona y con candado: al arrancar corre sin loop; desde PUT
+    /api/config va en `to_thread`."""
+    n = 0
+    for boca in ("local", "api", "classifier"):
+        url = (dispatch.CONFIG.get(boca) or {}).get("base_url") or ""
+        if not url:
+            continue
+        try:
+            host = urllib.parse.urlsplit(url).hostname or ""
+            motivo = boca
+        except ValueError:
+            # `http://[::1:11434/x` ('Invalid IPv6 URL'): fail-open. Un
+            # host que no se puede leer no es loopback demostrado: se
+            # declara como fuera, con destino=url (la aduana lo sanea) y el
+            # motivo lo dice. Sin esto el arranque perdia en silencio la
+            # memoria, los probes y `_backend_availability`, y PUT
+            # /api/config daba 500 DESPUES de guardar la config.
+            host, motivo = "?", f"{boca}: base_url no parseable"
+        if host and host not in _LOOPBACK_HOSTS:
+            aduana.declarar(quien, "modelo fuera de la maquina", destino=url, motivo=motivo)
+            n += 1
+    return n
+
+
+def _declarar_arranque() -> None:
+    """Lo que sale al arrancar el proceso, declarado UNA vez (spec seccion
+    7). La memoria sale a huggingface.co al construirse (`SentenceTransformer`
+    sin `local_files_only`: metadatos + un HEAD por archivo aunque el cache
+    este completo): se declara ACA y no en `Memory.__init__`, porque
+    `_switch_project` reconstruye la memoria en el loop y chromadb cachea
+    el modelo por clase (no vuelve a salir). NO se llama a nivel de modulo:
+    con `uvicorn calipso.server:app` (asi arranca el shell de escritorio,
+    ver `_instalar_filtro_de_token`, y asi levanta el smoke) el import del
+    modulo corre ADENTRO del loop (uvicorn 0.49: `Server._serve` ->
+    `config.load()`), la aduana detectaria el loop y NO escribiria
+    (`aduana_en_loop`), y la memoria quedaria sin declarar. Se llama desde
+    `_calentar_probes`, en `to_thread` desde `_startup_warm`, donde el
+    candado se puede tomar. Con `python calipso/server.py` daria igual."""
+    quien = aduana.Quien(origen="arranque", proyecto=_proyecto(),
+                         desde={"credencial": "maquina"})
+    aduana.declarar_una_vez("memoria", quien, "modelo de embeddings",
+                            destino="huggingface.co", motivo=EMBED_MODEL)
+    _declarar_modelos_fuera(quien)
+
 
 mem = Memory(project_root=str(ROOT))  # memoria hÃƒÂ­brida y por ÃƒÂ¡mbitos (global + proyecto)
 
@@ -2144,13 +2316,18 @@ def _cmd_exe(name: str) -> str | None:
     return shutil.which(name)
 
 
-def _cli_probe(name: str) -> dict:
+def _cli_probe(name: str, quien: aduana.Quien) -> dict:
     c = CLI_CONNECTORS.get(name)
     if not c:
         return {"installed": False, "ready": False, "error": "conector desconocido"}
     exe = _cmd_exe(c["exe"])
     if not exe:
         return {"installed": False, "ready": False, "error": "no esta en PATH"}
+    # `gh auth status` sale a api.github.com; `--version` no. Se declara UNA
+    # vez por proceso (spec seccion 7), sin bytes: el probe no es un cruce
+    aduana.declarar_una_vez(
+        f"cli_probe:{name}", quien, f"probe {c['exe']}: --version y auth status",
+        destino="api.github.com" if name == "github" else None)
     version = ""
     try:
         ver = subprocess.run(
@@ -3549,6 +3726,27 @@ async def ws_chat(ws: WebSocket) -> None:
                     ws, chat_msg, _edit_target, f"{agente_id}:borrador",
                     departamento))
 
+            # el Quien del turno para la aduana (spec seccion 4): chat_id ya
+            # es str (se creo en el bloque de arriba si faltaba), ROOT ya es
+            # el proyecto del chat (`_switch_project` corrio antes), `route`
+            # es la decidida (post-/nube), `sesion` es lo que devolvio
+            # `_ws_autorizado`. Se arma UNA vez por turno: la web y la
+            # vision por SDK lo heredan.
+            quien_turno = aduana.Quien(
+                origen="turno",
+                chat=chat_id,
+                proyecto=_proyecto(),
+                gesto=_gesto_de(directives),
+                # una ruta que la aduana no conoce va como None (la telemetria
+                # del turno la conserva, correlable por chat y ts): el
+                # ValueError de `Quien.__post_init__` jamas mata el turno
+                # (invariante 2: medir no rompe el producto). Hoy `route` solo
+                # vale local/subscription/api; esto cubre el dia que `_decide`
+                # o `ruteo_para_nube` devuelvan una nueva
+                ruta=route if route in aduana.RUTAS else None,
+                desde=_desde_de_sesion(sesion),
+            )
+
             # 1.5) navegación web si la tarea lo pide (grounding + preview)
             web_material = None
             # en /nube se saltea: `calipso_web.research` manda el mensaje
@@ -3557,8 +3755,10 @@ async def ws_chat(ws: WebSocket) -> None:
                     and not directives.get("nube"):
                 await ws.send_json({"type": "web", "action": "search",
                                     "query": chat_msg[:140]})
+                # todo lo de adentro (search, fetch, render, deps.ensure)
+                # corre en este hilo: el flock del libro nunca cae en el loop
                 web_material = await asyncio.to_thread(
-                    calipso_web.research, chat_msg, 4, 2)
+                    calipso_web.research, chat_msg, 4, 2, quien_turno)
                 await ws.send_json({
                     "type": "web", "action": "results",
                     "results": web_material["results"],
@@ -3582,7 +3782,8 @@ async def ws_chat(ws: WebSocket) -> None:
             if attachments.has_images(str(ROOT), attachment_ids) \
                     and not directives.get("nube"):
                 vision_text = await asyncio.to_thread(
-                    attachments.vision_describe, str(ROOT), attachment_ids, chat_msg)
+                    attachments.vision_describe, str(ROOT), attachment_ids, chat_msg,
+                    quien=quien_turno)
                 if vision_text:
                     system += "\n\n=== Vision de imagen adjunta ===\n" + vision_text
                 else:
@@ -3649,7 +3850,13 @@ async def ws_chat(ws: WebSocket) -> None:
                     # despues de la marca vale, sin marcas (seccion 8.4).
                     system_base = system
                     mensaje_turno = mensaje_saliente
-                    destino = "nube" if a_la_nube_tapado else "local"
+                    # el destino del abismo (viaje.py): "nube" = el gesto
+                    # /nube (anillos + juez); "local" = el modelo de la
+                    # maquina (transparente); "afuera" = suscripcion o API
+                    # sin /nube (los modelos ven todo, pero la credencial
+                    # jamas sale: spec de la aduana 13 y 15.1)
+                    destino = ("nube" if a_la_nube_tapado
+                               else "local" if route == "local" else "afuera")
                     etiqueta = f"{verdict.get('persona') or verdict['client']} via {verdict['client']}"
                     while True:
                         texto, queued = await _run_subscription_text_live(
@@ -3736,7 +3943,13 @@ async def ws_chat(ws: WebSocket) -> None:
                     # `_sistema_del_turno` (recall, economia bajo candado).
                     system_base = system
                     mensaje_turno = mensaje_saliente
-                    destino = "nube" if a_la_nube_tapado else "local"
+                    # el destino del abismo (viaje.py): "nube" = el gesto
+                    # /nube (anillos + juez); "local" = el modelo de la
+                    # maquina (transparente); "afuera" = suscripcion o API
+                    # sin /nube (los modelos ven todo, pero la credencial
+                    # jamas sale: spec de la aduana 13 y 15.1)
+                    destino = ("nube" if a_la_nube_tapado
+                               else "local" if route == "local" else "afuera")
                     while True:
                         if estado_abismo.sintetica and not inbox.empty():
                             # el steer de Pedro gana (spec seccion 10): llego
@@ -4058,9 +4271,9 @@ async def ws_chat(ws: WebSocket) -> None:
 
 
 @app.post("/api/reflect")
-def api_reflect() -> dict:
+def api_reflect(request: Request) -> dict:
     """Dispara la consolidaciÃƒÂ³n: promueve hechos duraderos al core curado."""
-    promoted = mem.reflect()
+    promoted = mem.reflect(_quien_http(request, "gesto", "/api/reflect"))
     return {"promoted": promoted}
 
 
@@ -4083,8 +4296,18 @@ def _routine_handlers() -> dict:
     consumo (calipso/consumo.py) solo lee jsonl locales -- ningun modelo,
     ningun CLI, ninguna decision economica.
     """
-    def _reflect(_r):
-        mem.reflect()
+    def _reflect(r):
+        # el Quien viaja en el dict de la rutina cuando lo manda el boton
+        # (`api_routines_run`, como dict JSON-seguro); el ticker no lo trae:
+        # rutina desde la maquina. ROOT se lee ACA, al correr: los handlers
+        # son closures fijos creados una vez al arrancar el ticker.
+        if r.get("quien"):
+            quien = aduana.Quien(**r["quien"])
+        else:
+            quien = aduana.Quien(origen="rutina", proyecto=_proyecto(),
+                                 rutina={"kind": r["kind"], "id": r["id"]},
+                                 desde={"credencial": "maquina"})
+        mem.reflect(quien)
 
     def _learn(_r):
         learning.learn()
@@ -4220,7 +4443,7 @@ def api_routines_delete(routine_id: str) -> dict:
 
 
 @app.post("/api/routines/{routine_id}/run")
-def api_routines_run(routine_id: str) -> dict:
+def api_routines_run(routine_id: str, request: Request) -> dict:
     """Corre una rutina ahora, ignorando el vencimiento (boton manual)."""
     routine = calipso_routines.get(routine_id)
     if routine is None:
@@ -4229,8 +4452,12 @@ def api_routines_run(routine_id: str) -> dict:
     if handler is None:
         raise HTTPException(status_code=400, detail="kind sin handler")
     now = datetime.datetime.now()
+    # `gesto` con la rutina que dispara: el Quien viaja dentro del dict
+    # porque los handlers son `Callable[[dict], Any]` compartidos con el ticker
+    quien = _quien_http(request, "gesto", "/api/routines/{id}/run",
+                        rutina={"kind": routine["kind"], "id": routine["id"]})
     try:
-        handler(routine)
+        handler(dict(routine, quien=quien.a_dict()))
         status = "ok"
     except Exception as e:
         status = f"error: {e}"
@@ -4345,13 +4572,14 @@ async def api_deps_install(request: Request) -> dict:
     except Exception:
         pass
     if body.get("tool"):
-        return await asyncio.to_thread(deps.ensure, body["tool"])
+        quien = _quien_http(request, "gesto", "/api/deps/install")
+        return await asyncio.to_thread(deps.ensure, body["tool"], quien)
     if body.get("package"):
-        # `deps.ensure_pip` corre `pip install <lo que venga>`, o sea ejecucion
-        # de codigo arbitrario para cualquiera que tenga el token. La rama se
-        # cierra: lo que se puede instalar es el catalogo cerrado de
-        # `deps.TOOLS`, y para sumar algo se edita ese catalogo, no se manda
-        # por HTTP.
+        # `deps.ensure_pip` (borrada con la aduana) corria `pip install <lo
+        # que venga>`, o sea ejecucion de codigo arbitrario para cualquiera
+        # que tenga el token. La rama se cierra: lo que se puede instalar es
+        # el catalogo cerrado de `deps.TOOLS`, y para sumar algo se edita
+        # ese catalogo, no se manda por HTTP.
         raise HTTPException(
             status_code=403,
             detail="instalar un paquete arbitrario esta cerrado: usa 'tool' "
@@ -4360,10 +4588,14 @@ async def api_deps_install(request: Request) -> dict:
 
 
 @app.get("/api/browser/screenshot")
-async def api_browser_screenshot(url: str, full: bool = False):
-    """Screenshot real de una URL con el navegador (instala Playwright si falta)."""
+async def api_browser_screenshot(url: str, request: Request, full: bool = False):
+    """Screenshot real de una URL con el navegador (instala Playwright si falta).
+    Para la aduana es `ui`: su unico llamador es un <img src> que la pagina
+    arma sola tras cada /web (index.html:1278), sin click."""
+    quien = _quien_http(request, "ui", "/api/browser/screenshot")
     try:
-        png = await asyncio.to_thread(calipso_browser.screenshot, url, None, full)
+        png = await asyncio.to_thread(calipso_browser.screenshot, url, None, full,
+                                      quien=quien)
     except calipso_browser.UrlNoPermitida as e:
         # 400 y no 502: no es que el sitio fallo, es que no se va a mirar
         raise HTTPException(status_code=400, detail=str(e)) from None
@@ -4373,9 +4605,10 @@ async def api_browser_screenshot(url: str, full: bool = False):
 
 
 @app.get("/api/updates")
-def api_updates() -> dict:
-    """Versiones de CLIs (+ si hay update en npm) y modelos nuevos descubiertos."""
-    return discovery.updates()
+def api_updates(request: Request) -> dict:
+    """Versiones de CLIs (+ si hay update en npm) y modelos nuevos descubiertos.
+    `ui`: lo dispara index.html:2680 al cargar `/`."""
+    return discovery.updates(_quien_http(request, "ui", "/api/updates"))
 
 
 @app.get("/api/plugins")
@@ -4403,6 +4636,25 @@ async def api_plugins_install(request: Request) -> dict:
     return await asyncio.to_thread(calipso_plugins.install, name)
 
 
+def _correr_actualizacion(cmd: list[str], quien: aduana.Quien) -> dict:
+    """Sincrona, en `to_thread` (invariante 8). Cruza con el paquete como
+    consulta (`cmd[-1]`, p.ej. `@anthropic-ai/claude-code@latest`) y el
+    registry de npm como destino nominal. El `except` se conserva: un npm
+    caido es `{ok: False}`, no un 500, y el libro dice `fallo`."""
+    try:
+        with aduana.cruzar(quien, "npm install -g", destino="registry.npmjs.org",
+                           carga=cmd[-1]) as cruce:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            cruce.entro(len(result.stdout or "") + len(result.stderr or ""))
+        return {
+            "ok": result.returncode == 0,
+            "stdout": result.stdout[-1000:],
+            "stderr": result.stderr[-500:],
+        }
+    except Exception as e:
+        return {"ok": False, "stderr": str(e)}
+
+
 @app.post("/api/updates/run")
 async def api_updates_run(request: Request) -> dict:
     """Ejecuta el comando de instalación para actualizar un CLI (claude o codex)."""
@@ -4414,15 +4666,8 @@ async def api_updates_run(request: Request) -> dict:
     cmd = connector.get("install")
     if not cmd:
         raise HTTPException(status_code=400, detail="sin comando de instalación")
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        return {
-            "ok": result.returncode == 0,
-            "stdout": result.stdout[-1000:],
-            "stderr": result.stderr[-500:],
-        }
-    except Exception as e:
-        return {"ok": False, "stderr": str(e)}
+    quien = _quien_http(request, "gesto", "/api/updates/run")
+    return await asyncio.to_thread(_correr_actualizacion, cmd, quien)
 
 
 @app.post("/api/learn")
@@ -4878,18 +5123,28 @@ _whisper_model = None
 _whisper_lock = asyncio.Lock()
 
 
-async def _get_whisper():
+def _cargar_whisper(quien: aduana.Quien):
+    """Sincrona, en `to_thread`: declara la descarga del modelo (huggingface.co,
+    desde adentro de faster_whisper) UNA vez por proceso y construye el modelo.
+    La bandera de `_whisper_model is None` ya da el "una vez"; la de
+    `declarar_una_vez` es la que se evalua antes del candado."""
+    from faster_whisper import WhisperModel
+    aduana.declarar_una_vez("whisper", quien, "modelo whisper",
+                            destino="huggingface.co",
+                            motivo="Systran/faster-whisper-tiny")
+    return WhisperModel("tiny", device="cpu", compute_type="int8")
+
+
+async def _get_whisper(quien: aduana.Quien):
     global _whisper_model
     async with _whisper_lock:
         if _whisper_model is None:
-            from faster_whisper import WhisperModel
-            _whisper_model = await asyncio.to_thread(
-                WhisperModel, "tiny", device="cpu", compute_type="int8")
+            _whisper_model = await asyncio.to_thread(_cargar_whisper, quien)
     return _whisper_model
 
 
 @app.post("/api/transcribe")
-async def api_transcribe(audio: UploadFile = File(...)) -> dict:
+async def api_transcribe(request: Request, audio: UploadFile = File(...)) -> dict:
     import tempfile, os
     data = await audio.read()
     suffix = pathlib.Path(audio.filename or "audio.webm").suffix or ".webm"
@@ -4898,7 +5153,7 @@ async def api_transcribe(audio: UploadFile = File(...)) -> dict:
         tmp = f.name
     try:
         try:
-            model = await _get_whisper()
+            model = await _get_whisper(_quien_http(request, "gesto", "/api/transcribe"))
         except ImportError:
             return {"text": "", "error": "faster-whisper no instalado — corre: pip install faster-whisper"}
         segments, info = await asyncio.to_thread(
@@ -7658,7 +7913,7 @@ async def _pescar_abismo(ws, m, estado, *, destino: str, mapa,
                             latencia_ms=ms)
         return False
     estado.bloques.append(v["texto"])
-    viaje_info = ({"destino": "local"} if destino == "local" else
+    viaje_info = ({"destino": destino} if destino != "nube" else
                   {"destino": "nube", "tapados": v["tapados"],
                    "texto_tapado": v["texto"]})
     await ws.send_json(abismo_turno.senal("pescado", m.fuente,
@@ -7865,13 +8120,34 @@ def _asegurar_rutina_consumo() -> None:
         pass
 
 
+def _calentar_probes() -> dict:
+    """En hilo (`to_thread` desde `_startup_warm`): declara UNA vez la memoria
+    y los modelos fuera de la maquina (`_declarar_arranque`; no puede ir a
+    nivel de modulo: con `uvicorn calipso.server:app` el import corre en el
+    loop) y los probes `claude/codex --version`, `auth status`, `login
+    status`, y calienta el cache. `_subscription_probe` queda SIN llamada a
+    la aduana a proposito: se alcanza desde el loop via `_harness_context`
+    en cada turno, y ahi el candado no se puede tomar (spec seccion 3)."""
+    _declarar_arranque()
+    aduana.declarar_una_vez(
+        "probes", aduana.Quien(origen="arranque", proyecto=_proyecto(),
+                               desde={"credencial": "maquina"}),
+        "probes claude/codex: --version, auth status, login status", destino=None)
+    return _backend_availability()
+
+
 @app.on_event("startup")
 async def _startup_warm() -> None:
+    # cada paso con su try: un `discover` que levanta (Ollama caido, una
+    # config rara) no se lleva la declaracion de la memoria ni los probes
     try:
         found = await asyncio.to_thread(discovery.discover, True)
         if found["added"]:
             print(f"[calipso] modelos descubiertos: {found['added']}")
-        await asyncio.to_thread(_backend_availability)  # pre-calienta el cache de probes
+    except Exception:
+        pass
+    try:
+        await asyncio.to_thread(_calentar_probes)  # declara la memoria y los probes, pre-calienta el cache
     except Exception:
         pass
     await asyncio.to_thread(_asegurar_rutina_catastro)
