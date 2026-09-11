@@ -625,6 +625,36 @@ def test_leer_devuelve_hoy_con_totales_y_cuenta_las_lineas_rotas(libro, monkeypa
             aduana.leer(desde="2026-09-09", hasta="2026-09-10T10:30:00")["cruces"]] == ["ayer", "web"]
 
 
+def test_leer_cuenta_como_ilegible_una_linea_json_valida_con_tipos_raros(libro, monkeypatch):
+    """Spec 9: las lineas rotas se cuentan, jamas rompen. Una linea editada
+    a mano puede ser JSON valido y tener `ts` que no es str, `quien` o
+    `destino` que no son dict, o no ser un objeto: ilegible, no un 500."""
+    monkeypatch.setattr(aduana, "_ahora", lambda: "2026-09-10T10:00:00")
+    monkeypatch.setattr(aduana, "_hoy", lambda: "2026-09-10")
+    with aduana.cruzar(quien_de_prueba(), "buena", "https://a.com/"):
+        pass
+    raras = [
+        '{"ts": 123, "quien": {}}',
+        '{"ts": "2026-09-10T10:00:01", "quien": {"origen": "turno"}, "destino": "a.com"}',
+        '{"ts": "2026-09-10T10:00:02", "quien": "turno"}',
+        '{"ts": "2026-09-10T10:00:03"}',
+        '[1, 2, 3]',
+        '42',
+        'null',
+    ]
+    with open(libro, "a", encoding="utf-8") as f:
+        f.write("\n".join(raras) + "\n")
+    r = aduana.leer()
+    assert [c["proposito"] for c in r["cruces"]] == ["buena"]
+    assert r["ilegibles"] == len(raras)
+    assert r["totales"]["por_destino"] == {"a.com": 1}
+    # y un destino ausente (None) sigue siendo legible: cuenta como "?"
+    with open(libro, "a", encoding="utf-8") as f:
+        f.write('{"ts": "2026-09-10T10:00:04", "quien": {"origen": "ui"}, "destino": null}\n')
+    r = aduana.leer()
+    assert len(r["cruces"]) == 2 and r["totales"]["por_destino"] == {"a.com": 1, "?": 1}
+
+
 def test_recortar_para_tablero_saca_carga_chat_y_url(libro):
     with aduana.cruzar(quien_de_prueba(), "web", "https://a.com/p?x=1", carga="secreto humano"):
         pass

@@ -677,6 +677,17 @@ def test_loopback_ve_todo_con_totales_e_ilegibles(libro, monkeypatch):
     assert d["sin_libro"] == {"n": 0, "desde": None, "ultimo_error": None}
 
 
+def test_una_linea_editada_a_mano_con_tipos_raros_no_tumba_el_endpoint(libro, monkeypatch):
+    _sembrar(libro, monkeypatch)
+    with open(libro, "a", encoding="utf-8") as f:
+        f.write('{"ts": 123, "quien": {}}\n')
+        f.write('{"ts": "2026-09-10T12:00:00", "quien": {"origen": "ui"}, "destino": "x"}\n')
+    r = _local().get("/api/aduana")
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["ilegibles"] == 3 and len(d["cruces"]) == 2
+
+
 def test_los_filtros_del_querystring(libro, monkeypatch):
     _sembrar(libro, monkeypatch)
     solo_arranque = _local().get("/api/aduana", params={"origen": "arranque"}).json()

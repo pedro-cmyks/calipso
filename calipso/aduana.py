@@ -513,7 +513,12 @@ def leer(desde: str | None = None, hasta: str | None = None,
             try:
                 c = json.loads(linea)
                 ts = c["ts"]
-                if not isinstance(c["quien"], dict):
+                # JSON valido con tipos raros (una linea editada a mano) es
+                # ilegible, no un 500 en GET /api/aduana: ts str, quien
+                # dict, destino dict o None
+                if (not isinstance(c, dict) or not isinstance(ts, str)
+                        or not isinstance(c["quien"], dict)
+                        or not isinstance(c.get("destino"), (dict, type(None)))):
                     raise TypeError
             except Exception:
                 ilegibles += 1
