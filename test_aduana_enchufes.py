@@ -324,7 +324,73 @@ def test_git_runner_con_log_no_cruza_y_con_fetch_si(libro, monkeypatch):
     assert fetch["destino"] == {"host": None, "url": None}
     assert clone["destino"]["host"] == "github.com"
     assert "s3cr3t" not in libro.read_text()
-    assert len(cap.llamadas) == 6
+    # porcelana compuesta que sale a la red (fix round 1): `remote update` y
+    # `submodule update` no son `fetch` pero fetchean; cruzan con su verbo
+    assert run(["remote", "update"])[0] == 0
+    assert run(["submodule", "update", "--remote"])[0] == 0
+    assert [c["proposito"] for c in cruces_del_libro(libro)] == [
+        "git fetch", "git clone", "git remote update", "git submodule update"]
+    assert len(cap.llamadas) == 8
+
+
+def test_git_runner_cruza_con_opcion_global_de_dos_tokens_antes_del_fetch(libro, monkeypatch):
+    """Fix round 1: `--git-dir /x/.git fetch` es un fetch. Antes el parser
+    tomaba `/x/.git` por subcomando y el fetch salia sin linea (invariante
+    1 rota, del lado que no es inocuo). El mismo argv con `--git-dir=/x`
+    (un token) ya funcionaba y sigue."""
+    cap = _Captura()
+    monkeypatch.setattr(github.shutil, "which", lambda n: "/usr/bin/git")
+    monkeypatch.setattr(github.subprocess, "run", cap)
+    run = github.git_runner(cwd="/tmp", quien=quien_de_prueba())
+    assert run(["--git-dir", "/x/.git", "fetch", "origin"])[0] == 0
+    assert run(["--git-dir=/x/.git", "--work-tree", "/x", "log", "-1"])[0] == 0
+    c, = cruces_del_libro(libro)
+    assert c["proposito"] == "git fetch"
+    assert c["carga"]["texto"] == "git --git-dir /x/.git fetch origin"
+    assert cap.llamadas == [["/usr/bin/git", "--git-dir", "/x/.git", "fetch", "origin"],
+                            ["/usr/bin/git", "--git-dir=/x/.git", "--work-tree", "/x", "log", "-1"]]
+
+
+@pytest.mark.parametrize("opcion", ["-c", "-C", "--git-dir", "--work-tree", "--namespace",
+                                    "--super-prefix", "--config-env", "--shallow-file",
+                                    "--attr-source"])
+def test_subcomando_git_salta_las_opciones_globales_que_llevan_valor(opcion):
+    assert github.subcomando_git([opcion, "valor", "fetch", "origin"]) == "fetch"
+    assert github.subcomando_git(["git", opcion, "valor", "-p", "log"]) == "log"
+    assert github.subcomando_git([opcion, "valor"]) is None
+
+
+def test_subcomando_git_trata_exec_path_y_los_flags_como_un_token():
+    # `git --exec-path` solo imprime la ruta y sale: no toma valor (git.c);
+    # `--git-dir=/x` y `--bare` tampoco
+    assert github.subcomando_git(["--exec-path", "fetch"]) == "fetch"
+    assert github.subcomando_git(["--git-dir=/x/.git", "--bare", "status"]) == "status"
+    assert github.subcomando_git([]) is None
+
+
+def test_subcomando_git_de_red_distingue_verbo_y_bandera():
+    """Fix round 1: la lista negra tiene que ser completa. `remote` y
+    `archive` son locales salvo por verbo/bandera; `submodule`, `svn`,
+    `lfs` mezclan verbos y entran enteros (una linea de mas es inocua)."""
+    red = github.subcomando_git_de_red
+    assert red(["remote", "get-url", "origin"]) is None
+    assert red(["remote", "-v"]) is None
+    assert red(["remote", "add", "origin", "https://x/y.git"]) is None
+    assert red(["remote", "-v", "update"]) == "remote update"
+    assert red(["remote", "prune", "origin"]) == "remote prune"
+    assert red(["remote", "show", "origin"]) == "remote show"
+    assert red(["remote", "set-head", "origin", "-a"]) == "remote set-head"
+    assert red(["archive", "-o", "x.tar", "HEAD"]) is None
+    assert red(["archive", "--remote=git@github.com:x/y.git", "HEAD"]) == "archive --remote"
+    assert red(["archive", "--remote", "https://x/y.git", "HEAD"]) == "archive --remote"
+    assert red(["submodule", "status"]) == "submodule status"
+    assert red(["submodule", "--quiet", "add", "https://x/y.git"]) == "submodule add"
+    assert red(["lfs", "fetch"]) == "lfs fetch"
+    assert red(["svn", "rebase"]) == "svn rebase"
+    assert red(["lfs"]) == "lfs"
+    assert red(["ls-remote", "origin"]) == "ls-remote"
+    assert red(["log", "-1"]) is None
+    assert red([]) is None
 
 
 def test_los_runners_exigen_quien():

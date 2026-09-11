@@ -30,8 +30,29 @@ from calipso import aduana
 Runner = Callable[[list[str]], "tuple[int, str, str]"]
 
 # git cruza SOLO con subcomando de red (spec seccion 7, ruling): rev-parse,
-# log, status, remote get-url, branch son locales y no cruzan.
-GIT_DE_RED = ("fetch", "push", "pull", "clone", "ls-remote")
+# log, status, remote get-url, branch son locales y no cruzan. La lista es
+# negra (cruza lo listado) y por eso tiene que ser completa: una linea de
+# mas es inocua -la aduana no frena-, una de menos rompe la invariante 1.
+# Ademas de la porcelana obvia entran la plumbing de transporte y los
+# subcomandos que mezclan verbos locales y de red (`submodule update`/`add`
+# clonan; `svn`, `lfs`, `p4` hablan con su servidor): esos entran enteros.
+# `remote` y `archive` son locales salvo por verbo o bandera: los resuelve
+# `subcomando_git_de_red`.
+GIT_DE_RED = ("fetch", "push", "pull", "clone", "ls-remote",
+              "submodule", "svn", "lfs", "p4", "request-pull",
+              "send-email", "imap-send",
+              "fetch-pack", "send-pack", "http-fetch", "http-push")
+# verbos de `git remote` que hablan con el remoto (`get-url`, `set-url`,
+# `-v`, `add`, `remove`, `rename` son locales; `show` sin `-n` y `set-head
+# -a` consultan)
+GIT_REMOTE_DE_RED = ("update", "prune", "show", "set-head")
+# opciones globales de git que llevan su valor en el token SIGUIENTE
+# (git.c, handle_options). `--exec-path` no esta: solo imprime la ruta y
+# sale, el valor va pegado (`--exec-path=/x`); `--super-prefix` no existe
+# desde 2.40 pero era de dos tokens.
+_GIT_OPCIONES_CON_VALOR = ("-c", "-C", "--git-dir", "--work-tree", "--namespace",
+                           "--super-prefix", "--config-env", "--shallow-file",
+                           "--attr-source")
 
 
 def _which_gh() -> str | None:
@@ -101,41 +122,83 @@ def default_runner(cwd: str | None = None, timeout: int = 15,
     return run
 
 
-def subcomando_git(args: list[str]) -> str | None:
-    """El subcomando de un argv de git: salta un `git` inicial (produccion
-    no lo pasa; test_seguridad_git_blindado.py si) y las opciones globales
-    `-c k=v` / `-C dir` / `--flag`."""
-    it = iter(args[1:] if args and args[0] == "git" else args)
-    for a in it:
-        if a in ("-c", "-C"):
-            next(it, None)
+def _partir_git(args: list[str]) -> tuple[str | None, list[str]]:
+    """(subcomando, lo que le sigue) de un argv de git: salta un `git`
+    inicial (produccion no lo pasa; test_seguridad_git_blindado.py si), las
+    opciones globales de un token (`--bare`, `--git-dir=/x`) y las de dos
+    (`-c k=v`, `-C dir`, `--git-dir /x`: `_GIT_OPCIONES_CON_VALOR`). Sin
+    las de dos tokens el valor se tomaria por subcomando y `--git-dir
+    /x/.git fetch` saldria a la red sin linea."""
+    resto = list(args[1:] if args and args[0] == "git" else args)
+    while resto:
+        a = resto.pop(0)
+        if a in _GIT_OPCIONES_CON_VALOR:
+            if resto:
+                resto.pop(0)
             continue
         if a.startswith("-"):
             continue
-        return a
+        return a, resto
+    return None, []
+
+
+def subcomando_git(args: list[str]) -> str | None:
+    """El subcomando de un argv de git (ver `_partir_git`)."""
+    return _partir_git(args)[0]
+
+
+def _verbo(resto: list[str]) -> str | None:
+    """El primer token que no es opcion: el verbo de un subcomando compuesto
+    (`remote -v update` -> `update`)."""
+    return next((a for a in resto if not a.startswith("-")), None)
+
+
+def subcomando_git_de_red(args: list[str]) -> str | None:
+    """El proposito del cruce (`fetch`, `remote update`, `archive
+    --remote`, `lfs fetch`) si el argv sale a la red; None si es local.
+    `GIT_DE_RED` entra entero, con su verbo si lo tiene, para que el
+    tablero diga `git submodule update` y no `git submodule`; `remote`
+    solo con verbo de `GIT_REMOTE_DE_RED`; `archive` solo con `--remote`."""
+    sub, resto = _partir_git(args)
+    if sub is None:
+        return None
+    verbo = _verbo(resto)
+    if sub in GIT_DE_RED:
+        return f"{sub} {verbo}" if verbo and sub in ("submodule", "svn", "lfs", "p4") else sub
+    if sub == "remote":
+        return f"remote {verbo}" if verbo in GIT_REMOTE_DE_RED else None
+    if sub == "archive" and any(a == "--remote" or a.startswith("--remote=") for a in resto):
+        return "archive --remote"
     return None
 
 
 def _destino_git(args: list[str]) -> str | None:
-    """La URL del remoto si viene en el argv (`git clone https://...`); con
-    un nombre (`origin`) el destino no se conoce y queda None."""
-    return next((a for a in args if "://" in a or a.startswith("git@")), None)
+    """La URL del remoto si viene en el argv (`git clone https://...`,
+    `archive --remote=git@...`); con un nombre (`origin`) el destino no se
+    conoce y queda None."""
+    for a in args:
+        v = a.split("=", 1)[1] if a.startswith("--") and "=" in a else a
+        if "://" in v or v.startswith("git@"):
+            return v
+    return None
 
 
 def git_runner(cwd: str | None = None, timeout: int = 10,
                *, quien: aduana.Quien) -> Runner:
-    """Cruza SOLO con subcomando de red (`GIT_DE_RED`); lo local corre
-    bajo `contextlib.nullcontext()`. El canario acepta el cruce condicional
-    porque el Call a `aduana.cruzar` esta en el closure."""
+    """Cruza SOLO con subcomando de red (`subcomando_git_de_red`); lo local
+    corre bajo `contextlib.nullcontext()`. El canario acepta el cruce
+    condicional porque el Call a `aduana.cruzar` esta en el closure. Limite
+    conocido: en un clon parcial (`--filter`) un `log -p` puede fetchear
+    blobs del promisor sin pasar por aca; el ROOT de Calipso no lo es."""
     exe = shutil.which("git.exe") or shutil.which("git")
     env = env_git_blindado()
 
     def run(args: list[str]) -> tuple[int, str, str]:
         if not exe:
             return (127, "", "git no esta en PATH")
-        sub = subcomando_git(args)
-        if sub in GIT_DE_RED:
-            cruce = aduana.cruzar(quien, f"git {sub}", destino=_destino_git(args),
+        red = subcomando_git_de_red(args)
+        if red:
+            cruce = aduana.cruzar(quien, f"git {red}", destino=_destino_git(args),
                                   carga=["git", *args])
         else:
             cruce = contextlib.nullcontext()
