@@ -1,0 +1,292 @@
+"""El canario de la aduana (spec seccion 8, regla invertida): TODA llamada de
+red y TODO subprocess del arbol se marca por AST, sin mirar argv ni host (por
+AST son indecidibles), y un hallazgo se salva solo si (a) la funcion que lo
+contiene -o un closure anidado, o una funcion que la envuelve- tiene un Call
+a `aduana.cruzar` / `aduana.declarar` / `aduana.declarar_una_vez`, o (b)
+`archivo:funcion` esta en EXCEPCIONES con motivo, una por linea, para que
+sumar una sea un diff visible. Una excepcion `helper: <archivo:funcion>`
+exige que ESE llamador tenga el Call.
+
+Limite honesto: no ve lo que sale desde adentro de una libreria (chromadb,
+sentence_transformers, el SDK de Anthropic) ni `page.goto` de Chromium. Para
+eso estan `declarar` y la tabla de la seccion 7 del spec.
+"""
+from __future__ import annotations
+
+import ast
+import pathlib
+import textwrap
+
+RAIZ = pathlib.Path(__file__).resolve().parent
+
+# archivo:funcion -> motivo. `helper: archivo:funcion` nombra al llamador que
+# lleva el Call (se verifica). Archivo relativo a la raiz del repo; funcion
+# anidada como `externa:interna`; nivel de modulo como `<modulo>`.
+EXCEPCIONES: dict[str, str] = {
+    # --- modelos: la aduana no conoce a los modelos (invariante 7) ---
+    "calipso/server.py:_run_subscription_text": "modelo: CLI de suscripcion, lo mide la telemetria y la economia",
+    "calipso/server.py:_run_subscription_text_live": "modelo: CLI de suscripcion en vivo, idem",
+    "calipso/plugins.py:install": "modelo: `claude -p` para instalar un plugin; CLI agente",
+    "dispatch.py:run_subscription": "modelo: el CLI suelto de dispatch.py no mide",
+    "dispatch.py:_http_post_json": "modelo: LiteLLM/Ollama por config; base_url no loopback se DECLARA al cargar la config",
+    "dispatch.py:_http_post_stream": "modelo: idem, stream",
+    # --- loopback por config o por construccion ---
+    "calipso/server.py:_http_up": "loopback: salud de Ollama/LiteLLM, corre en el LOOP",
+    "calipso/discovery.py:_get_json": "pendiente: Task 5 -- hoy tambien lo usa _npm_latest (registry.npmjs.org, NO loopback); la Task 5 le da a _npm_latest su propio urlopen y esta linea pasa a 'loopback por construccion'",
+    "calipso/discovery.py:_cli_version": "local: `<cli> --version`, sin red",
+    "calipso/resource_dispatcher.py:_ollama_get": "loopback: Ollama",
+    "calipso/resource_dispatcher.py:ollama_evict": "loopback: Ollama",
+    "calipso/attachments.py:_vision_ollama": "loopback: Ollama en localhost:11434",
+    "launch_calipso.py:_port_open": "loopback: el lanzador espera al propio server",
+    "launch_calipso.py:_wait_ready": "loopback: idem",
+    "launch_calipso.py:main": "local: lanza uvicorn/el navegador, no sale a internet",
+    # --- git local ---
+    "calipso/catastro.py:_git": "git local: rev-parse/log/status sobre el catastro",
+    "calipso/server.py:_git": "git local: /api/git/* sobre ROOT",
+    "calipso/tools/commands.py:run": "comandos locales de la allowlist (py_compile, git status...)",
+    # --- muertos en Linux ---
+    "calipso/server.py:api_connector_action": "muerto en Linux: Popen con CREATE_NEW_CONSOLE (solo Windows); cuando se arregle cruza como gesto",
+    "calipso/server.py:api_subscription_install": "muerto en Linux: idem",
+    "calipso/server.py:api_subscription_login": "muerto en Linux: idem",
+    # --- probes declarados en otro lugar (Task 6 lo pasa a `helper:`) ---
+    "calipso/server.py:_subscription_probe": "pendiente: Task 6 -- se alcanza desde el loop via _harness_context; el declarado va en el arranque",
+    # --- pendientes: cada task de enchufe borra su linea ---
+    "calipso/server.py:api_github_contribute_run": "pendiente: Task 3",
+    "calipso/server.py:api_updates_run": "pendiente: Task 3",
+    "calipso/web.py:_get": "pendiente: Task 4",
+    "calipso/deps.py:_run": "pendiente: Task 4",
+    "calipso/github.py:default_runner:run": "pendiente: Task 5",
+    "calipso/github.py:git_runner:run": "pendiente: Task 5",
+    "calipso/memory.py:reflect": "pendiente: Task 6",
+    "calipso/server.py:_cli_probe": "pendiente: Task 6",
+}
+
+_RED = {"urlopen", "urlretrieve"}
+_SUBPROCESS = {"run", "Popen", "check_output", "check_call", "call"}
+_MODULOS_RED = {"requests", "httpx", "aiohttp"}
+_ADUANA = ("aduana.cruzar", "aduana.declarar", "aduana.declarar_una_vez")
+
+
+def _archivos() -> list[pathlib.Path]:
+    return (sorted(p for p in RAIZ.glob("calipso/**/*.py") if "/web/" not in str(p))
+            + [RAIZ / "dispatch.py", RAIZ / "launch_calipso.py"])
+
+
+def _alias(tree: ast.AST) -> dict[str, str]:
+    """nombre local -> nombre canonico. `import urllib.request as _ur` ->
+    {_ur: urllib.request}; `from calipso import aduana` -> {aduana:
+    calipso.aduana}; `import subprocess` -> {subprocess: subprocess}."""
+    al: dict[str, str] = {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            for a in n.names:
+                if a.asname:
+                    al[a.asname] = a.name
+                else:
+                    raiz = a.name.split(".")[0]
+                    al[raiz] = raiz
+        elif isinstance(n, ast.ImportFrom) and n.module:
+            for a in n.names:
+                al[a.asname or a.name] = f"{n.module}.{a.name}"
+    return al
+
+
+def _canon(func: ast.AST, al: dict[str, str]) -> str | None:
+    partes: list[str] = []
+    while isinstance(func, ast.Attribute):
+        partes.append(func.attr)
+        func = func.value
+    if not isinstance(func, ast.Name):
+        return None
+    partes.append(al.get(func.id, func.id))
+    return ".".join(reversed(partes))
+
+
+def _es_salida(canon: str | None) -> bool:
+    if not canon:
+        return False
+    ultimo = canon.rsplit(".", 1)[-1]
+    if ultimo in _RED and canon.startswith("urllib"):
+        return True
+    if canon == "socket.create_connection":
+        return True
+    if canon.startswith("subprocess.") and ultimo in _SUBPROCESS:
+        return True
+    if canon.split(".")[0] in _MODULOS_RED:
+        return True
+    return canon == "websockets.connect"
+
+
+def _tiene_aduana(nodo: ast.AST, al: dict[str, str]) -> bool:
+    for n in ast.walk(nodo):
+        if isinstance(n, ast.Call):
+            c = _canon(n.func, al)
+            if c and c.endswith(_ADUANA):
+                return True
+    return False
+
+
+def _funciones(tree: ast.AST) -> dict[str, ast.AST]:
+    """`externa:interna` -> nodo, para verificar los `helper:`."""
+    out: dict[str, ast.AST] = {}
+
+    def visitar(n, pila):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            pila = pila + [n.name]
+            out[":".join(pila)] = n
+        for h in ast.iter_child_nodes(n):
+            visitar(h, pila)
+    visitar(tree, [])
+    return out
+
+
+def hallazgos_de(ruta: pathlib.Path, raiz: pathlib.Path = RAIZ) -> list[dict]:
+    """Toda salida sin aduana en `ruta`: [{sitio, linea, llamada, salvado}]."""
+    tree = ast.parse(ruta.read_text(encoding="utf-8"))
+    al = _alias(tree)
+    rel = str(ruta.relative_to(raiz)) if raiz in ruta.parents else ruta.name
+    out: list[dict] = []
+
+    def visitar(n, pila: list[ast.AST]):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            pila = pila + [n]
+        if isinstance(n, ast.Call):
+            c = _canon(n.func, al)
+            if _es_salida(c):
+                nombre = ":".join(f.name for f in pila) or "<modulo>"
+                out.append({
+                    "sitio": f"{rel}:{nombre}", "linea": n.lineno,
+                    "llamada": ast.unparse(n)[:120],
+                    "salvado": any(_tiene_aduana(f, al) for f in pila)})
+        for h in ast.iter_child_nodes(n):
+            visitar(h, pila)
+    visitar(tree, [])
+    return out
+
+
+def _sin_aduana(archivos, excepciones: dict[str, str], raiz=RAIZ) -> list[str]:
+    """Las lineas que la suite reporta: `archivo:linea  funcion  llamada`."""
+    por_archivo = {}
+    fallas: list[str] = []
+    for ruta in archivos:
+        tree = ast.parse(ruta.read_text(encoding="utf-8"))
+        por_archivo[ruta] = (tree, _alias(tree), _funciones(tree))
+    for ruta in archivos:
+        for h in hallazgos_de(ruta, raiz):
+            if h["salvado"]:
+                continue
+            motivo = excepciones.get(h["sitio"])
+            if motivo is None:
+                fallas.append(f"{h['sitio'].split(':')[0]}:{h['linea']}  "
+                              f"{h['sitio'].split(':', 1)[1]}  {h['llamada']}")
+                continue
+            if motivo.startswith("helper:"):
+                llamador = motivo[len("helper:"):].split("--")[0].strip()
+                arch, _, func = llamador.partition(":")
+                tree_l = next(((t, a, fs) for r, (t, a, fs) in por_archivo.items()
+                               if str(r.relative_to(raiz)) == arch), None)
+                if tree_l is None or func not in tree_l[2] \
+                        or not _tiene_aduana(tree_l[2][func], tree_l[1]):
+                    fallas.append(f"{h['sitio']}: la excepcion dice que el cruce "
+                                  f"esta en {llamador}, y ahi no hay Call a la aduana")
+    return list(dict.fromkeys(fallas))      # sin repetir (tres calls, un aviso)
+
+
+def test_toda_salida_del_proceso_cruza_o_se_declara():
+    fallas = _sin_aduana(_archivos(), EXCEPCIONES)
+    assert not fallas, "salidas sin aduana:\n" + "\n".join(fallas)
+
+
+def test_las_excepciones_apuntan_a_sitios_que_existen_y_que_no_cruzan_ya():
+    """Una excepcion que ya no matchea nada es vieja: se borra. Y una sobre
+    un sitio que YA tiene el Call a la aduana tambien sobra (un `pendiente`
+    que sobrevivio a su task): se borra, para que sumar o dejar una
+    excepcion sea siempre un diff visible y nunca un verde por inercia
+    (decision 13: sin este guardia, la lista de pendientes deja el canario
+    verde sobre main sin un solo enchufe)."""
+    hallazgos = [h for ruta in _archivos() for h in hallazgos_de(ruta)]
+    sitios = {h["sitio"] for h in hallazgos}
+    huerfanas = sorted(set(EXCEPCIONES) - sitios)
+    assert not huerfanas, f"excepciones sin sitio: {huerfanas}"
+    salvados = {h["sitio"] for h in hallazgos if h["salvado"]}
+    sobrantes = sorted(s for s in set(EXCEPCIONES) & salvados
+                       if not EXCEPCIONES[s].startswith("helper:"))
+    assert not sobrantes, f"excepciones sobre sitios que ya cruzan (borrarlas): {sobrantes}"
+
+
+# --- controles positivos ------------------------------------------------------
+
+def _archivo(tmp_path, nombre, codigo) -> pathlib.Path:
+    p = tmp_path / nombre
+    p.write_text(textwrap.dedent(codigo), encoding="utf-8")
+    return p
+
+
+def test_control_positivo_urlopen_sin_aduana(tmp_path):
+    p = _archivo(tmp_path, "suelto.py", """
+        import urllib.request as _ur
+        def traer(url):
+            with _ur.urlopen(url) as r:
+                return r.read()
+    """)
+    fallas = _sin_aduana([p], {}, raiz=tmp_path)
+    assert fallas and "suelto.py:4" in fallas[0] and "traer" in fallas[0]
+
+
+def test_control_positivo_subprocess_con_cmd_variable(tmp_path):
+    p = _archivo(tmp_path, "suelto.py", """
+        import subprocess
+        def correr(cmd):
+            return subprocess.run(cmd, capture_output=True)
+    """)
+    fallas = _sin_aduana([p], {}, raiz=tmp_path)
+    assert fallas and "suelto.py:4" in fallas[0]
+
+
+def test_un_cruce_en_la_funcion_o_en_el_closure_salva(tmp_path):
+    p = _archivo(tmp_path, "con_aduana.py", """
+        import subprocess
+        import urllib.request
+        from calipso import aduana
+        def runner(quien):
+            def run(args):
+                with aduana.cruzar(quien, "gh", "api.github.com", carga=args):
+                    return subprocess.run(args)
+            return run
+        def traer(url, quien):
+            with aduana.cruzar(quien, "leer", url, carga=url) as c:
+                with urllib.request.urlopen(url) as r:
+                    return r.read()
+    """)
+    assert _sin_aduana([p], {}, raiz=tmp_path) == []
+
+
+def test_una_excepcion_helper_exige_el_call_en_el_llamador(tmp_path):
+    p = _archivo(tmp_path, "helper.py", """
+        import subprocess
+        from calipso import aduana
+        def probe():
+            return subprocess.run(["x", "--version"])
+        def calentar(quien):
+            aduana.declarar(quien, "probes", None)
+            return probe()
+        def sin_nada():
+            return probe()
+    """)
+    assert _sin_aduana([p], {"helper.py:probe": "helper: helper.py:calentar"},
+                       raiz=tmp_path) == []
+    fallas = _sin_aduana([p], {"helper.py:probe": "helper: helper.py:sin_nada"},
+                         raiz=tmp_path)
+    assert fallas and "no hay Call" in fallas[0]
+
+
+def test_el_alias_local_de_urllib_se_resuelve(tmp_path):
+    """`import urllib.request as _ur` (attachments.py:290) no puede
+    esconder un urlopen."""
+    p = _archivo(tmp_path, "alias.py", """
+        def f(req):
+            import urllib.request as _ur, json as _j
+            with _ur.urlopen(req, timeout=60) as r:
+                return _j.loads(r.read())
+    """)
+    assert len(_sin_aduana([p], {}, raiz=tmp_path)) == 1
