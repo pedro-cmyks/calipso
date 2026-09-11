@@ -3978,6 +3978,13 @@ async def ws_chat(ws: WebSocket) -> None:
                     destino = ("nube" if a_la_nube_tapado
                                else "local" if route == "local" else "afuera")
                     etiqueta = f"{verdict.get('persona') or verdict['client']} via {verdict['client']}"
+                    # el historial que el CLI ve en CADA invocacion: la
+                    # "Conversacion anterior" que `_subscription_invocation`
+                    # arma desde `_history_messages(chat_id_nube)` (el mismo
+                    # en la reentrada: el mensaje de Pedro ya esta persistido
+                    # y el de Calipso recien al final). Con /nube tapado
+                    # chat_id_nube es None y queda vacio, como lo que viajo
+                    historial_sub = _history_messages(chat_id_nube)
                     while True:
                         # las suscripciones solo ESTIMAN (no exponen el tamano
                         # del prompt): una fila de ventana por invocacion,
@@ -3986,6 +3993,15 @@ async def ws_chat(ws: WebSocket) -> None:
                             _ventana_antes, secciones, [], mensaje_turno, route, model,
                             len(ventana) + 1)
                         ventana.append(_ventana_despues(fila_ventana, {}))
+                        # lo que viajo en esta pasada, con la forma que
+                        # `_chunks_for` devuelve (system + historial + user):
+                        # el canario ancla contra el historial que el CLI vio
+                        # de verdad (spec 2.1, "el historial que viajo"), no
+                        # contra uno vacio; `_contexto_persistido` lee el
+                        # mismo historial de aca
+                        mensajes_pasada = [{"role": "system", "content": system},
+                                           *historial_sub,
+                                           {"role": "user", "content": mensaje_turno}]
                         texto, queued = await _run_subscription_text_live(
                             ws, inbox, verdict["client"], system, mensaje_turno, model,
                             # la reentrada deja un SEGUNDO registro de job (no

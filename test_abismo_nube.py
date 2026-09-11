@@ -193,6 +193,31 @@ def test_en_nube_por_suscripcion_los_tramos_vuelven_crudos(chat, cli_falso, monk
     assert "Lo que subio" not in (chat.tmp / "chats.json").read_text(encoding="utf-8")
 
 
+def test_en_nube_por_suscripcion_el_canario_no_ve_el_historial_que_no_viajo(chat, cli_falso, monkeypatch):
+    """La contracara del anclaje contra el historial en suscripcion sin tapar
+    (fix round 1 de la Task 5): tapado, la conversacion no viaja
+    (chat_id_nube=None, Fase 2a) y el canario tampoco la ve. Un turno local
+    previo del mismo chat no es fuente de anclaje ni entra al contexto que
+    el desechable persiste: el hecho que solo estaba ahi sale
+    `sin_anclaje`, no anclado en un historial que el CLI no recibio."""
+    _juez_que_tapa_nombres(monkeypatch)
+    monkeypatch.setenv("CANARIOS_PERSISTIR_CONTEXTO", "1")
+    chats.append(chat.chat_id, "user", "el libro que me presto Marta es de cocina, de Paula Ortiz")
+    chats.append(chat.chat_id, "assistant", "que bueno ese libro de Marta")
+    cli_falso.guion([{"partes": ["Le dije a [ID_1] que el libro es de Paula Ortiz"], "pausa": 0}])
+    eventos = _turno_con_un_solo_done(chat, "/nube /claude que libro me presto Marta")
+    assert texto_visible(eventos) == "Le dije a Marta que el libro es de Paula Ortiz"
+    llamadas = cli_falso.llamadas()
+    assert len(llamadas) == 1 and "Conversaci" not in llamadas[0]["prompt"]
+    assert "cocina" not in json.dumps(llamadas) and "Marta" not in json.dumps(llamadas)
+    fila = chat.telemetria("chat_turn")[0]
+    assert fila["contexto"]["historial"] == []
+    a = fila["canarios"]["anclaje"]
+    assert a["tapado"] is True
+    assert [(h["tipo"], h["texto"]) for h in a["sin_anclaje"]] == [("nombre", "Paula Ortiz")]
+    assert not any("historial" in f for h in a["hechos"] for f in h["fuentes"])
+
+
 def test_en_nube_por_suscripcion_reponer_no_le_da_al_filtro_una_marca_que_el_detector_no_vio(chat, cli_falso, monkeypatch):
     """S11b del cierre (h01): el detector juzga el texto CRUDO (161 chars de
     cuerpo con cinco [ID_1]: ilegible por largo) pero lo visible pasa por

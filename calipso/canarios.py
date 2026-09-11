@@ -733,8 +733,10 @@ def veredicto(*, respuesta, secciones, mensajes, mensaje, bloques, features,
               texto_crudo=None) -> dict:
     """Las tres partes, sobre lo que el turno ya tiene. `mensajes` es lo que
     `_chunks_for` devolvio en la ultima pasada (system + historial + user):
-    de ahi sale el historial que el modelo vio de verdad. En /nube tapado
-    el anclaje corre sobre `texto_crudo`, el texto CRUDO ENTERO del turno
+    de ahi sale el historial que el modelo vio de verdad (en suscripcion el
+    server lo arma con la misma forma, con el historial que el CLI recibio;
+    en el orquestador es None: historial vacio, hueco declarado). En /nube
+    tapado el anclaje corre sobre `texto_crudo`, el texto CRUDO ENTERO del turno
     (con marcadores, todos los tramos incluida la respuesta de la reentrada;
     lo arma el server: en streaming `full` ya es crudo, en suscripcion y
     orquestador acumula lo crudo de cada invocacion) contra el contexto
