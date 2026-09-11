@@ -1109,6 +1109,27 @@ async def aparatos_revocar(hash_id: str, request: Request):
     return {"ok": True}
 
 
+@app.get("/api/aduana")
+def api_aduana(request: Request, desde: str | None = None, hasta: str | None = None,
+               origen: str | None = None) -> dict:
+    """Los cruces del libro (por defecto hoy) con totales, el hueco en
+    memoria (`sin_libro`, sin tocar el disco) y las lineas rotas contadas,
+    nunca escondidas (spec seccion 9). `def` y no `async def`: lee bajo el
+    candado del libro, en el threadpool (invariante 8).
+
+    Alcance por sesion (ruling 15.3, default seguro): loopback con el token
+    y una sesion `navegador` ven todo; `tablero` -y cualquier tipo que no
+    sea navegador- recibe los cruces SIN `carga`, SIN `quien.chat` y SIN
+    `destino.url`: la carga de un /web es el mensaje crudo de Pedro, y el
+    tablero por decision previa no ve chats. `lector` no llega: el guard lo
+    rebota con 403 por ALCANCES."""
+    respuesta = aduana.leer(desde=desde, hasta=hasta, origen=origen)
+    ses = getattr(request.state, "sesion", None)
+    if ses and ses.get("tipo") != "navegador":
+        return aduana.recortar_para_tablero(respuesta)
+    return respuesta
+
+
 # Defensa en profundidad de _safe (revision de seguridad 2026-09-07, C2):
 # aunque ROOT quedara siendo ancestro de estas carpetas (una raiz de catastro
 # rara, un symlink), las credenciales de Pedro y el estado de Calipso no se

@@ -638,3 +638,89 @@ def test_la_vision_del_turno_hereda_el_quien_del_turno(chat, libro, monkeypatch)
         chat.recibir(ws, 1)
     assert vistos and vistos[0].origen == "turno" and vistos[0].chat == chat.chat_id
     assert vistos[0].gesto is None and vistos[0].ruta == "local"
+
+
+# --- Task 7: GET /api/aduana ---------------------------------------------------------
+
+def _sembrar(libro, monkeypatch):
+    """Tres lineas con reloj fijo (una de ayer, un cruce y un declarado de
+    hoy) y una linea rota al final."""
+    relojes = iter(["2026-09-09T23:00:00", "2026-09-10T10:00:00", "2026-09-10T11:00:00"])
+    monkeypatch.setattr(aduana, "_ahora", lambda: next(relojes))
+    monkeypatch.setattr(aduana, "_hoy", lambda: "2026-09-10")
+    with aduana.cruzar(quien_de_prueba(chat="chat_ayer"), "ayer", "https://a.com/", carga="vieja"):
+        pass
+    with aduana.cruzar(quien_de_prueba(chat="chat_1"), "buscar en la web",
+                       "https://html.duckduckgo.com/html/", carga="precio del dolar"):
+        pass
+    aduana.declarar(quien_de_prueba(origen="arranque", chat=None, gesto=None, ruta=None),
+                    "modelo de embeddings", "huggingface.co")
+    with open(libro, "a", encoding="utf-8") as f:
+        f.write("{rota\n")
+
+
+def test_loopback_ve_todo_con_totales_e_ilegibles(libro, monkeypatch):
+    _sembrar(libro, monkeypatch)
+    r = _local().get("/api/aduana")
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert [c["proposito"] for c in d["cruces"]] == ["buscar en la web", "modelo de embeddings"]
+    assert d["cruces"][0]["carga"] == {"tipo": "consulta", "texto": "precio del dolar"}
+    assert d["cruces"][0]["quien"]["chat"] == "chat_1"
+    assert d["cruces"][0]["destino"]["url"] == "https://html.duckduckgo.com/html/"
+    assert d["totales"] == {"por_origen": {"turno": 1, "arranque": 1},
+                            "por_destino": {"html.duckduckgo.com": 1, "huggingface.co": 1},
+                            "por_proyecto": {"calipso": 2}, "por_desde": {"maquina": 2},
+                            "declarados": 1}
+    assert d["ilegibles"] == 1
+    assert d["sin_libro"] == {"n": 0, "desde": None, "ultimo_error": None}
+
+
+def test_los_filtros_del_querystring(libro, monkeypatch):
+    _sembrar(libro, monkeypatch)
+    solo_arranque = _local().get("/api/aduana", params={"origen": "arranque"}).json()
+    assert [c["proposito"] for c in solo_arranque["cruces"]] == ["modelo de embeddings"]
+    rango = _local().get("/api/aduana", params={"desde": "2026-09-09",
+                                                "hasta": "2026-09-10T10:30:00"}).json()
+    assert [c["proposito"] for c in rango["cruces"]] == ["ayer", "buscar en la web"]
+
+
+def test_sin_libro_viene_de_memoria_sin_tocar_el_disco(libro, monkeypatch):
+    def bomba(ruta, linea):
+        raise OSError("disco lleno")
+    monkeypatch.setattr(aduana, "_append", bomba)
+    with aduana.cruzar(quien_de_prueba(), "x", None):
+        pass
+    d = _local().get("/api/aduana").json()
+    assert d["cruces"] == [] and d["ilegibles"] == 0
+    assert d["sin_libro"]["n"] == 1 and "disco lleno" in d["sin_libro"]["ultimo_error"]
+
+
+def test_navegador_ve_todo_tablero_recortado_lector_403(libro, monkeypatch):
+    _sembrar(libro, monkeypatch)
+    nav = _pedir(REMOTO, "GET", "/api/aduana",
+                 cookies={srv.COOKIE_SESION: _sesion("navegador", "Celular")})
+    assert nav.status_code == 200, nav.text
+    assert nav.json()["cruces"][0]["carga"]["texto"] == "precio del dolar"
+    assert nav.json()["cruces"][0]["quien"]["chat"] == "chat_1"
+    tab = _pedir(REMOTO, "GET", "/api/aduana",
+                 cookies={srv.COOKIE_SESION: _sesion("tablero", "Musnap")})
+    assert tab.status_code == 200, tab.text
+    d = tab.json()
+    assert d["totales"]["por_origen"] == {"turno": 1, "arranque": 1}
+    assert d["ilegibles"] == 1 and d["sin_libro"]["n"] == 0
+    c = d["cruces"][0]
+    assert "carga" not in c and "chat" not in c["quien"]
+    assert c["destino"] == {"host": "html.duckduckgo.com"}
+    assert c["quien"]["origen"] == "turno" and c["proposito"] == "buscar en la web"
+    assert c["resultado"]["estado"] == "ok" and c["declarado"] is False
+    assert d["cruces"][1]["declarado"] is True
+    assert "precio del dolar" not in tab.text and "chat_1" not in tab.text
+    lec = _pedir(REMOTO, "GET", "/api/aduana",
+                 cookies={srv.COOKIE_SESION: _sesion("lector", "Musnap")})
+    assert lec.status_code == 403
+    assert lec.json() == {"detail": "fuera del alcance del aparato"}
+
+
+def test_sin_credencial_es_401():
+    assert TestClient(srv.app).get("/api/aduana").status_code == 401

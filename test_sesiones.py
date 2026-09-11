@@ -399,6 +399,7 @@ def test_los_alcances_son_la_tabla_del_spec():
     ("/api/inbox", "GET"),
     ("/api/plantel", "GET"),                  # ver el interruptor
     ("/api/routines", "GET"),
+    ("/api/aduana", "GET"),                   # ver los cruces (sin carga ni chat: lo recorta el endpoint)
 ])
 def test_el_tablero_ve_toda_la_fabrica(path, metodo):
     assert sesiones.permite("tablero", path, metodo) is True
