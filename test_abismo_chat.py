@@ -208,6 +208,12 @@ def chat(tmp_path, monkeypatch):
                         lambda user_msg, runtime, features=None: [("Sistema", "SISTEMA BASE")])
     monkeypatch.setattr(srv, "_harness_context", lambda *a, **k: "estado")
     monkeypatch.setattr(srv, "_extract_edit_target", lambda *a, **k: None)
+    # el tokenizador del modelo local NO se carga en el harness: el fallback
+    # local del turno (`model = _route_model_name("local")` = qwen2.5:7b)
+    # leeria el header del GGUF real de ~/.ollama y escribiria 11 MB bajo el
+    # home temporal; con `cargar` -> None el contador es el fallback de 3.3
+    # en todas las rutas y los numeros de ventana son deterministas
+    monkeypatch.setattr(srv.tokenizador, "cargar", lambda nombre: None)
     # la fuente `proyecto` recibe `catastro.obtener`, que sin catastro.json
     # en el home de la suite ESCANEA el home real de Pedro (`cargar()` ->
     # `escanear()` sobre `Path.home()`): cerrado aca para todo el harness;

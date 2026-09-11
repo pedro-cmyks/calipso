@@ -632,3 +632,95 @@ def degeneracion(respuesta: str, secciones, features, usages, turno) -> dict:
     if m:
         senales.append({"senal": "fuga_de_template", "evidencia": m.group(0).strip()})
     return {"senales": senales}
+
+
+# --- ventana (spec 2.3) ----------------------------------------------------
+
+def contar_fallback(texto: str) -> int:
+    return math.ceil(len(texto or "") / UMBRALES["fallback_chars_por_token"])
+
+
+def presupuesto(secciones, historial, mensaje, contar=None) -> int:
+    """Tokens del payload de /api/chat con el template de Ollama (medido
+    sobre el blob del template de qwen2.5: `<|im_start|>rol\n...<|im_end|>\n`
+    son 5 por mensaje, system incluido, y `<|im_start|>assistant\n` 3 de
+    cierre; Ollama no agrega BOS). `contar` es str -> tokens
+    (`tokenizador.contador`); sin el, el fallback de 3.3 chars/token."""
+    contar = contar or contar_fallback
+    por = UMBRALES["template_por_mensaje"]
+    total = contar(prompt_compiler.render_context(secciones)) + por
+    for m in historial or []:
+        total += contar(m.get("content", "")) + por
+    total += contar(mensaje or "") + por
+    return total + UMBRALES["template_cierre"]
+
+
+def _quitar_ultima_vineta(cuerpo: str) -> str:
+    partes = cuerpo.split("\n- ")
+    if len(partes) <= 1:
+        return ""
+    return "\n- ".join(partes[:-1])
+
+
+def recortar(secciones, historial, mensaje, num_ctx, contar=None) -> tuple[list, list, dict]:
+    """Lo volatil antes que lo estable, una cosa por vez, hasta que quepa:
+    historial mas viejo (de a dos), recuerdos (de a uno, los de menor score:
+    la ultima vineta), Repo, Resultados web, el bloque del abismo mas viejo
+    (nunca el ultimo, que es el de esta pasada). Intocables: todo lo demas
+    (invariante 8). Devuelve (secciones, historial, info)."""
+    secciones = list(secciones)
+    historial = list(historial or [])
+    estimado = presupuesto(secciones, historial, mensaje, contar)
+    info = {"estimado": estimado, "num_ctx": num_ctx, "recorte": [], "no_cabe": False}
+    while num_ctx and presupuesto(secciones, historial, mensaje, contar) > num_ctx:
+        if len(historial) >= 2:
+            historial = historial[2:]
+            info["recorte"].append("historial:2")
+            continue
+        if historial:
+            historial = []
+            info["recorte"].append("historial:1")
+            continue
+        i = next((k for k, (t, _) in enumerate(secciones) if es_volatil_recuerdos(t)), None)
+        if i is not None:
+            cuerpo = _quitar_ultima_vineta(secciones[i][1])
+            secciones = (secciones[:i] + ([(secciones[i][0], cuerpo)] if cuerpo else [])
+                         + secciones[i + 1:])
+            info["recorte"].append("recuerdo:1")
+            continue
+        i = next((k for k, (t, _) in enumerate(secciones) if t == SECCION_REPO), None)
+        if i is not None:
+            secciones = secciones[:i] + secciones[i + 1:]
+            info["recorte"].append("repo")
+            continue
+        i = next((k for k, (t, _) in enumerate(secciones) if es_web(t)), None)
+        if i is not None:
+            secciones = secciones[:i] + secciones[i + 1:]
+            info["recorte"].append("web")
+            continue
+        bloques = [k for k, (t, _) in enumerate(secciones) if es_bloque(t)]
+        if len(bloques) >= 2:
+            secciones = secciones[:bloques[0]] + secciones[bloques[0] + 1:]
+            info["recorte"].append("bloque:1")
+            continue
+        info["no_cabe"] = True
+        break
+    info["estimado_final"] = presupuesto(secciones, historial, mensaje, contar)
+    info["cabe"] = (info["estimado_final"] <= num_ctx) if num_ctx else None
+    return secciones, historial, info
+
+
+def truncado(estimado: int, evaluado: int | None, num_ctx: int | None):
+    """True/False en local; "sin medicion" cuando la pasada no llego al
+    done (o la ruta no expone el prompt: suscripcion); None sin techo (api:
+    se estima y se anota, no se juzga). Las tres reglas del spec 2.3 valen
+    SOLO donde `evaluado` y `estimado` salen del mismo tokenizador (el de
+    qwen o su fallback, contra prompt_eval_count de Ollama): en api el
+    evaluado lo cuenta el proveedor y la regla del 0.85 seria ruido."""
+    if evaluado is None:
+        return "sin medicion"
+    if num_ctx is None:
+        return None
+    if estimado > num_ctx or evaluado >= UMBRALES["truncado_evaluado_alto"] * num_ctx:
+        return True
+    return evaluado < UMBRALES["truncado_evaluado_bajo"] * estimado

@@ -99,7 +99,9 @@ from calipso import skills  # noqa: E402
 from calipso import telemetry  # noqa: E402
 from calipso import web as calipso_web  # noqa: E402
 from calipso import aduana  # noqa: E402
+from calipso import canarios  # noqa: E402
 from calipso import memoria_procedencia  # noqa: E402
+from calipso import tokenizador  # noqa: E402
 from calipso import verification  # noqa: E402
 from calipso.tools import commands as calipso_commands  # noqa: E402
 from calipso.memory import EMBED_MODEL, Memory, leer_carta  # noqa: E402
@@ -3033,11 +3035,19 @@ _HISTORY_TURNS = 12  # max mensajes del historial (6 intercambios)
 
 # `num_ctx` explicito en la llamada local del chat (spec del abismo,
 # seccion 4, presupuesto de contexto). El mismo valor que `_pensar_local`
-# y por la misma razon: Ollama trunca desde el COMIENZO del prompt, y con el
-# default (2048 en la mayoria de los builds) una reentrada con hasta tres
-# bloques del abismo mas el parcial dejaria de ver justo el system con el
-# contrato, en silencio. 8192 es holgura, no capacidad: cada token de
-# contexto cuesta RAM en la Ally.
+# y por la misma razon: sin el, con el default (2048 en la mayoria de los
+# builds) una reentrada con hasta tres bloques del abismo mas el parcial
+# dejaria de ver justo el system con el contrato, en silencio. Como corta
+# Ollama, medido por endpoint (spec canarios 2026-09-11, seccion 1): en
+# /api/generate (`_pensar_local`) trunca el prompt plano desde el COMIENZO;
+# en /api/chat (este chat) descarta primero los mensajes MAS VIEJOS que no
+# son system y conserva el system y el ultimo mensaje, y recien corta por
+# tokens desde el principio cuando esos dos solos no caben: el peligro real
+# es un system gordo (adjuntos, brief, bloques), no el historial. Desde los
+# canarios el presupuesto se mide ANTES de cada pasada con el tokenizador
+# real y lo volatil se recorta a la vista (`canarios.recortar`); este es el
+# techo. 8192 es holgura, no capacidad: cada token de contexto cuesta RAM
+# en la Ally.
 CHAT_NUM_CTX = 8192
 
 
@@ -3111,6 +3121,37 @@ def _chunks_for(route: str, system: str, user_msg: str, usage: dict,
     payload = {"model": mdl, "messages": messages, "stream": True,
                "options": {"num_ctx": CHAT_NUM_CTX}}
     return dispatch._ollama_chat_chunks(cfg["base_url"], payload, usage), mdl, messages
+
+
+def _ventana_antes(secciones: list[tuple[str, str]], historial: list[dict],
+                   mensaje: str, route: str, model: str | None, pasada: int,
+                   ) -> tuple[list[tuple[str, str]], list[dict], dict]:
+    """La ventana ANTES de una pasada (spec canarios 2.3), en hilo: el
+    presupuesto con el tokenizador real del modelo local (o el fallback) y,
+    SOLO donde el techo es real y lo impone Calipso (ruta local,
+    CHAT_NUM_CTX), el recorte de lo volatil. En api y suscripcion solo se
+    estima (num_ctx None: no hay techo configurado, y `truncado` queda
+    None: no se juzga, decision 7). Devuelve (secciones, historial, fila)
+    con la fila de la ventana a medio llenar."""
+    contar, origen = tokenizador.contador(model or dispatch.CONFIG["local"]["model"])
+    num_ctx = CHAT_NUM_CTX if route == "local" else None
+    secciones, historial, info = canarios.recortar(secciones, historial, mensaje, num_ctx, contar)
+    fila = {"pasada": pasada, "ruta": route, "estimado": info["estimado_final"],
+            "estimado_sin_recorte": info["estimado"], "num_ctx": num_ctx,
+            "cabe": info["cabe"], "recorte": info["recorte"], "no_cabe": info["no_cabe"],
+            "tokenizador": origen, "evaluado": None, "truncado": None, "done_reason": None}
+    return secciones, historial, fila
+
+
+def _ventana_despues(fila: dict, usage_pasada: dict) -> dict:
+    """La ventana DESPUES de la pasada: `evaluado` es prompt_eval_count de
+    ESA pasada (None si se corto antes del done: usage_pasada queda vacio),
+    y el truncado se decide con `canarios.truncado`."""
+    fila["evaluado"] = usage_pasada.get("prompt_tokens")
+    fila["done_reason"] = usage_pasada.get("done_reason")
+    fila["truncado"] = canarios.truncado(fila["estimado"], fila["evaluado"], fila["num_ctx"])
+    return fila
+
 
 def _subscription_invocation(client: str, system: str, user_msg: str,
                              model: str | None = None,
@@ -3848,6 +3889,12 @@ async def ws_chat(ws: WebSocket) -> None:
             used_route = route
             full = ""
             agent_team: dict | None = None
+            # lo que el canario lee al cierre (spec canarios): la ventana por
+            # pasada, el usage de cada pasada y lo que viajo en la ultima
+            ventana: list[dict] = []
+            usages: list[dict] = []
+            mensajes_pasada: list[dict] | None = None
+            secciones_pasada: list[tuple[str, str]] = secciones
             try:
                 if _should_orchestrate(features, directives, chat_msg) and not nube_local:
                     runtime = _harness_context(
@@ -3897,6 +3944,13 @@ async def ws_chat(ws: WebSocket) -> None:
                                else "local" if route == "local" else "afuera")
                     etiqueta = f"{verdict.get('persona') or verdict['client']} via {verdict['client']}"
                     while True:
+                        # las suscripciones solo ESTIMAN (no exponen el tamano
+                        # del prompt): una fila de ventana por invocacion,
+                        # sin evaluado ("sin medicion")
+                        _, _, fila_ventana = await asyncio.to_thread(
+                            _ventana_antes, secciones, [], mensaje_turno, route, model,
+                            len(ventana) + 1)
+                        ventana.append(_ventana_despues(fila_ventana, {}))
                         texto, queued = await _run_subscription_text_live(
                             ws, inbox, verdict["client"], system, mensaje_turno, model,
                             # la reentrada deja un SEGUNDO registro de job (no
@@ -4018,10 +4072,17 @@ async def ws_chat(ws: WebSocket) -> None:
                         # (llega en el chunk final): en api es una
                         # subfacturacion real, declarada (invariante 5).
                         usage_pasada: dict = {}
+                        # la ventana, por pasada (spec canarios 2.3, invariante
+                        # 9): presupuesto y, en local, el recorte de lo volatil
+                        # ANTES de mandar; en hilo (el tokenizador se carga la
+                        # primera vez y encode no es gratis)
+                        secciones_pasada, historial_pasada, fila_ventana = await asyncio.to_thread(
+                            _ventana_antes, secciones, historial, mensaje_turno, route, model,
+                            len(ventana) + 1)
                         gen, model, mensajes_pasada = _chunks_for(
-                            route, prompt_compiler.render_context(secciones), mensaje_turno,
+                            route, prompt_compiler.render_context(secciones_pasada), mensaje_turno,
                             usage_pasada, model, verdict.get("effort"),
-                            chat_id=chat_id_nube, history=historial)
+                            chat_id=chat_id_nube, history=historial_pasada)
                         marca_pendiente = None
                         desde = len(full)
                         while True:
@@ -4060,6 +4121,8 @@ async def ws_chat(ws: WebSocket) -> None:
                                 break
                         for k in ("prompt_tokens", "completion_tokens"):
                             usage[k] = usage.get(k, 0) + usage_pasada.get(k, 0)
+                        ventana.append(_ventana_despues(fila_ventana, usage_pasada))
+                        usages.append(dict(usage_pasada))
                         if marca_pendiente is None:
                             break
                         tramo = full[desde:]
@@ -4181,9 +4244,13 @@ async def ws_chat(ws: WebSocket) -> None:
                             attachment_context=attachment_context, bloque_dep=bloque_dep,
                             a_la_nube_tapado=a_la_nube_tapado)
                         estado_abismo.apagada = True   # un turno que cayo al fallback no consulta
+                        # una sola pasada, con su ventana (recorte en local)
+                        secciones_pasada, historial_pasada, fila_ventana = await asyncio.to_thread(
+                            _ventana_antes, secciones, _history_messages(chat_id), chat_msg,
+                            "local", model, len(ventana) + 1)
                         gen, model, mensajes_pasada = _chunks_for(
-                            "local", prompt_compiler.render_context(secciones), chat_msg, usage,
-                            chat_id=chat_id)
+                            "local", prompt_compiler.render_context(secciones_pasada), chat_msg,
+                            usage, chat_id=chat_id, history=historial_pasada)
                         while True:
                             if not inbox.empty():  # steering en el fallback local
                                 steer = inbox.get_nowait()
@@ -4200,6 +4267,8 @@ async def ws_chat(ws: WebSocket) -> None:
                             if chunk is sentinel:
                                 break
                             full += await emisor.chunk(chunk)
+                        ventana.append(_ventana_despues(fila_ventana, usage))
+                        usages.append(dict(usage))
                 else:
                     await ws.send_json({"type": "error", "text": str(e)})
             except StopIteration:
