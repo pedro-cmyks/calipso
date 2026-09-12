@@ -183,6 +183,78 @@ def test_el_remember_del_turno_corre_despues_del_done_como_tarea_de_fondo(chat, 
     assert not [t for t in list(srv._TAREAS_DE_FONDO) if not t.done()]
 
 
+def test_el_remember_de_fondo_tiene_tope_de_dos_en_vuelo_y_ninguno_se_pierde(chat, monkeypatch):
+    """Ola de fix del cierre, punto 5 (Codex): cada turno creaba una tarea
+    de fondo sin limite (un embed puede esperar 120 s), y dos turnos seguidos
+    acumulaban POSTs concurrentes a Ollama. Tres turnos seguidos en la misma
+    conexion con un embedder LENTO (0,3 s, retenido por una puerta): los tres
+    `guardados` al final y nunca mas de 2 en vuelo (contador en el doble).
+    El `done` no espera al semaforo: ya salio."""
+    class _Lenta(MemoriaFalsa):
+        def __init__(self):
+            super().__init__()
+            self.puerta = threading.Event()
+            self.candado = threading.Lock()
+            self.en_vuelo = 0
+            self.max_en_vuelo = 0
+            self.entradas = 0
+
+        def remember(self, text, scope="auto", **meta):
+            with self.candado:
+                self.en_vuelo += 1
+                self.entradas += 1
+                self.max_en_vuelo = max(self.max_en_vuelo, self.en_vuelo)
+            try:
+                assert self.puerta.wait(5), "el remember nunca recibio la puerta"
+                return super().remember(text, scope, **meta)
+            finally:
+                with self.candado:
+                    self.en_vuelo -= 1
+    lenta = _Lenta()
+    monkeypatch.setattr(srv, "mem", lenta)
+    with chat.cliente.websocket_connect("/ws/chat") as ws:
+        for texto in ("uno", "dos", "tres"):
+            ws.send_text(chat.paquete(texto))
+            eventos = chat.recibir(ws, 1)
+            assert len(de_tipo(eventos, "done")) == 1
+        time.sleep(0.3)                                  # el embedder lento: los tres ya pidieron entrar
+        assert lenta.entradas == 2 and lenta.max_en_vuelo == 2, (lenta.entradas, lenta.max_en_vuelo)
+        assert lenta.recordado == []                     # los done salieron con los remember vivos
+        lenta.puerta.set()
+        chat.esperar_fondo()
+    assert [g[0] for g in lenta.guardados] == [f"Pedro pregunto: {t}\nCalipso respondio: hola Pedro"
+                                               for t in ("uno", "dos", "tres")]
+    assert lenta.max_en_vuelo == 2 and lenta.entradas == 3
+    assert not [t for t in list(srv._TAREAS_DE_FONDO) if not t.done()]
+
+
+def test_el_shutdown_espera_las_tareas_de_fondo_y_anota_las_que_vencen(chat, monkeypatch):
+    """Al apagar el app se esperan las tareas de fondo hasta 10 s; si vence,
+    la fila `kind: memoria, accion: remember_pendiente, n: N` (nada se pierde
+    en silencio). Sin tareas vivas, ninguna fila."""
+    async def _rapida():
+        await asyncio.sleep(0.01)
+
+    async def _eterna(puerta: asyncio.Event):
+        await puerta.wait()
+
+    async def escenario():
+        srv._en_fondo(_rapida())
+        await srv._esperar_fondo_al_apagar(plazo=1.0)
+        assert not [t for t in list(srv._TAREAS_DE_FONDO) if not t.done()]
+        assert chat.telemetria("memoria") == []
+        puerta = asyncio.Event()
+        t1 = srv._en_fondo(_eterna(puerta))
+        t2 = srv._en_fondo(_eterna(puerta))
+        await srv._esperar_fondo_al_apagar(plazo=0.05)
+        filas = chat.telemetria("memoria")
+        assert [(f["accion"], f["n"]) for f in filas] == [("remember_pendiente", 2)]
+        puerta.set()
+        await asyncio.gather(t1, t2)
+    asyncio.run(escenario())
+    assert not [t for t in list(srv._TAREAS_DE_FONDO) if not t.done()]
+
+
 def test_un_remember_de_fondo_que_revienta_deja_su_fila_y_no_toca_el_turno(chat, monkeypatch):
     class _Rota(MemoriaFalsa):
         def remember(self, text, scope="auto", **meta):

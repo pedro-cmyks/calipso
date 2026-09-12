@@ -2435,6 +2435,15 @@ def _backend_quota_low() -> dict:
 # de los tests lo espera (`Harness.esperar_fondo`) para que las aserciones
 # sobre la memoria no sean una carrera.
 _TAREAS_DE_FONDO: set[asyncio.Task] = set()
+# Tope de remembers de fondo en vuelo (ola de fix del cierre, punto 5): cada
+# turno creaba su tarea sin limite y un embed puede esperar 120 s, asi que
+# dos turnos seguidos acumulaban POSTs concurrentes a Ollama. El semaforo lo
+# toma la corrutina de `_recordar` ANTES del `to_thread` (el `done` ya salio:
+# no afecta la latencia visible); el tercero espera su turno en el loop.
+REMEMBER_EN_VUELO_MAX = 2
+_SEMAFORO_REMEMBER: tuple[asyncio.AbstractEventLoop, asyncio.Semaphore] | None = None
+# cuanto espera el shutdown a las tareas de fondo antes de anotar las que quedan
+FONDO_PLAZO_APAGADO_S = 10.0
 
 
 def _en_fondo(coro) -> asyncio.Task:
@@ -2442,6 +2451,30 @@ def _en_fondo(coro) -> asyncio.Task:
     _TAREAS_DE_FONDO.add(tarea)
     tarea.add_done_callback(_TAREAS_DE_FONDO.discard)
     return tarea
+
+
+def _semaforo_remember() -> asyncio.Semaphore:
+    """El semaforo del loop que corre: un asyncio.Semaphore se ata al loop
+    en la primera espera, y la suite levanta un loop por TestClient; en
+    produccion hay uno solo y se crea una vez."""
+    global _SEMAFORO_REMEMBER
+    loop = asyncio.get_running_loop()
+    if _SEMAFORO_REMEMBER is None or _SEMAFORO_REMEMBER[0] is not loop:
+        _SEMAFORO_REMEMBER = (loop, asyncio.Semaphore(REMEMBER_EN_VUELO_MAX))
+    return _SEMAFORO_REMEMBER[1]
+
+
+async def _esperar_fondo_al_apagar(plazo: float = FONDO_PLAZO_APAGADO_S) -> None:
+    """En el shutdown del app: espera las tareas de fondo (los remember que
+    siguen embebiendo) hasta `plazo` y, si vencio, anota cuantas quedaron
+    (`kind: memoria, accion: remember_pendiente, n`): nada se pierde en
+    silencio (ruling 8.8)."""
+    vivas = [t for t in list(_TAREAS_DE_FONDO) if not t.done()]
+    if not vivas:
+        return
+    _, pendientes = await asyncio.wait(vivas, timeout=plazo)
+    if pendientes:
+        telemetry.log_event("memoria", accion="remember_pendiente", n=len(pendientes))
 
 
 def _anunciar_memoria() -> None:
@@ -4862,7 +4895,8 @@ async def ws_chat(ws: WebSocket) -> None:
 
                 async def _recordar(texto=episodio, meta=meta_episodio):
                     try:
-                        await asyncio.to_thread(mem.remember, texto, **meta)
+                        async with _semaforo_remember():     # a lo sumo REMEMBER_EN_VUELO_MAX embebiendo
+                            await asyncio.to_thread(mem.remember, texto, **meta)
                     except Exception as e:
                         telemetry.log_event("memoria", accion="remember_fallo", error=str(e)[:300])
                 _en_fondo(_recordar())
@@ -8880,6 +8914,16 @@ async def _startup_warm() -> None:
     await asyncio.to_thread(_asegurar_rutina_consumo)
     try:
         asyncio.create_task(_routines_ticker())
+    except Exception:
+        pass
+
+
+@app.on_event("shutdown")
+async def _shutdown_fondo() -> None:
+    # los remember de fondo que siguen embebiendo: hasta 10 s, y una fila
+    # si alguno quedo (ola de fix del cierre, punto 5)
+    try:
+        await _esperar_fondo_al_apagar()
     except Exception:
         pass
 
