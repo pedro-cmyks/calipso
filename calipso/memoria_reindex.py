@@ -13,6 +13,14 @@ la vieja; imprime cuantos copio y cuantos quedan.
     python -m calipso.memoria_reindex --aplicar      # la procedencia (merge, idempotente)
     python -m calipso.memoria_reindex --aplicar --forzar   # con el server prendido
     python -m calipso.memoria_reindex --embeddings   # episodic -> episodic-<tag>; SOLO con el server apagado
+    python -m calipso.memoria_reindex --embeddings --falsa   # con la EF falsa (hash), a proposito: tests
+
+`--embeddings` anuncia el embedder antes del bucle (`embedder: OllamaEmbed
+bge-m3:latest 1024 dims @ <url>`), se niega con 2 si la EF es la falsa de la
+suite y no vino `--falsa` (un `CALIPSO_EMBED_FALSA=1` heredado de la shell
+llenaria la viva con vectores de hash sin decirlo) y, si Ollama no contesta
+o el modelo no esta (`EmbedError`), lo dice en una linea y devuelve 3: la
+vieja queda intacta y se vuelve a correr.
 
 `--vista` y `--aplicar` operan sobre la VIVA si existe y sobre la vieja si
 no: `--embeddings` y luego `--aplicar`, o al reves, convergen. `--embeddings`
@@ -22,21 +30,19 @@ vieja antes y despues y, si aparecieron ids durante la corrida, lo dice y no
 declara `sin_reindexar = 0`.
 
 Abre cada ambito por directorio (`global/chroma` y `projects/*/chroma` bajo
-CALIPSO_HOME) con `chromadb.PersistentClient` + `get_collection("episodic",
+CALIPSO_HOME) con `chromadb.PersistentClient` + `get_collection(<nombre>,
 embedding_function=None)`, NO via `memory.Scope` (exige la funcion de
 embeddings y hace mkdir de un core_dir que aca no se conoce). Verificado en
 chromadb 1.5.9: `update(ids, metadatas)` sin `documents` MERGEA metadatos,
 un `None` BORRA la clave (por eso los nuevos se arman sin None), y no toca
-documento, id ni embedding. PERO ese `update` reconstruye la funcion de
-embeddings persistida en el schema de la coleccion (SentenceTransformer)
-aunque no embeba nada, y cargarla sale a huggingface.co salvo que el hub
-este en modo offline: por eso las dos variables de abajo se fijan ANTES de
-importar chromadb (`setdefault`: un `HF_HUB_OFFLINE=0` explicito de Pedro
-manda). Eso protege la corrida por CLI (proceso limpio: el acto de Pedro) y
-el archivo de tests corrido en aislado; dentro de la suite entera llega
-tarde (calipso.server ya construyo Memory() con el hub online al importar,
-conducta de main) y el test del fixture real no sale a la red porque
-reutiliza el modelo ya cargado en el proceso. Sin red, sin aduana: este
+documento, id ni embedding. Ese `update` reconstruye la funcion de
+embeddings persistida en el schema de la coleccion aunque no embeba nada:
+en la viva es `calipso_ollama`, pura (sin red); en la vieja `episodic` es la
+SentenceTransformer de MiniLM, que sin torch en el venv chroma degrada a
+None con un aviso y sigue, y con torch todavia instalado saldria a
+huggingface.co salvo que el hub este offline: por eso las dos variables de
+abajo se fijan ANTES de importar chromadb (`setdefault`: un
+`HF_HUB_OFFLINE=0` explicito de Pedro manda). Sin red, sin aduana: este
 proceso no es el server.
 
 `--vista` solo hace `get` y `count`: no carga el modelo, y SE PERMITE con
@@ -149,14 +155,18 @@ def reindexar_embeddings(cliente, ef) -> dict:
     explicitos), hace `update(ids, metadatas)` para los ids que ya estan
     (convergen sin re-embeber) y `upsert` con embeddings de
     `texto_para_embedding` para los que faltan, por lotes de LOTE_CHARS.
-    Un documento sin texto no se copia (queda en `sin_reindexar`); un
-    metadato vacio va como None (chroma rechaza `{}`). Devuelve copiados,
-    actualizados, los ids que aparecieron en la vieja durante la corrida y
-    `sin_reindexar` al final."""
+    Un documento sin texto no se copia (queda en `sin_reindexar` para
+    siempre: se cuenta en `sin_documento` y la linea lo dice); un metadato
+    vacio va como None (chroma rechaza `{}`). Devuelve copiados, `ya_estaban`
+    (los ids de la vieja que ya estaban en la viva), `actualizados` (los de
+    esos con metadatos, que se mergean), `sin_documento`, los ids que
+    aparecieron en la vieja durante la corrida y `sin_reindexar` al final.
+    Un `EmbedError` sale tal cual: `main` lo atrapa y lo dice."""
     try:
         vieja = cliente.get_collection(COLECCION_VIEJA, embedding_function=None)
     except NotFoundError:
-        return {"copiados": 0, "actualizados": 0, "aparecidos": 0, "sin_reindexar": 0, "sin_vieja": True}
+        return {"copiados": 0, "ya_estaban": 0, "actualizados": 0, "sin_documento": 0, "aparecidos": 0,
+                "sin_reindexar": 0, "sin_vieja": True}
     viva = cliente.get_or_create_collection(COLECCION_VIVA, embedding_function=ef,
                                             metadata={"hnsw:space": "cosine"})
     ids_antes = set(vieja.get(include=[])["ids"])
@@ -164,6 +174,7 @@ def reindexar_embeddings(cliente, ef) -> dict:
     presentes = set(viva.get(include=[])["ids"])
     nuevos: list[tuple[str, str, dict | None]] = []
     ya: list[tuple[str, dict]] = []
+    sin_documento = 0
     for id_, doc, meta in zip(datos["ids"], datos["documents"], datos["metadatas"]):
         meta_ = meta if isinstance(meta, dict) and meta else None
         if id_ in presentes:
@@ -171,6 +182,7 @@ def reindexar_embeddings(cliente, ef) -> dict:
                 ya.append((id_, meta_))
             continue
         if not isinstance(doc, str) or not doc.strip():
+            sin_documento += 1
             continue
         nuevos.append((id_, doc, meta_))
     for i in range(0, len(ya), LOTE):
@@ -188,8 +200,8 @@ def reindexar_embeddings(cliente, ef) -> dict:
         copiados += len(tramo)
     ids_despues = set(vieja.get(include=[])["ids"])
     vivos = set(viva.get(include=[])["ids"])
-    return {"copiados": copiados, "actualizados": len(ya),
-            "aparecidos": len(ids_despues - ids_antes),
+    return {"copiados": copiados, "ya_estaban": len(presentes & ids_antes), "actualizados": len(ya),
+            "sin_documento": sin_documento, "aparecidos": len(ids_despues - ids_antes),
             "sin_reindexar": len(ids_despues - vivos), "sin_vieja": False}
 
 
@@ -246,6 +258,28 @@ def aplicar(col, revision: dict) -> int:
     return len(pendientes)
 
 
+def _linea_embeddings(nombre: str, r: dict) -> str:
+    """Lo que `--embeddings` imprime por ambito: copiados, cuantos ya estaban
+    en la viva (aparte cuantos de esos convergieron metadatos), lo que queda
+    en `sin_reindexar` y, de eso, cuantos no tienen documento (no se copian
+    nunca), y el OJO de los ids aparecidos durante la corrida."""
+    texto = (f"{nombre}: {r['copiados']} copiados a {COLECCION_VIVA}, {r['ya_estaban']} ya estaban "
+             f"({r['actualizados']} metadatos actualizados), sin_reindexar {r['sin_reindexar']}")
+    if r["sin_documento"]:
+        texto += f" ({r['sin_documento']} sin documento: no se copian)"
+    if r["aparecidos"]:
+        texto += f"  OJO: aparecieron {r['aparecidos']} ids en {COLECCION_VIEJA} durante la corrida"
+    return texto
+
+
+def _describir_embedder(ef) -> str:
+    """La linea que `--embeddings` imprime antes del bucle: con que se
+    embebe (la falsa solo llega aca con `--falsa`)."""
+    if isinstance(ef, memoria_embed.EmbedFalsa):
+        return "embedder: EmbedFalsa (--falsa)"
+    return f"embedder: OllamaEmbed {ef.model} {ef.dims} dims @ {ef.url}"
+
+
 def _linea(nombre: str, r: dict) -> str:
     return (f"{nombre}: {r['episodios']} episodios, {r['con_procedencia']} con "
             f"procedencia, {r['parsean']} parsean como chat, "
@@ -266,6 +300,9 @@ def main(argv: list[str] | None = None, salida=None) -> int:
                            "(solo con el server apagado; sin --forzar)")
     ap.add_argument("--forzar", action="store_true",
                     help="aplicar aunque el server responda en CALIPSO_PORT (no vale con --embeddings)")
+    ap.add_argument("--falsa", action="store_true",
+                    help="con --embeddings: permitir la EF falsa de la suite (CALIPSO_EMBED_FALSA=1, "
+                         "vectores de hash) a proposito; sin el flag se niega")
     args = ap.parse_args(argv)
     if args.embeddings and args.forzar:
         # antes de mirar el puerto: con --embeddings, --forzar no existe (ruling 8.9),
@@ -292,19 +329,32 @@ def main(argv: list[str] | None = None, salida=None) -> int:
     if not lista:
         print("ningun ambito con chroma bajo el home", file=salida)
         return 1
-    ef = memoria_embed.embedder_por_env() if args.embeddings else None
+    ef = None
+    if args.embeddings:
+        ef = memoria_embed.embedder_por_env()
+        if isinstance(ef, memoria_embed.EmbedFalsa) and not args.falsa:
+            # un CALIPSO_EMBED_FALSA=1 heredado de la shell llenaria la viva
+            # de un home con vectores de hash sin decirlo (ola de fix, punto 3b)
+            print("CALIPSO_EMBED_FALSA=1: --embeddings no escribe vectores falsos en un home "
+                  "(usar env -u CALIPSO_EMBED_FALSA, o --falsa a proposito)", file=salida)
+            return 2
+        print(_describir_embedder(ef), file=salida)
     for nombre, chroma_dir in lista:
         cliente = chromadb.PersistentClient(path=str(chroma_dir))
         if args.embeddings:
-            r = reindexar_embeddings(cliente, ef)
+            try:
+                r = reindexar_embeddings(cliente, ef)
+            except memoria_embed.EmbedError as e:
+                # Ollama caido o el modelo sin bajar: una linea, no un traceback;
+                # la vieja no se toco y la viva a medias converge en la proxima corrida
+                print(f"{nombre}: no se pudo embeber por Ollama ({e}); si el modelo no esta: "
+                      f"ollama pull {memoria_embed.embed_tag(ef.model)}; la coleccion vieja queda intacta, "
+                      "volver a correr --embeddings", file=salida)
+                return 3
             if r["sin_vieja"]:
                 print(f"{nombre}: sin coleccion {COLECCION_VIEJA} (se salta)", file=salida)
                 continue
-            print(f"{nombre}: {r['copiados']} copiados a {COLECCION_VIVA}, {r['actualizados']} ya estaban "
-                  f"(metadatos actualizados), sin_reindexar {r['sin_reindexar']}"
-                  + (f"  OJO: aparecieron {r['aparecidos']} ids en {COLECCION_VIEJA} durante la corrida"
-                     if r["aparecidos"] else ""),
-                  file=salida)
+            print(_linea_embeddings(nombre, r), file=salida)
             continue
         col, coleccion = abrir(cliente)
         if col is None:

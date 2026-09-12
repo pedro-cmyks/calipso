@@ -174,7 +174,7 @@ def test_un_directorio_chroma_sin_la_coleccion_se_salta(home):
     chromadb.PersistentClient(path=str(d))          # crea el sqlite, sin coleccion
     codigo, texto = _correr("--vista")
     assert codigo == 0 and "projects/otro: sin coleccion episodic-bge-m3 ni episodic (se salta)" in texto
-    codigo, texto = _correr("--embeddings")
+    codigo, texto = _correr("--embeddings", "--falsa")
     assert codigo == 0 and "projects/otro: sin coleccion episodic (se salta)" in texto
 
 
@@ -216,7 +216,7 @@ def test_sobre_una_copia_del_fixture_real(tmp_path, monkeypatch):
                for m in despues["metas"])
     assert _leer(g) == vieja_antes                                # la vieja no se toca
     assert "global: nada que escribir" in _correr("--aplicar")[1]
-    codigo, texto = _correr("--embeddings")
+    codigo, texto = _correr("--embeddings", "--falsa")
     assert codigo == 0 and f"global: 0 copiados a {VIVA}, 16 ya estaban" in texto and "sin_reindexar 0" in texto
     assert _leer(g, VIVA) == despues                              # el merge de metadatos no pisa la procedencia
 
@@ -234,9 +234,9 @@ def test_embeddings_desde_cero_sobre_una_copia_del_fixture(tmp_path, monkeypatch
     vieja = _leer(g)
     codigo, texto = _correr("--vista")
     assert codigo == 0 and f"global: 16 en episodic, sin {VIVA}, sin_reindexar 16 (procedencia sobre episodic)" in texto
-    codigo, texto = _correr("--embeddings")
+    codigo, texto = _correr("--embeddings", "--falsa")
     assert codigo == 0, texto
-    assert f"global: 16 copiados a {VIVA}, 0 ya estaban (metadatos actualizados), sin_reindexar 0" in texto
+    assert f"global: 16 copiados a {VIVA}, 0 ya estaban (0 metadatos actualizados), sin_reindexar 0" in texto
     viva = _leer(g, VIVA)
     assert viva["count"] == 16 and sorted(viva["ids"]) == sorted(vieja["ids"])
     assert _por_id(viva) == _por_id(vieja)
@@ -257,9 +257,9 @@ def _por_id(leido: dict) -> dict:
 def test_embeddings_copia_la_vieja_a_la_viva_con_los_mismos_ids_documentos_y_metadatos(home):
     g = home / "global" / "chroma"
     antes = _leer(g)
-    codigo, texto = _correr("--embeddings")
+    codigo, texto = _correr("--embeddings", "--falsa")
     assert codigo == 0, texto
-    assert f"global: 6 copiados a {VIVA}, 0 ya estaban (metadatos actualizados), sin_reindexar 0" in texto
+    assert f"global: 6 copiados a {VIVA}, 0 ya estaban (0 metadatos actualizados), sin_reindexar 0" in texto
     assert f"projects/var-home-pedro-calipso: 2 copiados a {VIVA}" in texto
     assert "OJO" not in texto
     assert _leer(g) == antes                                   # la vieja no se toca
@@ -279,14 +279,14 @@ def test_embeddings_copia_la_vieja_a_la_viva_con_los_mismos_ids_documentos_y_met
 def test_embeddings_es_idempotente_y_converge_los_metadatos_en_los_dos_ordenes(home):
     g = home / "global" / "chroma"
     # orden A: --embeddings, luego --aplicar (sobre la viva), luego --embeddings otra vez
-    assert _correr("--embeddings")[0] == 0
+    assert _correr("--embeddings", "--falsa")[0] == 0
     codigo, texto = _correr("--aplicar")
     assert codigo == 0 and "global: 4 episodios reindexados; count 6 -> 6" in texto
     assert f"(procedencia sobre {VIVA})" in texto
     despues_a = _leer(g, VIVA)
     assert _por_id(despues_a)["m1"][1]["procedencia"] == 1
-    codigo, texto = _correr("--embeddings")
-    assert codigo == 0 and f"global: 0 copiados a {VIVA}, 6 ya estaban (metadatos actualizados), sin_reindexar 0" in texto
+    codigo, texto = _correr("--embeddings", "--falsa")
+    assert codigo == 0 and f"global: 0 copiados a {VIVA}, 6 ya estaban (6 metadatos actualizados), sin_reindexar 0" in texto
     assert _leer(g, VIVA) == despues_a                         # update mergea: la procedencia queda
     assert _por_id(_leer(g))["m1"][1].get("procedencia") is None   # la vieja sigue sin marcar
 
@@ -297,7 +297,7 @@ def test_aplicar_antes_de_embeddings_tambien_converge(home):
     assert codigo == 0 and "global: 4 episodios reindexados" in texto
     assert "(procedencia sobre episodic)" in texto
     assert _por_id(_leer(g))["m1"][1]["procedencia"] == 1
-    assert _correr("--embeddings")[0] == 0
+    assert _correr("--embeddings", "--falsa")[0] == 0
     viva = _por_id(_leer(g, VIVA))
     assert viva["m1"][1] == {"ts": "2026-09-10T20:58:05", "route": "local", "kind": "chat",
                              "procedencia": 1, "ruta": "local"}
@@ -315,7 +315,7 @@ def test_vista_imprime_sin_reindexar_sin_embeber_ni_crear_la_viva(home):
     assert f"global: 6 en episodic, sin {VIVA}, sin_reindexar 6 (procedencia sobre episodic)" in texto
     assert f"projects/var-home-pedro-calipso: 2 en episodic, sin {VIVA}, sin_reindexar 2" in texto
     assert me.ids_de(chromadb.PersistentClient(path=str(g)), VIVA) is None
-    assert _correr("--embeddings")[0] == 0
+    assert _correr("--embeddings", "--falsa")[0] == 0
     codigo, texto = _correr("--vista")
     assert f"global: 6 en episodic, 6 en {VIVA}, sin_reindexar 0 (procedencia sobre {VIVA})" in texto
     # un episodio nuevo en la vieja (un server viejo que siguio escribiendo) vuelve a contar
@@ -323,13 +323,13 @@ def test_vista_imprime_sin_reindexar_sin_embeber_ni_crear_la_viva(home):
         ids=["m7"], documents=[CHAT_DATO], metadatas=[{"ts": "2026-09-12T10:00:00", "kind": "chat"}],
         embeddings=[[0.7, 0.2, 0.3]])
     assert "sin_reindexar 1" in _correr("--vista")[1]
-    codigo, texto = _correr("--embeddings")
+    codigo, texto = _correr("--embeddings", "--falsa")
     assert f"global: 1 copiados a {VIVA}, 6 ya estaban" in texto and "sin_reindexar 0" in texto
 
 
 def test_embeddings_se_niega_con_el_puerto_ocupado_y_no_admite_forzar(home, monkeypatch):
     # con el puerto LIBRE (el fixture deja CALIPSO_PORT=1) --forzar tambien se rechaza: no existe en este modo
-    codigo, texto = _correr("--embeddings", "--forzar")
+    codigo, texto = _correr("--embeddings", "--falsa", "--forzar")
     assert codigo == 2 and "no admite --forzar" in texto
     assert me.ids_de(chromadb.PersistentClient(path=str(home / "global" / "chroma")), VIVA) is None
     escucha = socket.socket()
@@ -337,9 +337,9 @@ def test_embeddings_se_niega_con_el_puerto_ocupado_y_no_admite_forzar(home, monk
     escucha.listen(1)
     monkeypatch.setenv("CALIPSO_PORT", str(escucha.getsockname()[1]))
     try:
-        codigo, texto = _correr("--embeddings")
+        codigo, texto = _correr("--embeddings", "--falsa")
         assert codigo == 2 and "no admite --forzar" in texto
-        codigo, texto = _correr("--embeddings", "--forzar")
+        codigo, texto = _correr("--embeddings", "--falsa", "--forzar")
         assert codigo == 2 and "no admite --forzar" in texto
         assert me.ids_de(chromadb.PersistentClient(path=str(home / "global" / "chroma")), VIVA) is None
     finally:
@@ -357,7 +357,7 @@ def test_embeddings_detecta_ids_aparecidos_durante_la_corrida(home, monkeypatch)
         monkeypatch.setattr(me, "embeber", real)        # una sola vez
         return real(ef, textos, timeout=timeout)
     monkeypatch.setattr(me, "embeber", embeber_y_escribir_en_la_vieja)
-    codigo, texto = _correr("--embeddings")
+    codigo, texto = _correr("--embeddings", "--falsa")
     assert codigo == 0
     assert "OJO: aparecieron 1 ids en episodic durante la corrida" in texto
     assert "global: 6 copiados" in texto and "sin_reindexar 1" in texto
@@ -369,7 +369,68 @@ def test_embeddings_copia_sin_metadatos_y_deja_sin_reindexar_lo_que_no_tiene_doc
     col = _sembrar(tmp_path / "global" / "chroma", [])
     col.add(ids=["r1"], documents=[CHAT_DATO], embeddings=[[0.1, 0.2, 0.3]])       # sin meta
     col.add(ids=["r2"], embeddings=[[0.2, 0.2, 0.3]])                              # sin documento
-    codigo, texto = _correr("--embeddings")
-    assert codigo == 0 and "global: 1 copiados" in texto and "sin_reindexar 1" in texto
+    codigo, texto = _correr("--embeddings", "--falsa")
+    assert codigo == 0 and "global: 1 copiados" in texto
+    assert "sin_reindexar 1 (1 sin documento: no se copian)" in texto      # el que queda para siempre, dicho
     viva = _leer(tmp_path / "global" / "chroma", VIVA)
     assert viva["ids"] == ["r1"] and viva["metas"] == [None]
+    # la segunda corrida: "ya estaban" son los ids presentes en la viva, aparte los metadatos actualizados
+    codigo, texto = _correr("--embeddings", "--falsa")
+    assert codigo == 0
+    assert "global: 0 copiados" in texto and "1 ya estaban (0 metadatos actualizados)" in texto
+    assert "sin_reindexar 1 (1 sin documento: no se copian)" in texto
+
+
+# --- la ola de fix del cierre (punto 3): legible y sin vectores falsos ------------------
+
+def test_embeddings_con_la_ef_falsa_exige_el_flag_falsa(home):
+    """`embedder_por_env()` obedece un CALIPSO_EMBED_FALSA=1 heredado de la
+    shell (la suite lo fija en conftest) y llenaria la viva de un home con
+    vectores de hash sin decirlo: sin `--falsa` se niega con 2 y no escribe;
+    `--falsa` lo permite a proposito y lo anuncia."""
+    g = home / "global" / "chroma"
+    codigo, texto = _correr("--embeddings")
+    assert codigo == 2
+    assert "CALIPSO_EMBED_FALSA=1: --embeddings no escribe vectores falsos en un home" in texto
+    assert "env -u CALIPSO_EMBED_FALSA" in texto and "--falsa" in texto
+    assert me.ids_de(chromadb.PersistentClient(path=str(g)), VIVA) is None
+    codigo, texto = _correr("--embeddings", "--falsa")
+    assert codigo == 0
+    assert texto.index("embedder: EmbedFalsa (--falsa)") < texto.index("global: 6 copiados")
+
+
+class _OllamaDoblada(me.OllamaEmbed):
+    """Una EF real por firma (no es EmbedFalsa) que no postea: vectores fijos."""
+
+    def embed(self, textos, timeout=None):
+        return [[0.5] * self.dims for _ in textos]
+
+
+def test_embeddings_anuncia_el_embedder_real_antes_del_bucle(home, monkeypatch):
+    monkeypatch.setattr(me, "embedder_por_env",
+                        lambda: _OllamaDoblada(url="http://127.0.0.1:11434", model="bge-m3:latest", dims=1024))
+    codigo, texto = _correr("--embeddings")
+    assert codigo == 0, texto
+    assert "embedder: OllamaEmbed bge-m3:latest 1024 dims @ http://127.0.0.1:11434" in texto
+    assert texto.index("embedder: OllamaEmbed") < texto.index("global: 6 copiados")
+
+
+def test_embeddings_con_ollama_caido_lo_dice_sin_traceback_y_devuelve_3(home, monkeypatch):
+    """Un EmbedError (Ollama caido, el modelo sin bajar) no sale como
+    traceback: una linea con el motivo, que hacer (`ollama pull bge-m3`), que
+    la vieja queda intacta y que se vuelve a correr; codigo 3."""
+    class _Caida(me.OllamaEmbed):
+        def embed(self, textos, timeout=None):
+            raise me.EmbedError("POST http://127.0.0.1:11434/api/embed: HTTP Error 404: Not Found "
+                                "{\"error\":\"model 'bge-m3:latest' not found, try pulling it first\"}")
+    monkeypatch.setattr(me, "embedder_por_env", lambda: _Caida())
+    g = home / "global" / "chroma"
+    antes = _leer(g)
+    codigo, texto = _correr("--embeddings")
+    assert codigo == 3, texto
+    assert "global: no se pudo embeber por Ollama (POST http://127.0.0.1:11434/api/embed: HTTP Error 404" in texto
+    assert "try pulling it first" in texto
+    assert "si el modelo no esta: ollama pull bge-m3" in texto
+    assert "la coleccion vieja queda intacta, volver a correr --embeddings" in texto
+    assert _leer(g) == antes
+    assert "projects/var-home-pedro-calipso" not in texto        # corta en el primer ambito que falla
