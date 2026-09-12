@@ -84,11 +84,13 @@ def _seis_payloads(monkeypatch, nivel):
     return vistos
 
 
-def test_bajo_cargada_los_seis_llevan_keep_alive_0_y_la_mitad_de_los_hilos(monkeypatch):
+def test_bajo_cargada_los_seis_llevan_keep_alive_30s_y_la_mitad_de_los_hilos(monkeypatch):
+    """"30s", no 0 (ola de fix, punto 2): las pasadas de un mismo turno
+    (juez + turno de /nube, reentradas del abismo) comparten el runner."""
     vistos = _seis_payloads(monkeypatch, "cargada")
     sitios = ["chat", "agentes", "jefe", "juez", "vision"]
     for s in sitios:
-        assert vistos[s]["keep_alive"] == 0, s
+        assert vistos[s]["keep_alive"] == "30s", s
         assert vistos[s]["options"]["num_thread"] == carga.num_thread("cargada"), s
     assert vistos["chat"]["options"]["num_ctx"] == srv.CHAT_NUM_CTX
     assert vistos["jefe"]["options"] == {"temperature": 0, "num_ctx": carga.CHAT_NUM_CTX,

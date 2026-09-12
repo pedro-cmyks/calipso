@@ -327,9 +327,15 @@ def test_nivel_reciente_es_holgada_sin_medicion_y_sigue_a_la_ultima():
 # --- las perillas ---------------------------------------------------------------
 
 def test_keep_alive_y_num_thread_por_nivel():
+    """Bajo cargada el keep_alive es "30s", no 0 (ola de fix, punto 2): con 0
+    Ollama descargaba el 7b al terminar CADA pasada y /nube (juez + turno) y
+    las reentradas del abismo pagaban una carga desde disco por pasada (N
+    48-56 s contra A 36-42 s). Con 30 s las pasadas de un turno comparten el
+    runner y el vigia descarga en el tick siguiente cuando en_uso llega a 0."""
     assert carga.keep_alive("holgada") == "5m"
     assert carga.keep_alive("justa") == "2m"
-    assert carga.keep_alive("cargada") == 0
+    assert carga.keep_alive("cargada") == "30s"
+    assert "30s" in carga.keep_alive.__doc__ and "48-56" in carga.keep_alive.__doc__
     assert carga.keep_alive(None) == "5m"
     assert carga.num_thread("holgada", ncpu=16) is None
     assert carga.num_thread("justa", ncpu=16) == 8
@@ -343,7 +349,7 @@ def test_payload_local_agrega_las_perillas_sin_pisar_options_ni_mutar():
     assert h["keep_alive"] == "5m" and h["options"] == {"temperature": 0, "num_ctx": 8192}
     assert "num_thread" not in h["options"]
     c = carga.payload_local(base, "cargada")
-    assert c["keep_alive"] == 0
+    assert c["keep_alive"] == "30s"
     assert c["options"] == {"temperature": 0, "num_ctx": 8192, "num_thread": carga.num_thread("cargada")}
     assert "keep_alive" not in base and "num_thread" not in base["options"]   # no muta
     sin_options = carga.payload_local({"model": "m", "prompt": "p"}, "justa")

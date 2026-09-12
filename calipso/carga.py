@@ -400,13 +400,20 @@ def olvidar() -> None:
 
 # --- las perillas por nivel (spec 2, ultimo punto) ------------------------------
 
-_KEEP_ALIVE = {"holgada": "5m", "justa": "2m", "cargada": 0}
+_KEEP_ALIVE = {"holgada": "5m", "justa": "2m", "cargada": "30s"}
 
 
 def keep_alive(nivel: str | None):
     """holgada: el default de Ollama (5 min), explicito porque en Ollama gana
     el keep_alive de la ULTIMA request y tras un evict (0) hay que devolverlo;
-    justa: 2 min; cargada: 0 (se descarga al terminar la request)."""
+    justa: 2 min; cargada: "30s", NO 0 (ola de fix del 2026-09-11, punto 2).
+    Medido en el smoke con 0: Ollama descargaba el 7b al terminar CADA pasada
+    y /nube (juez + turno) y las reentradas del abismo pagaban una carga
+    desde disco por pasada (turno N 48-56 s contra A 36-42 s; a mitad de N
+    /api/ps vacio y 4212 MB libres contra 1925 tres segundos antes). Con 30 s
+    las pasadas de un mismo turno comparten el runner y el vigia descarga en
+    el tick siguiente (60 s) cuando `en_uso` llega a 0: el 7b no sobrevive
+    mas de ~90 s despues del turno."""
     return _KEEP_ALIVE.get(nivel or "holgada", "5m")
 
 
