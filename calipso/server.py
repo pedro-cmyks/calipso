@@ -2435,8 +2435,9 @@ def _medir_carga() -> carga.Carga:
     """El sensor de la maquina (spec carga, seccion 2), por un hook: los tests
     lo reemplazan con una Carga fija (nada de la suite mide /proc ni hace
     GET /api/ps). Se llama en HILO (en `_decide` y en el tick de las
-    rutinas), nunca en el event loop."""
-    return carga.medir(dispatch.CONFIG["local"]["model"])
+    rutinas), nunca en el event loop. Los modelos propios (los que el vigia
+    puede descargar) suman a la memoria efectiva (ola de fix, punto 1)."""
+    return carga.medir(dispatch.CONFIG["local"]["model"], modelos_propios=_modelos_de_calipso())
 
 
 def _nivel_del(verdict: dict) -> str | None:
@@ -2574,7 +2575,9 @@ def _decide(user_msg: str,
     # turno sale por la suscripcion mejor rankeada. `por_carga` dice si eso
     # cambio la decision (el primero del ranking sin filtrar era local): solo
     # entonces hay marca; un turno que ya iba por suscripcion por capacidad
-    # no cambia. Sin excepcion por "el 7b ya esta cargado" (ruling 9.1).
+    # no cambia. El "7b ya cargado" no es una excepcion aca: entra en la
+    # medicion como memoria efectiva (ola de fix, punto 1: con el 7b adentro
+    # y nada mas la maquina es holgada; el OOM sigue siendo cargada).
     por_carga = False
     if apaga_local and not gesto:
         sin_filtrar = _rankear(avail)

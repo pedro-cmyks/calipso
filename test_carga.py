@@ -41,14 +41,20 @@ def lector(meminfo=MEMINFO_HOLGADA, psi_mem=PSI_0, psi_cpu=PSI_0, loadavg=LOAD_B
     return _leer
 
 
-def medida(nivel="holgada", mem=None, motivo=None, modelos=(), necesidad=5746, **campos):
+def medida(nivel="holgada", mem=None, motivo=None, modelos=(), necesidad=5746,
+           modelo_cargado_mb=0, **campos):
     """Una Carga coherente con `nivel` sin medir nada: el molde para los
-    tests de _decide, del harness, del vigia y del endpoint."""
+    tests de _decide, del harness, del vigia y del endpoint. La memoria
+    efectiva (ola de fix, punto 1) es `mem + modelo_cargado_mb` salvo que
+    venga en `campos`."""
     por_nivel = {"holgada": (7377, ""), "justa": (6200, "mem 6200 < 5746+1024"),
                  "cargada": (480, "mem 480 < 5746")}
     mem_def, motivo_def = por_nivel[nivel]
+    disponible = mem if mem is not None else mem_def
     base = dict(nivel=nivel, motivo=motivo if motivo is not None else motivo_def,
-                mem_disponible_mb=mem if mem is not None else mem_def,
+                mem_disponible_mb=disponible,
+                mem_efectiva_mb=campos.pop("mem_efectiva_mb", disponible + modelo_cargado_mb),
+                modelo_cargado_mb=modelo_cargado_mb,
                 mem_total_mb=11638, swap_usado_mb=3615, swap_libre_mb=2203,
                 psi_mem_some10=0.0, psi_mem_full10=0.0, psi_cpu_some10=0.0,
                 load1=1.85, ncpu=16, modelos_cargados=list(modelos), necesidad_mb=necesidad,
@@ -96,6 +102,25 @@ def test_los_tres_niveles_por_memoria():
     assert carga.nivel(7377, 5746, 0.0, 0.0, 0.0, 1.0, 16) == ("holgada", "")
 
 
+def test_el_modelo_cargado_cuenta_como_memoria_efectiva():
+    """Ruling de la ola de fix (punto 1, revierte en parte el 9.1 del spec):
+    el nivel se mide contra la memoria EFECTIVA para el modelo, MemAvailable
+    mas el `size` de los modelos de Calipso que /api/ps lista en esa
+    medicion (lo que devuelve un evict). Con el 7b cargado y nada mas la
+    Ally es holgada; el OOM del 17:07 (500 + 5203 = 5703 < 5746) sigue
+    siendo cargada. El motivo dice `mem efectiva` cuando hay modelo cargado."""
+    # (a) el 7b cargado en reposo: 2709 libres + 5203 del 7b = 7912 -> holgada
+    assert carga.nivel(2709, 5746, 0.0, 0.0, 0.0, 1.0, 16, modelo_cargado_mb=5203) == ("holgada", "")
+    # (b) el OOM: 500 + 5203 = 5703 < 5746 -> cargada
+    assert carga.nivel(500, 5746, 0.0, 0.0, 0.0, 1.0, 16, modelo_cargado_mb=5203) == (
+        "cargada", "mem efectiva 5703 < 5746")
+    # justa por memoria efectiva: 1478 + 5203 = 6681 entre 5746 y 6770
+    assert carga.nivel(1478, 5746, 0.0, 0.0, 0.0, 1.0, 16, modelo_cargado_mb=5203) == (
+        "justa", "mem efectiva 6681 < 5746+1024")
+    # sin modelo cargado la forma es la de siempre
+    assert carga.nivel(5506, 5746, 0.0, 0.0, 0.0, 1.0, 16, modelo_cargado_mb=0) == ("cargada", "mem 5506 < 5746")
+
+
 def test_psi_alto_con_memoria_libre_es_cargada():
     assert carga.nivel(7377, 5746, 22.0, 0.0, 0.0, 1.0, 16)[0] == "cargada"
     assert carga.nivel(7377, 5746, 0.0, 6.0, 0.0, 1.0, 16)[0] == "cargada"
@@ -128,10 +153,30 @@ def test_la_calibracion_anotada_cae_donde_dice():
     assert carga.CALIBRACION
     for fila in carga.CALIBRACION:
         assert fila["cuando"] and fila["mem_disponible_mb"] is not None, fila["escena"]
+        assert "modelo_cargado_mb" in fila, fila["escena"]
         n, _ = carga.nivel(fila["mem_disponible_mb"], fila["necesidad_mb"],
                            fila["psi_mem_some10"], fila["psi_mem_full10"],
-                           fila["psi_cpu_some10"], fila["load1"], fila["ncpu"])
+                           fila["psi_cpu_some10"], fila["load1"], fila["ncpu"],
+                           modelo_cargado_mb=fila["modelo_cargado_mb"])
         assert n == fila["nivel"], fila["escena"]
+
+
+def test_la_calibracion_con_el_7b_cargado_cae_donde_dice_el_ruling():
+    """Las filas con el 7b adentro, recalculadas con la memoria efectiva
+    (ola de fix, punto 1): M (2709 + 5203) y V (2469 + 5203) son holgada; el
+    OOM (500 + 5203 = 5703) sigue cargada; 18:22-18:25 (1478/1578 + 5203)
+    quedan justa por load1 >= 8 (y 18:22 tambien por la memoria: 6681 < 6770)."""
+    por_cuando = {f["cuando"]: f for f in carga.CALIBRACION}
+    assert por_cuando["2026-09-11T22:47:15"]["modelo_cargado_mb"] == 5203
+    assert por_cuando["2026-09-11T22:47:15"]["nivel"] == "holgada"
+    assert por_cuando["2026-09-11T22:47:24"]["nivel"] == "holgada"
+    assert por_cuando["2026-09-11 17:07:59"]["modelo_cargado_mb"] == 5203
+    assert por_cuando["2026-09-11 17:07:59"]["nivel"] == "cargada"
+    assert por_cuando["2026-09-11 18:22:32"]["nivel"] == "justa"
+    assert por_cuando["2026-09-11 18:25:38"]["nivel"] == "justa"
+    # las filas sin modelo no cambian
+    assert por_cuando["2026-09-11T22:47:52"]["modelo_cargado_mb"] == 0
+    assert "punto 1" in carga.__doc__ or "memoria EFECTIVA" in carga.__doc__
 
 
 def test_la_fila_cargada_de_verdad_es_la_del_reservador_del_smoke():
@@ -148,7 +193,7 @@ def test_la_fila_cargada_de_verdad_es_la_del_reservador_del_smoke():
     assert (fila["mem_disponible_mb"], fila["necesidad_mb"], fila["nivel"]) == (5555, 5746, "cargada")
     assert carga.nivel(fila["mem_disponible_mb"], fila["necesidad_mb"], fila["psi_mem_some10"],
                        fila["psi_mem_full10"], fila["psi_cpu_some10"], fila["load1"],
-                       fila["ncpu"]) == ("cargada", "mem 5555 < 5746")
+                       fila["ncpu"], modelo_cargado_mb=fila["modelo_cargado_mb"]) == ("cargada", "mem 5555 < 5746")
     # cargada por memoria y nada mas: el PSI no llego ni al umbral de holgada
     assert fila["psi_mem_some10"] < carga.UMBRALES["PSI_MEM_SOME_HOLGADA"]
 
@@ -166,10 +211,57 @@ def test_medir_con_proc_y_ps_falsos_da_los_tres_niveles():
                      ps=lambda: [{"name": "qwen2.5:7b", "size_mb": 5203, "expires_at": "x"}],
                      ncpu=16, necesidad=5746)
     assert c2.nivel == "cargada" and c2.modelos_cargados == ["qwen2.5:7b"]
-    assert c2.motivo == "mem 500 < 5746"
+    assert c2.motivo == "mem efectiva 5703 < 5746"       # 500 + 5203 del 7b listado
+    assert (c2.mem_efectiva_mb, c2.modelo_cargado_mb) == (5703, 5203)
+    assert (c.mem_efectiva_mb, c.modelo_cargado_mb) == (7377, 0)
     c3 = carga.medir("qwen2.5:7b", leer=lector(meminfo=MEMINFO_JUSTA), ps=lambda: [],
                      ncpu=16, necesidad=5746)
     assert c3.nivel == "justa"
+
+
+MEMINFO_7B_EN_REPOSO = MEMINFO_HOLGADA.replace("MemAvailable:    7554048 kB", "MemAvailable:    2774016 kB")   # 2709 MiB
+MEMINFO_OOM = MEMINFO_HOLGADA.replace("MemAvailable:    7554048 kB", "MemAvailable:     512000 kB")           # 500 MiB
+MEMINFO_5506 = MEMINFO_HOLGADA.replace("MemAvailable:    7554048 kB", "MemAvailable:    5638144 kB")          # 5506 MiB
+PS_7B = [{"name": "qwen2.5:7b", "size_mb": 5203, "expires_at": "x"}]
+
+
+def test_medir_con_el_7b_cargado_en_reposo_es_holgada_y_sin_ps_es_cargada():
+    """Ola de fix, punto 1: (a) el 7b cargado y nada mas (2709 libres, ps lo
+    lista con 5203) -> holgada; (b) el OOM (500 libres, 7b listado) ->
+    cargada; (c) ps caido con 2709 libres -> cargada (fail-open: sin ps la
+    memoria efectiva es la disponible); (d) 5506 libres sin modelo -> cargada."""
+    a = carga.medir("qwen2.5:7b", leer=lector(meminfo=MEMINFO_7B_EN_REPOSO), ps=lambda: PS_7B,
+                    ncpu=16, necesidad=5746)
+    assert (a.nivel, a.motivo) == ("holgada", "")
+    assert (a.mem_disponible_mb, a.modelo_cargado_mb, a.mem_efectiva_mb) == (2709, 5203, 7912)
+    b = carga.medir("qwen2.5:7b", leer=lector(meminfo=MEMINFO_OOM), ps=lambda: PS_7B,
+                    ncpu=16, necesidad=5746)
+    assert (b.nivel, b.motivo, b.mem_efectiva_mb) == ("cargada", "mem efectiva 5703 < 5746", 5703)
+    c = carga.medir("qwen2.5:7b", leer=lector(meminfo=MEMINFO_7B_EN_REPOSO), ps=lambda: None,
+                    ncpu=16, necesidad=5746)
+    assert (c.nivel, c.motivo) == ("cargada", "mem 2709 < 5746")
+    assert (c.modelo_cargado_mb, c.mem_efectiva_mb, c.medido["ollama"]) == (0, 2709, False)
+    d = carga.medir("qwen2.5:7b", leer=lector(meminfo=MEMINFO_5506), ps=lambda: [],
+                    ncpu=16, necesidad=5746)
+    assert (d.nivel, d.motivo, d.mem_efectiva_mb) == ("cargada", "mem 5506 < 5746", 5506)
+
+
+def test_solo_los_modelos_propios_suman_a_la_memoria_efectiva():
+    """Un modelo ajeno listado no cuenta (el vigia no lo descargaria); por
+    defecto cuenta solo el modelo contra el que se mide; con
+    `modelos_propios=` cuentan todos los de Calipso (el 3b del clasificador)."""
+    ajeno_y_3b = PS_7B + [{"name": "llama3:8b", "size_mb": 4000, "expires_at": "x"},
+                          {"name": "qwen2.5:3b", "size_mb": 1900, "expires_at": "x"}]
+    c = carga.medir("qwen2.5:7b", leer=lector(meminfo=MEMINFO_OOM), ps=lambda: ajeno_y_3b,
+                    ncpu=16, necesidad=5746)
+    assert c.modelo_cargado_mb == 5203 and c.nivel == "cargada"
+    assert c.modelos_cargados == ["qwen2.5:7b", "llama3:8b", "qwen2.5:3b"]
+    c2 = carga.medir("qwen2.5:7b", leer=lector(meminfo=MEMINFO_OOM), ps=lambda: ajeno_y_3b,
+                     ncpu=16, necesidad=5746, modelos_propios={"qwen2.5:7b", "qwen2.5:3b"})
+    assert c2.modelo_cargado_mb == 5203 + 1900 and c2.mem_efectiva_mb == 500 + 5203 + 1900
+    assert c2.nivel == "holgada"                     # 7603 >= 5746 + 1024
+    # los avisos siguen diciendo los MB libres de verdad (lo que Pedro entiende)
+    assert carga.marca(carga.fila(c), "subscription")["mem_disponible_mb"] == 500
 
 
 def test_el_swap_lleno_con_memoria_libre_no_decide():

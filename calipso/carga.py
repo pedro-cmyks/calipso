@@ -23,11 +23,27 @@ nada se pudo medir, `holgada` con `medido` todo en False y Calipso se comporta
 como hoy.
 
 Los tres niveles (contra la necesidad del modelo del chat):
-  cargada  si MemAvailable < necesidad  o  psi_mem some avg10 >= 20  o  full avg10 >= 5
-  holgada  si MemAvailable >= necesidad + MARGEN_LIBRE_MB  y  psi_mem some < 5
+  cargada  si mem_efectiva < necesidad  o  psi_mem some avg10 >= 20  o  full avg10 >= 5
+  holgada  si mem_efectiva >= necesidad + MARGEN_LIBRE_MB  y  psi_mem some < 5
            y  psi_cpu some < 25  y  load1 < ncpu / 2
   justa    en el medio (incluida la CPU ocupada con RAM de sobra: el decode del
            7b usa los 16 hilos y le pega a un juego aunque sobre memoria)
+donde la memoria EFECTIVA para el modelo (ruling de la ola de fix del
+2026-09-11, punto 1, que revierte en parte el 9.1 del spec) es
+  mem_efectiva_mb = MemAvailable + sum(size de los modelos de Calipso que /api/ps
+                    de ESA medicion lista)
+o sea exactamente lo que devuelve un evict. Medido en el smoke: con el 7b
+cargado y NADA mas, MemAvailable baja de 7179 a 2709 (< 5746) y el sensor
+decia `cargada`: el vigia descargaba el 7b a los 60 s de todo turno local en
+holgada y el chat quedaba en suscripcion hasta la proxima holgada, lo
+contrario de "ocupen cuando puedan ocupar" en el caso mas comun. Con la
+memoria efectiva: 2709 + 5203 = 7912 -> holgada; el OOM del 17:07 (500 +
+5203 = 5703 < 5746) sigue dando cargada, el vigia descarga y el chat va a
+suscripcion con marca. El ping-pong desaparece por construccion: antes y
+despues de un evict la memoria efectiva es la misma. Si /api/ps no responde
+(`medido["ollama"]` False) la memoria efectiva es la disponible (fail-open).
+Los avisos siguen diciendo "N MB libres" con MemAvailable, que es lo que
+Pedro entiende.
 El swap NO entra: es zram con swappiness 180 (lleno es estado normal). Se
 mide y se anota, no decide (ruling 9.3).
 
@@ -97,25 +113,30 @@ UMBRALES: dict[str, float | int] = {
 
 # La calibracion, anotada y EJECUTABLE (test_carga.py recorre todas las
 # filas): escenas reales de la Ally (11638 MiB, 16 hilos), necesidad del 7b
-# 5746 (4466 + 1280). Los PSI son `avg10` en %; `mem` es MemAvailable en MiB.
+# 5746 (4466 + 1280). Los PSI son `avg10` en %; `mem` es MemAvailable en MiB;
+# `modelo_cargado_mb` es el `size` del 7b que /api/ps listaba (5203) o 0.
+# Ola de fix del 2026-09-11 (punto 1): el nivel se recalculo con la memoria
+# efectiva (MemAvailable + modelo cargado); las filas con el 7b adentro
+# cambiaron: M y V pasan de cargada a holgada, 18:22 y 18:25 de cargada a
+# justa (por load1 >= 8, y 18:22 tambien por 6681 < 6770); el OOM sigue cargada.
 CALIBRACION: list[dict] = [
-    {"cuando": "2026-09-11 17:07:59", "escena": "OOM: Ollama muerto mientras Pedro jugaba (swap libre 232 kB)",
-     "mem_disponible_mb": 500, "necesidad_mb": 5746, "psi_mem_some10": None, "psi_mem_full10": None,
+    {"cuando": "2026-09-11 17:07:59", "escena": "OOM: Ollama muerto mientras Pedro jugaba (swap libre 232 kB); efectiva 500 + 5203 = 5703 < 5746",
+     "mem_disponible_mb": 500, "modelo_cargado_mb": 5203, "necesidad_mb": 5746, "psi_mem_some10": None, "psi_mem_full10": None,
      "psi_cpu_some10": None, "load1": None, "ncpu": 16, "swap_usado_mb": 5819, "nivel": "cargada"},
     {"cuando": "2026-09-11 17:55", "escena": "jugando, con el juego quieto; /api/ps vacio",
-     "mem_disponible_mb": 6897, "necesidad_mb": 5746, "psi_mem_some10": 0.0, "psi_mem_full10": 0.0,
+     "mem_disponible_mb": 6897, "modelo_cargado_mb": 0, "necesidad_mb": 5746, "psi_mem_some10": 0.0, "psi_mem_full10": 0.0,
      "psi_cpu_some10": 0.0, "load1": 4.65, "ncpu": 16, "swap_usado_mb": 5150, "nivel": "holgada"},
     {"cuando": "2026-09-11 18:05", "escena": "reposo (dos python, plasma y steam frios en zram: swap al 95%)",
-     "mem_disponible_mb": 7377, "necesidad_mb": 5746, "psi_mem_some10": 0.0, "psi_mem_full10": 0.0,
+     "mem_disponible_mb": 7377, "modelo_cargado_mb": 0, "necesidad_mb": 5746, "psi_mem_some10": 0.0, "psi_mem_full10": 0.0,
      "psi_cpu_some10": None, "load1": None, "ncpu": 16, "swap_usado_mb": 5200, "nivel": "holgada"},
-    {"cuando": "2026-09-11 18:22:32", "escena": "smoke con el 7b cargado (Pedro no jugaba); swap libre 449 MiB",
-     "mem_disponible_mb": 1478, "necesidad_mb": 5746, "psi_mem_some10": 0.0, "psi_mem_full10": 0.0,
-     "psi_cpu_some10": 0.0, "load1": 8.54, "ncpu": 16, "swap_usado_mb": 5370, "nivel": "cargada"},
-    {"cuando": "2026-09-11 18:25:38", "escena": "idem, tres minutos despues; swap libre 68 kB y PSI mem 0,16: el PSI no ve el OOM que viene",
-     "mem_disponible_mb": 1578, "necesidad_mb": 5746, "psi_mem_some10": 0.16, "psi_mem_full10": 0.16,
-     "psi_cpu_some10": 0.46, "load1": 9.96, "ncpu": 16, "swap_usado_mb": 5819, "nivel": "cargada"},
+    {"cuando": "2026-09-11 18:22:32", "escena": "smoke con el 7b cargado (Pedro no jugaba); swap libre 449 MiB; JUSTA por efectiva 6681 < 6770 y load1 8,54",
+     "mem_disponible_mb": 1478, "modelo_cargado_mb": 5203, "necesidad_mb": 5746, "psi_mem_some10": 0.0, "psi_mem_full10": 0.0,
+     "psi_cpu_some10": 0.0, "load1": 8.54, "ncpu": 16, "swap_usado_mb": 5370, "nivel": "justa"},
+    {"cuando": "2026-09-11 18:25:38", "escena": "idem, tres minutos despues; swap libre 68 kB y PSI mem 0,16: el PSI no ve el OOM que viene; JUSTA por load1 9,96 (efectiva 6781)",
+     "mem_disponible_mb": 1578, "modelo_cargado_mb": 5203, "necesidad_mb": 5746, "psi_mem_some10": 0.16, "psi_mem_full10": 0.16,
+     "psi_cpu_some10": 0.46, "load1": 9.96, "ncpu": 16, "swap_usado_mb": 5819, "nivel": "justa"},
     {"cuando": "2026-09-11 18:41:37", "escena": "reposo tras el smoke, sin modelo cargado: JUSTA por memoria (5876 entre 5746 y 6770)",
-     "mem_disponible_mb": 5876, "necesidad_mb": 5746, "psi_mem_some10": 0.0, "psi_mem_full10": 0.0,
+     "mem_disponible_mb": 5876, "modelo_cargado_mb": 0, "necesidad_mb": 5746, "psi_mem_some10": 0.0, "psi_mem_full10": 0.0,
      "psi_cpu_some10": 0.04, "load1": 1.85, "ncpu": 16, "swap_usado_mb": 3615, "nivel": "justa"},
     # Las cinco que siguen las imprimio el smoke de la Task 6 (experimentos/
     # carga_smoke.py, corrida 3, 22:45-22:51, con el server REAL apagado por el
@@ -126,25 +147,25 @@ CALIBRACION: list[dict] = [
     # 860 MB libres y 944 MB de zram libre a mitad del turno C).
     {"cuando": "2026-09-11T22:45:40",
      "escena": "smoke: el server desechable arriba (~1,5 GB) y el server real APAGADO; /api/ps vacio",
-     "mem_disponible_mb": 7179, "necesidad_mb": 5746, "psi_mem_some10": 0.0, "psi_mem_full10": 0.0,
+     "mem_disponible_mb": 7179, "modelo_cargado_mb": 0, "necesidad_mb": 5746, "psi_mem_some10": 0.0, "psi_mem_full10": 0.0,
      "psi_cpu_some10": 0.0, "load1": 2.02, "ncpu": 16, "swap_usado_mb": 4156, "nivel": "holgada"},
     {"cuando": "2026-09-11T22:47:15",
-     "escena": "smoke, paso M: con el 7b cargado por /local (num_ctx 8192): cargar el 7b YA es cargada (9.1)",
-     "mem_disponible_mb": 2709, "necesidad_mb": 5746, "psi_mem_some10": 0.28, "psi_mem_full10": 0.28,
-     "psi_cpu_some10": 0.0, "load1": 6.46, "ncpu": 16, "swap_usado_mb": 4194, "nivel": "cargada"},
+     "escena": "smoke, paso M: con el 7b cargado por /local (num_ctx 8192): HOLGADA por efectiva 2709 + 5203 = 7912 (punto 1)",
+     "mem_disponible_mb": 2709, "modelo_cargado_mb": 5203, "necesidad_mb": 5746, "psi_mem_some10": 0.28, "psi_mem_full10": 0.28,
+     "psi_cpu_some10": 0.0, "load1": 6.46, "ncpu": 16, "swap_usado_mb": 4194, "nivel": "holgada"},
     {"cuando": "2026-09-11T22:47:24",
-     "escena": "smoke, paso V: el 7b recien recargado (keep_alive 5m) para que lo descargue el vigia",
-     "mem_disponible_mb": 2469, "necesidad_mb": 5746, "psi_mem_some10": 1.39, "psi_mem_full10": 1.39,
-     "psi_cpu_some10": 0.0, "load1": 5.7, "ncpu": 16, "swap_usado_mb": 4191, "nivel": "cargada"},
+     "escena": "smoke, paso V: el 7b recien recargado (keep_alive 5m); HOLGADA por efectiva 2469 + 5203 = 7672: el vigia NO lo descarga",
+     "mem_disponible_mb": 2469, "modelo_cargado_mb": 5203, "necesidad_mb": 5746, "psi_mem_some10": 1.39, "psi_mem_full10": 1.39,
+     "psi_cpu_some10": 0.0, "load1": 5.7, "ncpu": 16, "swap_usado_mb": 4191, "nivel": "holgada"},
     {"cuando": "2026-09-11T22:47:52",
      "escena": "cargada de verdad: el reservador del smoke (experimentos/carga_smoke.py, paso R, 1536 MB de "
                "bytes aleatorios, sin modelo cargado; docs/superpowers/2026-09-11-smoke-carga.md)",
-     "mem_disponible_mb": 5555, "necesidad_mb": 5746, "psi_mem_some10": 0.11, "psi_mem_full10": 0.11,
+     "mem_disponible_mb": 5555, "modelo_cargado_mb": 0, "necesidad_mb": 5746, "psi_mem_some10": 0.11, "psi_mem_full10": 0.11,
      "psi_cpu_some10": 0.0, "load1": 4.14, "ncpu": 16, "swap_usado_mb": 4191, "nivel": "cargada"},
     {"cuando": "2026-09-11T22:49:08",
      "escena": "smoke, paso P: el reservador otra vez hasta cargada tras C (2048 MB: cargar el 7b en C mando "
                "~700 MB frios de otros procesos a zram y al descargarse sobro memoria)",
-     "mem_disponible_mb": 5513, "necesidad_mb": 5746, "psi_mem_some10": 0.03, "psi_mem_full10": 0.03,
+     "mem_disponible_mb": 5513, "modelo_cargado_mb": 0, "necesidad_mb": 5746, "psi_mem_some10": 0.03, "psi_mem_full10": 0.03,
      "psi_cpu_some10": 0.0, "load1": 5.94, "ncpu": 16, "swap_usado_mb": 4887, "nivel": "cargada"},
 ]
 
@@ -170,6 +191,11 @@ class Carga:
     nivel: str
     motivo: str
     mem_disponible_mb: int
+    # la memoria EFECTIVA para el modelo (punto 1 de la ola de fix): la
+    # disponible mas el `size` de los modelos propios que /api/ps listo en
+    # esta medicion; es la que decide el nivel
+    mem_efectiva_mb: int
+    modelo_cargado_mb: int
     mem_total_mb: int
     swap_usado_mb: int
     swap_libre_mb: int
@@ -245,21 +271,25 @@ def necesidad_mb(modelo: str | None) -> int:
 def nivel(mem_disponible_mb: int | None, necesidad_mb: int,
           psi_mem_some10: float | None, psi_mem_full10: float | None,
           psi_cpu_some10: float | None, load1: float | None,
-          ncpu: int) -> tuple[str, str]:
+          ncpu: int, modelo_cargado_mb: int = 0) -> tuple[str, str]:
     """(nivel, motivo), puro sobre numeros. `None` en una senal = no se pudo
     medir: esa senal no decide (fail-open por senal). Cargada si CUALQUIER
     senal medida dispara; holgada si TODAS las medidas pasan; justa en el
-    medio; nada medido -> holgada."""
+    medio; nada medido -> holgada. La memoria que decide es la EFECTIVA:
+    `mem_disponible_mb + modelo_cargado_mb` (punto 1 de la ola de fix); el
+    motivo dice `mem efectiva N` cuando hay modelo cargado y `mem N` si no."""
     u = UMBRALES
-    if mem_disponible_mb is not None and mem_disponible_mb < necesidad_mb:
-        return "cargada", f"mem {mem_disponible_mb} < {necesidad_mb}"
+    mem_efectiva_mb = None if mem_disponible_mb is None else mem_disponible_mb + (modelo_cargado_mb or 0)
+    etiqueta = "mem efectiva" if modelo_cargado_mb else "mem"
+    if mem_efectiva_mb is not None and mem_efectiva_mb < necesidad_mb:
+        return "cargada", f"{etiqueta} {mem_efectiva_mb} < {necesidad_mb}"
     if psi_mem_some10 is not None and psi_mem_some10 >= u["PSI_MEM_SOME_CARGADA"]:
         return "cargada", f"psi_mem_some10 {psi_mem_some10} >= {u['PSI_MEM_SOME_CARGADA']:g}"
     if psi_mem_full10 is not None and psi_mem_full10 >= u["PSI_MEM_FULL_CARGADA"]:
         return "cargada", f"psi_mem_full10 {psi_mem_full10} >= {u['PSI_MEM_FULL_CARGADA']:g}"
     motivos = []
-    if mem_disponible_mb is not None and mem_disponible_mb < necesidad_mb + u["MARGEN_LIBRE_MB"]:
-        motivos.append(f"mem {mem_disponible_mb} < {necesidad_mb}+{u['MARGEN_LIBRE_MB']}")
+    if mem_efectiva_mb is not None and mem_efectiva_mb < necesidad_mb + u["MARGEN_LIBRE_MB"]:
+        motivos.append(f"{etiqueta} {mem_efectiva_mb} < {necesidad_mb}+{u['MARGEN_LIBRE_MB']}")
     if psi_mem_some10 is not None and psi_mem_some10 >= u["PSI_MEM_SOME_HOLGADA"]:
         motivos.append(f"psi_mem_some10 {psi_mem_some10} >= {u['PSI_MEM_SOME_HOLGADA']:g}")
     if psi_cpu_some10 is not None and psi_cpu_some10 >= u["PSI_CPU_SOME_HOLGADA"]:
@@ -278,14 +308,19 @@ _ultima_t: float = 0.0
 
 
 def medir(modelo: str | None = None, *, leer=None, ps=None, ncpu: int | None = None,
-          necesidad: int | None = None, ahora: datetime.datetime | None = None) -> Carga:
+          necesidad: int | None = None, ahora: datetime.datetime | None = None,
+          modelos_propios=None) -> Carga:
     """La medicion. `leer(ruta) -> str` (OSError si no esta), `ps() -> list |
     None` (None = Ollama no responde), `ncpu` y `necesidad` son inyectables
     para los tests; sin inyeccion se lee /proc, se hace GET /api/ps y se
-    cachea CACHE_S. Toda medicion queda como la ultima (`nivel_reciente`)."""
+    cachea CACHE_S. Toda medicion queda como la ultima (`nivel_reciente`).
+    `modelos_propios` son los nombres cuyo `size` en /api/ps suma a la
+    memoria efectiva (los que el vigia puede descargar: el server pasa
+    `_modelos_de_calipso()`); sin la lista cuenta solo `modelo`."""
     global _ultima, _ultima_t
     inyectado = leer is not None or ps is not None or ncpu is not None or necesidad is not None
     modelo = modelo or ""
+    propios = set(modelos_propios) if modelos_propios is not None else ({modelo} if modelo else set())
     if (not inyectado and _ultima is not None and _ultima.modelo == modelo
             and time.monotonic() - _ultima_t < UMBRALES["CACHE_S"]):
         return _ultima
@@ -314,10 +349,13 @@ def medir(modelo: str | None = None, *, leer=None, ps=None, ncpu: int | None = N
     except Exception:
         pass
     modelos: list[str] = []
+    modelo_cargado = 0
     try:
         lista = ps()
         if lista is not None:
             modelos = [str(m.get("name", "")) for m in lista if m.get("name")]
+            modelo_cargado = sum(int(m.get("size_mb") or 0) for m in lista
+                                 if m.get("name") and str(m.get("name")) in propios)
             medido["ollama"] = True
     except Exception:
         pass
@@ -330,8 +368,10 @@ def medir(modelo: str | None = None, *, leer=None, ps=None, ncpu: int | None = N
                       psi_mem[0] if medido["psi"] else None,
                       psi_mem[1] if medido["psi"] else None,
                       psi_cpu[0] if medido["psi"] else None,
-                      load1 if medido["loadavg"] else None, ncpu)
+                      load1 if medido["loadavg"] else None, ncpu,
+                      modelo_cargado_mb=modelo_cargado)
     c = Carga(nivel=n, motivo=motivo, mem_disponible_mb=disponible,
+              mem_efectiva_mb=disponible + modelo_cargado, modelo_cargado_mb=modelo_cargado,
               mem_total_mb=mem.get("MemTotal", 0) // 1024,
               swap_usado_mb=max(swap_total - swap_libre, 0), swap_libre_mb=swap_libre,
               psi_mem_some10=psi_mem[0], psi_mem_full10=psi_mem[1], psi_cpu_some10=psi_cpu[0],
@@ -548,7 +588,9 @@ def cuentas_del_dia(filas: list[dict], hoy: str | None = None) -> dict[str, int]
 # --- python -m calipso.carga ----------------------------------------------------
 
 def _linea(c: Carga) -> str:
-    return (f"nivel={c.nivel} mem={c.mem_disponible_mb}MB necesidad={c.necesidad_mb} "
+    return (f"nivel={c.nivel} mem={c.mem_disponible_mb}MB "
+            + (f"efectiva={c.mem_efectiva_mb}MB (modelo {c.modelo_cargado_mb}MB) " if c.modelo_cargado_mb else "")
+            + f"necesidad={c.necesidad_mb} "
             f"psi_mem={c.psi_mem_some10}/{c.psi_mem_full10} psi_cpu={c.psi_cpu_some10} "
             f"load1={c.load1}/{c.ncpu} swap_usado={c.swap_usado_mb}MB "
             f"modelos={c.modelos_cargados} medido={c.medido}"
@@ -558,6 +600,14 @@ def _linea(c: Carga) -> str:
 def _modelo_configurado() -> str:
     from calipso import config as calipso_config   # lee config.json del CALIPSO_HOME (solo lectura)
     return calipso_config.load_config()["local"]["model"]
+
+
+def _modelos_configurados() -> set[str]:
+    """Los modelos propios para la memoria efectiva desde la terminal: el del
+    chat y el del clasificador (el server suma el de vision si hay)."""
+    from calipso import config as calipso_config
+    cfg = calipso_config.load_config()
+    return {cfg["local"]["model"], (cfg.get("classifier") or {}).get("model") or cfg["local"]["model"]}
 
 
 def main(argv: list[str] | None = None, salida=None, medir_=None, dormir=None) -> int:
@@ -573,7 +623,7 @@ def main(argv: list[str] | None = None, salida=None, medir_=None, dormir=None) -
                     help="segundos maximos de --esperar; al vencer sale con 3 y no corre nada")
     ap.add_argument("--json", action="store_true", help="la medicion entera como JSON")
     args = ap.parse_args(argv)
-    medir_ = medir_ or (lambda: medir(_modelo_configurado()))
+    medir_ = medir_ or (lambda: medir(_modelo_configurado(), modelos_propios=_modelos_configurados()))
     if not args.esperar:
         c = medir_()
         print(json.dumps(fila(c), ensure_ascii=False) if args.json else _linea(c), file=salida)

@@ -49,6 +49,23 @@ def test_cargada_con_el_7b_listado_y_sin_uso_lo_descarga_una_vez_y_suspende(tick
     assert fila["nivel"] == "cargada" and fila["mem_disponible_mb"] == 480
 
 
+def test_con_el_7b_cargado_en_reposo_no_descarga_y_en_el_oom_si(tick):
+    """Ola de fix, punto 1: la memoria efectiva cuenta el modelo cargado. (a)
+    2709 libres con el 7b listado (5203) es holgada efectiva: el vigia NO
+    evicta (antes descargaba el 7b a los 60 s de cada turno local). (b) el
+    OOM: 500 + 5203 = 5703 < 5746 -> cargada -> descarga y suspende."""
+    tick["correr"](medida("holgada", mem=2709, modelos=["qwen2.5:7b"], modelo_cargado_mb=5203))
+    assert tick["evictados"] == [] and carga.local_suspendido is False
+    assert _de(tick["filas"], "descarga") == []
+    oom = medida("cargada", mem=500, modelos=["qwen2.5:7b"], modelo_cargado_mb=5203,
+                 motivo="mem efectiva 5703 < 5746")
+    assert oom.mem_efectiva_mb == 5703
+    tick["correr"](oom)
+    assert tick["evictados"] == ["qwen2.5:7b"] and carga.local_suspendido is True
+    fila = _de(tick["filas"], "descarga")[0]
+    assert fila["mem_disponible_mb"] == 500 and fila["mem_efectiva_mb"] == 5703
+
+
 def test_con_el_modelo_en_uso_no_descarga_y_lo_anota(tick):
     carga.tomar()
     tick["correr"](medida("cargada", modelos=["qwen2.5:7b"]))
@@ -77,6 +94,20 @@ def test_los_tres_modelos_de_calipso_son_los_de_config_y_el_de_vision(monkeypatc
                                          srv.dispatch.CONFIG["classifier"]["model"]}
     monkeypatch.setattr(srv.attachments, "ollama_vision_model", lambda: "moondream")
     assert "moondream" in srv._modelos_de_calipso()
+
+
+def test_medir_carga_del_server_pasa_los_modelos_de_calipso_como_propios(monkeypatch):
+    """La memoria efectiva suma SOLO lo que el vigia puede descargar (punto
+    1): el server mide con `modelos_propios=_modelos_de_calipso()`."""
+    vistos = {}
+
+    def medir(modelo, **k):
+        vistos["modelo"], vistos["k"] = modelo, k
+        return medida("holgada")
+    monkeypatch.setattr(carga, "medir", medir)
+    srv._medir_carga()
+    assert vistos["modelo"] == srv.dispatch.CONFIG["local"]["model"]
+    assert vistos["k"]["modelos_propios"] == srv._modelos_de_calipso()
 
 
 def test_bajo_holgada_o_justa_el_vigia_no_toca_nada(tick):
