@@ -94,7 +94,15 @@ def _decide_local(user_msg, last_features=None, last_verdict=None):
                "session": "s", "source": "harness", "why": "harness"}
     features = {"type": "chat", "complexity": 1, "needs_repo": False,
                 "needs_web": False, "private": False}
+    verdict.update(VEREDICTO_EXTRA)
     return verdict, features, [], d
+
+
+# lo que un test suma (o pisa) en el veredicto falso: `carga`,
+# `carga_medicion`, o una ruta de suscripcion con su cliente
+# (test_carga_chat.py). Se pisa con monkeypatch sobre este modulo; el
+# default vacio deja el harness exactamente como estaba
+VEREDICTO_EXTRA: dict = {}
 
 
 PLAZO = 60       # segundos que un turno del harness puede tardar en dar sus `done`

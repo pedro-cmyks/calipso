@@ -100,6 +100,7 @@ from calipso import telemetry  # noqa: E402
 from calipso import web as calipso_web  # noqa: E402
 from calipso import aduana  # noqa: E402
 from calipso import canarios  # noqa: E402
+from calipso import carga  # noqa: E402
 from calipso import memoria_procedencia  # noqa: E402
 from calipso import tokenizador  # noqa: E402
 from calipso import verification  # noqa: E402
@@ -2418,6 +2419,86 @@ def _backend_quota_low() -> dict:
         capabilities.load_backends(), _connector_health())
 
 
+def _medir_carga() -> carga.Carga:
+    """El sensor de la maquina (spec carga, seccion 2), por un hook: los tests
+    lo reemplazan con una Carga fija (nada de la suite mide /proc ni hace
+    GET /api/ps). Se llama en HILO (en `_decide` y en el tick de las
+    rutinas), nunca en el event loop."""
+    return carga.medir(dispatch.CONFIG["local"]["model"])
+
+
+def _nivel_del(verdict: dict) -> str | None:
+    """El nivel medido en `_decide` de este turno (None si el veredicto no lo
+    trae: el harness de los tests)."""
+    return (verdict.get("carga_medicion") or {}).get("nivel")
+
+
+def _gesto_local(d: dict, features: dict, avail: dict, backends: dict, prof: dict) -> str | None:
+    """El gesto que fija LOCAL por construccion (spec carga 3.1, invariante
+    2): con uno de estos, la carga no apaga los backends locales y el turno
+    va local con el aviso `puede tardar o fallar`. En orden: /local, /redacta,
+    /otra, el prompt privado (regex `dispatch.PRIVATE`), `/model X` cuando X
+    nombra un backend local (key, model, persona del registro o nombre del
+    agente en la sesion), y "sin suscripcion" (ningun backend de suscripcion
+    disponible). None = sin gesto."""
+    if d.get("force_route") == "local":
+        return "/local"
+    if d.get("redacta"):
+        return "/redacta"
+    if d.get("otra"):
+        return "/otra"
+    if features.get("private"):
+        return "prompt privado"
+    fm = (d.get("force_model") or "").lower()
+    if fm:
+        agentes = prof.get("agents") or {}
+        for key, m in backends.items():
+            if m.get("route") != "local":
+                continue
+            nombres = (key.lower(), (m.get("model") or "").lower(),
+                       (m.get("persona") or "").lower(),
+                       (agentes.get(key, {}).get("name") or "").lower())
+            if fm in nombres:
+                return f"/model {d['force_model']}"
+    if not any(v for k, v in avail.items() if backends.get(k, {}).get("route") == "subscription"):
+        return "sin suscripcion"
+    return None
+
+
+def _veredicto_local(prof: dict, d: dict, sel_effort: int, why: str) -> dict:
+    """El veredicto local DIRECTO (spec carga 3.1, `/local` cerrado de verdad):
+    el modelo configurado buscado en el registro (no el literal de la rama
+    `else`), la persona y la intensidad de la sesion como en la rama del
+    ranking. No pasa por `choose`: con Ollama caido, complejidad 4-5, /think
+    o la sonda de salud lenta, `/local` sigue siendo local, y `_chunks_for`
+    es quien para con Ollama caido."""
+    modelo = dispatch.CONFIG["local"]["model"]
+    key, m = f"local:{modelo}", {"persona": "Epicteto", "tier": "small"}
+    backends = capabilities.load_backends(str(ROOT))
+    # `/local /model X` con X local: ese backend, no el configurado (hoy lo
+    # elige `forced` sobre el ranking filtrado a local; sin esto el veredicto
+    # directo seria una regresion). Si X no nombra un local, el configurado
+    fm = (d.get("force_model") or "").lower()
+    forzado = next((k for k, b in backends.items() if b.get("route") == "local" and fm and fm in (
+        k.lower(), (b.get("model") or "").lower(), (b.get("persona") or "").lower())), None)
+    if forzado:
+        key, m = forzado, backends[forzado]
+        modelo = m.get("model") or modelo
+    else:
+        for k, b in backends.items():
+            if b.get("route") == "local" and b.get("model") == modelo:
+                key, m = k, b
+                break
+    sess = sessions.apply(prof, key, m.get("persona", "Epicteto"), "local")
+    exec_effort = sel_effort
+    if d.get("effort") is None and sess["intensity"]:
+        exec_effort = capabilities.EFFORT[sess["intensity"]]
+    return {"route": "local", "client": None, "model": modelo, "model_id": key,
+            "persona": sess["name"], "tier": m.get("tier", "small"),
+            "effort": exec_effort, "effort_name": capabilities.EFFORT_NAME[exec_effort],
+            "session": prof["id"], "source": "capabilities", "why": why}
+
+
 def _decide(user_msg: str,
             last_features: dict | None = None,
             last_verdict: dict | None = None) -> tuple[dict, dict, list, dict]:
@@ -2439,30 +2520,66 @@ def _decide(user_msg: str,
 
     # sesión activa: deshabilita los agentes apagados para ESTA sesión
     prof = sessions.active()
+    # la carga de la maquina (spec carga 3.1): se mide ACA, en el hilo de
+    # _decide y ANTES de los probes (`_backend_availability` puede tardar
+    # segundos; `medir` cuesta microsegundos mas un GET de 0,5 s a lo sumo).
+    # Una medicion holgada levanta la suspension (histeresis, spec 3.4).
+    medida = _medir_carga()
+    carga.liberar_si_holgada(medida)
+    apaga_local = medida.nivel == "cargada" or carga.local_suspendido
     avail = _backend_availability()
     for mid, a in (prof.get("agents") or {}).items():
         if not a.get("enabled", True):
             avail[mid] = False
+    backends = capabilities.load_backends(str(ROOT))
+    gesto = _gesto_local(d, features, avail, backends, prof)
+    quota = _backend_quota_low()
 
-    ranked = capabilities.choose(features, sel_effort, avail,
-                                 _backend_quota_low(), project_root=str(ROOT))
-    if d.get("force_route"):
-        ranked = [r for r in ranked if r["route"] == d["force_route"]] or ranked
-    # No escalar a API paga en silencio: un veredicto de API solo vale si
-    # Pedro lo forzo. El freno viejo (`api_only_when_forced`) solo vivia en
-    # el CLI muerto `dispatch.py` y nunca corria en el chat, asi que si las
-    # suscripciones caian y el proxy pago estaba arriba, la API ganaba sola.
-    if d.get("force_route") != "api":
-        ranked = [r for r in ranked if r["route"] != "api"]
-    if d.get("force_model"):
-        fm = d["force_model"].lower()
-        forced = [r for r in ranked if fm in (
-            r["key"].lower(), (r["model"] or "").lower(), (r["client"] or "").lower(),
-            (prof["agents"].get(r["key"], {}).get("name") or r["persona"]).lower())]
-        if forced:
-            ranked = forced
+    def _rankear(disponibles: dict) -> list:
+        ranked = capabilities.choose(features, sel_effort, disponibles, quota,
+                                     project_root=str(ROOT))
+        if d.get("force_route"):
+            ranked = [r for r in ranked if r["route"] == d["force_route"]] or ranked
+        # No escalar a API paga en silencio: un veredicto de API solo vale si
+        # Pedro lo forzo. El freno viejo (`api_only_when_forced`) solo vivia en
+        # el CLI muerto `dispatch.py` y nunca corria en el chat, asi que si las
+        # suscripciones caian y el proxy pago estaba arriba, la API ganaba sola.
+        # (La API paga tampoco entra por carga: este filtro corre en los dos
+        # rankings de abajo.)
+        if d.get("force_route") != "api":
+            ranked = [r for r in ranked if r["route"] != "api"]
+        if d.get("force_model"):
+            fm = d["force_model"].lower()
+            forced = [r for r in ranked if fm in (
+                r["key"].lower(), (r["model"] or "").lower(), (r["client"] or "").lower(),
+                (prof["agents"].get(r["key"], {}).get("name") or r["persona"]).lower())]
+            if forced:
+                ranked = forced
+        return ranked
 
-    if ranked:
+    # bajo `cargada` (o con el local suspendido) y SIN gesto local, los
+    # backends `route == "local"` se apagan en `avail` ANTES de choose y el
+    # turno sale por la suscripcion mejor rankeada. `por_carga` dice si eso
+    # cambio la decision (el primero del ranking sin filtrar era local): solo
+    # entonces hay marca; un turno que ya iba por suscripcion por capacidad
+    # no cambia. Sin excepcion por "el 7b ya esta cargado" (ruling 9.1).
+    por_carga = False
+    if apaga_local and not gesto:
+        sin_filtrar = _rankear(avail)
+        por_carga = bool(sin_filtrar) and sin_filtrar[0]["route"] == "local"
+        avail = {k: bool(v) and backends.get(k, {}).get("route") != "local"
+                 for k, v in avail.items()}
+    ranked = _rankear(avail)
+
+    if gesto in ("/local", "/redacta", "/otra"):
+        # `/local` cerrado de verdad (spec 3.1): antes el filtro de arriba
+        # caia al ranking ENTERO (`or ranked`) con Ollama caido, complejidad
+        # 4-5, /think o la sonda de salud lenta, y /local salia a suscripcion
+        # en silencio. /redacta y /otra siempre corren `_chunks_for("local")`
+        verdict = _veredicto_local(prof, d, sel_effort, f"{gesto}: local por construccion")
+        if gesto == "/local":
+            carga.liberar()     # /local explicito rompe la suspension (spec 3.4)
+    elif ranked:
         top = ranked[0]
         sess = sessions.apply(prof, top["key"], top.get("persona"), top["route"])
         # intensidad efectiva: slash > intensidad de sesión del agente > derivada
@@ -2486,6 +2603,25 @@ def _decide(user_msg: str,
                    "effort_name": capabilities.EFFORT_NAME[sel_effort],
                    "session": prof["id"], "source": "capabilities",
                    "why": "ningun modelo apto; local"}
+    # lo que el turno necesita de la medicion: la fila entera (telemetria,
+    # /api/carga), el avail final (build_team: un solo avail por turno, spec
+    # 3.5) y la marca SOLO si la carga intervino (holgada queda byte a byte)
+    verdict["carga_medicion"] = carga.fila(medida)
+    verdict["avail"] = avail
+    if apaga_local:
+        motivo = ("local suspendido hasta holgada" if carga.local_suspendido
+                  and medida.nivel != "cargada" else None)
+        libres = f"{medida.mem_disponible_mb} MB libres"
+        detalle = f"{libres}: {motivo or medida.motivo}" if (motivo or medida.motivo) else libres
+        if verdict["route"] == "local":
+            verdict["carga"] = {"ruta": "local", "gesto": gesto, "motivo": motivo}
+            verdict["why"] += (f"; maquina {medida.nivel} ({detalle}): local igual, "
+                               "puede tardar o fallar")
+        elif por_carga:
+            verdict["carga"] = {"ruta": verdict["route"], "gesto": None, "motivo": motivo}
+            verdict["why"] += (f"; maquina {medida.nivel} ({detalle}): por suscripcion "
+                               "en vez de local")
+            carga.suspender()
     return verdict, features, ranked, d
 
 
@@ -3544,6 +3680,29 @@ async def _proximo_del_chat(ws: WebSocket | _SocketVigilado,
                 return None
 
 
+async def _senal_de_carga(ws, verdict: dict, ruta: str, gesto: str | None,
+                          chat_id: str | None) -> dict:
+    """La marca de carga del turno (spec carga 3.2): la senal `{type:
+    "carga", ...}` ANTES del primer chunk, la fila `kind: carga` y el dict
+    que va a `meta.carga`. `ruta` es la FINAL (post-/nube: un gesto local que
+    el juez subio a suscripcion dice "contesto por", no "es local"). La
+    persona del aviso es la del veredicto solo si el veredicto es de
+    suscripcion; si no, el cliente que /nube eligio."""
+    medicion = verdict.get("carga_medicion") or {}
+    persona = (verdict.get("persona")
+               if str(verdict.get("model_id") or "").startswith("subscription:")
+               else (verdict.get("client") or None))
+    motivo = (verdict.get("carga") or {}).get("motivo")
+    marca = carga.marca(medicion, ruta, gesto=gesto, persona=persona, motivo=motivo)
+    await ws.send_json({"type": "carga", **marca})
+    telemetry.log_event(
+        "carga", accion=("suscripcion" if ruta == "subscription" else "local_con_aviso"),
+        chat=chat_id, ruta=ruta, gesto=gesto, aviso=marca["aviso"],
+        **{k: v for k, v in medicion.items() if k != "motivo"},
+        motivo=marca["motivo"])
+    return marca
+
+
 @app.websocket("/ws/chat")
 async def ws_chat(ws: WebSocket) -> None:
     # de quien es este socket: con eso se envuelve para el corte en vivo
@@ -3585,6 +3744,10 @@ async def ws_chat(ws: WebSocket) -> None:
     # de un turno, y lo resetea SOLO un mensaje real de Pedro (mas abajo,
     # donde paquete y steer ya convergieron en `user_msg`: invariante 8).
     estado_abismo = abismo_turno.EstadoTurno()
+    # el modelo local "en uso" durante el turno local entero (spec carga 3.3,
+    # invariante 6): un tenedor idempotente por conexion; se toma cuando la
+    # ruta queda final y se suelta en `done`, en cada turno nuevo y al cerrar
+    uso_local = carga.Uso()
     try:
         while True:
             chat_id = chats.active_id()
@@ -3612,6 +3775,7 @@ async def ws_chat(ws: WebSocket) -> None:
                     attachment_ids = []
             user_msg = user_msg.strip()
             estado_abismo.reset()      # un mensaje real de Pedro, paquete o steer
+            uso_local.soltar()         # por si el turno anterior no llego a `done`
             if not user_msg or user_msg == "/stop":
                 continue  # /stop en reposo no interrumpe nada
             if not chat_id or not chats.get(chat_id):
@@ -3710,6 +3874,13 @@ async def ws_chat(ws: WebSocket) -> None:
                     continue
                 system_b, user_b = compositor_redactor.preparar_borrador(
                     pedido, chats._load(), compositor_ejemplos.cargar())
+                if verdict.get("carga"):
+                    # el borrador es local por construccion (spec 3.1): el
+                    # aviso viaja como senal; no hay turno persistido donde
+                    # vivir (el borrador no pasa por chats.append)
+                    await _senal_de_carga(ws, verdict, "local",
+                                          verdict["carga"].get("gesto"), chat_id)
+                uso_local.tomar()
                 await ws.send_json({"type": "borrador", "action": "inicio"})
                 usage_b: dict = {}
                 emisor_b = Emisor(ws)
@@ -3745,6 +3916,8 @@ async def ws_chat(ws: WebSocket) -> None:
                                         "text": f"no pude armar el borrador: {e}"})
                     await ws.send_json({"type": "done"})
                     continue
+                finally:
+                    uso_local.soltar()
                 await emisor_b.cerrar()
                 # cost/done como un turno local normal -- pero SIN cobrarle
                 # nada a ningun departamento: local ya es gratis (Fase 1;
@@ -3829,6 +4002,25 @@ async def ws_chat(ws: WebSocket) -> None:
                                 "effort": verdict.get("effort_name"),
                                 "client": verdict.get("client"),
                                 "why": verdict["why"], "note": note})
+            # la marca de carga (spec carga 3.2): la senal justo despues de
+            # `meta` y ANTES del primer chunk, sobre la ruta FINAL (post-/nube);
+            # y el contador `en_uso` mientras dure el turno local (spec 3.3)
+            marca_carga = None
+            if (nube_local and (verdict.get("carga") or {}).get("ruta") != "local"
+                    and (_nivel_del(verdict) == "cargada" or carga.local_suspendido)):
+                # el fallo cerrado del juez de /nube es gesto local por
+                # construccion (spec 3.1, invariante 2) y _decide no lo ve:
+                # el turno iba por suscripcion (por capacidad, sin marca; o
+                # por carga, con marca "subscription") y contesta local bajo
+                # carga. Avisa; no suspende (es local por privacidad). Un
+                # gesto local previo (/local /nube) conserva su marca
+                verdict["carga"] = {"ruta": "local", "gesto": "fallo cerrado del juez",
+                                    "motivo": (verdict.get("carga") or {}).get("motivo")}
+            if verdict.get("carga"):
+                marca_carga = await _senal_de_carga(
+                    ws, verdict, route, verdict["carga"].get("gesto"), chat_id)
+            if route == "local":
+                uso_local.tomar()
 
             agente_id = "chat:" + uuid.uuid4().hex[:8]
             # la tuberia de filtros del turno conversacional: foco primero,
@@ -4320,6 +4512,13 @@ async def ws_chat(ws: WebSocket) -> None:
                         })
                         used_route, usage = "local", {}
                         model = _route_model_name("local")
+                        # bajo `cargada` (o con marca previa: justa + local
+                        # suspendido) el fallback a local lleva el mismo aviso
+                        # (spec 3.1) y pisa la marca del turno: meta.carga
+                        # dice la ruta que contesto de verdad
+                        if verdict.get("carga") or _nivel_del(verdict) == "cargada":
+                            marca_carga = await _senal_de_carga(ws, verdict, "local", "fallback", chat_id)
+                        uso_local.tomar()
                         runtime = _harness_context(verdict, "local", model, f"ruta {route} fallo; fallback local")
                         # este ultimo fallback ya corre en local (chat_msg
                         # crudo, chat_id sin tapar mas abajo): used_route
@@ -4502,6 +4701,10 @@ async def ws_chat(ws: WebSocket) -> None:
                     "client": verdict.get("client"),
                     "agent_team": agent_team,
                     **({"canarios": veredicto} if veredicto is not None else {}),
+                    # la marca de carga, solo cuando la hubo (los turnos
+                    # holgados quedan byte a byte); invisible al historial
+                    # que vuelve al modelo (`_history_messages` lee `text`)
+                    **({"carga": marca_carga} if marca_carga else {}),
                 })
                 current_chat = chats.get(chat_id)
                 if current_chat:
@@ -4518,10 +4721,12 @@ async def ws_chat(ws: WebSocket) -> None:
 
             _last_features = features
             _last_verdict = verdict
+            uso_local.soltar()
             await ws.send_json({"type": "done"})
     except WebSocketDisconnect:
         pass
     finally:
+        uso_local.soltar()       # una desconexion a mitad de turno no deja el contador en 1
         rtask.cancel()
 
 
