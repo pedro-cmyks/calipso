@@ -3951,6 +3951,7 @@ async def ws_chat(ws: WebSocket) -> None:
                               "deci /redacta primero")
                     await ws.send_json({"type": "error", "text": aviso})
                     await ws.send_json({"type": "done"})
+                    uso_local.soltar()     # como /help y /mia: la salida temprana no deja el contador en 1
                     continue
                 system_b, user_b = compositor_redactor.preparar_borrador(
                     pedido, chats._load(), compositor_ejemplos.cargar())

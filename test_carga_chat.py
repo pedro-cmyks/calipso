@@ -284,3 +284,19 @@ def test_un_turno_que_nube_sube_a_suscripcion_suelta_el_contador_durante_el_stre
 def test_help_suelta_el_contador_tomado_tras_decide(chat):
     eventos = chat.turno("/help")
     assert de_tipo(eventos, "done") and carga.en_uso == 0
+
+
+def test_redacta_sin_pedido_suelta_el_contador_tomado_tras_decide(chat):
+    """Residuo de la re-review de la ola de fix: /redacta y /otra son veredicto
+    local por construccion (el contador se toma apenas _decide dice local) y
+    la salida temprana 'sin pedido' hacia `continue` sin soltarlo: en_uso
+    quedaba en 1 con el socket abierto y el vigia veia `descarga_diferida`
+    en cada tick sin descargar nada."""
+    for gesto in ("/redacta", "/otra"):
+        # con el socket ABIERTO: al cerrarlo el server suelta el contador de
+        # todos modos (la desconexion), y eso taparia la fuga
+        with chat.cliente.websocket_connect("/ws/chat") as ws:
+            ws.send_text(chat.paquete(gesto))
+            eventos = chat.recibir(ws)
+            assert de_tipo(eventos, "done"), gesto
+            assert carga.en_uso == 0, (gesto, carga.en_uso)
