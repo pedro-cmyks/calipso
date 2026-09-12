@@ -299,7 +299,10 @@ fabrica viva.
   `CALIPSO_CANARIOS=off` en el entorno del server (leido por llamada, `canarios.canarios_activos`) apaga el
   recorte (la ventana solo estima, con `num_ctx` None y la fila con `apagado`), el veredicto (no corre el
   hilo), la senal ws `canario`, `meta.canarios` y los dos numeros del remember; cualquier otro valor o ausente
-  es prendido. Bancos: anclaje recall y
+  es prendido. El mismo rollback existe para la carga (rama `feat/carga`, ola de fix del 2026-09-11, punto 3):
+  `CALIPSO_CARGA=off` (leido por llamada, `carga.carga_activa`) hace que `carga.medir` devuelva una Carga
+  holgada con `medido` todo en False y `apagado: True` sin leer /proc ni Ollama: sin vigia, sin rutinas
+  pospuestas, sin marca, sin histeresis, perillas de holgada (Calipso como antes de la rama). Bancos: anclaje recall y
   precision 100% en las tres clases sobre 22 filas reales (hecho 1/0/0, recuerdo 5/0/0, accion 2/0/0 tp/fp/fn),
   degeneracion 19/19 rotas atrapadas y 0/32 falsas. Porton de la reentrada (N=3, 12 turnos por condicion):
   vieja 0/0/0 contra nueva 0/0/0 en `sin_anclaje` / `sin_dato` / `sin_dato falso` (2 filas de `nueva` excluidas

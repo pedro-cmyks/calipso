@@ -20,7 +20,12 @@ del anon-rss del OOM; ver CALIBRACION).
 
 Fail-open por senal (invariante 5): lo que no se pudo medir no decide; si
 nada se pudo medir, `holgada` con `medido` todo en False y Calipso se comporta
-como hoy.
+como hoy. Rollback en caliente (ola de fix, punto 3): `CALIPSO_CARGA=off` en
+el entorno del server (leido POR LLAMADA, `carga_activa`, patron de
+`canarios.canarios_activos`) hace que `medir` devuelva esa misma Carga holgada
+con `apagado: True` sin leer /proc ni hacer el GET: sin vigia, sin pospuestas,
+sin marca, sin histeresis, perillas de holgada. Cualquier otro valor o ausente
+es prendido.
 
 Los tres niveles (contra la necesidad del modelo del chat):
   cargada  si mem_efectiva < necesidad  o  psi_mem some avg10 >= 20  o  full avg10 >= 5
@@ -209,6 +214,8 @@ class Carga:
     modelo: str
     medido: dict[str, bool]
     medido_en: str
+    # True solo con CALIPSO_CARGA=off (el rollback en caliente, punto 3)
+    apagado: bool = False
 
 
 def fila(c: Carga) -> dict:
@@ -307,6 +314,24 @@ _ultima: Carga | None = None
 _ultima_t: float = 0.0
 
 
+def carga_activa() -> bool:
+    """El rollback en caliente (ola de fix, punto 3): False solo con
+    CALIPSO_CARGA=off (sin distinguir mayusculas); ausente, vacio o cualquier
+    otro valor es prendido. Se lee por llamada, nunca congelado."""
+    return os.environ.get("CALIPSO_CARGA", "on").strip().lower() != "off"
+
+
+def _apagada(modelo: str, ncpu: int, ahora: datetime.datetime | None) -> Carga:
+    """La Carga de CALIPSO_CARGA=off: holgada, nada medido, `apagado` True."""
+    return Carga(nivel="holgada", motivo="", mem_disponible_mb=0, mem_efectiva_mb=0,
+                 modelo_cargado_mb=0, mem_total_mb=0, swap_usado_mb=0, swap_libre_mb=0,
+                 psi_mem_some10=0.0, psi_mem_full10=0.0, psi_cpu_some10=0.0, load1=0.0,
+                 ncpu=ncpu, modelos_cargados=[], necesidad_mb=int(UMBRALES["NECESIDAD_DEFAULT_MB"]),
+                 modelo=modelo, medido={"meminfo": False, "psi": False, "loadavg": False, "ollama": False},
+                 medido_en=(ahora or datetime.datetime.now()).isoformat(timespec="seconds"),
+                 apagado=True)
+
+
 def medir(modelo: str | None = None, *, leer=None, ps=None, ncpu: int | None = None,
           necesidad: int | None = None, ahora: datetime.datetime | None = None,
           modelos_propios=None) -> Carga:
@@ -320,6 +345,10 @@ def medir(modelo: str | None = None, *, leer=None, ps=None, ncpu: int | None = N
     global _ultima, _ultima_t
     inyectado = leer is not None or ps is not None or ncpu is not None or necesidad is not None
     modelo = modelo or ""
+    if not carga_activa():
+        c = _apagada(modelo, ncpu or os.cpu_count() or 1, ahora)
+        _ultima, _ultima_t = c, time.monotonic()
+        return c
     propios = set(modelos_propios) if modelos_propios is not None else ({modelo} if modelo else set())
     if (not inyectado and _ultima is not None and _ultima.modelo == modelo
             and time.monotonic() - _ultima_t < UMBRALES["CACHE_S"]):

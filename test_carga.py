@@ -316,6 +316,39 @@ def test_la_cache_dura_dos_segundos_y_solo_sin_lectores_inyectados(monkeypatch):
     assert carga.nivel_reciente() == "holgada"
 
 
+def test_calipso_carga_off_apaga_el_sensor_por_llamada(monkeypatch):
+    """El rollback en caliente (ola de fix, punto 3): con CALIPSO_CARGA=off
+    (leido POR LLAMADA, patron de canarios_activos) `medir` devuelve una
+    Carga holgada con `medido` todo en False y `apagado: True` (la rama del
+    invariante 5: Calipso se comporta como hoy, sin vigia ni pospuestas ni
+    marca ni histeresis, perillas de holgada). Sin leer /proc ni Ollama."""
+    monkeypatch.setenv("CALIPSO_CARGA", "OFF")
+    leidos = []
+
+    def leer(ruta):
+        leidos.append(ruta)
+        return lector()(ruta)
+    c = carga.medir("qwen2.5:7b", leer=leer, ps=lambda: leidos.append("ps") or PS_7B, ncpu=16,
+                    necesidad=5746)
+    assert c.nivel == "holgada" and c.motivo == "" and c.apagado is True
+    assert c.medido == {"meminfo": False, "psi": False, "loadavg": False, "ollama": False}
+    assert leidos == [] and c.modelos_cargados == [] and c.mem_disponible_mb == 0
+    assert carga.nivel_reciente() == "holgada" and carga.fila(c)["apagado"] is True
+    # tambien sin inyeccion: no lee /proc ni hace GET
+    monkeypatch.setattr(carga, "_leer_proc", leer)
+    monkeypatch.setattr(carga, "ollama_loaded_models", lambda base=None, timeout=None: leidos.append("ps") or [])
+    assert carga.medir("qwen2.5:7b").apagado is True and leidos == []
+    # ausente, vacio o cualquier otro valor: prendido
+    for valor in ("", "on", "0", "false"):
+        monkeypatch.setenv("CALIPSO_CARGA", valor)
+        assert carga.carga_activa() is True
+        assert carga.medir("qwen2.5:7b", leer=lector(), ps=lambda: [], ncpu=16, necesidad=5746).apagado is False
+    monkeypatch.delenv("CALIPSO_CARGA")
+    assert carga.carga_activa() is True
+    assert carga.medir("qwen2.5:7b", leer=lector(meminfo=MEMINFO_CARGADA), ps=lambda: [], ncpu=16,
+                       necesidad=5746).nivel == "cargada"
+
+
 def test_nivel_reciente_es_holgada_sin_medicion_y_sigue_a_la_ultima():
     assert carga.nivel_reciente() == "holgada"
     carga.medir("qwen2.5:7b", leer=lector(meminfo=MEMINFO_CARGADA), ps=lambda: [], ncpu=16, necesidad=5746)
