@@ -247,3 +247,47 @@ la convivencia con el 7b bajo `justa`) y el cierre.
     atrapa nada y ningun llamador del server lo usa directo (verificado: `server.py:3201` y
     `abismo/fuentes.py:120` van por `Memory`). El fail-open vive en la fachada, que es la unica puerta.
 
+
+## 9. Addendum del cierre (2026-09-12): rulings tomados al construir, para Pedro
+
+Todo esta en el codigo de `feat/memoria-ollama`, en el ledger (`docs/superpowers/2026-09-12-cierre-memoria-ollama/`)
+y medido en el smoke (`docs/superpowers/2026-09-12-smoke-memoria.md`, tres corridas; la 3 con el codigo
+final). Numerados para vetar por numero; todos revertibles.
+
+16. **El embedder queda residente solo con memoria DISPONIBLE de sobra.** Con la memoria efectiva (ruling
+    13 de la carga) el 7b residente no vuelve `cargada` la maquina, y el embedder se quedaba 5 min al lado
+    del 7b: el smoke midio 327 MB de swap libre y `psi_mem_full10` 5,19. Ahora `keep_alive_embed` lee
+    `MemAvailable` FRESCO (no la ultima medicion, que puede ser de antes de cargar el 7b) y mira si el
+    modelo del chat esta listado: con menos de `EMBED_RESIDENTE_MB` (2500) disponibles o con el 7b
+    residente, `keep_alive 0` (embebe y suelta, ~2 s por uso); si no, la tabla por nivel (`holgada` 5m).
+    Corrida 3: con el 7b residente y 2010 MB disponibles, bge-m3 no se quedo y el turno completo tardo
+    16-18 s con el remember de fondo en 2,3 s. Costo si esta mal: 2 s mas por recall mientras el 7b esta
+    cargado.
+17. **El banco mide contra temas ausentes; el ruido de siempre es otro episodio del mismo corpus.** En el
+    top-4 de las 29 consultas positivas hay 63 hits de otro topico: con 0,476 pasan 22/63 (con MiniLM a
+    0,30 pasaban 45/63); en el abismo 32/63 (0,44) contra 60/63 (0,20). Es una mejora real (mismos
+    aciertos, la mitad de recuerdos fuera de tema en el prompt) pero el umbral queda a 0,02 del ruido y a
+    0,078 del peor acierto: no es un corte limpio. La metrica quedo en el banco (`--informe`) y los
+    umbrales siguen PROVISORIOS con `CALIPSO_RECALL_MIN_SCORE` / `CALIPSO_RECALL_UMBRAL`; se re-miden
+    cuando el corpus real crezca.
+18. **El remember de fondo tiene tope** (dos en vuelo, `REMEMBER_EN_VUELO_MAX`) y el server espera hasta
+    10 s las tareas pendientes al apagarse (fila `remember_pendiente` si vencio).
+19. **`--embeddings` es legible y no escribe vectores falsos:** con Ollama caido o el modelo sin bajar dice
+    el motivo y `ollama pull bge-m3` (codigo 3, la vieja intacta); con `CALIPSO_EMBED_FALSA=1` heredado
+    del shell se niega (codigo 2) salvo `--falsa` explicito; anuncia el embedder; los conteos distinguen
+    "ya estaban", "metadatos actualizados" y "sin documento".
+20. **El orden del despliegue es: merge, reindex del home real (server apagado), reinicio, verificar
+    `GET /api/memory`, y recien entonces `pip uninstall`.** La vuelta atras: `pip install torch
+    --index-url https://download.pytorch.org/whl/cpu && pip install sentence-transformers` (~200 MB) mas
+    checkout de main; la coleccion vieja no se borra; `~/.cache/huggingface` no se borra. Vuelta RAPIDA
+    sin pip ni checkout: `CALIPSO_EMBED_URL=http://127.0.0.1:1` en el entorno del server deja la memoria
+    en fail-open (turno entero sin recuerdos, `recall_fallo` inmediato).
+21. **El fixture es sintetico** (los personajes de los smokes: Mariana, el libro rosa, el presupuesto del
+    taller); las consultas de los episodios reales de Pedro entran por `--reales` fuera del repo y el JSONL
+    commiteado no lleva su texto. Codex lo leyo como datos personales: no lo son.
+22. **Lo que el smoke midio con el codigo final (corrida 3):** recall frio 2,0 s y caliente 0,19 s;
+    `done` 111 ms tras el ultimo chunk y el episodio guardado 0,6 s despues; con el embedder caido el turno
+    entero sale (18,9 s), `recall_fallo` y `remember_fallo` con el motivo, `recall_ok` false y vuelve a true
+    solo; reindex idempotente 1,1 s y desde cero 10 s para 16 documentos; evict por `/api/embed`; y la
+    convivencia del ruling 16. Lo que NO ejercito: `cargada` por PSI con el embedder, un turno con abismo
+    (varias pasadas) bajo carga, y el `pip uninstall` (es del despliegue).
