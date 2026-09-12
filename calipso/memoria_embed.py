@@ -37,6 +37,7 @@ import hashlib
 import json
 import os
 import re
+import urllib.error
 import urllib.request
 
 import numpy as np
@@ -114,16 +115,29 @@ def lotes(textos: list[str], max_chars: int | None = None) -> list[list[str]]:
     return salida
 
 
+CUERPO_ERROR_CHARS = 300      # cuanto del cuerpo de un error HTTP de Ollama viaja en el EmbedError
+
+
 def _post_embed(url: str, payload: dict, timeout: float) -> dict:
     """El unico POST del modulo: `{base}/api/embed` por urllib, loopback (no
     cruza la aduana; entrada en EXCEPCIONES del canario). Cualquier fallo
-    (conexion, timeout, HTTP, JSON) es EmbedError."""
+    (conexion, timeout, HTTP, JSON) es EmbedError. Un error HTTP conserva el
+    CUERPO que Ollama manda (`{"error": "model 'bge-m3:latest' not found, try
+    pulling it first"}`, hasta CUERPO_ERROR_CHARS): `str(HTTPError)` es solo
+    "HTTP Error 404: Not Found" y las filas `recall_fallo` / `remember_fallo`
+    no decian por que (ola de fix, punto 1)."""
     datos = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=datos, method="POST")
     req.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            cuerpo = e.read()[:CUERPO_ERROR_CHARS].decode("utf-8", errors="replace")
+        except Exception:
+            cuerpo = ""
+        raise EmbedError(f"POST {url}: {e} {cuerpo}".rstrip()) from e
     except Exception as e:
         raise EmbedError(f"POST {url}: {e}") from e
 
@@ -159,7 +173,10 @@ class OllamaEmbed(EmbeddingFunction[Documents]):
                 vectores = datos.get("embeddings") if isinstance(datos, dict) else None
                 if not isinstance(vectores, list) or len(vectores) != len(lote):
                     cuantos = len(vectores) if isinstance(vectores, list) else "?"
-                    raise EmbedError(f"{self.model}: esperaba {len(lote)} vectores y vinieron {cuantos}")
+                    # un 200 con {"error": ...} y sin `embeddings`: el motivo va en el mensaje
+                    error = datos.get("error") if isinstance(datos, dict) else None
+                    raise EmbedError(f"{self.model}: esperaba {len(lote)} vectores y vinieron {cuantos}"
+                                     + (f" (Ollama: {str(error)[:CUERPO_ERROR_CHARS]})" if error else ""))
                 for v in vectores:
                     if not isinstance(v, list) or len(v) != self.dims:
                         raise EmbedError(f"{self.model}: vector de {len(v) if isinstance(v, list) else '?'} "

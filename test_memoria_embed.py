@@ -212,9 +212,32 @@ def test_una_respuesta_con_otras_dims_o_menos_vectores_es_embed_error(monkeypatc
     _urlopen_falso(monkeypatch, vectores=[[0.5] * 1024])
     with pytest.raises(me.EmbedError, match="esperaba 2 vectores"):
         me.OllamaEmbed().embed(["q", "r"])
+    # un 200 con {"error": ...} y sin `embeddings`: el mensaje trae el error de Ollama
     monkeypatch.setattr(me.urllib.request, "urlopen", lambda req, timeout=None: _Resp(b'{"error": "model not found"}'))
-    with pytest.raises(me.EmbedError):
+    with pytest.raises(me.EmbedError, match="model not found"):
         me.OllamaEmbed().embed(["q"])
+
+
+def test_un_http_error_conserva_el_cuerpo_del_error_de_ollama(monkeypatch):
+    """`str(HTTPError)` es solo "HTTP Error 404: Not Found": el cuerpo
+    `{"error": "model 'bge-m3:latest' not found, try pulling it first"}` es lo
+    que dice POR QUE, y es lo que las filas `recall_fallo` / `remember_fallo`
+    y `ultimo_recall_fallo` tienen que mostrar (ola de fix, punto 1)."""
+    import io
+    import urllib.error
+    cuerpo = io.BytesIO(b'{"error":"model not found, try pulling it first"}')
+    _urlopen_falso(monkeypatch, error=urllib.error.HTTPError(
+        "http://127.0.0.1:11434/api/embed", 404, "Not Found", {}, cuerpo))
+    with pytest.raises(me.EmbedError, match="model not found") as ex:
+        me.OllamaEmbed().embed(["q"])
+    assert "HTTP Error 404" in str(ex.value) and "POST http://" in str(ex.value)
+    assert carga.en_uso == 0
+    # un cuerpo largo se corta a 300 y uno que no decodifica no revienta
+    _urlopen_falso(monkeypatch, error=urllib.error.HTTPError(
+        "http://127.0.0.1:11434/api/embed", 500, "Boom", {}, io.BytesIO(b"\xff" + b"x" * 1000)))
+    with pytest.raises(me.EmbedError, match="HTTP Error 500") as ex:
+        me.OllamaEmbed().embed(["q"])
+    assert len(str(ex.value)) < 400
 
 
 # --- el registro en chroma -----------------------------------------------------
