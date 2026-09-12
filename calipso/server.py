@@ -3803,8 +3803,9 @@ async def ws_chat(ws: WebSocket) -> None:
     # donde paquete y steer ya convergieron en `user_msg`: invariante 8).
     estado_abismo = abismo_turno.EstadoTurno()
     # el modelo local "en uso" durante el turno local entero (spec carga 3.3,
-    # invariante 6): un tenedor idempotente por conexion; se toma cuando la
-    # ruta queda final y se suelta en `done`, en cada turno nuevo y al cerrar
+    # invariante 6): un tenedor idempotente por conexion; se toma apenas
+    # _decide dice local (ola de fix, punto 8), se confirma o suelta con la
+    # ruta final (post-/nube) y se suelta en `done`, en cada turno nuevo y al cerrar
     uso_local = carga.Uso()
     try:
         while True:
@@ -3883,7 +3884,16 @@ async def ws_chat(ws: WebSocket) -> None:
             #    bloquear el event loop (si no, no se puede interrumpir/steerear).
             verdict, features, ranked, directives = await asyncio.to_thread(
                 _decide, user_msg, _last_features, _last_verdict)
+            # el modelo local queda "en uso" APENAS _decide dice local (ola
+            # de fix, punto 8): entre aca y el primer request hay awaits (la
+            # ficha, el juez de /nube, el system) y el vigia podia descargar
+            # el modelo que el turno estaba por usar. Si /nube o el ruteo
+            # final lo sacan de local, se suelta (mas abajo); los `continue`
+            # tempranos sueltan tambien
+            if verdict.get("route") == "local":
+                uso_local.tomar()
             if directives.get("help"):
+                uso_local.soltar()
                 await ws.send_json({"type": "chunk", "text": HELP_TEXT})
                 await ws.send_json({"type": "done"})
                 continue
@@ -3895,6 +3905,7 @@ async def ws_chat(ws: WebSocket) -> None:
             # ni memoria. Asi el compositor aprende su voz real de lo que el
             # corrige (ver calipso/compositor/ejemplos.py y voz.ejemplos_de_voz).
             if directives.get("mia"):
+                uso_local.soltar()
                 texto_mia = compositor_ejemplos.texto_del_gesto(chat_msg)
                 if not texto_mia:
                     await ws.send_json({"type": "error",
@@ -4078,8 +4089,12 @@ async def ws_chat(ws: WebSocket) -> None:
             if verdict.get("carga"):
                 marca_carga = await _senal_de_carga(
                     ws, verdict, route, verdict["carga"].get("gesto"), chat_id)
+            # la ruta FINAL (post-/nube): local lo toma (idempotente: ya
+            # tomado tras _decide), cualquier otra suelta lo tomado
             if route == "local":
                 uso_local.tomar()
+            else:
+                uso_local.soltar()
 
             agente_id = "chat:" + uuid.uuid4().hex[:8]
             # la tuberia de filtros del turno conversacional: foco primero,

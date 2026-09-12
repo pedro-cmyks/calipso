@@ -238,3 +238,49 @@ def test_el_fallback_local_del_equipo_bajo_holgada_no_avisa(chat, monkeypatch):
     eventos = chat.turno("arma un plan de la ciudad")
     assert de_tipo(eventos, "carga") == [] and chat.telemetria("carga") == []
     assert texto_visible(eventos) == "ok" and carga.en_uso == 0
+
+
+# --- la ventana entre _decide y el primer request (ola de fix, punto 8) ---------
+
+def test_el_turno_local_toma_el_contador_apenas_decide_y_lo_suelta_en_done(chat, monkeypatch):
+    """Entre `_decide` (local) y el primer request hay awaits (la ficha del
+    departamento, el juez de /nube, el system); el vigia podia descargar en
+    esa ventana el modelo que el turno estaba por usar. Ahora `Uso` se toma
+    apenas `_decide` devuelve local: ya vale 1 cuando corre `_ficha_y_cuenta`
+    (el primer await tras _decide) y en `done` vuelve a 0."""
+    vistos = {}
+    real = srv._ficha_y_cuenta
+
+    def ficha(departamento):
+        vistos["en_ficha"] = carga.en_uso
+        return real(departamento)
+    monkeypatch.setattr(srv, "_ficha_y_cuenta", ficha)
+    chat.turno("hola")
+    assert vistos["en_ficha"] == 1 and carga.en_uso == 0
+
+
+def test_un_turno_que_nube_sube_a_suscripcion_suelta_el_contador_durante_el_stream(chat, cli_falso, monkeypatch):
+    """`_decide` dio local (tomado), `/nube` lo sube a suscripcion: el tenedor
+    se suelta y el stream corre con `en_uso` 0 (el vigia puede descargar)."""
+    vistos = {}
+    real = srv._ficha_y_cuenta
+
+    def ficha(departamento):
+        vistos["en_ficha"] = carga.en_uso
+        return real(departamento)
+    monkeypatch.setattr(srv, "_ficha_y_cuenta", ficha)
+    monkeypatch.setattr(srv.privacidad_nube, "preparar_envio",
+                        lambda texto, mapa: {"accion": "nube", "texto": texto, "tapados": [], "motivo": ""})
+    monkeypatch.setattr(srv, "_harness_context",
+                        lambda verdict, ruta, modelo, nota: vistos.setdefault("en_stream", carga.en_uso) and "estado" or "estado")
+    cli_falso.guion([{"partes": ["desde la nube"]}])
+    eventos = chat.turno("/nube analiza esto")
+    assert vistos["en_ficha"] == 1                  # tomado apenas _decide dio local
+    assert vistos["en_stream"] == 0                 # soltado cuando /nube lo subio
+    assert texto_visible(eventos) == "desde la nube" and carga.en_uso == 0
+    assert chat.modelo.llamadas == []
+
+
+def test_help_suelta_el_contador_tomado_tras_decide(chat):
+    eventos = chat.turno("/help")
+    assert de_tipo(eventos, "done") and carga.en_uso == 0
