@@ -2,7 +2,7 @@
 y sus bordes con /proc y /api/ps FALSOS (nada de esto toca la maquina ni
 Ollama), las perillas por nivel, el contador de uso con hilos, la histeresis,
 los dos helpers traidos de resource_dispatcher, los avisos, las cuentas del
-dia y `--esperar` que vence con 3.
+dia y `--esperar` (no cargada por default, `--holgada` exige holgada) que vence con 3.
 
 `medida(nivel, ...)` es el molde de Carga que los otros archivos de tests
 importan (test_carga_decide.py, test_carga_chat.py, test_carga_vigia.py,
@@ -10,6 +10,7 @@ test_carga_api.py): una Carga coherente con su nivel, sin medir nada.
 """
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import io
 import json
@@ -384,14 +385,47 @@ def test_esperar_que_vence_sale_con_3_y_no_duerme_de_mas():
     assert "cargada" in salida.getvalue() and "vencio" in salida.getvalue()
 
 
-def test_esperar_vuelve_0_en_cuanto_hay_holgada():
+def test_esperar_vuelve_0_en_cuanto_no_esta_cargada():
+    """Ruling del controlador (ledger, tras la Task 1): con el server real
+    corriendo la Ally en reposo mide `justa` (5800-6500 MB contra 6770 de
+    holgada), asi que el default de --esperar es NO cargada: `justa` abre."""
     niveles = iter(["cargada", "justa", "holgada"])
     dormidos = []
     salida = io.StringIO()
     codigo = carga.main(["--esperar"], salida=salida,
                         medir_=lambda: medida(next(niveles)), dormir=lambda s: dormidos.append(s))
+    assert codigo == 0 and dormidos == [15]
+    assert salida.getvalue().count("\n") == 2
+    assert "justa" in salida.getvalue().splitlines()[-1]
+
+
+def test_esperar_con_holgada_exige_holgada():
+    niveles = iter(["cargada", "justa", "holgada"])
+    dormidos = []
+    salida = io.StringIO()
+    codigo = carga.main(["--esperar", "--holgada"], salida=salida,
+                        medir_=lambda: medida(next(niveles)), dormir=lambda s: dormidos.append(s))
     assert codigo == 0 and dormidos == [15, 15]
     assert salida.getvalue().count("\n") == 3
+
+
+def test_esperar_con_holgada_vence_con_3_si_solo_hay_justa():
+    dormidos = []
+    salida = io.StringIO()
+    codigo = carga.main(["--esperar", "--holgada", "--tope", "30"], salida=salida,
+                        medir_=lambda: medida("justa"), dormir=lambda s: dormidos.append(s))
+    assert codigo == 3 and dormidos == [15, 15]
+    assert "vencio" in salida.getvalue() and "holgada" in salida.getvalue().splitlines()[-1]
+
+
+def test_la_ayuda_y_el_docstring_dicen_lo_que_espera_cada_flag():
+    buf = io.StringIO()                                # argparse escribe la ayuda en sys.stdout
+    with contextlib.redirect_stdout(buf), pytest.raises(SystemExit) as e:
+        carga.main(["--help"])
+    assert e.value.code == 0
+    ayuda = buf.getvalue()
+    assert "--holgada" in ayuda and "no cargada" in ayuda and "justa o holgada" in ayuda
+    assert "--holgada" in carga.__doc__ and "no cargada" in carga.__doc__
 
 
 def test_sin_flag_imprime_la_medicion_y_con_json_la_fila_entera():

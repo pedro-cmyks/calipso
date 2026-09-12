@@ -33,8 +33,13 @@ mide y se anota, no decide (ruling 9.3).
 
 Uso desde la terminal (los procesos del agente, spec 3.9):
   CALIPSO_HOME=$(mktemp -d) .venv/bin/python -m calipso.carga            # imprime la medicion
-  CALIPSO_HOME=$(mktemp -d) .venv/bin/python -m calipso.carga --esperar  # bloquea hasta holgada
-      (mide cada ESPERA_S; con --tope N segundos, default 600; al vencer sale con 3 y no corre nada)
+  CALIPSO_HOME=$(mktemp -d) .venv/bin/python -m calipso.carga --esperar  # bloquea hasta no cargada
+      (`justa` o `holgada`; mide cada ESPERA_S; con --tope N segundos, default 600; al vencer sale
+      con 3 y no corre nada). Con --holgada exige `holgada`.
+  Ruling del controlador (ledger de la carga, tras la Task 1): con el server real corriendo (1,5 GB)
+  la Ally en reposo mide `justa` (5800-6500 MB contra 6770 de holgada), asi que esperar `holgada`
+  literal nunca abria; `justa` quiere decir que el modelo entra con menos de 1 GB de sobra: el
+  margen es comodidad, no correccion. Costo si esta mal: un smoke que compite por el ultimo GB.
 """
 from __future__ import annotations
 
@@ -537,7 +542,9 @@ def main(argv: list[str] | None = None, salida=None, medir_=None, dormir=None) -
     ap = argparse.ArgumentParser(prog="python -m calipso.carga",
                                  description="la carga de la maquina segun el sensor de Calipso")
     ap.add_argument("--esperar", action="store_true",
-                    help=f"bloquear hasta holgada, midiendo cada {ESPERA_S} s")
+                    help=f"bloquear hasta no cargada (justa o holgada), midiendo cada {ESPERA_S} s")
+    ap.add_argument("--holgada", action="store_true",
+                    help="con --esperar: exigir holgada (el default abre con justa)")
     ap.add_argument("--tope", type=int, default=600,
                     help="segundos maximos de --esperar; al vencer sale con 3 y no corre nada")
     ap.add_argument("--json", action="store_true", help="la medicion entera como JSON")
@@ -547,15 +554,16 @@ def main(argv: list[str] | None = None, salida=None, medir_=None, dormir=None) -
         c = medir_()
         print(json.dumps(fila(c), ensure_ascii=False) if args.json else _linea(c), file=salida)
         return 0
+    abre = ("holgada",) if args.holgada else ("holgada", "justa")
     esperado = 0
     while True:
         c = medir_()
         print(f"[carga] {esperado} s: {_linea(c)}", file=salida, flush=True)
-        if c.nivel == "holgada":
+        if c.nivel in abre:
             return 0
         if esperado >= args.tope:
-            print(f"[carga] vencio el tope de {args.tope} s sin holgada: no corro nada (codigo 3)",
-                  file=salida, flush=True)
+            print(f"[carga] vencio el tope de {args.tope} s sin {' ni '.join(abre)}: "
+                  "no corro nada (codigo 3)", file=salida, flush=True)
             return 3
         dormir(ESPERA_S)
         esperado += ESPERA_S
