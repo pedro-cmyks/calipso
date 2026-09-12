@@ -39,6 +39,7 @@ import os
 import re
 import urllib.error
 import urllib.request
+import warnings
 
 import numpy as np
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
@@ -259,12 +260,19 @@ def embeber(ef, textos: list[str], timeout: float | None = None) -> list[list[fl
 
 def ids_de(cliente, nombre: str) -> set[str] | None:
     """Los ids de la coleccion `nombre` del cliente, o None si no existe.
-    `get(include=[])` no reconstruye la EF persistida ni importa nada."""
-    try:
-        col = cliente.get_collection(nombre, embedding_function=None)
-    except NotFoundError:
-        return None
-    return set(col.get(include=[])["ids"])
+    `get(include=[])` no reconstruye la EF persistida ni importa nada. Sobre
+    la vieja `episodic` (EF sentence_transformer persistida) chroma, sin
+    torch en el venv, avisa `UserWarning: Could not reconstruct embedding
+    function ...` y sigue con la EF en None: se calla aca (saldria en cada
+    arranque y en cada /api/memory); cualquier otro aviso pasa."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Could not reconstruct embedding function",
+                                category=UserWarning)
+        try:
+            col = cliente.get_collection(nombre, embedding_function=None)
+        except NotFoundError:
+            return None
+        return set(col.get(include=[])["ids"])
 
 
 def sin_reindexar(cliente) -> int:

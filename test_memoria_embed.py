@@ -368,6 +368,29 @@ def mem(tmp_path, monkeypatch):
     return m
 
 
+def test_ids_de_calla_el_aviso_de_chroma_por_la_ef_vieja_que_no_reconstruye():
+    """Sin torch en el venv, `get_collection("episodic")` de chroma avisa
+    `UserWarning: Could not reconstruct embedding function sentence_transformer
+    ...` (y sigue): lo haria en CADA arranque y en cada `/api/memory`.
+    `ids_de` lo calla; cualquier otro aviso pasa (ola de fix, punto 8)."""
+    import warnings
+
+    class _Col:
+        def get(self, include=None):
+            return {"ids": ["a", "b"]}
+
+    class _Cliente:
+        def get_collection(self, nombre, embedding_function=None):
+            warnings.warn("Could not reconstruct embedding function sentence_transformer from config. "
+                          "Setting to None.", UserWarning)
+            warnings.warn("otro aviso", DeprecationWarning)
+            return _Col()
+    with warnings.catch_warnings(record=True) as vistos:
+        warnings.simplefilter("always")
+        assert me.ids_de(_Cliente(), "episodic") == {"a", "b"}
+    assert [str(w.message) for w in vistos] == ["otro aviso"]
+
+
 def test_la_coleccion_viva_lleva_el_tag_del_embedder(mem):
     assert mem.glob._col.name == me.COLECCION_VIVA == "episodic-bge-m3"
     assert mem.project._col.name == me.COLECCION_VIVA
