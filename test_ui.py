@@ -22,6 +22,22 @@ def check(name: str, cond: bool, fails: list[str]) -> None:
         fails.append(name)
 
 
+def carga_los_chats_tras_el_dom(text: str) -> bool:
+    """La carrera de la PWA al arrancar (smoke de los canarios, hallazgo 3):
+    `loadChats()` suelto en el parseo pintaba el historial antes de que el
+    `<script type="module">` colgara `window.Canarios`, y las marcas
+    guardadas en `meta.canarios` no se veian hasta re-abrir el chat. Los
+    module scripts sin async corren antes de DOMContentLoaded: la carga del
+    historial se cuelga de ahi."""
+    suelta = re.search(r"^loadChats\(\);\s*$", text, re.M)
+    diferida = 'document.addEventListener("DOMContentLoaded", () => loadChats());' in text
+    return suelta is None and diferida
+
+
+def test_la_pwa_carga_los_chats_tras_el_domcontentloaded():
+    assert carga_los_chats_tras_el_dom(HTML.read_text(encoding="utf-8"))
+
+
 def main() -> int:
     fails: list[str] = []
     text = HTML.read_text(encoding="utf-8")
@@ -42,6 +58,7 @@ def main() -> int:
     check("rama del abismo", all(x in text for x in (
         "startAbismo", "stopAbismo", 'm.type === "abismo"', "addDetalleViaje",
         "abismoEl")), fails)
+    check("loadChats espera al DOMContentLoaded", carga_los_chats_tras_el_dom(text), fails)
     scripts = re.findall(r"<script>([\s\S]*?)</script>", text)
     check("scripts inline encontrados", bool(scripts), fails)
     node = shutil.which("node")

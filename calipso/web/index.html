@@ -791,7 +791,13 @@ window.addEventListener("keydown", e => {
 });
 loadTree();
 loadProject();
-loadChats();
+// el historial se pinta recien con el DOM listo: el <script type="module">
+// que cuelga window.Canarios corre antes de DOMContentLoaded, y si
+// loadChats() corria suelto en el parseo llegaba primero y las marcas
+// guardadas en meta.canarios no se veian hasta re-abrir el chat (smoke de
+// los canarios, hallazgo 3). Si el modulo falla, DOMContentLoaded dispara
+// igual: fail-open con la guarda de aplicarCanario
+document.addEventListener("DOMContentLoaded", () => loadChats());
 setupSplitters();
 
 const changesPanel = document.getElementById("changesPanel");

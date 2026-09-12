@@ -286,15 +286,15 @@ async def turno(token: str, mensaje: str, attachment_ids=None) -> dict:
 def capturar(token: str, chat_id: str, carpeta: pathlib.Path, nombre: str) -> None:
     """Las dos UIs con el chat abierto, por playwright (Chromium del venv).
     /fabrica solo carga un chat al tocarlo en la lista, asi que se toca la
-    fila `.chat.activo`. La PWA abre el chat activo sola, pero al arranque
-    corre una carrera (hallazgo del smoke): `loadChats()` pinta el
-    historial desde el script clasico mientras `window.Canarios` lo cuelga
-    un `<script type="module">` diferido; si el historial llega primero,
-    `aplicarCanario` sale sin pintar y las marcas guardadas no se ven hasta
-    re-abrir el chat. Aca se espera al modulo y se re-abre el chat activo
-    (`activateChat`, lo que hace Pedro al tocarlo). Se espera (con tope) a
-    que aparezca el pie del canario; si no aparece, la captura sale igual y
-    documenta lo que hay."""
+    fila `.chat.activo`. La PWA abre el chat activo sola y la captura es
+    la prueba del PRIMER pintado: el smoke encontro una carrera al arranque
+    (`loadChats()` pintaba el historial antes de que el `<script
+    type="module">` colgara `window.Canarios`, y las marcas guardadas no
+    se veian hasta re-abrir el chat); la ola de fix del cierre colgo
+    `loadChats` de DOMContentLoaded, y aca ya no se re-abre el chat: si la
+    carrera vuelve, la captura sale sin pie y lo dice. Se espera (con tope)
+    a que aparezca el pie del canario; si no aparece, la captura sale igual
+    y documenta lo que hay."""
     try:
         from playwright.sync_api import sync_playwright
     except Exception as e:
@@ -314,12 +314,6 @@ def capturar(token: str, chat_id: str, carpeta: pathlib.Path, nombre: str) -> No
                     pg.click(click, timeout=5000)
                 except Exception as e:
                     print(f"   {nombre}-{sufijo}: no pude tocar {click}: {e}")
-            else:
-                try:
-                    pg.wait_for_function("window.Canarios && currentChatId", timeout=5000)
-                    pg.evaluate("activateChat(currentChatId)")
-                except Exception as e:
-                    print(f"   {nombre}-{sufijo}: no pude re-abrir el chat: {e}")
             try:
                 pg.wait_for_selector(pie, timeout=5000)
             except Exception:
