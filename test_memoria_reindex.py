@@ -190,25 +190,59 @@ def test_un_episodio_con_metadatos_raros_se_salta_y_se_cuenta(tmp_path, monkeypa
 
 
 def test_sobre_una_copia_del_fixture_real(tmp_path, monkeypatch):
-    """El fixture del porton tal cual (funcion de embeddings persistida): la
-    vista da los numeros del spec y aplicar deja 16/16 con procedencia."""
+    """El fixture del porton tal cual, con las DOS colecciones (spec memoria
+    por Ollama, ruling 8.12): la vista da los numeros del spec de procedencia
+    SOBRE LA VIVA (`episodic-bge-m3`, EF `calipso_ollama` pura: sin torch),
+    sin_reindexar 0; aplicar deja 16/16 con procedencia en la viva y la vieja
+    intacta; y `--embeddings` es idempotente sobre el fixture."""
     monkeypatch.setenv("CALIPSO_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("CALIPSO_PORT", "1")
     shutil.copytree(FIXTURE, tmp_path / "home")
-    antes = _leer(tmp_path / "home" / "global" / "chroma")
+    g = tmp_path / "home" / "global" / "chroma"
+    vieja_antes = _leer(g)
+    antes = _leer(g, VIVA)
     codigo, texto = _correr("--vista")
     assert codigo == 0
+    assert f"global: 16 en episodic, 16 en {VIVA}, sin_reindexar 0 (procedencia sobre {VIVA})" in texto
     assert ("global: 16 episodios, 0 con procedencia, 16 parsean como chat, "
             "0 kind=chat que NO parsean, 0 no chat, 5 sin_dato, 0 basura, 0 raros "
             "-> 16 por reindexar") in texto
     assert "projects/var-home-pedro-calipso: 0 episodios" in texto
     codigo, texto = _correr("--aplicar")
     assert codigo == 0 and "global: 16 episodios reindexados; count 16 -> 16" in texto
-    despues = _leer(tmp_path / "home" / "global" / "chroma")
+    despues = _leer(g, VIVA)
     assert (despues["ids"], despues["docs"], despues["emb"]) == (antes["ids"], antes["docs"], antes["emb"])
     assert all(m["procedencia"] == 1 and m["ruta"] == "local" and m["route"] == "local"
                for m in despues["metas"])
+    assert _leer(g) == vieja_antes                                # la vieja no se toca
     assert "global: nada que escribir" in _correr("--aplicar")[1]
+    codigo, texto = _correr("--embeddings")
+    assert codigo == 0 and f"global: 0 copiados a {VIVA}, 16 ya estaban" in texto and "sin_reindexar 0" in texto
+    assert _leer(g, VIVA) == despues                              # el merge de metadatos no pisa la procedencia
+
+
+def test_embeddings_desde_cero_sobre_una_copia_del_fixture(tmp_path, monkeypatch):
+    """Spec seccion 5, en la suite y sin Ollama (EmbedFalsa): sobre una copia
+    del fixture con la viva borrada EN LA COPIA, `--embeddings` copia los 16
+    con ids y metadatos iguales a la vieja y `sin_reindexar` pasa de 16 a 0.
+    El smoke (paso X) repite lo mismo con bge-m3 real."""
+    monkeypatch.setenv("CALIPSO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("CALIPSO_PORT", "1")
+    shutil.copytree(FIXTURE, tmp_path / "home")
+    g = tmp_path / "home" / "global" / "chroma"
+    chromadb.PersistentClient(path=str(g)).delete_collection(VIVA)       # en la copia, jamas en el fixture
+    vieja = _leer(g)
+    codigo, texto = _correr("--vista")
+    assert codigo == 0 and f"global: 16 en episodic, sin {VIVA}, sin_reindexar 16 (procedencia sobre episodic)" in texto
+    codigo, texto = _correr("--embeddings")
+    assert codigo == 0, texto
+    assert f"global: 16 copiados a {VIVA}, 0 ya estaban (metadatos actualizados), sin_reindexar 0" in texto
+    viva = _leer(g, VIVA)
+    assert viva["count"] == 16 and sorted(viva["ids"]) == sorted(vieja["ids"])
+    assert _por_id(viva) == _por_id(vieja)
+    assert {len(e) for e in viva["emb"]} == {1024}
+    assert _leer(g) == vieja                                                # la vieja no se toca
+    assert f"sin_reindexar 0 (procedencia sobre {VIVA})" in _correr("--vista")[1]
 
 
 # --- el reindex a otro embedder: --embeddings (spec memoria por Ollama 2026-09-12) ---
