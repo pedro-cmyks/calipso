@@ -327,7 +327,18 @@ fabrica viva.
   mientras jugaba y Ollama murio por OOM). Decision suya: bajo carga el chat AVISA y va por suscripcion;
   `/local` jamas cae a la nube. Spec v2 (tres lentes, 12 rulings revertibles en su seccion 9) en
   `docs/superpowers/specs/2026-09-11-carga-design.md`; plan de 6 tasks en `docs/superpowers/plans/2026-09-11-carga.md`;
-  rama `feat/carga`, en ejecucion por SDD en un worktree (`.claude/worktrees/carga`) para que el server real
-  siga sirviendo main. Arregla de paso `server.py:2450` (`/local` caia al ranking entero). Para el agente, la
-  regla ya rige: antes de cargar el 7b o abrir Chromium se mide `MemAvailable` (6400 MB para el 7b, 1500 para
-  Chromium) y las suites corren con `nice -n 19`.
+  rama `feat/carga`, ejecutada por SDD en un worktree (`.claude/worktrees/carga`) para que el server real
+  siguiera sirviendo main. **MERGEADA a main (`562cf9b`) y DESPLEGADA el 2026-09-12 a las 00:50** (server
+  real reiniciado; `GET /api/carga` dio `holgada` 7030 MB con todas las senales medidas; ningun turno
+  enviado). Arregla de paso `server.py:2450` (`/local` y `/model <local>` caian al ranking entero). Cierre en
+  `docs/superpowers/2026-09-11-cierre-carga/` (README con lo que queda para Pedro) y addendum del spec
+  (seccion 10, rulings 13-24; el 13 corrige al 9.1 con los datos del smoke: el nivel se mide contra la
+  memoria EFECTIVA, MemAvailable mas el tamano de los modelos de Calipso que el `ps` lista; con el 7b cargado
+  y nada mas la Ally es `holgada`; en el escenario del OOM sigue `cargada`). Smoke con carga real: cuatro
+  corridas, la 4 con el codigo final, 0 fallos (`docs/superpowers/2026-09-11-smoke-carga.md`). **Rollback en
+  caliente:** `CALIPSO_CARGA=off` en el entorno del server (reinicio del proceso, no revert). Dato para
+  Pedro: el server pesa 1,5 GB antes de servir nada (el modelo de embeddings al importar); con el server real
+  corriendo la Ally en reposo sin el 7b mide `justa` (5,8-6,7 GB) u `holgada` (7,0-7,4) segun el frio en
+  zram; bajo `justa` casi nada cambia. Para el agente, la regla ya rige: antes de cargar el 7b o abrir
+  Chromium, `CALIPSO_HOME=$(mktemp -d) .venv/bin/python -m calipso.carga --esperar` (abre con `justa`;
+  `--holgada` exige holgada; 1500 MB para Chromium) y las suites con `nice -n 19`.
