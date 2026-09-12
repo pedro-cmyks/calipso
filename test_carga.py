@@ -59,7 +59,7 @@ def medida(nivel="holgada", mem=None, motivo=None, modelos=(), necesidad=5746,
                 psi_mem_some10=0.0, psi_mem_full10=0.0, psi_cpu_some10=0.0,
                 load1=1.85, ncpu=16, modelos_cargados=list(modelos), necesidad_mb=necesidad,
                 modelo="qwen2.5:7b",
-                medido={"meminfo": True, "psi": True, "loadavg": True, "ollama": True},
+                medido={"meminfo": True, "psi_mem": True, "psi_cpu": True, "loadavg": True, "ollama": True},
                 medido_en="2026-09-11T18:41:37")
     base.update(campos)
     return carga.Carga(**base)
@@ -219,7 +219,7 @@ def test_medir_con_proc_y_ps_falsos_da_los_tres_niveles():
     c = carga.medir("qwen2.5:7b", leer=lector(), ps=lambda: [], ncpu=16, necesidad=5746)
     assert (c.nivel, c.motivo, c.mem_disponible_mb, c.mem_total_mb) == ("holgada", "", 7377, 11638)
     assert (c.swap_usado_mb, c.swap_libre_mb) == (3615, 2203)
-    assert c.medido == {"meminfo": True, "psi": True, "loadavg": True, "ollama": True}
+    assert c.medido == {"meminfo": True, "psi_mem": True, "psi_cpu": True, "loadavg": True, "ollama": True}
     assert c.modelos_cargados == [] and c.necesidad_mb == 5746 and c.modelo == "qwen2.5:7b"
     assert c.medido_en and "T" in c.medido_en
     c2 = carga.medir("qwen2.5:7b", leer=lector(meminfo=MEMINFO_CARGADA),
@@ -288,12 +288,47 @@ def test_el_swap_lleno_con_memoria_libre_no_decide():
 def test_sin_pressure_el_psi_no_decide_y_medido_lo_dice():
     c = carga.medir("qwen2.5:7b", leer=lector(psi_mem=None, psi_cpu=None), ps=lambda: [],
                     ncpu=16, necesidad=5746)
-    assert c.nivel == "holgada" and c.medido["psi"] is False
+    assert c.nivel == "holgada" and c.medido["psi_mem"] is False and c.medido["psi_cpu"] is False
     assert (c.psi_mem_some10, c.psi_mem_full10, c.psi_cpu_some10) == (0.0, 0.0, 0.0)
     # la memoria sigue decidiendo sola
     c2 = carga.medir("qwen2.5:7b", leer=lector(meminfo=MEMINFO_CARGADA, psi_mem=None, psi_cpu=None),
                      ps=lambda: [], ncpu=16, necesidad=5746)
     assert c2.nivel == "cargada"
+
+
+def test_el_psi_se_mide_por_archivo_y_solo_el_que_fallo_no_decide():
+    """Ola de fix, punto 6c: antes el PSI se descartaba en bloque si fallaba
+    uno de los dos archivos. Con /proc/pressure/cpu ausente, la memoria
+    sigue decidiendo por PSI (22 -> cargada) y `medido` lo dice por archivo;
+    y al reves, sin /proc/pressure/memory el PSI de CPU sigue contando."""
+    psi_mem_alto = "some avg10=22.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n"
+    c = carga.medir("qwen2.5:7b", leer=lector(psi_mem=psi_mem_alto, psi_cpu=None), ps=lambda: [],
+                    ncpu=16, necesidad=5746)
+    assert c.nivel == "cargada" and c.motivo == "psi_mem_some10 22.0 >= 20"
+    assert c.medido["psi_mem"] is True and c.medido["psi_cpu"] is False
+    assert (c.psi_mem_some10, c.psi_cpu_some10) == (22.0, 0.0)
+    psi_cpu_alto = "some avg10=30.00 avg60=0.00 avg300=0.00 total=1\n"
+    c2 = carga.medir("qwen2.5:7b", leer=lector(psi_mem=None, psi_cpu=psi_cpu_alto), ps=lambda: [],
+                     ncpu=16, necesidad=5746)
+    assert c2.nivel == "justa" and c2.motivo == "psi_cpu_some10 30.0 >= 25"
+    assert c2.medido["psi_mem"] is False and c2.medido["psi_cpu"] is True
+
+
+def test_medir_con_ps_timeout_propio_lo_pasa_al_lector_de_api_ps(monkeypatch):
+    """Ola de fix, punto 6a: el tick mide con `ps_timeout=PS_TIMEOUT_TICK_S`
+    (2 s): bajo carga /api/ps con 0,5 s puede no responder y el vigia no
+    descargaba ni dejaba rastro."""
+    vistos = []
+    monkeypatch.setattr(carga, "ollama_loaded_models",
+                        lambda base=None, timeout=None: vistos.append(timeout) or [])
+    monkeypatch.setattr(carga, "necesidad_mb", lambda modelo: 5746)
+    monkeypatch.setattr(carga, "_leer_proc", lector())
+    assert carga.UMBRALES["PS_TIMEOUT_TICK_S"] == 2.0
+    carga.medir("qwen2.5:7b", ps_timeout=carga.UMBRALES["PS_TIMEOUT_TICK_S"])
+    assert vistos == [2.0]
+    carga.olvidar()
+    carga.medir("qwen2.5:7b")
+    assert vistos == [2.0, None]           # sin timeout propio: el default (PS_TIMEOUT_S)
 
 
 def test_ps_caido_deja_sin_modelos_y_el_resto_decide():
@@ -306,7 +341,7 @@ def test_nada_medible_es_holgada_con_medido_todo_falso():
     c = carga.medir("qwen2.5:7b", leer=lector(None, None, None, None), ps=lambda: None,
                     ncpu=16, necesidad=5746)
     assert c.nivel == "holgada" and c.motivo == ""
-    assert c.medido == {"meminfo": False, "psi": False, "loadavg": False, "ollama": False}
+    assert c.medido == {"meminfo": False, "psi_mem": False, "psi_cpu": False, "loadavg": False, "ollama": False}
     assert c.mem_disponible_mb == 0
 
 
@@ -346,7 +381,7 @@ def test_calipso_carga_off_apaga_el_sensor_por_llamada(monkeypatch):
     c = carga.medir("qwen2.5:7b", leer=leer, ps=lambda: leidos.append("ps") or PS_7B, ncpu=16,
                     necesidad=5746)
     assert c.nivel == "holgada" and c.motivo == "" and c.apagado is True
-    assert c.medido == {"meminfo": False, "psi": False, "loadavg": False, "ollama": False}
+    assert c.medido == {"meminfo": False, "psi_mem": False, "psi_cpu": False, "loadavg": False, "ollama": False}
     assert leidos == [] and c.modelos_cargados == [] and c.mem_disponible_mb == 0
     assert carga.nivel_reciente() == "holgada" and carga.fila(c)["apagado"] is True
     # tambien sin inyeccion: no lee /proc ni hace GET

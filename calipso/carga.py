@@ -113,6 +113,9 @@ UMBRALES: dict[str, float | int] = {
     # el sensor
     "CACHE_S": 2.0,
     "PS_TIMEOUT_S": 0.5,
+    # el tick del vigia mide /api/ps con mas paciencia (ola de fix, punto
+    # 6a): bajo carga 0,5 s puede no alcanzar y el vigia no descargaba nada
+    "PS_TIMEOUT_TICK_S": 2.0,
     "EVICT_TIMEOUT_S": 10.0,
 }
 
@@ -175,8 +178,9 @@ CALIBRACION: list[dict] = [
 ]
 
 # las acciones que llevan las filas `kind: carga` de telemetria (spec 4) y
-# que la pestana Aduana cuenta por dia; `descarga_diferida`, `descarga_fallida`
-# y `vigia_error` existen tambien (decision 16 del plan) y no se cuentan
+# que la pestana Aduana cuenta por dia; `descarga_diferida`, `descarga_fallida`,
+# `vigia_error` (decision 16 del plan) y `ps_no_medido` (ola de fix, punto
+# 6a: cargada sin respuesta de /api/ps en el tick) existen tambien y no se cuentan
 ACCIONES = ("suscripcion", "local_con_aviso", "descarga", "pospone", "sin_3b", "sin_vision")
 
 # los textos del aviso, en un solo lugar (spec 3.2). Son una MARCA (senal ws
@@ -331,21 +335,23 @@ def _apagada(modelo: str, ncpu: int, ahora: datetime.datetime | None) -> Carga:
                  modelo_cargado_mb=0, mem_total_mb=0, swap_usado_mb=0, swap_libre_mb=0,
                  psi_mem_some10=0.0, psi_mem_full10=0.0, psi_cpu_some10=0.0, load1=0.0,
                  ncpu=ncpu, modelos_cargados=[], necesidad_mb=int(UMBRALES["NECESIDAD_DEFAULT_MB"]),
-                 modelo=modelo, medido={"meminfo": False, "psi": False, "loadavg": False, "ollama": False},
+                 modelo=modelo,
+                 medido={"meminfo": False, "psi_mem": False, "psi_cpu": False, "loadavg": False, "ollama": False},
                  medido_en=(ahora or datetime.datetime.now()).isoformat(timespec="seconds"),
                  apagado=True)
 
 
 def medir(modelo: str | None = None, *, leer=None, ps=None, ncpu: int | None = None,
           necesidad: int | None = None, ahora: datetime.datetime | None = None,
-          modelos_propios=None) -> Carga:
+          modelos_propios=None, ps_timeout: float | None = None) -> Carga:
     """La medicion. `leer(ruta) -> str` (OSError si no esta), `ps() -> list |
     None` (None = Ollama no responde), `ncpu` y `necesidad` son inyectables
     para los tests; sin inyeccion se lee /proc, se hace GET /api/ps y se
     cachea CACHE_S. Toda medicion queda como la ultima (`nivel_reciente`).
     `modelos_propios` son los nombres cuyo `size` en /api/ps suma a la
     memoria efectiva (los que el vigia puede descargar: el server pasa
-    `_modelos_de_calipso()`); sin la lista cuenta solo `modelo`."""
+    `_modelos_de_calipso()`); sin la lista cuenta solo `modelo`. `ps_timeout`
+    es el del GET a /api/ps (el tick del vigia pasa PS_TIMEOUT_TICK_S)."""
     global _ultima, _ultima_t
     inyectado = leer is not None or ps is not None or ncpu is not None or necesidad is not None
     modelo = modelo or ""
@@ -358,9 +364,9 @@ def medir(modelo: str | None = None, *, leer=None, ps=None, ncpu: int | None = N
             and time.monotonic() - _ultima_t < UMBRALES["CACHE_S"]):
         return _ultima
     leer = leer or _leer_proc
-    ps = ps or ollama_loaded_models
+    ps = ps or (lambda: ollama_loaded_models(timeout=ps_timeout))
     ncpu = ncpu or os.cpu_count() or 1
-    medido = {"meminfo": False, "psi": False, "loadavg": False, "ollama": False}
+    medido = {"meminfo": False, "psi_mem": False, "psi_cpu": False, "loadavg": False, "ollama": False}
 
     mem: dict[str, int] = {}
     try:
@@ -368,11 +374,17 @@ def medir(modelo: str | None = None, *, leer=None, ps=None, ncpu: int | None = N
         medido["meminfo"] = "MemAvailable" in mem
     except Exception:
         pass
+    # el PSI se mide POR ARCHIVO (ola de fix, punto 6c): si falla uno, el
+    # otro sigue decidiendo; antes se descartaban los dos en bloque
     psi_mem = psi_cpu = (0.0, 0.0)
     try:
         psi_mem = _psi(leer("/proc/pressure/memory"))
+        medido["psi_mem"] = True
+    except Exception:
+        pass
+    try:
         psi_cpu = _psi(leer("/proc/pressure/cpu"))
-        medido["psi"] = True
+        medido["psi_cpu"] = True
     except Exception:
         pass
     load1 = 0.0
@@ -398,9 +410,9 @@ def medir(modelo: str | None = None, *, leer=None, ps=None, ncpu: int | None = N
     swap_total = mem.get("SwapTotal", 0) // 1024
     swap_libre = mem.get("SwapFree", 0) // 1024
     n, motivo = nivel(disponible if medido["meminfo"] else None, necesidad_,
-                      psi_mem[0] if medido["psi"] else None,
-                      psi_mem[1] if medido["psi"] else None,
-                      psi_cpu[0] if medido["psi"] else None,
+                      psi_mem[0] if medido["psi_mem"] else None,
+                      psi_mem[1] if medido["psi_mem"] else None,
+                      psi_cpu[0] if medido["psi_cpu"] else None,
                       load1 if medido["loadavg"] else None, ncpu,
                       modelo_cargado_mb=modelo_cargado)
     c = Carga(nivel=n, motivo=motivo, mem_disponible_mb=disponible,

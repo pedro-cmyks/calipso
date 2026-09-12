@@ -2431,13 +2431,15 @@ def _backend_quota_low() -> dict:
         capabilities.load_backends(), _connector_health())
 
 
-def _medir_carga() -> carga.Carga:
+def _medir_carga(ps_timeout: float | None = None) -> carga.Carga:
     """El sensor de la maquina (spec carga, seccion 2), por un hook: los tests
     lo reemplazan con una Carga fija (nada de la suite mide /proc ni hace
     GET /api/ps). Se llama en HILO (en `_decide` y en el tick de las
     rutinas), nunca en el event loop. Los modelos propios (los que el vigia
-    puede descargar) suman a la memoria efectiva (ola de fix, punto 1)."""
-    return carga.medir(dispatch.CONFIG["local"]["model"], modelos_propios=_modelos_de_calipso())
+    puede descargar) suman a la memoria efectiva (ola de fix, punto 1); el
+    tick pasa `ps_timeout` mas paciente (punto 6a)."""
+    return carga.medir(dispatch.CONFIG["local"]["model"], modelos_propios=_modelos_de_calipso(),
+                       ps_timeout=ps_timeout)
 
 
 def _nivel_del(verdict: dict) -> str | None:
@@ -5714,9 +5716,19 @@ def _vigia_del_modelo(medida: carga.Carga) -> list[str]:
             telemetry.log_event("carga", accion="descarga_diferida", modelo=nombre,
                                 en_uso=carga.en_uso, **fila)
             continue
-        ok = _ollama_evict(nombre)
+        # se suspende ANTES del evict (ola de fix, punto 6b): en la ventana
+        # del evict un `_decide` veia holgada y recargaba. Si el evict falla
+        # (o revienta) se vuelve al estado anterior: una suspension previa
+        # no se pisa
+        suspendido_antes = carga.local_suspendido
+        carga.suspender()
+        ok = False
+        try:
+            ok = _ollama_evict(nombre)
+        finally:
+            if not ok and not suspendido_antes:
+                carga.liberar()
         if ok:
-            carga.suspender()
             descargados.append(nombre)
         telemetry.log_event("carga", accion=("descarga" if ok else "descarga_fallida"),
                             modelo=nombre, ok=ok, **fila)
@@ -5733,7 +5745,11 @@ def _tick_con_carga(now: datetime.datetime, handlers: dict) -> list[dict]:
     (como hoy); antes el ticker se lo tragaba y ninguna rutina corria."""
     medida = None
     try:
-        medida = _medir_carga()
+        medida = _medir_carga(ps_timeout=carga.UMBRALES["PS_TIMEOUT_TICK_S"])
+        if medida.nivel == "cargada" and not medida.medido.get("ollama"):
+            # el vigia tendria que actuar y no sabe que hay cargado (ola de
+            # fix, punto 6a): que quede el rastro
+            telemetry.log_event("carga", accion="ps_no_medido", **carga.fila(medida))
         _vigia_del_modelo(medida)
     except Exception as e:
         telemetry.log_event("carga", accion="vigia_error", error=str(e),

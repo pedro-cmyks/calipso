@@ -30,7 +30,7 @@ def tick(monkeypatch, tmp_path):
     monkeypatch.setattr(srv, "_ollama_evict", lambda modelo: evictados.append(modelo) or True)
 
     def correr(m, handlers=None):
-        monkeypatch.setattr(srv, "_medir_carga", lambda: m)
+        monkeypatch.setattr(srv, "_medir_carga", lambda **k: m)
         return srv._tick_con_carga(AHORA, handlers or {})
     yield {"filas": filas, "evictados": evictados, "correr": correr}
     carga.olvidar()
@@ -64,6 +64,57 @@ def test_con_el_7b_cargado_en_reposo_no_descarga_y_en_el_oom_si(tick):
     assert tick["evictados"] == ["qwen2.5:7b"] and carga.local_suspendido is True
     fila = _de(tick["filas"], "descarga")[0]
     assert fila["mem_disponible_mb"] == 500 and fila["mem_efectiva_mb"] == 5703
+
+
+def test_el_tick_mide_con_el_timeout_propio_del_ps_y_anota_si_no_respondio(tick, monkeypatch):
+    """Ola de fix, punto 6a: el tick mide con `ps_timeout` =
+    UMBRALES["PS_TIMEOUT_TICK_S"] (2 s, no 0,5) y si bajo cargada /api/ps no
+    respondio deja la fila `ps_no_medido` (antes: ni descarga ni rastro)."""
+    vistos = {}
+
+    def medir(modelo, **k):
+        vistos.update(k)
+        return medida("cargada", medido={"meminfo": True, "psi_mem": True, "psi_cpu": True,
+                                         "loadavg": True, "ollama": False})
+    monkeypatch.setattr(carga, "medir", medir)        # el _medir_carga real, con el medir doblado
+    srv._tick_con_carga(AHORA, {})
+    assert vistos["ps_timeout"] == carga.UMBRALES["PS_TIMEOUT_TICK_S"] == 2.0
+    fila = _de(tick["filas"], "ps_no_medido")[0]
+    assert fila["nivel"] == "cargada" and fila["medido"]["ollama"] is False
+    assert tick["evictados"] == []
+    # bajo holgada sin ps no hay fila: solo importa cuando el vigia tendria que actuar
+    tick["filas"].clear()
+    tick["correr"](medida("holgada", medido={"meminfo": True, "psi_mem": True, "psi_cpu": True,
+                                             "loadavg": True, "ollama": False}))
+    assert _de(tick["filas"], "ps_no_medido") == []
+
+
+def test_suspende_antes_del_evict_y_libera_si_fallo_sin_pisar_una_suspension_previa(tick, monkeypatch):
+    """Ola de fix, punto 6b: `suspender()` se fijaba DESPUES del evict; en
+    esa ventana un `_decide` veia holgada y recargaba. Ahora se suspende
+    ANTES; si el evict falla se libera, salvo que ya estuviera suspendido."""
+    vistos = []
+    monkeypatch.setattr(srv, "_ollama_evict", lambda modelo: vistos.append(carga.local_suspendido) or True)
+    srv._vigia_del_modelo(medida("cargada", modelos=["qwen2.5:7b"]))
+    assert vistos == [True] and carga.local_suspendido is True
+    # el evict falla sin suspension previa: queda liberado
+    carga.olvidar()
+    monkeypatch.setattr(srv, "_ollama_evict", lambda modelo: vistos.append(carga.local_suspendido) or False)
+    srv._vigia_del_modelo(medida("cargada", modelos=["qwen2.5:7b"]))
+    assert vistos == [True, True] and carga.local_suspendido is False
+    # el evict falla con suspension previa: sigue suspendido
+    carga.suspender()
+    srv._vigia_del_modelo(medida("cargada", modelos=["qwen2.5:7b"]))
+    assert carga.local_suspendido is True
+    # el evict revienta: tampoco queda suspendido de mas
+    carga.olvidar()
+
+    def revienta(modelo):
+        raise RuntimeError("ollama colgado")
+    monkeypatch.setattr(srv, "_ollama_evict", revienta)
+    with pytest.raises(RuntimeError):
+        srv._vigia_del_modelo(medida("cargada", modelos=["qwen2.5:7b"]))
+    assert carga.local_suspendido is False
 
 
 def test_con_el_modelo_en_uso_no_descarga_y_lo_anota(tick):
@@ -121,7 +172,7 @@ def test_una_medicion_que_revienta_no_se_lleva_las_rutinas_y_deja_vigia_error(ti
     fuera del try y si levantaba, el ticker se lo tragaba y NINGUNA rutina
     corria, en silencio. Ahora: fila `vigia_error` con el error y las
     rutinas corren sin nivel (como hoy)."""
-    def revienta():
+    def revienta(**k):
         raise AttributeError("'list' object has no attribute 'get'")
     monkeypatch.setattr(srv, "_medir_carga", revienta)
     rt = calipso_routines.add("catastro", "cat", 60, enabled=True)
