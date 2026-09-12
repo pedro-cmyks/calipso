@@ -66,10 +66,9 @@ def test_la_carta_vive_afuera_del_core(home):
     conclusion propia del jefe. `load_core` hace glob sobre `core/*.md`:
     alcanza con que la carta no este ahi abajo.
 
-    Y se prueba asi a proposito: `Memory.__init__` carga un modelo de
-    embeddings (`SentenceTransformerEmbeddingFunction`), asi que construir
-    una para comprobar una ruta seria un test lento y fragil por un motivo
-    ajeno a lo que prueba.
+    Y se prueba asi a proposito: `Memory.__init__` abre dos clientes de
+    chroma y crea directorios, asi que construir una para comprobar una
+    ruta seria un test con efectos por un motivo ajeno a lo que prueba.
     """
     carta = memory.ruta_carta("taller")
     core = home / "memoria" / "departamento" / "taller" / "core"

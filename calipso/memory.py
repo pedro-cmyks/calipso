@@ -33,17 +33,24 @@ import re as _re
 import shutil
 import subprocess
 
-from calipso import aduana
+from calipso import aduana, telemetry
+from calipso import config as calipso_config
+from calipso import memoria_embed
 
 import chromadb
-from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 
 CALIPSO_HOME = pathlib.Path(os.environ.get(
     "CALIPSO_HOME", os.path.expanduser("~/.calipso")))
 
-# Modelo multilingüe local; se descarga automáticamente en el primer uso (~470 MB).
-EMBED_MODEL = os.environ.get("CALIPSO_EMBED_MODEL",
-                             "paraphrase-multilingual-MiniLM-L12-v2")
+# El embedder vive en Ollama (spec memoria por Ollama 2026-09-12): el nombre
+# en calipso.config (EMBED_MODEL = "bge-m3:latest", ruling 8.11) y la
+# coleccion viva lleva el tag (`episodic-bge-m3`). La vieja `episodic`
+# (MiniLM, 384 dims, EF sentence_transformer persistida) queda intacta en el
+# mismo sqlite hasta que `memoria_reindex --embeddings` la copie: chroma
+# prohibe cambiar la clase de EF de una coleccion y las dims no coinciden.
+# Este modulo ya no importa torch ni sentence_transformers.
+EMBED_MODEL = calipso_config.EMBED_MODEL
+COLECCION = memoria_embed.COLECCION_VIVA
 
 
 def _slug(path: pathlib.Path) -> str:
@@ -61,8 +68,11 @@ class Scope:
         chroma_dir = pathlib.Path(chroma_dir)
         chroma_dir.mkdir(parents=True, exist_ok=True)
         self._client = chromadb.PersistentClient(path=str(chroma_dir))
+        self._embed = embed
+        # la EF se pasa para que chroma persista su esquema (name + config) y
+        # el hnsw sea coseno; los vectores llegan siempre explicitos
         self._col = self._client.get_or_create_collection(
-            "episodic", embedding_function=embed,
+            COLECCION, embedding_function=embed,
             metadata={"hnsw:space": "cosine"})
 
     # --- core markdown ---
@@ -114,14 +124,29 @@ class Scope:
         clean["ts"] = datetime.datetime.now().isoformat(timespec="seconds")
         huella = repr((text, sorted(clean.items())))
         mem_id = "m" + hashlib.sha256(huella.encode("utf-8")).hexdigest()[:24]
-        self._col.upsert(documents=[text], metadatas=[clean], ids=[mem_id])
+        # el vector se calcula por afuera sobre la pregunta + 150 palabras de
+        # respuesta (memoria_embed.texto_para_embedding, ruling 8.5) y va
+        # explicito: chroma no llama a la EF. El documento sigue siendo el par.
+        vector = memoria_embed.embeber(
+            self._embed, [memoria_embed.texto_para_embedding(text)],
+            timeout=memoria_embed.TIMEOUT_REMEMBER_S)
+        self._col.upsert(documents=[text], metadatas=[clean], ids=[mem_id],
+                         embeddings=vector)
         return mem_id
 
-    def recall(self, query: str, n: int = 5) -> list[dict]:
+    def recall(self, query: str, n: int = 5, embedding=None) -> list[dict]:
+        """Los `n` episodios mas cercanos de ESTE ambito. Con `embedding`
+        (el vector de `query`, que `Memory.recall` calcula UNA vez para todos
+        los ambitos) no embebe nada; sin el, embebe: es la costura vieja. No
+        atrapa: el fail-open vive en `Memory.recall`, el unico punto de
+        entrada del server."""
         total = self._col.count()
         if total == 0:
             return []
-        res = self._col.query(query_texts=[query], n_results=min(n, total))
+        if embedding is None:
+            embedding = memoria_embed.embeber(
+                self._embed, [query], timeout=memoria_embed.TIMEOUT_RECALL_S)[0]
+        res = self._col.query(query_embeddings=[embedding], n_results=min(n, total))
         out = []
         for doc, md, dist in zip(res["documents"][0], res["metadatas"][0],
                                  res["distances"][0]):
@@ -159,8 +184,17 @@ REFLECT_PROMPT = (
 class Memory:
     """Fachada: une los ámbitos global y de proyecto."""
 
-    def __init__(self, project_root: str | None = None) -> None:
-        self._embed = SentenceTransformerEmbeddingFunction(model_name=EMBED_MODEL)
+    # el estado del ultimo recall (spec memoria por Ollama, ruling 8.8: fail-open
+    # VISIBLE): los lee `GET /api/memory` y la fuente `memoria` del abismo.
+    # Defaults de clase para que los dobles construidos con `__new__` los tengan.
+    recall_ok: bool = True
+    ultimo_recall_fallo: dict | None = None
+
+    def __init__(self, project_root: str | None = None, embed=None) -> None:
+        # la EF es barata y pura (ruling 8.2): `_switch_project` la reconstruye
+        # en el loop sin costo. `embed=` es para inyectar una en los tests;
+        # sin ella, la real, o la falsa con CALIPSO_EMBED_FALSA=1 (conftest)
+        self._embed = embed or memoria_embed.embedder_por_env()
         g = CALIPSO_HOME / "global"
         self.glob = Scope("global", g / "core", g / "chroma", self._embed)
         self.project: Scope | None = None
@@ -205,12 +239,38 @@ class Memory:
         """ambitos=None: la fusion de siempre (global+proyecto). Con ambitos,
         solo los scopes nombrados -- la consulta dirigida del abismo. El
         umbral sigue viviendo en el llamador (server.py para el turno,
-        abismo/fuentes.py para la consulta)."""
+        abismo/fuentes.py para la consulta).
+
+        Una sola embedding por turno, y ninguna si no hay que buscar (spec
+        memoria por Ollama, seccion 2): primero que ambitos tienen episodios;
+        si ninguno, [] sin tocar Ollama (la suite y un home nuevo); si alguno,
+        la pregunta se embebe UNA vez y cada ambito consulta con ese vector.
+
+        FAIL-OPEN de verdad (invariante 2): cualquier excepcion (Ollama caido,
+        timeout, coleccion rota) devuelve [] con la fila `kind: memoria,
+        accion: recall_fallo` y deja `recall_ok`/`ultimo_recall_fallo` para
+        que la memoria muerta no quede escondida (ruling 8.8). El recall del
+        turno corre fuera del try del turno (server.py): antes una excepcion
+        aca tumbaba el websocket."""
         scopes = [s for s in self._scopes
                   if ambitos is None or s.name in ambitos]
-        hits = []
-        for s in scopes:
-            hits += s.recall(query, n)
+        try:
+            poblados = [s for s in scopes if s.count() > 0]
+            if not poblados:
+                return []
+            vector = memoria_embed.embeber(
+                self._embed, [query], timeout=memoria_embed.TIMEOUT_RECALL_S)[0]
+            hits = []
+            for s in poblados:
+                hits += s.recall(query, n, embedding=vector)
+        except Exception as e:
+            self.recall_ok = False
+            self.ultimo_recall_fallo = {
+                "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+                "error": str(e)[:300]}
+            telemetry.log_event("memoria", accion="recall_fallo", error=str(e)[:300])
+            return []
+        self.recall_ok = True
         hits.sort(key=lambda h: h["score"], reverse=True)
         return hits[:n]
 

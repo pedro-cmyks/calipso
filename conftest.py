@@ -45,6 +45,14 @@ import tempfile
 
 _HOME_SUITE = pathlib.Path(tempfile.mkdtemp(prefix="calipso_suite_home_"))
 os.environ["CALIPSO_HOME"] = str(_HOME_SUITE)
+# La memoria embebe por Ollama (spec 2026-09-12, ruling 8.10): en la suite
+# NADIE llama a Ollama. Con esta variable `memory.Memory()` construye
+# `memoria_embed.EmbedFalsa` (hash determinista, 1024 dims, sin red), y tiene
+# que estar puesta ANTES del primer import de calipso por la misma razon que
+# CALIPSO_HOME: varios tests importan `calipso.server` a nivel de modulo y
+# eso construye `Memory()` en el acto. Se pisa siempre: un `0` exportado en
+# la shell convertiria la suite en 200 POSTs a Ollama.
+os.environ["CALIPSO_EMBED_FALSA"] = "1"
 
 
 def home_de_la_suite() -> pathlib.Path:

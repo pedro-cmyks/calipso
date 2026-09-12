@@ -10,6 +10,19 @@ CALIPSO_HOME = pathlib.Path(os.environ.get(
     "CALIPSO_HOME", os.path.expanduser("~/.calipso")))
 CONFIG_FILE = CALIPSO_HOME / "config.json"
 
+# El embedder de la memoria episodica vive en Ollama (spec memoria por Ollama
+# 2026-09-12). Vive ACA y no en memory.py (ruling 8.11) para que `carga` lo
+# lea sin arrastrar chromadb. EMBED_MODEL es el nombre TAL COMO lo devuelve
+# /api/ps (`bge-m3:latest`; `bge-m3` a secas no matchea, ruling 8.1); el tag
+# de la coleccion (`bge-m3`) lo deriva memoria_embed.embed_tag. Las
+# dimensiones son fijas por config (ruling 8.2: nada consulta /api/show al
+# construir la funcion de embeddings; cambiar de modelo es cambiar las dos
+# variables juntas y reindexar). La URL es la del Ollama local; el smoke la
+# apunta a un proxy para cortarla a mitad.
+EMBED_MODEL = os.environ.get("CALIPSO_EMBED_MODEL", "bge-m3:latest")
+EMBED_DIMS = int(os.environ.get("CALIPSO_EMBED_DIMS", "1024"))
+EMBED_URL = os.environ.get("CALIPSO_EMBED_URL", "http://localhost:11434")
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "projects": {
         "recent": [],

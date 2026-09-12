@@ -47,6 +47,7 @@ EXCEPCIONES: dict[str, str] = {
     "calipso/discovery.py:_cli_version": "local: `<cli> --version`, sin red",
     "calipso/carga.py:_ollama_get": "loopback: Ollama (/api/ps del sensor de la carga, 0,5 s)",
     "calipso/carga.py:ollama_evict": "loopback: Ollama (keep_alive 0 del vigia)",
+    "calipso/memoria_embed.py:_post_embed": "loopback: Ollama (/api/embed del embedder de la memoria, bge-m3; spec memoria por Ollama 2026-09-12). La memoria ya no sale a huggingface.co",
     "calipso/attachments.py:_vision_ollama": "loopback: Ollama en localhost:11434",
     "launch_calipso.py:_port_open": "loopback: el lanzador espera al propio server",
     "launch_calipso.py:_wait_ready": "loopback: idem",
@@ -55,7 +56,7 @@ EXCEPCIONES: dict[str, str] = {
     # --- git local ---
     "calipso/catastro.py:_git": "git local: rev-parse/log/status sobre el catastro",
     "calipso/server.py:_git": "git local: /api/git/* sobre ROOT",
-    "calipso/tools/commands.py:run": "subprocesos de la allowlist: git local y tests; `test_memory` sale a la red desde OTRO proceso (test_memory.py construye Memory() -> huggingface.co y llama reflect -> `claude -p`), fuera de la aduana: limite conocido, como los CLIs agentes",
+    "calipso/tools/commands.py:run": "subprocesos de la allowlist: git local y tests; `test_memory` habla con Ollama en loopback desde OTRO proceso (test_memory.py construye Memory() -> POST /api/embed) y llama reflect -> `claude -p`, fuera de la aduana: limite conocido, como los CLIs agentes",
     # --- muertos en Linux ---
     "calipso/server.py:api_connector_action": "muerto en Linux: Popen con CREATE_NEW_CONSOLE (solo Windows); cuando se arregle cruza como gesto",
     "calipso/server.py:api_subscription_install": "muerto en Linux: idem",

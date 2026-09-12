@@ -12,16 +12,17 @@ los tres vivian en la misma linea del turno de chat:
 3. Corria sobre el event loop, a diferencia del `remember` de la meta ocho
    lineas mas arriba, que ya iba por hilo.
 
-Los tres se comprueban sin cargar el modelo de embeddings: el ruteo se prueba
-sobre `Memory.remember` con ambitos falsos, y el sitio de llamada se lee del
-fuente, porque vive adentro de un handler de websocket.
+Los tres se comprueban sin construir una Memory real (abre dos clientes de
+chroma): el ruteo se prueba sobre `Memory.remember` con ambitos falsos, y el
+sitio de llamada se lee del fuente, porque vive adentro de un handler de
+websocket.
 """
 import pathlib
 import re
 
 import pytest
 
-from calipso import memory
+from calipso import memoria_embed, memory
 
 
 class _AmbitoFalso:
@@ -38,8 +39,8 @@ class _AmbitoFalso:
 
 @pytest.fixture
 def mem():
-    """Una Memory sin construir: `__init__` carga los pesos del embebedor
-    (unos siete segundos) y aca no hace falta ni uno."""
+    """Una Memory sin construir: `__init__` abre dos clientes de chroma y aca
+    no hace falta ninguno."""
     m = memory.Memory.__new__(memory.Memory)
     m.glob = _AmbitoFalso("global")
     m.project = _AmbitoFalso("proyecto")
@@ -141,15 +142,17 @@ class _ColeccionFalsa:
         self.llamadas.append("add")
         self.docs.setdefault(ids[0], documents[0])   # add NO pisa
 
-    def upsert(self, documents, metadatas, ids):
+    def upsert(self, documents, metadatas, ids, embeddings=None):
         self.llamadas.append("upsert")
         self.docs[ids[0]] = documents[0]             # upsert SI pisa
+        self.vectores = embeddings                   # explicitos desde Scope.remember
 
 
 @pytest.fixture
 def ambito():
     s = memory.Scope.__new__(memory.Scope)
     s._col = _ColeccionFalsa()
+    s._embed = memoria_embed.EmbedFalsa()            # remember embebe por afuera, sin red
     return s
 
 
