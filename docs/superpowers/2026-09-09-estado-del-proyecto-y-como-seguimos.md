@@ -360,8 +360,13 @@ fabrica viva.
   si el 7b esta residente (ruling de la convivencia: < 2500 MB o el 7b cargado -> embebe y suelta), el
   reindex `--embeddings` anuncia el embedder, se niega con la EF falsa sin `--falsa` y dice el motivo si
   Ollama no contesta (codigo 3), el remember de fondo con tope de 2 en vuelo y espera en el shutdown
-  (`remember_pendiente`), el banco anota el ruido intra-corpus (22 de 63 hits de otro topico cruzan 0.476). **Pendiente del controlador, EN ESTE
-  ORDEN** (el detalle en `docs/superpowers/2026-09-12-smoke-memoria.md`, "Pendiente del controlador"):
+  (`remember_pendiente`), el banco anota el ruido intra-corpus (22 de 63 hits de otro topico cruzan 0.476).
+  **MERGEADA a main (`e402557`) y DESPLEGADA el 2026-09-12 a las 15:20:** home real reindexado (5 episodios,
+  `sin_reindexar` 0; respaldo de las colecciones en `~/.calipso/backups/pre-memoria-ollama-2026-09-12/`),
+  server reiniciado (`VmRSS` 1571 -> 161 MB, sin torch mapeado, `recall_ok` true), `pip uninstall` de 30
+  paquetes (~5 GB liberados; sin restos), imports verificados y suite 1943 passed + node 452 con el venv
+  limpio. Cierre en `docs/superpowers/2026-09-12-cierre-memoria-ollama/` y addendum del spec (seccion 9,
+  rulings 16-22). Lo que sigue era el pendiente, ya cumplido, **en este orden** (el detalle en `docs/superpowers/2026-09-12-smoke-memoria.md`, "Pendiente del controlador"):
   merge -> reindex del home real con el server apagado (`--vista`, `env -u CALIPSO_EMBED_FALSA ...
   --embeddings`, evict de bge-m3) -> reinicio -> verificar `GET /api/memory` (`sin_reindexar` 0,
   `recall_ok` true tras un turno de Pedro) -> recien entonces `pip uninstall` con la lista explicita del
