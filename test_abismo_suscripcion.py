@@ -442,3 +442,24 @@ def test_en_suscripcion_lo_que_calipso_dijo_antes_ancla_solo_en_calipso(chat, cl
     assert a["aplica_por"] == ["consulta"] and a["sin_anclaje"] == []
     assert [(h["texto"], h["fuentes"]) for h in a["hechos"]] == [("Umberto Eco", ["historial_calipso"])]
     assert a["anclado_solo_en_calipso"] == 1
+
+
+def test_en_suscripcion_la_ventana_mide_el_historial_que_el_cli_recibe(chat, cli_falso):
+    """Ola de fix del cierre (punto 6): `_ventana_antes` corria con
+    historial vacio en suscripcion, pero el CLI recibe la "=== Conversacion
+    anterior ===" que `_subscription_invocation` arma desde el chat: el
+    estimado subestimaba justo en las charlas largas. Con `num_ctx` None
+    la ventana solo estima, no recorta: el CLI sigue viendo todo."""
+    cli_falso.guion([{"partes": ["dale"], "pausa": 0}])
+    eventos = chat.turno("/claude hola")
+    sin_historial = de_tipo(eventos, "canario")[0]["ventana"][0]
+    largo = "una linea de historial bien larga para que el estimado se mueva " * 20
+    for _ in range(3):
+        chats.append(chat.chat_id, "user", largo)
+        chats.append(chat.chat_id, "assistant", largo)
+    eventos = chat.turno("/claude hola")
+    con_historial = de_tipo(eventos, "canario")[0]["ventana"][0]
+    assert con_historial["estimado"] > sin_historial["estimado"] + 500
+    assert con_historial["num_ctx"] is None and con_historial["recorte"] == []
+    assert con_historial["cabe"] is None and con_historial["truncado"] == "sin medicion"
+    # (que el CLI recibe ese historial lo fija el test de anclaje de arriba)

@@ -4014,9 +4014,11 @@ async def ws_chat(ws: WebSocket) -> None:
                     while True:
                         # las suscripciones solo ESTIMAN (no exponen el tamano
                         # del prompt): una fila de ventana por invocacion,
-                        # sin evaluado ("sin medicion")
+                        # sin evaluado ("sin medicion"), sobre el historial
+                        # que el CLI recibe de verdad (num_ctx None: no se
+                        # recorta nada, el CLI sigue viendo todo)
                         _, _, fila_ventana = await asyncio.to_thread(
-                            _ventana_antes, secciones, [], mensaje_turno, route, model,
+                            _ventana_antes, secciones, historial_sub, mensaje_turno, route, model,
                             len(ventana) + 1)
                         ventana.append(_ventana_despues(fila_ventana, {}))
                         # lo que viajo en esta pasada, con la forma que
