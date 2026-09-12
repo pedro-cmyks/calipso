@@ -360,7 +360,7 @@ fabrica viva.
   si el 7b esta residente (ruling de la convivencia: < 2500 MB o el 7b cargado -> embebe y suelta), el
   reindex `--embeddings` anuncia el embedder, se niega con la EF falsa sin `--falsa` y dice el motivo si
   Ollama no contesta (codigo 3), el remember de fondo con tope de 2 en vuelo y espera en el shutdown
-  (`remember_pendiente`). **Pendiente del controlador, EN ESTE
+  (`remember_pendiente`), el banco anota el ruido intra-corpus (22 de 63 hits de otro topico cruzan 0.476). **Pendiente del controlador, EN ESTE
   ORDEN** (el detalle en `docs/superpowers/2026-09-12-smoke-memoria.md`, "Pendiente del controlador"):
   merge -> reindex del home real con el server apagado (`--vista`, `env -u CALIPSO_EMBED_FALSA ...
   --embeddings`, evict de bge-m3) -> reinicio -> verificar `GET /api/memory` (`sin_reindexar` 0,

@@ -27,6 +27,9 @@ RECALL_TOP = 8
 # Corrida 2026-09-12 (variante pregunta+150): hit@1 24/24, hit@4 24/24,
 # aciertos min 0.5537, negativas max 0.3987, margen 0.155; este umbral es
 # max(negativas) + 0.25 * margen = 0.4375, redondeado a dos decimales.
+# Ruido intra-corpus (ola de fix del cierre, punto 7): otro episodio del
+# mismo corpus cruza 0.44 en 32 de los 63 hits de otro topico del top-4 de
+# las positivas del banco (recall_banco_resultados.md). Sigue PROVISORIO.
 RECALL_UMBRAL = memoria_procedencia.umbral_por_env("CALIPSO_RECALL_UMBRAL", 0.44)
 
 # el fail-open visible de la memoria (spec memoria por Ollama 2026-09-12,

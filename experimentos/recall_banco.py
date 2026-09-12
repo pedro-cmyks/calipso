@@ -25,6 +25,17 @@ max(score top-1 de las negativas); un umbral sugerido = el punto medio del
 margen. Regla de parada: si bge-m3 no iguala el hit@1 por topico de MiniLM o
 su margen es negativo, se para y se le dice a Pedro (no se aterriza a ciegas).
 
+El RUIDO INTRA-CORPUS (ola de fix del cierre, punto 7): el margen se mide
+contra temas AUSENTES, pero el ruido de siempre es otro episodio del mismo
+corpus. Por condicion, `ruido_intra_corpus` toma los hits de OTRO topico en
+el top-4 de las positivas (literal, parafrasis y reales), su max y cuantos
+pasan el umbral sugerido y los de referencia (0.476 el turno, 0.44 el
+abismo, 0.30 el viejo de MiniLM). Se calcula del JSONL (`--informe`, sin
+Ollama). En la corrida del 2026-09-12: 63 hits de otro topico en
+`bge-m3:pregunta+150`, 22 pasan 0.476 (MiniLM: 45 de 63 pasaban su 0.30):
+un umbral por margen no filtra el ruido intra-corpus; los umbrales siguen
+PROVISORIOS y se re-miden cuando el corpus crezca.
+
     python experimentos/recall_banco.py                       # todas las condiciones (Ollama + la ST)
     python experimentos/recall_banco.py --condiciones bge-m3:pregunta+150
     python experimentos/recall_banco.py --home ~/.calipso --listar-reales    # los docs reales, para escribir las consultas
@@ -70,6 +81,8 @@ SALIDA_MD = RAIZ / "experimentos" / "recall_banco_resultados.md"
 MINILM = "paraphrase-multilingual-MiniLM-L12-v2"
 TOP = 4
 CONDICIONES = ("minilm", "bge-m3:pregunta", "bge-m3:pregunta+150", "bge-m3:par")
+# los umbrales contra los que se cuenta el ruido intra-corpus, ademas del sugerido
+UMBRALES_REFERENCIA = {"0.476": 0.476, "0.44": 0.44, "0.30": 0.30}   # turno, abismo, MiniLM viejo
 
 # los 8 topicos del fixture: topico -> fragmento que identifica la pregunta del documento
 TOPICOS = {
@@ -246,9 +259,29 @@ def correr_condicion(condicion: str, embed, docs: list[dict], consultas: list[di
 
 # --- las metricas y el informe ---------------------------------------------------
 
+def ruido_intra_corpus(filas: list[dict]) -> dict:
+    """Por condicion: los scores de OTRO topico en el top-4 de las consultas
+    POSITIVAS (literal, parafrasis y reales; las negativas no tienen topico
+    propio y ya las mide el margen), ordenados de mayor a menor; `n`, `max`
+    y `pasan` = cuantos llegan a cada umbral de UMBRALES_REFERENCIA."""
+    por_cond: dict[str, list[float]] = {}
+    for f in filas:
+        if f["tipo"] == "negativa" or f["topico"] is None:
+            continue
+        scores = por_cond.setdefault(f["condicion"], [])
+        scores += [t["score"] for t in f["top"] if t["topico"] != f["topico"]]
+    salida = {}
+    for nombre, scores in por_cond.items():
+        scores.sort(reverse=True)
+        salida[nombre] = {"n": len(scores), "max": scores[0] if scores else None, "scores": scores,
+                          "pasan": {k: sum(s >= u for s in scores) for k, u in UMBRALES_REFERENCIA.items()}}
+    return salida
+
+
 def resumen(filas: list[dict]) -> dict:
     """Por condicion: hit@1 y hit@4 por topico y totales, la distribucion de
-    scores, el margen y el umbral sugerido."""
+    scores, el margen, el umbral sugerido y el ruido intra-corpus (con
+    cuantos de sus hits pasan el umbral sugerido)."""
     por_cond: dict[str, dict] = {}
     for f in filas:
         r = por_cond.setdefault(f["condicion"], {"topicos": {}, "aciertos": [], "negativas": [],
@@ -278,6 +311,11 @@ def resumen(filas: list[dict]) -> dict:
         r["negativas_min_med_max"] = (round(min(ne), 4), round(statistics.median(ne), 4), round(max(ne), 4)) if ne else None
         r["margen"] = round(min(ac) - max(ne), 4) if ac and ne else None
         r["umbral_sugerido"] = round((min(ac) + max(ne)) / 2, 3) if ac and ne and min(ac) > max(ne) else None
+    ruido = ruido_intra_corpus(filas)
+    for nombre, r in por_cond.items():
+        ru = ruido.get(nombre, {"n": 0, "max": None, "scores": [], "pasan": {k: 0 for k in UMBRALES_REFERENCIA}})
+        u = r["umbral_sugerido"]
+        r["ruido"] = {**ru, "pasan_sugerido": sum(s >= u for s in ru["scores"]) if u is not None else None}
     return por_cond
 
 
@@ -298,10 +336,33 @@ def regla_de_parada(res: dict) -> list[str]:
     return avisos
 
 
-def informe(filas: list[dict]) -> str:
+SECCION_UMBRALES = "## Umbrales elegidos"
+
+
+def conservar_del_md(texto: str | None) -> dict:
+    """Lo que `--informe` conserva del MD anterior al regenerarlo desde el
+    JSONL: la fecha de la corrida (la del calculo no es una corrida nueva) y
+    la seccion de umbrales elegidos, que se completa a mano."""
+    salida: dict = {"corrida": None, "umbrales": None}
+    if not texto:
+        return salida
+    for linea in texto.splitlines():
+        if linea.startswith("Corrida: "):
+            salida["corrida"] = linea[len("Corrida: "):].split(".")[0]
+            break
+    if SECCION_UMBRALES in texto:
+        cuerpo = texto[texto.index(SECCION_UMBRALES):]
+        fin = cuerpo.find("\n## ", len(SECCION_UMBRALES))
+        salida["umbrales"] = (cuerpo if fin < 0 else cuerpo[:fin]).rstrip("\n").splitlines()
+    return salida
+
+
+def informe(filas: list[dict], conservar: dict | None = None) -> str:
     res = resumen(filas)
+    conservar = conservar or {}
     L = ["# Banco de recall: MiniLM contra bge-m3 en tres variantes (spec memoria por Ollama, seccion 3)", ""]
-    L.append(f"Corrida: {time.strftime('%Y-%m-%d %H:%M')}. Consultas por condicion: {len({f['consulta'] for f in filas})} "
+    L.append(f"Corrida: {conservar.get('corrida') or time.strftime('%Y-%m-%d %H:%M')}. "
+             f"Consultas por condicion: {len({f['consulta'] for f in filas})} "
              f"({len(CONSULTAS)} positivas = 8 topicos x 3, {len(NEGATIVAS)} negativas"
              + (", mas las reales" if any(f["tipo"].startswith("real_") for f in filas) else "") + "). "
              "Score = coseno (= 1 - distancia de chroma). Los duplicados del fixture cuentan como UN acierto (por topico).")
@@ -323,12 +384,29 @@ def informe(filas: list[dict]) -> str:
         L.append(f"| {topico} | " + " | ".join(
             f"{res[c]['topicos'].get(topico, {}).get('hit1', 0)}/3 (hit@4 {res[c]['topicos'].get(topico, {}).get('hit4', 0)}/3)"
             for c in CONDICIONES if c in res) + " |")
+    L += ["", "## Ruido intra-corpus: otro topico en el top-4 de las positivas", "",
+          "El margen se mide contra temas AUSENTES (las negativas); el ruido de siempre es OTRO episodio del mismo "
+          "corpus. Por condicion: cuantos hits de otro topico hay en el top-4 de las consultas positivas (literal, "
+          "parafrasis y reales), el max de sus scores y cuantos pasan el umbral sugerido de la condicion y los de "
+          "referencia (0.476 el turno, 0.44 la consulta del abismo, 0.30 el viejo de MiniLM). Un umbral por margen "
+          "no filtra este ruido: los umbrales siguen PROVISORIOS y se re-miden cuando el corpus crezca.", "",
+          "| condicion | hits de otro topico | max | pasan el sugerido | pasan 0.476 | pasan 0.44 | pasan 0.30 |",
+          "|---|---|---|---|---|---|---|"]
+    for nombre in [c for c in CONDICIONES if c in res] + [c for c in res if c not in CONDICIONES]:
+        r = res[nombre]
+        ru = r["ruido"]
+        sugerido = f"{ru['pasan_sugerido']}/{ru['n']} ({r['umbral_sugerido']})" if ru["pasan_sugerido"] is not None else "- (sin umbral)"
+        L.append(f"| {nombre} | {ru['n']} | {ru['max']} | {sugerido} | {ru['pasan']['0.476']}/{ru['n']} | "
+                 f"{ru['pasan']['0.44']}/{ru['n']} | {ru['pasan']['0.30']}/{ru['n']} |")
     L += ["", "## Regla de parada", ""]
     avisos = regla_de_parada(res)
     L += [f"- {a}" for a in avisos] or ["- ninguna variante de bge-m3 queda por debajo de MiniLM y todos los margenes son positivos"]
-    L += ["", "## Umbrales elegidos (a completar a mano al anotar: ver el plan, Task 3, Step 10)", "",
-          "- `RECALL_MIN_SCORE` (server.py): ", "- `RECALL_UMBRAL` (abismo/fuentes.py): ",
-          "- variante aterrizada (`PALABRAS_RESPUESTA`): ", ""]
+    if conservar.get("umbrales"):
+        L += [""] + list(conservar["umbrales"]) + [""]
+    else:
+        L += ["", f"{SECCION_UMBRALES} (a completar a mano al anotar: ver el plan, Task 3, Step 10)", "",
+              "- `RECALL_MIN_SCORE` (server.py): ", "- `RECALL_UMBRAL` (abismo/fuentes.py): ",
+              "- variante aterrizada (`PALABRAS_RESPUESTA`): ", ""]
     L += ["## Detalle: top-1 por consulta", "", "| condicion | consulta | tipo | top-1 (topico, score) | mejor del topico | acierto@1 |", "|---|---|---|---|---|---|"]
     for f in filas:
         t = f["top"][0]
@@ -357,7 +435,12 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.informe:
         filas = [json.loads(l) for l in SALIDA_JSONL.read_text(encoding="utf-8").splitlines() if l.strip()]
-        SALIDA_MD.write_text(informe(filas), encoding="utf-8")
+        viejo = SALIDA_MD.read_text(encoding="utf-8") if SALIDA_MD.exists() else None
+        SALIDA_MD.write_text(informe(filas, conservar_del_md(viejo)), encoding="utf-8")
+        for nombre, r in resumen(filas).items():
+            ru = r["ruido"]
+            print(f"[banco] {nombre}: ruido intra-corpus {ru['n']} hits, max {ru['max']}, "
+                  f"pasan el sugerido {ru['pasan_sugerido']}, pasan 0.476 {ru['pasan']['0.476']}")
         print(SALIDA_MD)
         return 0
     docs = corpus(args.home)

@@ -24,6 +24,17 @@ Corrida: 2026-09-12 13:06. Consultas por condicion: 37 (24 positivas = 8 topicos
 | buen_dia | 3/3 (hit@4 3/3) | 3/3 (hit@4 3/3) | 3/3 (hit@4 3/3) | 3/3 (hit@4 3/3) |
 | websocket | 3/3 (hit@4 3/3) | 2/3 (hit@4 3/3) | 3/3 (hit@4 3/3) | 3/3 (hit@4 3/3) |
 
+## Ruido intra-corpus: otro topico en el top-4 de las positivas
+
+El margen se mide contra temas AUSENTES (las negativas); el ruido de siempre es OTRO episodio del mismo corpus. Por condicion: cuantos hits de otro topico hay en el top-4 de las consultas positivas (literal, parafrasis y reales), el max de sus scores y cuantos pasan el umbral sugerido de la condicion y los de referencia (0.476 el turno, 0.44 la consulta del abismo, 0.30 el viejo de MiniLM). Un umbral por margen no filtra este ruido: los umbrales siguen PROVISORIOS y se re-miden cuando el corpus crezca.
+
+| condicion | hits de otro topico | max | pasan el sugerido | pasan 0.476 | pasan 0.44 | pasan 0.30 |
+|---|---|---|---|---|---|---|
+| minilm | 63 | 0.7011 | 26/63 (0.374) | 14/63 | 16/63 | 45/63 |
+| bge-m3:pregunta | 64 | 0.6292 | - (sin umbral) | 26/64 | 35/64 | 64/64 |
+| bge-m3:pregunta+150 | 63 | 0.6961 | 22/63 (0.476) | 22/63 | 32/63 | 63/63 |
+| bge-m3:par | 63 | 0.6961 | 21/63 (0.494) | 22/63 | 36/63 | 63/63 |
+
 ## Regla de parada
 
 - bge-m3:pregunta: margen -0.0036 (negativo o sin datos): PARAR y decirle a Pedro

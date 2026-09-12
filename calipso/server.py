@@ -3073,6 +3073,9 @@ CONTEXT_CORE_MAX = int(os.environ.get("CALIPSO_CORE_MAX", "3000"))
 # Corrida 2026-09-12 (variante pregunta+150, la de produccion): hit@1 24/24,
 # hit@4 24/24, reales 5/5, aciertos min 0.5537, negativas max 0.3987, margen
 # 0.155 (MiniLM: hit@1 22/24, margen 0.0629); el umbral es el punto medio.
+# Ruido intra-corpus (ola de fix del cierre, punto 7): el margen mide temas
+# AUSENTES; otro episodio del mismo corpus cruza este umbral en 22 de los 63
+# hits de otro topico del top-4 (MiniLM a 0.30: 45/63). Sigue PROVISORIO.
 RECALL_MIN_SCORE = memoria_procedencia.umbral_por_env(
     "CALIPSO_RECALL_MIN_SCORE", 0.476, alias="CALIPSO_RECALL_MIN")
 RECALL_MAX = int(os.environ.get("CALIPSO_RECALL_MAX", "4"))
