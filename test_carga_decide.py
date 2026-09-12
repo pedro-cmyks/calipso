@@ -193,3 +193,40 @@ def test_local_con_la_salud_cacheada_en_false_sigue_siendo_local(monkeypatch):
     monkeypatch.setattr(srv, "_probe_cached", lambda c: {"ready": True, "error": None})
     verdict, *_ = srv._decide("/local " + TRADUCE)
     assert verdict["route"] == "local"
+
+
+# --- /model <local> cerrado como /local (ola de fix, punto 9) --------------------
+
+def test_model_local_con_ollama_caido_sigue_siendo_local(monkeypatch):
+    """`/model qwen2.5:7b` con la salud local en False caia al ranking
+    entero y salia por suscripcion sin marca (verificado: haiku)."""
+    _salud(monkeypatch, local={"ready": False})
+    verdict, *_ = srv._decide("/model qwen2.5:7b " + TRADUCE)
+    assert verdict["route"] == "local" and verdict["model_id"] == "local:qwen2.5:7b"
+    assert verdict["why"].startswith("/model qwen2.5:7b: local por construccion")
+
+
+def test_model_local_con_complejidad_5_sigue_siendo_local(monkeypatch):
+    real = srv.dispatch.extract_features
+    monkeypatch.setattr(srv.dispatch, "extract_features", lambda t: dict(real(t), complexity=5))
+    verdict, *_ = srv._decide("/model qwen2.5:3b " + TRADUCE)
+    assert verdict["route"] == "local" and verdict["model_id"] == "local:qwen2.5:3b"
+    assert verdict["model"] == "qwen2.5:3b"
+
+
+def test_model_local_con_think_sigue_siendo_local():
+    verdict, *_ = srv._decide("/model qwen2.5:7b /think " + TRADUCE)
+    assert verdict["route"] == "local" and verdict["effort_name"] == "think"
+
+
+def test_model_local_no_rompe_la_suspension_ni_cambia_el_camino_de_suscripcion(monkeypatch):
+    """Solo `/local` explicito libera la histeresis; `/model <local>` va
+    local con aviso pero deja la suspension como esta. Y `/model` con un
+    backend de suscripcion sigue por el ranking, como hoy."""
+    _carga(monkeypatch, "cargada")
+    carga.suspender()
+    verdict, *_ = srv._decide("/model qwen2.5:7b " + TRADUCE)
+    assert verdict["route"] == "local" and verdict["carga"]["gesto"] == "/model qwen2.5:7b"
+    assert carga.local_suspendido is True
+    verdict, *_ = srv._decide("/model sonnet " + TRADUCE)
+    assert verdict["route"] == "subscription" and "carga" not in verdict

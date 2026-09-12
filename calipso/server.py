@@ -2486,16 +2486,22 @@ def _veredicto_local(prof: dict, d: dict, sel_effort: int, why: str) -> dict:
     `else`), la persona y la intensidad de la sesion como en la rama del
     ranking. No pasa por `choose`: con Ollama caido, complejidad 4-5, /think
     o la sonda de salud lenta, `/local` sigue siendo local, y `_chunks_for`
-    es quien para con Ollama caido."""
+    es quien para con Ollama caido. `/model <X>` con X local entra por aca
+    tambien (ola de fix, punto 9): antes caia al ranking entero y salia por
+    suscripcion sin marca."""
     modelo = dispatch.CONFIG["local"]["model"]
     key, m = f"local:{modelo}", {"persona": "Epicteto", "tier": "small"}
     backends = capabilities.load_backends(str(ROOT))
-    # `/local /model X` con X local: ese backend, no el configurado (hoy lo
-    # elige `forced` sobre el ranking filtrado a local; sin esto el veredicto
-    # directo seria una regresion). Si X no nombra un local, el configurado
+    # `/local /model X` (o `/model X` solo) con X local: ese backend, no el
+    # configurado (hoy lo elige `forced` sobre el ranking filtrado a local;
+    # sin esto el veredicto directo seria una regresion). X nombra al
+    # backend como en `_gesto_local`: key, model, persona o el nombre del
+    # agente en la sesion. Si X no nombra un local, el configurado
     fm = (d.get("force_model") or "").lower()
+    agentes = prof.get("agents") or {}
     forzado = next((k for k, b in backends.items() if b.get("route") == "local" and fm and fm in (
-        k.lower(), (b.get("model") or "").lower(), (b.get("persona") or "").lower())), None)
+        k.lower(), (b.get("model") or "").lower(), (b.get("persona") or "").lower(),
+        (agentes.get(k, {}).get("name") or "").lower())), None)
     if forzado:
         key, m = forzado, backends[forzado]
         modelo = m.get("model") or modelo
@@ -2588,11 +2594,13 @@ def _decide(user_msg: str,
                  for k, v in avail.items()}
     ranked = _rankear(avail)
 
-    if gesto in ("/local", "/redacta", "/otra"):
+    if gesto in ("/local", "/redacta", "/otra") or (gesto or "").startswith("/model "):
         # `/local` cerrado de verdad (spec 3.1): antes el filtro de arriba
         # caia al ranking ENTERO (`or ranked`) con Ollama caido, complejidad
         # 4-5, /think o la sonda de salud lenta, y /local salia a suscripcion
-        # en silencio. /redacta y /otra siempre corren `_chunks_for("local")`
+        # en silencio. /redacta y /otra siempre corren `_chunks_for("local")`.
+        # `/model <X>` con X local (ola de fix, punto 9) va por el mismo
+        # veredicto directo: `_veredicto_local` respeta el X forzado
         verdict = _veredicto_local(prof, d, sel_effort, f"{gesto}: local por construccion")
         if gesto == "/local":
             carga.liberar()     # /local explicito rompe la suspension (spec 3.4)
