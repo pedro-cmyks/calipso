@@ -419,10 +419,19 @@ def descargar_modelos(R: "Resultados") -> None:
     apagaba el server y los dos modelos quedaban residentes hasta 5 min
     (en las dos corridas los descargo el implementador a mano)."""
     try:
-        embed_fuera = carga.ollama_evict(EMBED, embedding=True)
-        chat_fuera = carga.ollama_evict(MODELO)
+        # solo lo que /api/ps lista: un evict a un modelo NO cargado lo CARGA
+        # (ruling 9.12 de la carga) y con Ollama caido no hay nada que esperar
+        listados = nombres(ps())
+        if not listados:
+            R.nota("Z descarga de los dos modelos", "/api/ps ya estaba vacio (o Ollama no contesta): nada que descargar")
+            return
+        hechos = []
+        if any(carga.mismo_modelo(n, EMBED) for n in listados):
+            hechos.append(f"{EMBED} {carga.ollama_evict(EMBED, embedding=True)}")
+        if any(carga.mismo_modelo(n, MODELO) for n in listados):
+            hechos.append(f"{MODELO} {carga.ollama_evict(MODELO)}")
         vacio = esperar_ps(lambda l: not l, 30)
-        R.nota("Z descarga de los dos modelos", f"evict {EMBED} {embed_fuera}, {MODELO} {chat_fuera}; "
+        R.nota("Z descarga de los dos modelos", f"evict {', '.join(hechos) or 'nada de Calipso listado'}; "
                                                 f"/api/ps vacio en <= 30 s: {vacio}; /api/ps {nombres(ps())}")
     except Exception as e:                       # el cierre no tapa el resultado del smoke
         R.nota("Z descarga de los dos modelos", f"no se pudo descargar: {e!r}")

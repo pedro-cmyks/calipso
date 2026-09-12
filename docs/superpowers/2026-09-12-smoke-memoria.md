@@ -161,8 +161,8 @@ memoria nueva anda, torch sigue en el venv y `main` sigue siendo una vuelta atra
    (`ollama pull bge-m3`): `.venv/bin/python -m calipso.memoria_reindex --vista` (mira los conteos;
    `sin_reindexar` por ambito), `env -u CALIPSO_EMBED_FALSA .venv/bin/python -m calipso.memoria_reindex
    --embeddings` (imprime `embedder: OllamaEmbed bge-m3:latest 1024 dims @ ...`; si Ollama no contesta
-   devuelve 3 con el motivo y se vuelve a correr), y descargar bge-m3 al terminar (la CLI lo deja con
-   `keep_alive 5m`: `carga.ollama_evict("bge-m3:latest", embedding=True)` o un POST a `/api/embed` con
+   devuelve 3 con el motivo y se vuelve a correr), y descargar bge-m3 al terminar (la CLI lo deja hasta
+   5 min segun la memoria disponible; descargarlo igual: `carga.ollama_evict("bge-m3:latest", embedding=True)` o un POST a `/api/embed` con
    `keep_alive 0`). El home real tiene 5 episodios vivos: < 5 s.
 3. Reinicio del server real.
 4. Verificar `GET /api/memory`: `sin_reindexar` en 0 en todos los ambitos y, tras un turno de Pedro,
