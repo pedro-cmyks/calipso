@@ -2783,18 +2783,19 @@ async def _run_agent_text(ws: WebSocket, inbox: asyncio.Queue, agent: dict,
 
 
 async def _fallback_local_del_equipo(ws: WebSocket, verdict: dict, system: str,
-                                     user_msg: str, chat_id: str | None) -> str:
+                                     user_msg: str, chat_id: str | None,
+                                     avisado: dict) -> str:
     """El fallback a local de un agente o de la sintesis del equipo dinamico
     (ola de fix, punto 7): antes iba a `_run_backend_text(local)` sin mirar
     el nivel, sin marca y sin rastro. Coherente con el fallback
     suscripcion->local del chat: bajo `cargada` (o con el local suspendido)
     la senal `carga` con gesto `fallback` y el aviso "puede tardar o fallar"
     (`_senal_de_carga`: senal ws + fila `local_con_aviso`), una sola vez por
-    turno; el POST corre con `en_uso` tomado (`_run_backend_text` ya envuelve
-    la ruta local en `carga.usando()`)."""
-    if ((_nivel_del(verdict) == "cargada" or carga.local_suspendido)
-            and not verdict.get("_carga_fallback_equipo")):
-        verdict["_carga_fallback_equipo"] = True
+    turno (`avisado` es el estado del equipo: {"carga": bool}); el POST corre
+    con `en_uso` tomado (`_run_backend_text` ya envuelve la ruta local en
+    `carga.usando()`)."""
+    if (_nivel_del(verdict) == "cargada" or carga.local_suspendido) and not avisado.get("carga"):
+        avisado["carga"] = True
         await _senal_de_carga(ws, verdict, "local", "fallback", chat_id)
     return await asyncio.to_thread(
         _run_backend_text, "local", None, _route_model_name("local"), system, user_msg, None)
@@ -2814,6 +2815,7 @@ async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
     # del turno decide si el planner corre el 3b
     nivel = _nivel_del(verdict)
     avail = verdict["avail"] if verdict.get("avail") is not None else _backend_availability()
+    avisado_fallback = {"carga": False}     # la marca del fallback local, una vez por turno
     plan_obj = await asyncio.to_thread(_plan_dynamic_team, chat_msg, features, nivel)
     team = orchestrator.build_team(
         plan_obj, avail, project_root=str(ROOT),
@@ -2884,7 +2886,7 @@ async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
                 agent["fallback_error"] = str(e)
                 try:
                     output = await _fallback_local_del_equipo(
-                        ws, verdict, agent_system, agent["task"], chat_id)
+                        ws, verdict, agent_system, agent["task"], chat_id, avisado_fallback)
                     agent["fallback_route"] = "local"
                 except Exception as e2:
                     output = (
@@ -2945,7 +2947,8 @@ async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
                 verdict.get("model"), base_system, synth_prompt, verdict.get("effort"))
     except Exception as e:
         try:
-            final = await _fallback_local_del_equipo(ws, verdict, base_system, synth_prompt, chat_id)
+            final = await _fallback_local_del_equipo(ws, verdict, base_system, synth_prompt, chat_id,
+                                                     avisado_fallback)
         except Exception as e2:
             final = (
                 "No pude completar la sintesis automatica. Resultado parcial del equipo:\n\n"
