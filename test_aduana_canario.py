@@ -47,6 +47,8 @@ EXCEPCIONES: dict[str, str] = {
     "calipso/discovery.py:_cli_version": "local: `<cli> --version`, sin red",
     "calipso/resource_dispatcher.py:_ollama_get": "loopback: Ollama",
     "calipso/resource_dispatcher.py:ollama_evict": "loopback: Ollama",
+    "calipso/carga.py:_ollama_get": "loopback: Ollama (/api/ps del sensor de la carga, 0,5 s)",
+    "calipso/carga.py:ollama_evict": "loopback: Ollama (keep_alive 0 del vigia)",
     "calipso/attachments.py:_vision_ollama": "loopback: Ollama en localhost:11434",
     "launch_calipso.py:_port_open": "loopback: el lanzador espera al propio server",
     "launch_calipso.py:_wait_ready": "loopback: idem",

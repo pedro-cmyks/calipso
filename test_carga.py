@@ -1,0 +1,408 @@
+"""El sensor de la carga (spec 2026-09-11, secciones 2 y 6): los tres niveles
+y sus bordes con /proc y /api/ps FALSOS (nada de esto toca la maquina ni
+Ollama), las perillas por nivel, el contador de uso con hilos, la histeresis,
+los dos helpers traidos de resource_dispatcher, los avisos, las cuentas del
+dia y `--esperar` que vence con 3.
+
+`medida(nivel, ...)` es el molde de Carga que los otros archivos de tests
+importan (test_carga_decide.py, test_carga_chat.py, test_carga_vigia.py,
+test_carga_api.py): una Carga coherente con su nivel, sin medir nada.
+"""
+from __future__ import annotations
+
+import dataclasses
+import io
+import json
+import threading
+
+import pytest
+
+from calipso import carga
+
+MEMINFO_HOLGADA = (
+    "MemTotal:       11917720 kB\nMemFree:          465764 kB\n"
+    "MemAvailable:    7554048 kB\nSwapTotal:       5958652 kB\nSwapFree:        2256184 kB\n")
+MEMINFO_CARGADA = MEMINFO_HOLGADA.replace("MemAvailable:    7554048 kB", "MemAvailable:     512000 kB")
+MEMINFO_JUSTA = MEMINFO_HOLGADA.replace("MemAvailable:    7554048 kB", "MemAvailable:    6144000 kB")
+PSI_0 = "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n"
+LOAD_BAJA = "1.85 1.92 3.31 1/1257 775214\n"
+
+
+def lector(meminfo=MEMINFO_HOLGADA, psi_mem=PSI_0, psi_cpu=PSI_0, loadavg=LOAD_BAJA):
+    """Un `leer(ruta)` falso: None en una ruta = OSError (el archivo no esta)."""
+    tabla = {"/proc/meminfo": meminfo, "/proc/pressure/memory": psi_mem,
+             "/proc/pressure/cpu": psi_cpu, "/proc/loadavg": loadavg}
+
+    def _leer(ruta):
+        if tabla.get(ruta) is None:
+            raise OSError(f"no existe {ruta}")
+        return tabla[ruta]
+    return _leer
+
+
+def medida(nivel="holgada", mem=None, motivo=None, modelos=(), necesidad=5746, **campos):
+    """Una Carga coherente con `nivel` sin medir nada: el molde para los
+    tests de _decide, del harness, del vigia y del endpoint."""
+    por_nivel = {"holgada": (7377, ""), "justa": (6200, "mem 6200 < 5746+1024"),
+                 "cargada": (480, "mem 480 < 5746")}
+    mem_def, motivo_def = por_nivel[nivel]
+    base = dict(nivel=nivel, motivo=motivo if motivo is not None else motivo_def,
+                mem_disponible_mb=mem if mem is not None else mem_def,
+                mem_total_mb=11638, swap_usado_mb=3615, swap_libre_mb=2203,
+                psi_mem_some10=0.0, psi_mem_full10=0.0, psi_cpu_some10=0.0,
+                load1=1.85, ncpu=16, modelos_cargados=list(modelos), necesidad_mb=necesidad,
+                modelo="qwen2.5:7b",
+                medido={"meminfo": True, "psi": True, "loadavg": True, "ollama": True},
+                medido_en="2026-09-11T18:41:37")
+    base.update(campos)
+    return carga.Carga(**base)
+
+
+@pytest.fixture(autouse=True)
+def _sensor_limpio():
+    carga.olvidar()
+    yield
+    carga.olvidar()
+
+
+# --- la necesidad del modelo ---------------------------------------------------
+
+def test_necesidad_es_el_blob_del_gguf_mas_el_margen(tmp_path, monkeypatch):
+    monkeypatch.setenv("OLLAMA_MODELS", str(tmp_path))
+    manifiesto = tmp_path / "manifests" / "registry.ollama.ai" / "library" / "qwen2.5"
+    manifiesto.mkdir(parents=True)
+    (tmp_path / "blobs").mkdir()
+    blob = tmp_path / "blobs" / "sha256-abc"
+    with open(blob, "wb") as f:
+        f.truncate(100 * 2**20)          # 100 MiB sin escribirlos
+    (manifiesto / "7b").write_text(json.dumps({"layers": [
+        {"mediaType": "application/vnd.ollama.image.model", "digest": "sha256:abc"}]}),
+        encoding="utf-8")
+    assert carga.necesidad_mb("qwen2.5:7b") == 100 + carga.UMBRALES["MARGEN_MODELO_MB"]
+
+
+def test_sin_blob_la_necesidad_es_el_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("OLLAMA_MODELS", str(tmp_path / "no-hay"))
+    assert carga.necesidad_mb("qwen2.5:7b") == carga.UMBRALES["NECESIDAD_DEFAULT_MB"]
+    assert carga.necesidad_mb(None) == carga.UMBRALES["NECESIDAD_DEFAULT_MB"]
+
+
+# --- nivel(): pura sobre numeros ------------------------------------------------
+
+def test_los_tres_niveles_por_memoria():
+    assert carga.nivel(480, 5746, 0.0, 0.0, 0.0, 1.0, 16) == ("cargada", "mem 480 < 5746")
+    assert carga.nivel(6200, 5746, 0.0, 0.0, 0.0, 1.0, 16) == ("justa", "mem 6200 < 5746+1024")
+    assert carga.nivel(7377, 5746, 0.0, 0.0, 0.0, 1.0, 16) == ("holgada", "")
+
+
+def test_psi_alto_con_memoria_libre_es_cargada():
+    assert carga.nivel(7377, 5746, 22.0, 0.0, 0.0, 1.0, 16)[0] == "cargada"
+    assert carga.nivel(7377, 5746, 0.0, 6.0, 0.0, 1.0, 16)[0] == "cargada"
+    # de laboratorio: con el 7b cargado y el swap a 68 kB el PSI dio 0,00-0,16
+    # (terreno-maquina, T2); lo que ve el OOM que viene es MemAvailable
+    assert carga.nivel(7377, 5746, 7.0, 0.0, 0.0, 1.0, 16) == ("justa", "psi_mem_some10 7.0 >= 5")
+
+
+def test_cpu_ocupada_con_ram_de_sobra_es_justa_nunca_cargada():
+    assert carga.nivel(7377, 5746, 0.0, 0.0, 30.0, 1.0, 16) == ("justa", "psi_cpu_some10 30.0 >= 25")
+    assert carga.nivel(7377, 5746, 0.0, 0.0, 0.0, 9.9, 16) == ("justa", "load1 9.9 >= 8.0")
+    # jugando con el juego quieto (17:55): load1 4,65 de 16 -> holgada
+    assert carga.nivel(6897, 5746, 0.0, 0.0, 0.0, 4.65, 16) == ("holgada", "")
+
+
+def test_una_senal_no_medida_no_decide():
+    # sin PSI ni load: solo la memoria decide
+    assert carga.nivel(7377, 5746, None, None, None, None, 16) == ("holgada", "")
+    assert carga.nivel(480, 5746, None, None, None, None, 16)[0] == "cargada"
+    # sin memoria: el PSI decide
+    assert carga.nivel(None, 5746, 22.0, 0.0, 0.0, 1.0, 16)[0] == "cargada"
+    # nada medido: holgada
+    assert carga.nivel(None, 5746, None, None, None, None, 16) == ("holgada", "")
+
+
+def test_la_calibracion_anotada_cae_donde_dice():
+    """La tabla del modulo es ejecutable: cada escena medida cae en el nivel
+    que dice. La fila 'cargada de verdad' nace sin numeros (la llena el smoke)."""
+    for fila in carga.CALIBRACION:
+        if fila["mem_disponible_mb"] is None:
+            continue
+        n, _ = carga.nivel(fila["mem_disponible_mb"], fila["necesidad_mb"],
+                           fila["psi_mem_some10"], fila["psi_mem_full10"],
+                           fila["psi_cpu_some10"], fila["load1"], fila["ncpu"])
+        assert n == fila["nivel"], fila["escena"]
+
+
+# --- medir(): con /proc y /api/ps falsos --------------------------------------
+
+def test_medir_con_proc_y_ps_falsos_da_los_tres_niveles():
+    c = carga.medir("qwen2.5:7b", leer=lector(), ps=lambda: [], ncpu=16, necesidad=5746)
+    assert (c.nivel, c.motivo, c.mem_disponible_mb, c.mem_total_mb) == ("holgada", "", 7377, 11638)
+    assert (c.swap_usado_mb, c.swap_libre_mb) == (3615, 2203)
+    assert c.medido == {"meminfo": True, "psi": True, "loadavg": True, "ollama": True}
+    assert c.modelos_cargados == [] and c.necesidad_mb == 5746 and c.modelo == "qwen2.5:7b"
+    assert c.medido_en and "T" in c.medido_en
+    c2 = carga.medir("qwen2.5:7b", leer=lector(meminfo=MEMINFO_CARGADA),
+                     ps=lambda: [{"name": "qwen2.5:7b", "size_mb": 5203, "expires_at": "x"}],
+                     ncpu=16, necesidad=5746)
+    assert c2.nivel == "cargada" and c2.modelos_cargados == ["qwen2.5:7b"]
+    assert c2.motivo == "mem 500 < 5746"
+    c3 = carga.medir("qwen2.5:7b", leer=lector(meminfo=MEMINFO_JUSTA), ps=lambda: [],
+                     ncpu=16, necesidad=5746)
+    assert c3.nivel == "justa"
+
+
+def test_el_swap_lleno_con_memoria_libre_no_decide():
+    lleno = MEMINFO_HOLGADA.replace("SwapFree:        2256184 kB", "SwapFree:             68 kB")
+    c = carga.medir("qwen2.5:7b", leer=lector(meminfo=lleno), ps=lambda: [], ncpu=16, necesidad=5746)
+    assert c.nivel == "holgada" and c.swap_libre_mb == 0 and c.swap_usado_mb == 5818
+
+
+def test_sin_pressure_el_psi_no_decide_y_medido_lo_dice():
+    c = carga.medir("qwen2.5:7b", leer=lector(psi_mem=None, psi_cpu=None), ps=lambda: [],
+                    ncpu=16, necesidad=5746)
+    assert c.nivel == "holgada" and c.medido["psi"] is False
+    assert (c.psi_mem_some10, c.psi_mem_full10, c.psi_cpu_some10) == (0.0, 0.0, 0.0)
+    # la memoria sigue decidiendo sola
+    c2 = carga.medir("qwen2.5:7b", leer=lector(meminfo=MEMINFO_CARGADA, psi_mem=None, psi_cpu=None),
+                     ps=lambda: [], ncpu=16, necesidad=5746)
+    assert c2.nivel == "cargada"
+
+
+def test_ps_caido_deja_sin_modelos_y_el_resto_decide():
+    c = carga.medir("qwen2.5:7b", leer=lector(meminfo=MEMINFO_CARGADA), ps=lambda: None,
+                    ncpu=16, necesidad=5746)
+    assert c.nivel == "cargada" and c.modelos_cargados == [] and c.medido["ollama"] is False
+
+
+def test_nada_medible_es_holgada_con_medido_todo_falso():
+    c = carga.medir("qwen2.5:7b", leer=lector(None, None, None, None), ps=lambda: None,
+                    ncpu=16, necesidad=5746)
+    assert c.nivel == "holgada" and c.motivo == ""
+    assert c.medido == {"meminfo": False, "psi": False, "loadavg": False, "ollama": False}
+    assert c.mem_disponible_mb == 0
+
+
+def test_la_cache_dura_dos_segundos_y_solo_sin_lectores_inyectados(monkeypatch):
+    reloj = [100.0]
+    monkeypatch.setattr(carga.time, "monotonic", lambda: reloj[0])
+    llamadas = []
+
+    def leer(ruta):
+        llamadas.append(ruta)
+        return lector()(ruta)
+    monkeypatch.setattr(carga, "_leer_proc", leer)
+    monkeypatch.setattr(carga, "ollama_loaded_models", lambda base=None, timeout=None: [])
+    monkeypatch.setattr(carga, "necesidad_mb", lambda modelo: 5746)
+    a = carga.medir("qwen2.5:7b")
+    n = len(llamadas)
+    b = carga.medir("qwen2.5:7b")
+    assert b is a and len(llamadas) == n           # fresca: no se releyo nada
+    reloj[0] += carga.UMBRALES["CACHE_S"] + 0.1
+    c = carga.medir("qwen2.5:7b")
+    assert c is not a and len(llamadas) > n
+    assert carga.nivel_reciente() == "holgada"
+
+
+def test_nivel_reciente_es_holgada_sin_medicion_y_sigue_a_la_ultima():
+    assert carga.nivel_reciente() == "holgada"
+    carga.medir("qwen2.5:7b", leer=lector(meminfo=MEMINFO_CARGADA), ps=lambda: [], ncpu=16, necesidad=5746)
+    assert carga.nivel_reciente() == "cargada"
+    carga.olvidar()
+    assert carga.nivel_reciente() == "holgada"
+
+
+# --- las perillas ---------------------------------------------------------------
+
+def test_keep_alive_y_num_thread_por_nivel():
+    assert carga.keep_alive("holgada") == "5m"
+    assert carga.keep_alive("justa") == "2m"
+    assert carga.keep_alive("cargada") == 0
+    assert carga.keep_alive(None) == "5m"
+    assert carga.num_thread("holgada", ncpu=16) is None
+    assert carga.num_thread("justa", ncpu=16) == 8
+    assert carga.num_thread("cargada", ncpu=16) == 8
+    assert carga.num_thread("cargada", ncpu=1) == 1
+
+
+def test_payload_local_agrega_las_perillas_sin_pisar_options_ni_mutar():
+    base = {"model": "m", "prompt": "p", "stream": False, "options": {"temperature": 0, "num_ctx": 8192}}
+    h = carga.payload_local(base, "holgada")
+    assert h["keep_alive"] == "5m" and h["options"] == {"temperature": 0, "num_ctx": 8192}
+    assert "num_thread" not in h["options"]
+    c = carga.payload_local(base, "cargada")
+    assert c["keep_alive"] == 0
+    assert c["options"] == {"temperature": 0, "num_ctx": 8192, "num_thread": carga.num_thread("cargada")}
+    assert "keep_alive" not in base and "num_thread" not in base["options"]   # no muta
+    sin_options = carga.payload_local({"model": "m", "prompt": "p"}, "justa")
+    assert sin_options["keep_alive"] == "2m" and sin_options["options"] == {"num_thread": carga.num_thread("justa")}
+    assert "options" not in carga.payload_local({"model": "m"}, "holgada")
+    # sin nivel toma el reciente (holgada si no se midio)
+    assert carga.payload_local({"model": "m"})["keep_alive"] == "5m"
+
+
+# --- el contador de uso ---------------------------------------------------------
+
+def test_usando_cuenta_con_hilos_y_vuelve_a_cero():
+    adentro = threading.Event()
+    seguir = threading.Event()
+    vistos = []
+
+    def uno():
+        with carga.usando():
+            vistos.append(carga.en_uso)
+            adentro.set()
+            seguir.wait(5)
+    hilos = [threading.Thread(target=uno) for _ in range(3)]
+    for h in hilos:
+        h.start()
+    adentro.wait(5)
+    seguir.set()
+    for h in hilos:
+        h.join(5)
+    assert carga.en_uso == 0 and max(vistos) >= 1
+
+
+def test_uso_es_idempotente():
+    u = carga.Uso()
+    u.tomar(); u.tomar()
+    assert carga.en_uso == 1
+    u.soltar(); u.soltar()
+    assert carga.en_uso == 0
+    u2 = carga.Uso()
+    u2.soltar()                       # sin tomar: no baja de cero
+    assert carga.en_uso == 0
+
+
+# --- la histeresis --------------------------------------------------------------
+
+def test_local_suspendido_se_apaga_solo_en_holgada():
+    assert carga.local_suspendido is False
+    carga.suspender()
+    assert carga.local_suspendido is True
+    assert carga.liberar_si_holgada(medida("justa")) is False and carga.local_suspendido is True
+    assert carga.liberar_si_holgada(medida("cargada")) is False and carga.local_suspendido is True
+    assert carga.liberar_si_holgada(medida("holgada")) is True and carga.local_suspendido is False
+    carga.suspender()
+    carga.liberar()
+    assert carga.local_suspendido is False
+
+
+# --- Ollama: lo traido de resource_dispatcher -----------------------------------
+
+class _Resp:
+    def __init__(self, cuerpo):
+        self.cuerpo = cuerpo
+
+    def read(self):
+        return self.cuerpo
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_ollama_loaded_models_lee_api_ps_y_none_si_no_responde(monkeypatch):
+    pedidos = []
+
+    def urlopen(req, timeout=None):
+        pedidos.append((req.full_url, timeout))
+        return _Resp(json.dumps({"models": [
+            {"name": "qwen2.5:7b", "size": 5455793356, "size_vram": 0, "expires_at": "2026-09-11T18:30:31"}]}).encode())
+    monkeypatch.setattr(carga.urllib.request, "urlopen", urlopen)
+    assert carga.ollama_loaded_models() == [
+        {"name": "qwen2.5:7b", "size_mb": 5203, "expires_at": "2026-09-11T18:30:31"}]
+    assert pedidos == [("http://localhost:11434/api/ps", carga.UMBRALES["PS_TIMEOUT_S"])]
+
+    def caido(req, timeout=None):
+        raise OSError("connection refused")
+    monkeypatch.setattr(carga.urllib.request, "urlopen", caido)
+    assert carga.ollama_loaded_models() is None
+
+
+def test_ollama_evict_manda_keep_alive_0_al_modelo_y_dice_si_pudo(monkeypatch):
+    vistos = []
+
+    def urlopen(req, timeout=None):
+        vistos.append((req.full_url, json.loads(req.data.decode()), timeout))
+        return _Resp(b"{}")
+    monkeypatch.setattr(carga.urllib.request, "urlopen", urlopen)
+    assert carga.ollama_evict("qwen2.5:7b") is True
+    assert vistos == [("http://localhost:11434/api/generate",
+                       {"model": "qwen2.5:7b", "prompt": "", "stream": False, "keep_alive": 0},
+                       carga.UMBRALES["EVICT_TIMEOUT_S"])]
+    monkeypatch.setattr(carga.urllib.request, "urlopen", lambda req, timeout=None: (_ for _ in ()).throw(OSError("x")))
+    assert carga.ollama_evict("qwen2.5:7b") is False
+
+
+# --- los avisos y las cuentas ---------------------------------------------------
+
+def test_marca_compone_el_aviso_desde_avisos():
+    m = carga.fila(medida("cargada", mem=480))
+    sus = carga.marca(m, "subscription", persona="Mariana")
+    assert sus == {"nivel": "cargada", "mem_disponible_mb": 480, "motivo": "mem 480 < 5746",
+                   "ruta": "subscription", "gesto": None,
+                   "aviso": "maquina cargada (480 MB libres): contesto por Mariana"}
+    loc = carga.marca(m, "local", gesto="/local")
+    assert loc["aviso"] == "maquina cargada (480 MB libres): /local es local, puede tardar o fallar"
+    assert carga.marca(m, "local")["aviso"] == "maquina cargada (480 MB libres): la respuesta es local, puede tardar o fallar"
+    assert carga.marca(m, "subscription")["aviso"].endswith("contesto por la suscripcion")
+    assert carga.marca(m, "subscription", motivo="local suspendido hasta holgada")["motivo"] == "local suspendido hasta holgada"
+    # bajo justa con el local suspendido (histeresis) el aviso dice el nivel real
+    j = carga.marca(carga.fila(medida("justa")), "subscription", persona="Mariana",
+                    motivo="local suspendido hasta holgada")
+    assert j["aviso"] == "maquina justa (6200 MB libres): contesto por Mariana" and j["nivel"] == "justa"
+
+
+def test_cuentas_del_dia_cuenta_solo_hoy_y_solo_kind_carga():
+    filas = [
+        {"ts": "2026-09-11T10:00:00", "kind": "carga", "accion": "suscripcion"},
+        {"ts": "2026-09-11T10:01:00", "kind": "carga", "accion": "suscripcion"},
+        {"ts": "2026-09-11T10:02:00", "kind": "carga", "accion": "descarga"},
+        {"ts": "2026-09-11T10:03:00", "kind": "carga", "accion": "pospone", "rutina_id": "r1"},
+        {"ts": "2026-09-11T10:04:00", "kind": "carga", "accion": "pospone", "rutina_id": "r1"},   # el tick siguiente: la misma rutina
+        {"ts": "2026-09-11T10:04:00", "kind": "carga", "accion": "vigia_error"},
+        {"ts": "2026-09-11T10:04:30", "kind": "carga", "accion": "descarga_fallida"},
+        {"ts": "2026-09-10T10:00:00", "kind": "carga", "accion": "suscripcion"},
+        {"ts": "2026-09-11T10:05:00", "kind": "chat_turn", "accion": "suscripcion"},
+    ]
+    assert carga.cuentas_del_dia(filas, hoy="2026-09-11") == {
+        "suscripcion": 2, "local_con_aviso": 0, "descarga": 1, "pospone": 1, "sin_3b": 0, "sin_vision": 0}
+    assert carga.cuentas_del_dia([], hoy="2026-09-11") == {a: 0 for a in carga.ACCIONES}
+
+
+# --- python -m calipso.carga ----------------------------------------------------
+
+def test_esperar_que_vence_sale_con_3_y_no_duerme_de_mas():
+    dormidos = []
+    salida = io.StringIO()
+    codigo = carga.main(["--esperar", "--tope", "30"], salida=salida,
+                        medir_=lambda: medida("cargada"), dormir=lambda s: dormidos.append(s))
+    assert codigo == 3
+    assert dormidos == [15, 15]                       # 0, 15, 30 -> vencio
+    assert "cargada" in salida.getvalue() and "vencio" in salida.getvalue()
+
+
+def test_esperar_vuelve_0_en_cuanto_hay_holgada():
+    niveles = iter(["cargada", "justa", "holgada"])
+    dormidos = []
+    salida = io.StringIO()
+    codigo = carga.main(["--esperar"], salida=salida,
+                        medir_=lambda: medida(next(niveles)), dormir=lambda s: dormidos.append(s))
+    assert codigo == 0 and dormidos == [15, 15]
+    assert salida.getvalue().count("\n") == 3
+
+
+def test_sin_flag_imprime_la_medicion_y_con_json_la_fila_entera():
+    salida = io.StringIO()
+    assert carga.main([], salida=salida, medir_=lambda: medida("justa")) == 0
+    assert salida.getvalue().startswith("nivel=justa mem=6200MB necesidad=5746")
+    salida = io.StringIO()
+    assert carga.main(["--json"], salida=salida, medir_=lambda: medida("justa")) == 0
+    assert json.loads(salida.getvalue())["nivel"] == "justa"
+
+
+def test_carga_no_congela_el_home():
+    assert not hasattr(carga, "CALIPSO_HOME")
+    assert dataclasses.is_dataclass(carga.Carga)
