@@ -86,10 +86,6 @@ from calipso.abismo import filtro as abismo_filtro  # noqa: E402
 from calipso.abismo import marca as abismo_marca  # noqa: E402
 from calipso.abismo import turno as abismo_turno  # noqa: E402
 from calipso.abismo import viaje as abismo_viaje  # noqa: E402
-try:
-    from calipso import resource_dispatcher as _rd  # noqa: E402
-except Exception:
-    _rd = None  # type: ignore[assignment]
 from calipso import prompt_compiler  # noqa: E402
 from calipso import routines as calipso_routines  # noqa: E402
 from calipso import backup as calipso_backup  # noqa: E402
@@ -2684,15 +2680,26 @@ def _heuristic_plan(request: str, features: dict) -> dict:
     return {"agents": agents[:3], "synthesis": "entrega una sola respuesta util para Pedro"}
 
 
-def _plan_dynamic_team(request: str, features: dict) -> dict:
+def _plan_dynamic_team(request: str, features: dict, nivel: str | None = None) -> dict:
+    # el planner es un POST al 3b: un SEGUNDO modelo en RAM. Solo bajo
+    # holgada (spec carga 3.5); en justa y cargada, la heuristica, con su
+    # fila `kind: carga` (accion sin_3b). `nivel` lo trae _run_dynamic_team
+    # desde el veredicto; sin el, el reciente del proceso
+    nivel = nivel or carga.nivel_reciente()
+    if nivel != "holgada":
+        telemetry.log_event("carga", accion="sin_3b", nivel=nivel)
+        return orchestrator.plan(request, lambda prompt: _heuristic_plan(request, features))
+
     def llm_json(prompt: str) -> dict:
         cfg = dispatch.CONFIG["classifier"]
         try:
-            data = dispatch._http_post_json(
-                cfg["base_url"],
-                {"model": cfg["model"], "prompt": prompt, "stream": False,
-                 "format": "json", "options": {"temperature": 0}},
-            )
+            with carga.usando():
+                data = dispatch._http_post_json(
+                    cfg["base_url"],
+                    carga.payload_local(
+                        {"model": cfg["model"], "prompt": prompt, "stream": False,
+                         "format": "json", "options": {"temperature": 0}}, nivel),
+                )
             return json.loads(data.get("response") or "{}")
         except Exception:
             return _heuristic_plan(request, features)
@@ -2720,11 +2727,15 @@ def _run_backend_text(route: str, client: str | None, model: str | None,
         return (data.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
     cfg = dispatch.CONFIG["local"]
     mdl = model or cfg["model"]
-    data = dispatch._http_post_json(
-        cfg["base_url"],
-        {"model": mdl, "prompt": f"{system}\n\nUsuario: {user_msg}\nCalipso:",
-         "stream": False},
-    )
+    # sitio 2 de carga.payload_local (spec 3.6): el nivel reciente del
+    # proceso (el de _decide de este turno); uso suelto del modelo: en_uso
+    with carga.usando():
+        data = dispatch._http_post_json(
+            cfg["base_url"],
+            carga.payload_local(
+                {"model": mdl, "prompt": f"{system}\n\nUsuario: {user_msg}\nCalipso:",
+                 "stream": False}),
+        )
     return (data.get("response") or "").strip()
 
 
@@ -2750,9 +2761,14 @@ async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
                             allow_paid: bool = False) -> tuple[str, dict, str | None]:
     # allow_paid simetrico al filtro de _decide (Task 3): sin gesto explicito
     # de Pedro (force_route=="api"), el equipo dinamico no cae en API paga.
-    plan_obj = await asyncio.to_thread(_plan_dynamic_team, chat_msg, features)
+    # un solo avail por turno (spec carga 3.5): el que _decide filtro por
+    # carga; si el veredicto no lo trae (harness), el de siempre. El nivel
+    # del turno decide si el planner corre el 3b
+    nivel = _nivel_del(verdict)
+    avail = verdict["avail"] if verdict.get("avail") is not None else _backend_availability()
+    plan_obj = await asyncio.to_thread(_plan_dynamic_team, chat_msg, features, nivel)
     team = orchestrator.build_team(
-        plan_obj, _backend_availability(), project_root=str(ROOT),
+        plan_obj, avail, project_root=str(ROOT),
         session=sessions.active(), allow_paid=allow_paid)
     agents = team.get("agents", [])
     if not agents:
@@ -2789,9 +2805,9 @@ async def _run_dynamic_team(ws: WebSocket, inbox: asyncio.Queue, chat_msg: str,
         await ws.send_json({"type": "plan", "action": "revising", "note": decision})
         plan_obj = await asyncio.to_thread(
             _plan_dynamic_team,
-            f"{chat_msg}\n\nAjuste de Pedro al plan: {decision}", features)
+            f"{chat_msg}\n\nAjuste de Pedro al plan: {decision}", features, nivel)
         team = orchestrator.build_team(
-            plan_obj, _backend_availability(), project_root=str(ROOT),
+            plan_obj, avail, project_root=str(ROOT),
             session=sessions.active(), allow_paid=allow_paid)
         agents = team.get("agents", []) or agents
 
@@ -3183,8 +3199,9 @@ _HISTORY_TURNS = 12  # max mensajes del historial (6 intercambios)
 # canarios el presupuesto se mide ANTES de cada pasada con el tokenizador
 # real y lo volatil se recorta a la vista (`canarios.recortar`); este es el
 # techo. 8192 es holgura, no capacidad: cada token de contexto cuesta RAM
-# en la Ally.
-CHAT_NUM_CTX = 8192
+# en la Ally. El numero vive en `carga.py` (spec carga 3.5): el juez de
+# /nube usa el MISMO (antes 4096: Ollama recreaba el runner en cada /nube).
+CHAT_NUM_CTX = carga.CHAT_NUM_CTX
 
 
 def _history_messages(chat_id: str | None, limit: int = _HISTORY_TURNS) -> list[dict]:
@@ -3211,7 +3228,8 @@ def _history_messages(chat_id: str | None, limit: int = _HISTORY_TURNS) -> list[
 
 def _chunks_for(route: str, system: str, user_msg: str, usage: dict,
                 model: str | None = None, effort: int | None = None,
-                chat_id: str | None = None, history: list[dict] | None = None):
+                chat_id: str | None = None, history: list[dict] | None = None,
+                nivel: str | None = None):
     """Devuelve (generador, modelo, messages) segun la ruta con historial de
     conversacion. `history` prearmado (la ventana lo recorta por pasada,
     spec canarios 2.3); sin el, se lee del chat como siempre. `messages` es
@@ -3259,8 +3277,11 @@ def _chunks_for(route: str, system: str, user_msg: str, usage: dict,
             yield ("[Calipso] no puedo contestar esto con el modelo local: "
                    "Ollama no esta disponible. No lo mando a la nube.")
         return _local_caido(), mdl, messages
-    payload = {"model": mdl, "messages": messages, "stream": True,
-               "options": {"num_ctx": CHAT_NUM_CTX}}
+    # las perillas por nivel de carga (spec carga 3.6): `keep_alive` de primer
+    # nivel y `options.num_thread`; `nivel` viene del veredicto del turno
+    # (None = el reciente = holgada si nadie midio: byte a byte como hoy)
+    payload = carga.payload_local({"model": mdl, "messages": messages, "stream": True,
+                                   "options": {"num_ctx": CHAT_NUM_CTX}}, nivel)
     return dispatch._ollama_chat_chunks(cfg["base_url"], payload, usage), mdl, messages
 
 
@@ -3895,7 +3916,8 @@ async def ws_chat(ws: WebSocket) -> None:
                 try:
                     gen_b, model_b, _ = _chunks_for(
                         "local", system_b, user_b, usage_b,
-                        _route_model_name("local"), chat_id=None)
+                        _route_model_name("local"), chat_id=None,
+                        nivel=_nivel_del(verdict))
                     while True:
                         if not inbox.empty():  # steering: barge-in del borrador
                             steer = inbox.get_nowait()
@@ -4115,12 +4137,19 @@ async def ws_chat(ws: WebSocket) -> None:
             vision_text, aviso_imagen = "", False
             if attachments.has_images(str(ROOT), attachment_ids) \
                     and not directives.get("nube"):
+                # la vision por Ollama es un SEGUNDO modelo en RAM: solo bajo
+                # holgada (spec carga 3.5); si no, el aviso de imagen y la fila
+                holgada = _nivel_del(verdict) in (None, "holgada")
                 vision_text = await asyncio.to_thread(
                     attachments.vision_describe, str(ROOT), attachment_ids, chat_msg,
-                    quien=quien_turno)
+                    quien=quien_turno, permitir_ollama=holgada)
                 if not vision_text:
                     vm = attachments.ollama_vision_model()
-                    aviso_imagen = not vm and not os.environ.get("ANTHROPIC_API_KEY")
+                    if vm and not holgada:
+                        telemetry.log_event("carga", accion="sin_vision", modelo=vm,
+                                            nivel=_nivel_del(verdict))
+                    aviso_imagen = ((not vm or not holgada)
+                                    and not os.environ.get("ANTHROPIC_API_KEY"))
             attachment_context = attachments.context_block(str(ROOT), attachment_ids)
             # las secciones que el server suma (adjuntos y departamento no
             # van en /nube-a-la-nube: ver `_secciones_del_turno`); el string
@@ -4360,7 +4389,8 @@ async def ws_chat(ws: WebSocket) -> None:
                         gen, model, mensajes_pasada = _chunks_for(
                             route, prompt_compiler.render_context(secciones_pasada), mensaje_turno,
                             usage_pasada, model, verdict.get("effort"),
-                            chat_id=chat_id_nube, history=historial_pasada)
+                            chat_id=chat_id_nube, history=historial_pasada,
+                            nivel=_nivel_del(verdict))
                         marca_pendiente = None
                         desde = len(full)
                         while True:
@@ -4539,7 +4569,8 @@ async def ws_chat(ws: WebSocket) -> None:
                             "local", model, len(ventana) + 1)
                         gen, model, mensajes_pasada = _chunks_for(
                             "local", prompt_compiler.render_context(secciones_pasada), chat_msg,
-                            usage, chat_id=chat_id, history=historial_pasada)
+                            usage, chat_id=chat_id, history=historial_pasada,
+                            nivel=_nivel_del(verdict))
                         while True:
                             if not inbox.empty():  # steering en el fallback local
                                 steer = inbox.get_nowait()
@@ -5470,14 +5501,6 @@ def api_goal_subtask(goal_id: str, subtask_id: str, body: GoalSubtaskBody) -> di
     if not goal:
         raise HTTPException(status_code=404, detail="meta no existe")
     return {"goal": goal}
-
-
-@app.get("/api/resources")
-def api_resources() -> dict:
-    """Estado de recursos del sistema + cola del resource_dispatcher."""
-    if _rd is None:
-        return {"available": False}
-    return _rd.diagnose()
 
 
 @app.get("/api/jobs")
@@ -7706,9 +7729,13 @@ def _pensar_local(prompt: str) -> str:
     del modelo.
     """
     cfg = dispatch.CONFIG["local"]
-    data = dispatch._http_post_json(
+    # sitio 4 de carga.payload_local (spec 3.6), y uso suelto del modelo
+    # (en_uso): el tick corre en el to_thread del ticker, con el nivel que
+    # ese mismo tick acaba de medir
+    with carga.usando():
+        data = dispatch._http_post_json(
         cfg["base_url"],
-        {"model": cfg["model"], "prompt": prompt, "stream": False,
+        carga.payload_local({"model": cfg["model"], "prompt": prompt, "stream": False,
          # `num_ctx` explicito y no el default de Ollama, por dos razones que
          # se descubrieron midiendo: Ollama trunca desde el COMIENZO del
          # prompt, y `decision.prompt` pone primero lo que mas importa (lo
@@ -7718,7 +7745,7 @@ def _pensar_local(prompt: str) -> str:
          # 8192 y no mas: `qwen2.5:7b` soporta bastante mas, pero cada token
          # de contexto cuesta RAM en la maquina de Pedro y el prompt entero
          # de un tic hoy no llega ni cerca. Es holgura, no capacidad.
-         "options": {"temperature": 0, "num_ctx": 8192}})
+         "options": {"temperature": 0, "num_ctx": carga.CHAT_NUM_CTX}}))
     return str(data.get("response") or "")
 
 

@@ -19,10 +19,6 @@ from __future__ import annotations
 from calipso import capabilities
 from calipso import prompt_compiler
 from calipso import skills
-try:
-    from calipso import resource_dispatcher as _rd
-except Exception:
-    _rd = None  # type: ignore[assignment]
 
 PLANNER_SYSTEM = (
     "Eres el planificador de Calipso. Descompón la PETICIÓN en un EQUIPO PEQUEÑO "
@@ -74,28 +70,15 @@ def pick_model(tier: str, task_type: str, available: dict,
                project_root: str | None = None, allow_paid: bool = False):
     """El mejor modelo DISPONIBLE para ese tier+tarea (prefiere el tier pedido).
 
-    Si resource_dispatcher está activo, filtra modelos locales sin RAM suficiente
-    antes de elegir.
+    No mira la maquina: `available` ya viene filtrado por la carga desde
+    `_decide` (un solo avail por turno, spec carga 3.5). El snapshot propio
+    de `resource_dispatcher` (dos GET a Ollama por agente y un downgrade al
+    3b en silencio) se retiro (ruling 9.7).
 
     `allow_paid` (default False) es simetrico al filtro de `_decide` (Task 3):
     sin gesto explicito de Pedro, un backend `route=="api"` no entra al pool de
     candidatos aunque puntue mas alto. Con `allow_paid=True` vuelve a competir.
     """
-    if _rd is not None:
-        try:
-            snap = _rd.ResourceSnapshot.take()
-            # Descarta modelos locales que no tienen RAM suficiente ahora mismo.
-            patched = dict(available)
-            for key, m in capabilities.load_backends(project_root).items():
-                if m.get("route") == "local" and patched.get(key):
-                    model_name = m.get("model", "")
-                    dec = _rd.gate(model_name, route="local", snap=snap)
-                    if dec.action in ("reroute", "defer"):
-                        patched[key] = False
-            available = patched
-        except Exception:
-            pass  # si falla el diagnóstico, continúa sin filtrar
-
     backends = capabilities.load_backends(project_root)
     cands = [(k, m) for k, m in backends.items() if available.get(k)]
     if not allow_paid:

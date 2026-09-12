@@ -43,10 +43,8 @@ EXCEPCIONES: dict[str, str] = {
     "dispatch.py:_http_post_stream": "modelo: idem, stream",
     # --- loopback por config, por default o por construccion ---
     "calipso/server.py:_http_up": "loopback: salud de Ollama/LiteLLM, corre en el LOOP",
-    "calipso/discovery.py:_get_json": "loopback por default: los llamadores de produccion (`discover`, `resource_dispatcher.ollama_installed_models`) llaman a discover_ollama/discover_litellm con el `base` por defecto (localhost); un llamador con otro `base` no cruza: limite conocido (el modelo fuera de la maquina lo cubre el declarado del arranque). `_npm_latest` no pasa por aca (tiene su propio urlopen con el Call)",
+    "calipso/discovery.py:_get_json": "loopback por default: el llamador de produccion (`discover`) llama a discover_ollama/discover_litellm con el `base` por defecto (localhost); un llamador con otro `base` no cruza: limite conocido (el modelo fuera de la maquina lo cubre el declarado del arranque). `_npm_latest` no pasa por aca (tiene su propio urlopen con el Call)",
     "calipso/discovery.py:_cli_version": "local: `<cli> --version`, sin red",
-    "calipso/resource_dispatcher.py:_ollama_get": "loopback: Ollama",
-    "calipso/resource_dispatcher.py:ollama_evict": "loopback: Ollama",
     "calipso/carga.py:_ollama_get": "loopback: Ollama (/api/ps del sensor de la carga, 0,5 s)",
     "calipso/carga.py:ollama_evict": "loopback: Ollama (keep_alive 0 del vigia)",
     "calipso/attachments.py:_vision_ollama": "loopback: Ollama en localhost:11434",

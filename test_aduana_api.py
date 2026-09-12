@@ -732,8 +732,11 @@ def test_post_reflect_y_routines_run_declaran_como_gesto(libro, monkeypatch):
 def test_la_vision_del_turno_hereda_el_quien_del_turno(chat, libro, monkeypatch):
     vistos = []
     monkeypatch.setattr(srv.attachments, "has_images", lambda root, ids: True)
+    # el doble acepta `permitir_ollama` (spec carga 3.5: la vision por Ollama
+    # solo bajo holgada); aca no se mira, el test es sobre el Quien
     monkeypatch.setattr(srv.attachments, "vision_describe",
-                        lambda root, ids, question, *, quien: vistos.append(quien) or None)
+                        lambda root, ids, question, *, quien, permitir_ollama=True:
+                        vistos.append(quien) or None)
     # el paquete del ws lleva `attachment_ids` (server.py:3284); el id no
     # existe en disco: `context_block` lo saltea y `has_images` esta doblado
     with chat.cliente.websocket_connect("/ws/chat") as ws:
