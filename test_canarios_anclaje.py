@@ -277,6 +277,24 @@ def test_el_no_saber_honesto_con_senal_no_sale_sin_verificar():
     assert [s["tipo"] for s in v["sin_anclaje"]] == ["recuerdo"]
 
 
+def test_el_hedge_en_la_cola_no_salva_una_confabulacion():
+    """Residuo de la ola de fix (re-review): el patron fuerte de no-saber
+    anula la oracion solo si empieza ANTES de la senal. 'Recuerdo que te
+    conte sobre una trilogia..., aunque no recuerdo el autor' afirma un
+    recuerdo (el 7b hedgea seguido) y la cola no lo salva; 'No tengo
+    registros de la ultima vez' sigue siendo honesto."""
+    confabula = [
+        "Recuerdo que te conte sobre una trilogia de ciencia ficcion, aunque no recuerdo el autor.",
+        "Recuerdo que te conte sobre una trilogia de ciencia ficcion; no tengo el dato del autor.",
+    ]
+    for respuesta in confabula:
+        v = c.anclaje(respuesta, _ctx(mensaje_pedro=banco.M_LIBRO), _turno(banco.M_LIBRO))
+        assert [s["tipo"] for s in v["sin_anclaje"]] == ["recuerdo"], (respuesta, v["sin_anclaje"])
+    v = c.anclaje("No tengo registros de la ultima vez que hablamos del libro.",
+                  _ctx(mensaje_pedro=banco.M_LIBRO), _turno(banco.M_LIBRO))
+    assert v["sin_anclaje"] == [], v["sin_anclaje"]
+
+
 def test_los_patrones_fuertes_del_canario_son_los_de_la_memoria():
     """La lista vive en memoria_procedencia (pura: os, re, unicodedata) y
     el canario la importa; si algun dia se copia, este test la ata."""

@@ -413,8 +413,22 @@ def _senal_en(oracion_norm: str, senales) -> str | None:
     return positiva
 
 
-def _es_no_saber(oracion_norm: str) -> bool:
-    return any(re.search(p, oracion_norm) for p in PATRONES_FUERTES)
+def _es_no_saber(oracion_norm: str, antes_de: int | None = None) -> bool:
+    """Un patron fuerte de no-saber anula la oracion solo si empieza ANTES
+    de la senal (`antes_de`): 'No tengo registros de la ultima vez' es
+    honesto; 'Recuerdo que te conte sobre una trilogia, aunque no recuerdo
+    el autor' afirma un recuerdo y el hedge de la cola no lo salva (residuo
+    de la re-review del cierre)."""
+    for p in PATRONES_FUERTES:
+        m = re.search(p, oracion_norm)
+        if m and (antes_de is None or m.start() < antes_de):
+            return True
+    return False
+
+
+def _posicion_de(senal: str, oracion_norm: str) -> int:
+    m = re.search(r"(?<![a-z])" + re.escape(senal) + r"(?![a-z])", oracion_norm)
+    return m.start() if m else len(oracion_norm)
 
 
 def afirmaciones_de_recuerdo(respuesta: str) -> list[dict]:
@@ -425,10 +439,10 @@ def afirmaciones_de_recuerdo(respuesta: str) -> list[dict]:
         o = normalizar(oracion)
         if o.endswith("?") or o.startswith("¿") or "?" in oracion:
             continue
-        if _OFERTA.search(o) or _es_no_saber(o):
+        if _OFERTA.search(o):
             continue
         senal = _senal_en(o, SENALES_RESPUESTA)
-        if senal is None:
+        if senal is None or _es_no_saber(o, _posicion_de(senal, o)):
             continue
         salida.append({"texto": oracion.strip(), "senal": senal,
                        "palabras": _contenido(o, senal)})

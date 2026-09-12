@@ -46,12 +46,18 @@ def test_el_cache_del_tokenizador_no_se_respalda(tmp_path, monkeypatch):
     _sembrar_home(tmp_path)
     (tmp_path / "tokenizador").mkdir()
     (tmp_path / "tokenizador" / "sha256-abc.json").write_text("{}", encoding="utf-8")
+    # la exclusion es de la RAIZ (ahi vive el cache): un "tokenizador" dentro
+    # de un proyecto es una carpeta comun y se respalda
+    anidado = tmp_path / "projects" / "x" / "tokenizador"
+    anidado.mkdir(parents=True)
+    (anidado / "f.json").write_text("{}", encoding="utf-8")
     r = backup.create_backup(stamp="test")
     assert r["ok"]
     with zipfile.ZipFile(r["path"]) as zf:
         nombres = set(zf.namelist())
     assert "chats.json" in nombres
     assert not any(n.startswith("tokenizador/") for n in nombres)
+    assert "projects/x/tokenizador/f.json" in nombres
 
 
 def test_logs_anidado_si_se_respalda(tmp_path, monkeypatch):
