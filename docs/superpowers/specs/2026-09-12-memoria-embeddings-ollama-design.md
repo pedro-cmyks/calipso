@@ -243,3 +243,7 @@ la convivencia con el 7b bajo `justa`) y el cierre.
     torch (lo instalo una mano): no hay nada que sacar de ahi; AGENTS.md se corrige.
 14. **Ni el lector ni el compositor ni el juez tocan la memoria vectorial** (verificado por las lentes): el
     cambio es de `memory.py`, el reindex, el recall del turno y el abismo.
+15. **Solo `Memory.recall` atrapa** (decision 3 del plan): `Scope.recall(query, n, embedding=None)` no
+    atrapa nada y ningun llamador del server lo usa directo (verificado: `server.py:3201` y
+    `abismo/fuentes.py:120` van por `Memory`). El fail-open vive en la fachada, que es la unica puerta.
+
