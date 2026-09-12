@@ -91,16 +91,19 @@ function nodo(id, etiqueta = "div") {
   // puesta la seleccion del navegador (lo mismo que documenta el comentario
   // de `nodosDeTurno` en app.js). "Cuantas veces se escribio" es lo unico
   // que se puede medir de eso desde afuera de un navegador de verdad.
+  // ...y asignarlo VACIA `hijos`, como en el navegador (ola de fix, punto
+  // 10): sin eso el test de la reinsercion de la cabecera pasaba aunque
+  // app.js no la volviera a poner con insertBefore
   let texto = "", escriturasDeTexto = 0;
   Object.defineProperty(n, "textContent", {
     get: () => texto,
-    set: v => { texto = v; escriturasDeTexto++; },
+    set: v => { texto = v; escriturasDeTexto++; n.hijos.length = 0; },
     enumerable: true, configurable: true,
   });
   n.escriturasDeTexto = () => escriturasDeTexto;
-  // el primer hijo, para `insertBefore(cab, div.firstChild)`; asignar
-  // textContent NO borra `hijos` aca (en el navegador si): por eso app.js
-  // MUEVE la cabecera con insertBefore en vez de crearla de nuevo
+  // el primer hijo, para `insertBefore(cab, div.firstChild)`: asignar
+  // textContent borra `hijos` (arriba), por eso app.js MUEVE la cabecera
+  // con insertBefore en vez de crearla de nuevo
   Object.defineProperty(n, "firstChild", {get: () => n.hijos[0] || null});
   return n;
 }

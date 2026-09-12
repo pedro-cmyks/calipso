@@ -641,3 +641,23 @@ def test_sin_flag_imprime_la_medicion_y_con_json_la_fila_entera():
 def test_carga_no_congela_el_home():
     assert not hasattr(carga, "CALIPSO_HOME")
     assert dataclasses.is_dataclass(carga.Carga)
+
+
+# --- las piezas secas del smoke (experimentos/carga_smoke.py) --------------------
+
+def test_el_smoke_parsea_y_su_paso_v_es_el_del_ruling():
+    """Ola de fix, punto 10: el smoke no se corre aca (lo corre el
+    controlador); en seco: parsea, el paso V ya no recarga el 7b desde
+    afuera para que lo descargue el vigia (con la memoria efectiva el 7b
+    adentro y nada mas es holgada y el vigia NO descarga) y el docstring
+    dice donde queda cubierto el camino de la descarga."""
+    import ast
+    import pathlib
+    fuente = (pathlib.Path(__file__).parent / "experimentos" / "carga_smoke.py").read_text(encoding="utf-8")
+    modulo = ast.parse(fuente)
+    doc = ast.get_docstring(modulo)
+    assert "def cargar_desde_afuera" not in fuente
+    assert "el vigia NO descarga" in doc and "test_carga_vigia.py" in doc
+    assert "mem_efectiva_mb >= necesidad_mb" in doc
+    assert "7082-7352" in doc and "server real apagado" in doc
+    assert "V el vigia NO descargo el 7b" in fuente

@@ -24,15 +24,19 @@ Los pasos, en este orden (cada uno imprime su veredicto y sigue):
      bajo holgada; "2m" bajo justa).
   N. `/nube /local` (el juez corre local con num_ctx = CHAT_NUM_CTX): /api/ps
      sigue con context_length 8192 -> el runner no se recreo.
-  M. la medicion con el 7b cargado: en esta maquina eso ya es `cargada`
-     (MemAvailable no cuenta al modelo: ruling 9.1). Se anota.
-  V. el vigia: como N corrio bajo `cargada` (el 7b adentro ya es cargada)
-     con keep_alive 0, el 7b se va solo al terminar N; se espera /api/ps
-     vacio y se recarga desde afuera con keep_alive "5m" (lo que dejaria un
-     turno bajo holgada) para que sea el VIGIA el que descargue: en <= 90 s
-     una fila `descarga` en telemetry.jsonl y /api/ps vacio; el local queda
-     suspendido. Al descargar, MemAvailable vuelve a subir: por eso lo que
-     sigue necesita carga REAL.
+  M. la medicion con el 7b cargado: con la memoria EFECTIVA (ola de fix
+     del 2026-09-11, punto 1: MemAvailable + el size del 7b listado) el 7b
+     adentro y nada mas es `holgada` (2709 + 5203 = 7912 en la corrida 3;
+     o `justa` por CPU): se anota y se afirma `nivel != "cargada"` y
+     `mem_efectiva_mb >= necesidad_mb`.
+  V. el vigia NO descarga: con el 7b cargado (tras A/N) se esperan dos
+     ticks (130 s) y se afirma que NO hay fila `descarga` y que /api/ps
+     sigue listando el 7b (si M dio `justa`, el keep_alive del turno fue
+     "2m" y Ollama lo puede soltar solo antes de los 130 s: eso se reporta
+     como nota, no como fallo). El camino de la descarga (cargada con el 7b
+     adentro -> evict + suspension) queda cubierto por test_carga_vigia.py:
+     no se puede provocar `cargada` con el 7b adentro sin pasar el tope
+     duro de 1500 MB (500 + 5203 < 5746: seria el OOM de verdad).
   R. el reservador SIN el modelo cargado: aparta hasta `cargada` (o tope duro)
      -> la calibracion "cargada de verdad" (MemAvailable, PSI, load1, swap en
      ese momento: ES la fila que se anota en carga.CALIBRACION). Se mantiene
@@ -48,16 +52,19 @@ Los pasos, en este orden (cada uno imprime su veredicto y sigue):
      con "/local es local, puede tardar o fallar"; A MITAD DEL STREAM el
      smoke manda un keep_alive 0 desde afuera (lo que haria el vigia): el
      turno termina con done, sin error y con texto -> keep_alive 0 no corta
-     una request viva; despues /api/ps queda vacio en <= 30 s (el keep_alive
-     0 del propio turno).
+     una request viva; despues /api/ps queda vacio en <= 90 s (el keep_alive
+     "30s" del propio turno bajo cargada, punto 2, o el vigia al tick).
   P. cargar el 7b en C manda paginas frias de otros procesos a zram y al
      descargarse sobra memoria (la reserva sola ya no alcanza): el reservador
      vuelve a apartar hasta `cargada`; despues una rutina `catastro`
      habilitada (interval 60, sin last_run): en <= 90 s una fila `pospone` y
      last_run sigue None.
   L. libera la memoria: se espera `holgada` hasta 120 s (o se reporta el
-     nivel alcanzado: hoy en reposo la Ally dio `justa`, 5876 MB); la rutina
-     corre al tick siguiente (last_run puesto) si el nivel lo permite.
+     nivel alcanzado: en las tres corridas del 2026-09-11, con el server
+     real apagado, tras liberar dio `holgada` con 7082-7352 MB; con el
+     server real corriendo la Ally en reposo da `justa`); la rutina corre al
+     tick siguiente (last_run puesto) salvo `cargada` (bajo justa corren
+     todas: punto 5).
   D. `traduce al ingles: hola` (va local por capacidad): con holgada, local
      sin senal (la histeresis se levanto sola); con justa, suscripcion con
      motivo "local suspendido hasta holgada" (se REPORTA: es el diseno, y el
@@ -161,7 +168,8 @@ def medir() -> carga.Carga:
 
 
 def linea(c: carga.Carga) -> str:
-    return (f"{c.nivel} mem={c.mem_disponible_mb} necesidad={c.necesidad_mb} "
+    return (f"{c.nivel} mem={c.mem_disponible_mb} efectiva={c.mem_efectiva_mb} "
+            f"(modelo {c.modelo_cargado_mb}) necesidad={c.necesidad_mb} "
             f"psi_mem={c.psi_mem_some10}/{c.psi_mem_full10} psi_cpu={c.psi_cpu_some10} "
             f"load1={c.load1}/{c.ncpu} swap_usado={c.swap_usado_mb} modelos={c.modelos_cargados}"
             + (f" ({c.motivo})" if c.motivo else ""))
@@ -233,18 +241,6 @@ def _ollama_listo() -> None:
 def ps() -> list[dict]:
     with urllib.request.urlopen(f"{OLLAMA}/api/ps", timeout=10) as r:
         return json.loads(r.read()).get("models", [])
-
-
-def cargar_desde_afuera(keep_alive: str) -> None:
-    """Carga el 7b como lo dejaria un turno bajo holgada (keep_alive 5m):
-    un prompt vacio a /api/generate solo carga el modelo."""
-    req = urllib.request.Request(
-        f"{OLLAMA}/api/generate",
-        data=json.dumps({"model": MODELO, "prompt": "", "stream": False,
-                         "keep_alive": keep_alive}).encode(),
-        headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=180) as r:
-        r.read()
 
 
 def evict_desde_afuera() -> None:
@@ -461,7 +457,7 @@ def main(argv=None) -> int:
         if con_server.nivel == "cargada":
             res.nota("1 precondicion de A, N y V", "la maquina YA es cargada con el server arriba: "
                      "A, N y V van a fallar por la maquina (el 7b no queda cargado bajo cargada: "
-                     "keep_alive 0), no por el producto")
+                     "keep_alive 30s y el vigia lo descarga), no por el producto")
 
         # 1. las UIs sirven la marca
         res.ok("1 carga.js sirve", "textosDeCarga" in server.texto("/static/fabrica/carga.js"))
@@ -483,33 +479,43 @@ def main(argv=None) -> int:
                any(m.get("name") == MODELO and m.get("context_length") == 8192 for m in cargados),
                json.dumps([(m.get("name"), m.get("context_length")) for m in cargados]) + f" error={n['error']}")
 
-        # M. la medicion con el 7b cargado
+        # M. la medicion con el 7b cargado: con la memoria efectiva (ola de
+        # fix, punto 1) el 7b adentro y nada mas NO es cargada
         m = medir()
         calibracion.append(("con el 7b cargado", m))
         res.nota("M medicion con el 7b cargado", linea(m))
-        if m.nivel != "cargada":
-            res.nota("M no es cargada con el 7b: aparto memoria hasta cargada", "")
-            m = reservar_hasta_cargada(reservador)
-            calibracion.append(("con el 7b + reservador", m))
-        res.ok("M cargada", m.nivel == "cargada", linea(m))
+        res.ok("M no cargada con el 7b cargado (memoria efectiva >= necesidad)",
+               m.nivel != "cargada" and m.modelo_cargado_mb > 0 and m.mem_efectiva_mb >= m.necesidad_mb,
+               linea(m))
 
-        # V. el vigia descarga sin cortar nada. En la corrida 1 el 7b ya se
-        # habia ido solo: N corrio bajo cargada y su propio keep_alive 0 lo
-        # descargo antes del tick. Para que sea el VIGIA el que descarga, se
-        # carga el 7b desde afuera con keep_alive "5m" (lo que dejaria un
-        # turno bajo holgada) con la maquina cargada, y se espera la fila.
-        # (Ollama tarda unos segundos en soltar el runner tras un keep_alive
-        # 0: primero se espera a que el ps quede vacio, y recien ahi se
-        # recarga; si N no lo descargo, se sigue con el que hay.)
-        if esperar_ps_vacio(30):
-            cargar_desde_afuera("5m")
-            m = medir()
-            calibracion.append(("con el 7b recargado para el vigia", m))
-            res.nota("V el 7b recargado desde afuera (keep_alive 5m)", linea(m))
-        fila = server.esperar_fila("carga", "descarga")
-        res.ok("V el vigia descargo el 7b (fila descarga)", fila is not None and fila.get("modelo") == MODELO,
-               json.dumps({k: fila.get(k) for k in ("modelo", "ok", "nivel", "mem_disponible_mb")}) if fila else "sin fila en 90 s")
-        res.ok("V /api/ps vacio tras la descarga", esperar_ps_vacio(30), json.dumps([x.get("name") for x in ps()]))
+        # V. el vigia NO descarga (punto 1): dos ticks sin fila `descarga` y
+        # /api/ps sigue listando el 7b. El camino de la descarga (cargada
+        # con el 7b adentro) lo cubre test_carga_vigia.py: provocarlo aca
+        # seria pasar el tope duro de 1500 MB (el OOM de verdad).
+        antes = [x for x in ps() if x.get("name") == MODELO]
+        descargas_antes = len([f for f in server.telemetria("carga") if f.get("accion") == "descarga"])
+        res.nota("V espero dos ticks (130 s) con el 7b cargado",
+                 json.dumps([(x.get("name"), x.get("expires_at")) for x in antes]))
+        time.sleep(130)        # dos ticks del ticker (60 s) con margen
+        descargas = [f for f in server.telemetria("carga") if f.get("accion") == "descarga"]
+        res.ok("V el vigia NO descargo el 7b en dos ticks (sin fila descarga)",
+               len(descargas) == descargas_antes,
+               json.dumps([{k: f.get(k) for k in ("modelo", "nivel", "mem_disponible_mb", "mem_efectiva_mb")}
+                           for f in descargas[descargas_antes:]]))
+        sigue = any(x.get("name") == MODELO for x in ps())
+        if m.nivel == "holgada":
+            res.ok("V /api/ps sigue listando el 7b (keep_alive 5m intacto)", sigue,
+                   json.dumps([x.get("name") for x in ps()]))
+        else:
+            res.nota("V /api/ps con el 7b tras 130 s",
+                     f"{'sigue' if sigue else 'se fue solo'}: M dio {m.nivel} (keep_alive 2m), "
+                     "una expiracion de Ollama no es una descarga del vigia")
+        # lo que sigue necesita el 7b afuera y carga REAL: se descarga desde
+        # afuera (un keep_alive 0 a un modelo cargado; sin request viva)
+        if sigue:
+            evict_desde_afuera()
+        res.ok("V /api/ps vacio tras el evict desde afuera", esperar_ps_vacio(30),
+               json.dumps([x.get("name") for x in ps()]))
         time.sleep(3)          # que MemAvailable se asiente tras la descarga
 
         # R. la calibracion "cargada de verdad": el reservador SIN el modelo
@@ -550,8 +556,8 @@ def main(argv=None) -> int:
         res.ok("C keep_alive 0 desde afuera no corto la request viva",
                c["error"] is None and len(c["texto"].strip()) > 40 and "done" in c["eventos"],
                f"{c['ms']} ms, {len(c['texto'])} chars, error={c['error']}")
-        res.ok("C /api/ps vacio tras el turno (keep_alive 0 del propio turno)", esperar_ps_vacio(30),
-               json.dumps([x.get("name") for x in ps()]))
+        res.ok("C /api/ps vacio tras el turno (keep_alive 30s del turno bajo cargada, o el vigia al tick)",
+               esperar_ps_vacio(ESPERA_TICK_S), json.dumps([x.get("name") for x in ps()]))
 
         # P. la rutina pospuesta. La reserva sigue apartada, pero cargar el
         # 7b en C manda paginas frias de OTROS procesos a zram (comprimidas
@@ -589,7 +595,7 @@ def main(argv=None) -> int:
                 corrio = mia["last_run"]
                 break
             time.sleep(5)
-        if nivel in ("holgada", "justa"):        # catastro no es pesada: bajo justa corre
+        if nivel in ("holgada", "justa"):        # bajo justa corren todas (punto 5)
             res.ok("L la rutina pospuesta corrio al liberar", corrio is not None, json.dumps(corrio))
         else:
             res.nota("L la rutina sigue pospuesta", f"nivel {nivel}")
@@ -620,6 +626,7 @@ def main(argv=None) -> int:
     print("\n=== calibracion (para carga.CALIBRACION) ===")
     for escena, c in calibracion:
         print(json.dumps({"cuando": c.medido_en, "escena": escena, "mem_disponible_mb": c.mem_disponible_mb,
+                          "modelo_cargado_mb": c.modelo_cargado_mb,
                           "necesidad_mb": c.necesidad_mb, "psi_mem_some10": c.psi_mem_some10,
                           "psi_mem_full10": c.psi_mem_full10, "psi_cpu_some10": c.psi_cpu_some10,
                           "load1": c.load1, "ncpu": c.ncpu, "swap_usado_mb": c.swap_usado_mb,

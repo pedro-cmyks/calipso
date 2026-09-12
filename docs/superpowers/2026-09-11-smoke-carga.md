@@ -8,7 +8,7 @@ raiz del repo). Server desechable: `uvicorn calipso.server:app` en 127.0.0.1:877
 restaurado desde `experimentos/fixtures/memoria_smoke_home/` (copia; el fixture no se toca), token
 aleatorio, `CALIPSO_NO_TOTP=1`. Ollama REAL en 11434 con `qwen2.5:7b`. La CLI `claude` de suscripcion
 estaba disponible (el turno B lo contesto Socrates por haiku). Sin Chromium: las marcas de las dos UIs las
-cubren los 12 tests de node de la Task 5; el smoke verifico que `carga.js` sirve y que `index.html` lo importa.
+cubren los 13 tests de node de la Task 5 (3+5+3+2); el smoke verifico que `carga.js` sirve y que `index.html` lo importa.
 
 Tres corridas, todas del controlador del plan (no de un implementador), con el server REAL de Pedro
 (8000) APAGADO durante cada una y relanzado al terminar (login 200, `/api/ps` vacio, ningun turno enviado).
@@ -48,7 +48,8 @@ desechable arriba: `justa` 5945.
 **Arreglo 1 (del controlador, en `experimentos/carga_smoke.py`):** el reservador aparta `os.urandom(PASO)`
 (bytes aleatorios no se comprimen: mandarlos a zram no libera nada y el kernel no gana con eso); y en V, si
 `/api/ps` esta vacio, se recarga el 7b desde afuera con `keep_alive: "5m"` (lo que dejaria un turno bajo
-`holgada`) para que sea el VIGIA quien lo descargue.
+`holgada`) para que sea el VIGIA quien lo descargue. Tras la corrida 3, `1c2685b` cambio el reservador a
+`readinto` desde /dev/urandom (sin copia transitoria); probado en seco, no corrido en vivo.
 
 **Corrida 2 (22:37-22:44, home `xtxofgn9`, EXIT=1, 3 fallos).** Paso 0: `holgada` 8314 MB; con el server
 desechable arriba: `holgada` 7165.
@@ -219,7 +220,7 @@ Al final el `finally` libero la reserva, apago el server y descargo el 7b que de
   ningun turno con equipo ni con adjunto; las cuentas quedaron en 0. Solo tests (Task 3).
 - `descarga_fallida` y `vigia_error`.
 - Dos turnos locales a la vez (`en_uso > 1`).
-- Las marcas en las UIs con un navegador (12 tests de node de la Task 5; aca solo que `carga.js` sirve y que
+- Las marcas en las UIs con un navegador (13 tests de node de la Task 5, 3+5+3+2; aca solo que `carga.js` sirve y que
   `index.html` lo importa).
 - Pedro jugando de verdad: el reservador es memoria anonima incompresible sin CPU ni GPU; un juego ademas
   ocupa hilos (la CPU entra solo en `justa`: ruling 9.4) y VRAM compartida.
