@@ -17,6 +17,7 @@ import uuid
 from typing import Any
 
 from calipso import aduana
+from calipso import carga
 
 IMAGE_MIMES = {
     "image/png", "image/jpeg", "image/jpg", "image/gif",
@@ -237,7 +238,7 @@ def ollama_vision_model() -> str | None:
 
 def vision_describe(project_root: str | None, ids: list[str],
                     question: str = "Describe en detalle lo que ves en esta imagen.",
-                    *, quien: aduana.Quien) -> str | None:
+                    *, quien: aduana.Quien, permitir_ollama: bool = True) -> str | None:
     """Describe imagen(es) con el motor de visión disponible.
     Prioridad: SDK Anthropic (ANTHROPIC_API_KEY) > Ollama vision model.
     Devuelve texto con la descripción, o None si no hay capacidad de visión.
@@ -252,8 +253,10 @@ def vision_describe(project_root: str | None, ids: list[str],
     if api_key:
         return _vision_anthropic(project_root, image_ids, question, api_key, quien)
 
+    # la vision por Ollama es un SEGUNDO modelo en RAM: el turno la permite
+    # solo bajo holgada (spec carga 3.5); con permitir_ollama=False, None
     vm = ollama_vision_model()
-    if vm:
+    if vm and permitir_ollama:
         return _vision_ollama(project_root, image_ids, question, vm)
 
     return None
@@ -305,14 +308,15 @@ def _vision_ollama(project_root: str | None, image_ids: list[str],
                 images_b64.append(result[0])
         if not images_b64:
             return None
-        payload = _j.dumps({
+        # sitio 6 de carga.payload_local (spec carga 3.6); uso suelto (en_uso)
+        payload = _j.dumps(carga.payload_local({
             "model": model, "prompt": question,
             "images": images_b64, "stream": False,
-        }).encode()
+        })).encode()
         req = _ur.Request("http://localhost:11434/api/generate", data=payload,
                           method="POST")
         req.add_header("Content-Type", "application/json")
-        with _ur.urlopen(req, timeout=60) as r:
+        with carga.usando(), _ur.urlopen(req, timeout=60) as r:
             return _j.loads(r.read()).get("response", "").strip() or None
     except Exception as e:
         return f"[vision Ollama error: {e}]"

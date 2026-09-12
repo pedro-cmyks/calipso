@@ -10,6 +10,7 @@ cerrado -- no se manda nada a la nube.
 import json
 
 import dispatch
+from calipso import carga
 
 _TIPOS = ("identidad", "credencial", "salud", "ubicacion", "financiero", "contacto")
 
@@ -56,16 +57,20 @@ def juzgar_llm(texto: str, base_url: str | None = None,
     {"tramos": [...], "ok": bool}. ok=False si el modelo no responde o su
     salida no parsea -- el llamador lo trata como fallo cerrado."""
     cfg = dispatch.CONFIG["local"]
-    payload = {
+    # sitio 5 de carga.payload_local (spec carga 3.6): keep_alive y num_thread
+    # del nivel reciente; y `num_ctx` unificado con el chat (CHAT_NUM_CTX):
+    # con 4096 aca y 8192 alla, Ollama recreaba el runner en cada /nube
+    payload = carga.payload_local({
         "model": modelo or cfg["model"],
         "system": JUEZ_SISTEMA,
         "prompt": texto,
         "stream": False,
         "format": "json",
-        "options": {"temperature": 0, "num_ctx": 4096},
-    }
+        "options": {"temperature": 0, "num_ctx": carga.CHAT_NUM_CTX},
+    })
     try:
-        data = dispatch._http_post_json(base_url or cfg["base_url"], payload)
+        with carga.usando():      # uso suelto del 7b: el vigia no lo descarga mientras juzga
+            data = dispatch._http_post_json(base_url or cfg["base_url"], payload)
         obj = json.loads(data.get("response", ""))
         crudos = obj.get("tramos", []) if isinstance(obj, dict) else []
         tramos = [{"texto": str(t["texto"]), "tipo": str(t.get("tipo", ""))}

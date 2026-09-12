@@ -15,6 +15,7 @@ import {disposicion, escapar, textoDeTarjeta, posicionDeTarjeta,
         textoDeEmpleado, textoDeRazonamiento} from "./paneles.js";
 import {crearChat, textoDeAbismo} from "./chat.js";
 import {textosDeCanario} from "./canarios.js";
+import {textosDeCarga} from "./carga.js";
 import {crearPulso, empleadosDe, estadoVisible} from "./pulso.js";
 import {textoDeMesa} from "./mesa.js";
 import {textoDePlantel} from "./plantel.js";
@@ -804,6 +805,9 @@ async function pintarInbox() {
 const cajaAduana = document.getElementById("aduana");
 let datosAduana = null;
 let filtrosAduana = {};
+// la medicion de la maquina y las cuentas del dia (GET /api/carga); vive
+// al lado de los datos para que el repintado por filtro la conserve
+let maquinaAduana = null;
 
 async function pintarAduana() {
   // misma guarda que cajaAparatos: arranque.test.js monta un DOM de mentira
@@ -813,7 +817,10 @@ async function pintarAduana() {
     cajaAduana.innerHTML = `<div class="vacio">${texto}</div>`;
   };
   try {
-    const r = await fetch("/api/aduana");
+    // la aduana y la maquina en paralelo; la maquina puede faltar (endpoint
+    // caido, fuera de alcance) sin tumbar la aduana: queda en null
+    const [r, rm] = await Promise.all([
+      fetch("/api/aduana"), fetch("/api/carga").catch(() => null)]);
     if (!r.ok) {
       // 401/403 no es una falla: es un lector, que no ve la fabrica
       sinLibro(r.status === 401 || r.status === 403
@@ -822,7 +829,8 @@ async function pintarAduana() {
       return;
     }
     datosAduana = await r.json();
-    cajaAduana.innerHTML = textoDeAduana(datosAduana, filtrosAduana);
+    maquinaAduana = rm && rm.ok ? await rm.json().catch(() => null) : null;
+    cajaAduana.innerHTML = textoDeAduana(datosAduana, filtrosAduana, maquinaAduana);
   } catch (_) {
     sinLibro("No se pudo leer el libro de la aduana.");
   }
@@ -835,7 +843,7 @@ cajaAduana?.addEventListener("change", evento => {
   // el select nuevo nace con lo que diga `filtrosAduana`. Se repinta con
   // los datos que ya vinieron: filtrar no pide el libro de nuevo.
   filtrosAduana = {...filtrosAduana, [select.dataset.filtro]: select.value};
-  cajaAduana.innerHTML = textoDeAduana(datosAduana, filtrosAduana);
+  cajaAduana.innerHTML = textoDeAduana(datosAduana, filtrosAduana, maquinaAduana);
 });
 
 for (const boton of document.querySelectorAll("#submesa button")) {
@@ -1129,6 +1137,10 @@ const nodosDeTurno = [];
 // texto cambia el pie se da por perdido y se vuelve a colgar
 const textosPintados = [];
 const piesDeTurno = [];
+// y la cabecera con la marca de la carga (spec carga 2026-09-11, 4): un nodo
+// por turno que se REUTILIZA: cuando el texto cambia, textContent se lo lleva
+// en el navegador y se vuelve a insertar el mismo nodo (insertBefore mueve)
+const cabecerasDeTurno = [];
 let avisoPasajero = null;
 
 /** Las marcas del canario al pie del turno: un <details> con el resumen
@@ -1148,6 +1160,34 @@ function pintarPie(i, div, turno) {
   pie.appendChild(detalle);
   div.appendChild(pie);
   piesDeTurno[i] = pie;
+}
+
+/** La marca de la carga como CABECERA del turno de Calipso: un <details>
+ *  con el aviso del server en el summary y los numeros adentro, primer
+ *  hijo del div; sin color de alarma. Se crea una vez por turno. */
+function pintarCabecera(i, div, turno) {
+  const marcas = textosDeCarga(turno.carga);
+  if (!marcas.length) return;
+  const texto = marcas.map(m => m.texto).join(" | ");
+  const vieja = cabecerasDeTurno[i];
+  if (vieja) {
+    // ya esta colgada: pintarConversacion la mueve. Solo si la MARCA cambio
+    // (el fallback suscripcion -> local pisa la del turno) se reemplaza el nodo
+    if (vieja.dataset.marca === texto) return;
+    div.removeChild(vieja);
+  }
+  const cab = document.createElement("details");
+  cab.className = "cabecera";
+  cab.dataset.marca = texto;
+  const resumen = document.createElement("summary");
+  resumen.textContent = texto;
+  cab.appendChild(resumen);
+  const detalle = document.createElement("div");
+  detalle.className = "cabecera-detalle";
+  detalle.textContent = marcas.map(m => m.detalle).filter(Boolean).join("\n");
+  cab.appendChild(detalle);
+  div.insertBefore(cab, div.firstChild);
+  cabecerasDeTurno[i] = cab;
 }
 
 function claseDeTurno(t) {
@@ -1170,7 +1210,9 @@ function pintarConversacion(turnos) {
     nodosDeTurno.push(div);
     textosPintados.push(turnos[i].texto);
     piesDeTurno.push(null);
+    cabecerasDeTurno.push(null);
     conversacion.appendChild(div);
+    pintarCabecera(i, div, turnos[i]);   // el historial cargado trae meta.carga
     pintarPie(i, div, turnos[i]);        // el historial cargado trae meta.canarios
   }
   // el unico turno que cambia mientras llegan chunks es el ultimo: al resto
@@ -1182,9 +1224,12 @@ function pintarConversacion(turnos) {
     div.textContent = turnos[i].texto;
     textosPintados[i] = turnos[i].texto;
     piesDeTurno[i] = null;               // textContent se llevo el pie
+    // ...y la cabecera: el MISMO nodo vuelve adelante (insertBefore mueve)
+    if (cabecerasDeTurno[i]) div.insertBefore(cabecerasDeTurno[i], div.firstChild);
   }
   const clase = claseDeTurno(turnos[i]);
   if (div.className !== clase) div.className = clase;
+  pintarCabecera(i, div, turnos[i]);     // la marca llego antes del primer chunk
   pintarPie(i, div, turnos[i]);          // la senal llega antes del done
 }
 
@@ -1247,6 +1292,7 @@ const chat = crearChat(estado => {
     nodosDeTurno.length = 0;
     textosPintados.length = 0;
     piesDeTurno.length = 0;
+    cabecerasDeTurno.length = 0;
     avisoPasajero = null;
     conversacion.innerHTML = "";
   }

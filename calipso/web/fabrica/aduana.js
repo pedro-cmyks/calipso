@@ -108,7 +108,37 @@ function selectorDeFiltro(filtro, claves, elegido) {
   return `<label>${filtro}<select data-filtro="${filtro}">${opciones.join("")}</select></label>`;
 }
 
-export function textoDeAduana(datos, filtros = {}) {
+/** La linea "la maquina" de la pestana (spec carga 2026-09-11, seccion 4):
+ *  la medicion actual de GET /api/carga y las cuentas del dia de telemetria.
+ *  `maquina` es {medicion, hoy}; sin el (endpoint caido, fuera de alcance),
+ *  "" y la aduana se pinta igual. La clase es .maquina y no .carga: `carga`
+ *  ya es el PAYLOAD de un cruce en esta pestana. Los nombres de modelos
+ *  vienen de /api/ps: texto no confiable, pasan por escapar(). */
+export function textoDeMaquina(maquina) {
+  const m = maquina?.medicion;
+  if (!m || typeof m !== "object") return "";
+  const hoy = maquina.hoy || {};
+  const medido = m.medido || {};
+  const nivel = Object.values(medido).some(Boolean) ? (m.nivel || "?") : "sin medir";
+  const memoria = `${escapar(m.mem_disponible_mb ?? "?")} MB libres, necesita ` +
+    `${escapar(m.necesidad_mb ?? "?")}` + (m.motivo ? ` (${escapar(m.motivo)})` : "");
+  const presion = `mem ${escapar(m.psi_mem_some10 ?? 0)}/${escapar(m.psi_mem_full10 ?? 0)}, ` +
+    `cpu ${escapar(m.psi_cpu_some10 ?? 0)}, load1 ${escapar(m.load1 ?? 0)}/${escapar(m.ncpu ?? "?")}, ` +
+    `swap usado ${escapar(m.swap_usado_mb ?? 0)} MB`;
+  const cargados = (m.modelos_cargados || []).length
+    ? m.modelos_cargados.map(escapar).join(", ") : "ninguno";
+  const cuentas = `${escapar(hoy.suscripcion || 0)} a suscripcion, ` +
+    `${escapar(hoy.local_con_aviso || 0)} local con aviso, ` +
+    `${escapar(hoy.descarga || 0)} descarga(s), ${escapar(hoy.pospone || 0)} pospuesta(s)`;   // pospone: rutinas distintas, no ticks (cuentas_del_dia)
+  return `<div class="maquina"><div class="subtitulo">la maquina</div>` +
+    `<div class="fila"><span>nivel</span><span>${escapar(nivel)}</span></div>` +
+    `<div class="fila"><span>memoria</span><span>${memoria}</span></div>` +
+    `<div class="fila"><span>presion</span><span>${presion}</span></div>` +
+    `<div class="fila"><span>cargados</span><span>${cargados}</span></div>` +
+    `<div class="fila"><span>hoy</span><span>${cuentas}</span></div></div>`;
+}
+
+export function textoDeAduana(datos, filtros = {}, maquina = null) {
   const cruces = datos?.cruces || [];
   const totales = datos?.totales || {};
   const sinLibro = datos?.sin_libro;
@@ -133,6 +163,6 @@ export function textoDeAduana(datos, filtros = {}) {
     : (cruces.length
         ? `<div class="vacio">Ningun cruce con ese filtro.</div>`
         : `<div class="vacio">Ningun cruce hoy.</div>`);
-  return aviso + rotas + cabecera + bloques + selectores +
+  return textoDeMaquina(maquina) + aviso + rotas + cabecera + bloques + selectores +
     `<div class="subtitulo">cruces del dia</div>` + lista;
 }

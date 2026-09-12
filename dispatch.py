@@ -45,11 +45,6 @@ except Exception:
     load_config = None
 
 try:
-    from calipso import resource_dispatcher as _rd
-except Exception:
-    _rd = None  # type: ignore[assignment]
-
-try:
     from calipso.economia.pagador import (Pagador as _Pagador,
                                           suscripcion_de_cliente as
                                           _suscripcion_de_cliente)

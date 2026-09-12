@@ -157,6 +157,13 @@
                        font-size: 11px; color: var(--muted); }
   .msg.bot .msg-foot summary { cursor: pointer; }
   .msg.bot .msg-foot .msg-foot-detalle { white-space: pre-wrap; margin-top: 2px; }
+  /* la marca de la carga como CABECERA de la burbuja (spec carga 2026-09-11,
+     seccion 4): el aviso del server, los numeros al tocar; sin alarma. El
+     padding derecho deja lugar a Narrar/Copiar, que son absolutos */
+  .msg.bot .msg-head { display: block; white-space: normal; margin-bottom: 6px;
+                       padding-right: 90px; font-size: 11px; color: var(--muted); }
+  .msg.bot .msg-head summary { cursor: pointer; }
+  .msg.bot .msg-head .msg-head-detalle { white-space: pre-wrap; margin-top: 2px; }
   .artifact-card { margin-top: 8px; border: 1px solid var(--border2); border-radius: 8px;
                    background: var(--bg); overflow: hidden; white-space: normal; }
   .artifact-head { display: flex; align-items: center; gap: 8px; padding: 7px 8px;
@@ -592,6 +599,10 @@ window.SvgSeguro = {pareceSvg, extraerSvgDelTexto, sanearSvg, dimensionesSvg};
 // dos UIs dicen lo mismo (calipso/web/fabrica/canarios.js, con node --test)
 import {textosDeCanario} from "/static/fabrica/canarios.js";
 window.Canarios = {textosDeCanario};
+// la marca de la carga (spec carga 2026-09-11): el mismo modulo puro que la
+// fabrica (calipso/web/fabrica/carga.js, con node --test)
+import {textosDeCarga} from "/static/fabrica/carga.js";
+window.Carga = {textosDeCarga};
 </script>
 <script>
 if ("serviceWorker" in navigator) {
@@ -610,6 +621,9 @@ const sendBtn = document.getElementById("send");
 const attachInput = document.getElementById("attachInput");
 const attachmentChips = document.getElementById("attachmentChips");
 let ws = null, botEl = null, busy = false;
+// la marca de carga del turno que viene: llega ANTES del primer chunk, cuando
+// `botEl` todavia no existe; el chunk que abre la burbuja se la lleva
+let cargaPendiente = null;
 let currentChatId = null;
 const processEls = new Map();
 const agentEls = new Map();
@@ -1713,6 +1727,26 @@ function aplicarCanario(el, veredicto) {
   pie.appendChild(detalle);
   el.appendChild(pie);
 }
+function aplicarCarga(el, marca) {
+  // la CABECERA de la burbuja (spec carga 2026-09-11, seccion 4): antes del
+  // texto, se reemplaza si ya habia una. Todo por textContent. `window.Carga`
+  // lo cuelga el script type=module de arriba
+  if (!el || !window.Carga) return;
+  const marcas = window.Carga.textosDeCarga(marca);
+  const vieja = el.querySelector(".msg-head");
+  if (vieja) vieja.remove();
+  if (!marcas.length) return;
+  const cab = document.createElement("details");
+  cab.className = "msg-head";
+  const resumen = document.createElement("summary");
+  resumen.textContent = marcas.map(m => m.texto).join(" | ");
+  cab.appendChild(resumen);
+  const detalle = document.createElement("div");
+  detalle.className = "msg-head-detalle";
+  detalle.textContent = marcas.map(m => m.detalle).filter(Boolean).join("\n");
+  cab.appendChild(detalle);
+  el.insertBefore(cab, el.firstChild);
+}
 function appendBotText(el, text) {
   const span = el?.querySelector?.(".msg-text");
   if (span) span.textContent += text || "";
@@ -2216,6 +2250,7 @@ function renderHistory(chat) {
   for (const msg of (chat?.messages || [])) {
     const el = addMsg(msg.role === "user" ? "user" : "bot", msg.text || "");
     if (msg.role !== "user" && msg.meta && msg.meta.canarios) aplicarCanario(el, msg.meta.canarios);
+    if (msg.role !== "user" && msg.meta && msg.meta.carga) aplicarCarga(el, msg.meta.carga);
     if (msg.meta && (msg.meta.route || msg.meta.model)) {
       addMsg("meta", `$ ${msg.meta.route || "ruta"} - ${msg.meta.model || ""}`);
     }
@@ -2295,7 +2330,7 @@ function connect() {
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
     if (m.type === "thinking") {
-      startThinking();
+      startThinking(); cargaPendiente = null;
     } else if (m.type === "chat") {
       if (m.chat) {
         currentChatId = m.chat.id || currentChatId;
@@ -2396,7 +2431,7 @@ function connect() {
       if (m.why) t += ` - ${m.why}`;
       addMsg("meta", t);
     } else if (m.type === "steered") {
-      stopThinking(); stopAbismo(); addMsg("meta", "interrumpido"); botEl = null;
+      stopThinking(); stopAbismo(); addMsg("meta", "interrumpido"); botEl = null; cargaPendiente = null;
     } else if (m.type === "abismo") {
       if (m.fase === "pondering") {
         startAbismo(m);
@@ -2407,7 +2442,11 @@ function connect() {
       }
     } else if (m.type === "chunk") {
       stopThinking();
-      if (!botEl) botEl = addMsg("bot", "");
+      if (!botEl) {
+        botEl = addMsg("bot", "");
+        // la burbuja nace con la cabecera de carga si la senal ya llego
+        if (cargaPendiente) { aplicarCarga(botEl, cargaPendiente); cargaPendiente = null; }
+      }
       appendBotText(botEl, m.text);
     } else if (m.type === "cost") {
       const c = m.cost_usd > 0 ? `$${m.cost_usd.toFixed(4)}` : "gratis";
@@ -2455,13 +2494,18 @@ function connect() {
       messages.appendChild(el);
       messages.scrollTop = messages.scrollHeight;
     } else if (m.type === "error") {
-      stopThinking(); stopAbismo(); addMsg("meta", "! " + m.text);
+      stopThinking(); stopAbismo(); addMsg("meta", "! " + m.text); cargaPendiente = null;
+    } else if (m.type === "carga") {
+      // llega ANTES del primer chunk (spec carga 3.2): la burbuja no existe
+      // todavia; queda pendiente para el chunk que la abra. Con la burbuja
+      // ya abierta (fallback tras texto) pisa la cabecera en el acto
+      if (botEl) aplicarCarga(botEl, m); else cargaPendiente = m;
     } else if (m.type === "canario") {
       // llega ANTES del done, sobre la burbuja que se esta cerrando; con
       // steer no hay burbuja (botEl ya es null) y no se pinta nada
       if (botEl) aplicarCanario(botEl, m);
     } else if (m.type === "done") {
-      stopThinking(); stopAbismo();
+      stopThinking(); stopAbismo(); cargaPendiente = null;
       if (_autoNarrate && botEl) {
         const span = botEl.querySelector(".msg-text");
         const narrbtn = botEl.querySelector(".narrbtn");

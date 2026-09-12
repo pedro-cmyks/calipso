@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 import calipso.routines as routines
 import calipso.server as srv
+from test_carga import medida
 from calipso import memory
 from calipso.economia import departamentos as eco_deps
 from calipso.economia import tipos as eco_tipos
@@ -798,6 +799,7 @@ def test_la_api_paga_no_gana_sin_gesto_explicito(monkeypatch):
                 "model": "deepseek-chat", "persona": "Confucio", "tier": "mid",
                 "score": 0.5}]
     monkeypatch.setattr(srv.capabilities, "choose", lambda *a, **k: list(ranking))
+    monkeypatch.setattr(srv, "_medir_carga", lambda: medida("holgada"))   # el sensor no mide en la suite
     verdict, *_ = srv._decide("analiza esto")
     assert verdict["route"] != "api"
 
@@ -808,6 +810,7 @@ def test_la_api_paga_si_gana_cuando_pedro_la_fuerza(monkeypatch):
                 "model": "deepseek-chat", "persona": "Confucio", "tier": "mid",
                 "score": 0.5}]
     monkeypatch.setattr(srv.capabilities, "choose", lambda *a, **k: list(ranking))
+    monkeypatch.setattr(srv, "_medir_carga", lambda: medida("holgada"))
     # con /api la directiva arma force_route == "api"
     verdict, *_ = srv._decide("/api analiza esto")
     assert verdict["route"] == "api"

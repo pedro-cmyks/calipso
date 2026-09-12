@@ -203,6 +203,23 @@ git (rutas explicitas o worktree); `write_text` trunca en el lugar (usar el escr
 congelan `CALIPSO_HOME` al importar; el MCP de playwright no arranca en la Ally (usar el de python del venv);
 un server que escuche en 0.0.0.0 ve como remoto lo que entra por la IP de wlan0 desde la misma maquina.
 
+**Regla de recursos (2026-09-11, spec de la carga, politica 9; va en las REGLAS de todo workflow):** la Ally
+tiene 11,4 GiB y Pedro a veces juega en ella. Todo porton, smoke o script del agente que vaya a cargar el 7b
+o a abrir Chromium empieza por `CALIPSO_HOME=$(mktemp -d) .venv/bin/python -m calipso.carga --esperar`
+(bloquea hasta NO cargada, `justa` o `holgada`, midiendo cada 15 s; `--holgada` exige `holgada`; `--tope N`
+segundos, default 600; **al vencer sale con 3 y no se corre nada**: no se baja el tope, no se saltea). Por que
+`justa` abre (ruling del controlador de la carga, tras la Task 1): con el server real corriendo (1,5 GB) la
+Ally en reposo mide `justa` (5800-6500 MB contra 6770 de `holgada`), asi que esperar `holgada` literal no
+abria nunca; `justa` quiere decir que el modelo entra con menos de 1 GB de sobra. Sigue vigente la regla de
+Pedro de los canarios para el 7b y Chromium a mano: mirar `MemAvailable` antes; con menos de 6400 MB (5,4 del
+7b + 1 de margen) se espera o se declara BLOCKED. La suite corre con `nice -n 19`. Sin flag,
+`python -m calipso.carga` imprime la medicion (`--json` la fila entera). Si el 7b de otro proceso sobra,
+descargarlo (`keep_alive: 0`). Un server desechable de Calipso pesa ~1,5 GB (la memoria construye su
+SentenceTransformer al importar `calipso.server`): con el real corriendo, levantar otro deja la maquina en
+`cargada` para el sensor antes de cargar ningun modelo (mordio en la corrida 2 del smoke de los canarios y
+frena el smoke de la carga mientras el server real este arriba). Los umbrales viven en `calipso/carga.py`
+(`UMBRALES`, con la calibracion anotada) y cambiarlos es ruling de Pedro.
+
 **Propuesta para la proxima sesion:** (1) desplegar (reiniciar + rotar); (2) decidir h05 y, si es (a), correr
 el ciclo de medicion sobre el system real (un dia); (3) la escalada PUT+commands (brainstorm corto + spec +
 plan: es lo que destraba abrir el host y, con eso, el lector); (4) sembrar la economia cuando quieras ver la
@@ -282,7 +299,10 @@ fabrica viva.
   `CALIPSO_CANARIOS=off` en el entorno del server (leido por llamada, `canarios.canarios_activos`) apaga el
   recorte (la ventana solo estima, con `num_ctx` None y la fila con `apagado`), el veredicto (no corre el
   hilo), la senal ws `canario`, `meta.canarios` y los dos numeros del remember; cualquier otro valor o ausente
-  es prendido. Bancos: anclaje recall y
+  es prendido. El mismo rollback existe para la carga (rama `feat/carga`, ola de fix del 2026-09-11, punto 3):
+  `CALIPSO_CARGA=off` (leido por llamada, `carga.carga_activa`) hace que `carga.medir` devuelva una Carga
+  holgada con `medido` todo en False y `apagado: True` sin leer /proc ni Ollama: sin vigia, sin rutinas
+  pospuestas, sin marca, sin histeresis, perillas de holgada (Calipso como antes de la rama). Bancos: anclaje recall y
   precision 100% en las tres clases sobre 22 filas reales (hecho 1/0/0, recuerdo 5/0/0, accion 2/0/0 tp/fp/fn),
   degeneracion 19/19 rotas atrapadas y 0/32 falsas. Porton de la reentrada (N=3, 12 turnos por condicion):
   vieja 0/0/0 contra nueva 0/0/0 en `sin_anclaje` / `sin_dato` / `sin_dato falso` (2 filas de `nueva` excluidas

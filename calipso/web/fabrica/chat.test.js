@@ -464,3 +464,56 @@ test("el historial cargado lleva meta.canarios al turno, y solo cuando lo trae",
   assert.deepEqual(turnos[1].canarios, VEREDICTO);
   assert.deepEqual(turnos[2], {quien: "calipso", texto: "otra", abierto: false});
 });
+
+// --- la carga: la marca llega ANTES del primer chunk y viaja en el turno ----
+
+const MARCA_CARGA = {nivel: "cargada", mem_disponible_mb: 480, motivo: "mem 480 < 5746",
+                     ruta: "local", gesto: "/local",
+                     aviso: "maquina cargada (480 MB libres): /local es local, puede tardar o fallar"};
+
+test("la senal carga antes del primer chunk queda en el turno de Calipso que ese chunk abre", () => {
+  const e = aplicar([{type: "thinking"}, {type: "carga", ...MARCA_CARGA},
+                     {type: "chunk", text: "hola"}, {type: "chunk", text: " Pedro"}, {type: "done"}]);
+  assert.equal(e.turnos.length, 1);
+  assert.deepEqual(e.turnos[0], {quien: "calipso", texto: "hola Pedro", abierto: false, carga: MARCA_CARGA});
+  assert.equal(e.cargaPendiente, null);
+});
+
+test("una carga que llega con el turno ya abierto (fallback tras texto) pisa la marca del turno", () => {
+  const OTRA = {...MARCA_CARGA, ruta: "local", gesto: "fallback",
+                aviso: "maquina cargada (480 MB libres): fallback es local, puede tardar o fallar"};
+  const e = aplicar([{type: "thinking"}, {type: "carga", ...MARCA_CARGA}, {type: "chunk", text: "hola"},
+                     {type: "carga", ...OTRA}, {type: "chunk", text: " Pedro"}, {type: "done"}]);
+  assert.equal(e.turnos.length, 1);
+  assert.deepEqual(e.turnos[0], {quien: "calipso", texto: "hola Pedro", abierto: false, carga: OTRA});
+  assert.equal(e.cargaPendiente, null);
+});
+
+test("una carga cuyo turno muere en error o done no se pega al turno siguiente", () => {
+  const conError = aplicar([{type: "thinking"}, {type: "carga", ...MARCA_CARGA}, {type: "error", text: "x"},
+                            {type: "thinking"}, {type: "chunk", text: "otro"}, {type: "done"}]);
+  assert.deepEqual(conError.turnos.at(-1), {quien: "calipso", texto: "otro", abierto: false});
+  const sinChunk = aplicar([{type: "thinking"}, {type: "carga", ...MARCA_CARGA}, {type: "done"},
+                            {type: "thinking"}, {type: "chunk", text: "otro"}]);
+  assert.deepEqual(sinChunk.turnos.at(-1), {quien: "calipso", texto: "otro", abierto: true});
+});
+
+test("una carga que llega despues de cargar otro chat se descarta", () => {
+  const {chat, disparar} = wsAbierto();
+  disparar({type: "thinking"});
+  chat.cargar({id: "c9", messages: [{role: "user", text: "viejo"}]});
+  disparar({type: "carga", ...MARCA_CARGA});
+  disparar({type: "chunk", text: "tarde"});
+  assert.equal(chat.estado().cargaPendiente, null);
+  assert.deepEqual(chat.estado().turnos, [{quien: "pedro", texto: "viejo", abierto: false}]);
+});
+
+test("el historial cargado lleva meta.carga al turno, y solo cuando lo trae", () => {
+  const turnos = turnosDeHistorial([
+    {role: "user", text: "hola"},
+    {role: "assistant", text: "que tal", meta: {route: "subscription", carga: MARCA_CARGA}},
+    {role: "assistant", text: "otra", meta: {route: "local"}},
+  ]);
+  assert.deepEqual(turnos[1], {quien: "calipso", texto: "que tal", abierto: false, carga: MARCA_CARGA});
+  assert.deepEqual(turnos[2], {quien: "calipso", texto: "otra", abierto: false});
+});
