@@ -32,6 +32,25 @@ CALIPSO_HOME = pathlib.Path(os.environ.get(
 
 KINDS = ("reflect", "learn", "backup", "departamento", "catastro", "cierre", "consumo")
 
+# las rutinas y la carga de la maquina (spec carga 2026-09-11, 3.7): bajo
+# `cargada` se pospone TODA rutina vencida; bajo `justa` solo las pesadas
+# (las que cargan el modelo local: `departamento` despierta al jefe via
+# `_pensar_local`; reflect corre `claude -p`, consumo lee JSONL, catastro
+# escanea el disco, backup escribe). Una pospuesta NO pasa por mark_run:
+# `last_run` queda intacto y sigue vencida al tick siguiente (pasarla por
+# mark_run la empujaria un intervalo entero, 24 h para las diarias). Nunca
+# se saltan: se posponen.
+POSPUESTA = "pospuesta por carga"
+PESADAS = ("departamento",)
+
+
+def se_pospone(kind: str, nivel: str | None) -> bool:
+    if nivel == "cargada":
+        return True
+    if nivel == "justa":
+        return kind in PESADAS
+    return False
+
 
 class ErrorRutinas(Exception):
     """El archivo esta pero no se pudo leer -- no es lo mismo que "nunca
@@ -279,16 +298,23 @@ def mark_run(routine_id: str, now: datetime.datetime, status: str) -> None:
 
 
 def run_due(now: datetime.datetime,
-            handlers: dict[str, Callable[[dict[str, Any]], Any]]) -> list[dict[str, Any]]:
+            handlers: dict[str, Callable[[dict[str, Any]], Any]],
+            nivel: str | None = None) -> list[dict[str, Any]]:
     """Ejecuta las rutinas vencidas usando los handlers inyectados.
 
     Devuelve un resumen por rutina ejecutada. Un handler que lanza no rompe las
-    demas: se registra `error`.
+    demas: se registra `error`. Con `nivel` (la carga de la maquina medida por
+    el ticker) las vencidas que `se_pospone` NO corren ni pasan por mark_run:
+    van a `ran` con `status` POSPUESTA (el ticker las anota en telemetria).
+    Sin `nivel`, como siempre.
     """
     ran: list[dict[str, Any]] = []
     for r in due(load(), now):
         handler = handlers.get(r["kind"])
         if handler is None:
+            continue
+        if se_pospone(r["kind"], nivel):
+            ran.append({"id": r["id"], "kind": r["kind"], "status": POSPUESTA})
             continue
         try:
             handler(r)

@@ -5652,15 +5652,87 @@ async def api_transcribe(request: Request, audio: UploadFile = File(...)) -> dic
             pass
 
 
+def _modelos_de_calipso() -> set[str]:
+    """Los nombres que el vigia puede descargar (spec carga 3.3, ruling 9.12):
+    el del chat, el del clasificador y el de vision si hay. Jamas otro: un
+    `prompt: ""` con keep_alive 0 a un modelo NO cargado lo CARGA."""
+    nombres = {dispatch.CONFIG["local"]["model"], dispatch.CONFIG["classifier"]["model"]}
+    vm = attachments.ollama_vision_model()
+    if vm:
+        nombres.add(vm)
+    return nombres
+
+
+# el hook de la descarga: los tests lo reemplazan con un espia
+_ollama_evict = carga.ollama_evict
+
+
+def _fila_sin_modelo(medida: carga.Carga) -> dict:
+    """La fila de la medicion SIN `modelo` (`Carga.modelo` es el modelo del
+    chat contra el que se midio): las filas del vigia llevan `modelo=<el
+    evictado>` y con las dos claves `log_event` levanta `TypeError: got
+    multiple values for keyword argument 'modelo'`."""
+    return {k: v for k, v in carga.fila(medida).items() if k != "modelo"}
+
+
+def _vigia_del_modelo(medida: carga.Carga) -> list[str]:
+    """Bajo `cargada`, descarga los modelos de Calipso que /api/ps de ESTA
+    medicion listo, solo con `en_uso == 0` (invariante 6: la descarga jamas
+    corta un turno; con uso, `descarga_diferida` y lo intenta el tick que
+    viene). Tras una descarga REAL (`ollama_evict` True), el local queda
+    suspendido hasta holgada (histeresis, spec 3.4); si el evict fallo
+    (timeout, Ollama colgado) la fila es `descarga_fallida` y no se suspende
+    nada. Devuelve lo que descargo."""
+    if medida.nivel != "cargada":
+        return []
+    descargados: list[str] = []
+    de_calipso = _modelos_de_calipso()
+    fila = _fila_sin_modelo(medida)
+    for nombre in medida.modelos_cargados:
+        if nombre not in de_calipso:
+            continue
+        if carga.en_uso > 0:
+            telemetry.log_event("carga", accion="descarga_diferida", modelo=nombre,
+                                en_uso=carga.en_uso, **fila)
+            continue
+        ok = _ollama_evict(nombre)
+        if ok:
+            carga.suspender()
+            descargados.append(nombre)
+        telemetry.log_event("carga", accion=("descarga" if ok else "descarga_fallida"),
+                            modelo=nombre, ok=ok, **fila)
+    return descargados
+
+
+def _tick_con_carga(now: datetime.datetime, handlers: dict) -> list[dict]:
+    """Un tick del ticker, sincrono (corre en el to_thread): mide la carga,
+    corre el vigia (un fallo suyo va a telemetria y NO se lleva las rutinas:
+    el `except Exception: continue` del ticker tragaria todo sin ruido) y
+    corre las rutinas vencidas con el nivel; las pospuestas dejan su fila."""
+    medida = _medir_carga()
+    try:
+        _vigia_del_modelo(medida)
+    except Exception as e:
+        telemetry.log_event("carga", accion="vigia_error", error=str(e), **carga.fila(medida))
+    ran = calipso_routines.run_due(now, handlers, nivel=medida.nivel)
+    for r in ran:
+        if r["status"] == calipso_routines.POSPUESTA:
+            telemetry.log_event("carga", accion="pospone", rutina=r["kind"], rutina_id=r["id"],
+                                **carga.fila(medida))
+    return ran
+
+
 async def _routines_ticker() -> None:
     """Corre rutinas vencidas mientras el server este vivo. Las tres viejas
-    son locales; la rutina "departamento" abre red (despierta al jefe)."""
+    son locales; la rutina "departamento" abre red (despierta al jefe). Cada
+    tick mide la carga primero: el vigia del modelo y las pospuestas viven
+    en `_tick_con_carga` (spec carga 3.3 y 3.7); el arranque no cambia."""
     handlers = _routine_handlers()
     while True:
         try:
             await asyncio.sleep(60)
             now = datetime.datetime.now()
-            ran = await asyncio.to_thread(calipso_routines.run_due, now, handlers)
+            ran = await asyncio.to_thread(_tick_con_carga, now, handlers)
             for r in ran:
                 print(f"[calipso] rutina {r['kind']} -> {r['status']}")
         except asyncio.CancelledError:  # pragma: no cover
