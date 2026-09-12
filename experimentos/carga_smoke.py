@@ -1,7 +1,8 @@
 """El smoke en vivo de la carga (spec 2026-09-11, seccion 6, ultimo punto):
 un server desechable en 8778 sobre el fixture de la memoria, Ollama REAL, y
 carga REAL: un reservador de memoria (subproceso) que aparta de a 512 MB
-tocando cada pagina, midiendo con el sensor despues de cada paso, hasta
+de bytes aleatorios (zram no los comprime), midiendo con el sensor despues
+de cada paso, hasta
 `cargada`, con tope duro (nunca deja MemAvailable por debajo de TOPE_DURO_MB
 ni pasa de MAX_RESERVA_MB). Sin Chromium: las marcas de las UIs las cubren
 los tests de node; aca se verifica que carga.js sirve y que index.html lo
@@ -62,6 +63,10 @@ Los pasos, en este orden (cada uno imprime su veredicto y sigue):
      motivo "local suspendido hasta holgada" (se REPORTA: es el diseno, y el
      dato para el ruling de umbrales de Pedro).
 Todo va a un home temporal; el server real (8000) y ~/.calipso no se tocan.
+Ollama SI es el real y compartido: el smoke presupone el server real apagado
+(ruling del controlador: con el real arriba, 1,5 GB, la Ally no llega) y el
+evict de C y el del final descargan el 7b lo haya cargado quien lo haya
+cargado (no cortan una request viva).
 El reservador y el server se apagan al final aunque falle un paso, y el 7b
 que deja D (keep_alive 5m) se descarga.
 
@@ -123,7 +128,9 @@ for linea in sys.stdin:
         # entera a zram, MemAvailable subio 1 GB y la maquina dejo de estar
         # cargada (la rutina de P corrio). Lo aleatorio no se comprime:
         # mandarlo a zram no libera nada y el kernel no gana con eso.
-        b = bytearray(os.urandom(PASO))
+        b = bytearray(PASO)
+        with open("/dev/urandom", "rb") as f:
+            f.readinto(b)             # sin copia transitoria: el tope duro vale
         bloques.append(b)
         print(f"ok {len(bloques) * PASO // 2**20}", flush=True)
     elif orden == "libera":

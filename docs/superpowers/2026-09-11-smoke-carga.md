@@ -37,11 +37,13 @@ desechable arriba: `justa` 5945.
   smoke el que esperaba que el vigia descargara algo que el producto ya habia descargado por su cuenta.
   El paso `V /api/ps vacio` dio ok (por eso mismo).
 - FALLO `P la rutina se pospuso` y `P last_run sigue None` (`last_run` 22:32:59): el reservador apartaba un
-  `bytearray` de ceros tocando un byte por pagina. Al cargar el 7b en C, el kernel mando esa reserva a zram
-  (una pagina casi vacia se comprime a nada): el swap subio 1 GB (4047 -> 5059 MB), `MemAvailable` volvio a
-  quedar por encima de 5746, la maquina dejo de estar `cargada` y la rutina corrio en el tick. La "carga real"
-  no era real contra zram.
-- El resto (1, A, N, M, R, B, C, L, D): ok, con los mismos numeros que la corrida 3.
+  `bytearray` de ceros tocando un byte por pagina. Hipotesis (los logs no la aislan): una reserva de ceros es
+  compresible y al cargar el 7b en C pudo irse a zram (el swap subio 1 GB, 4047 -> 5059 MB); lo demostrado
+  es que `MemAvailable` volvio a quedar por encima de 5746, la maquina dejo de estar `cargada` y la rutina
+  corrio en el tick. La corrida 2, ya con bytes aleatorios, mostro la otra mitad de la causa (lo frio de
+  OTROS procesos se comprime): de ahi los dos arreglos.
+- El resto (1, A, N, M, R, B, C, L, D): ok, con numeros parecidos a los de la corrida 3 (M 2702 / R 5506
+  contra 2709 / 5555).
 
 **Arreglo 1 (del controlador, en `experimentos/carga_smoke.py`):** el reservador aparta `os.urandom(PASO)`
 (bytes aleatorios no se comprimen: mandarlos a zram no libera nada y el kernel no gana con eso); y en V, si
@@ -99,7 +101,8 @@ todo lo que sigue necesita carga que no sea el modelo.
 ## Los pasos de la corrida 3
 
 27 filas en el resumen: 23 aserciones y 4 notas (las notas no cuentan como pasos); 0 fallos; EXIT=0.
-Los tiempos de los turnos son `latency_ms` de la fila `chat_turn` de la telemetria del home desechable.
+Los tiempos de A y C son los ms del propio smoke (entre el envio y `done`: 38650 y 60311; en la telemetria
+`latency_ms` da 38612 y 60205); los de N, B y D son `latency_ms` de la fila `chat_turn`.
 
 | paso | resultado | detalle |
 |---|---|---|
@@ -159,17 +162,26 @@ Al final el `finally` libero la reserva, apago el server y descargo el 7b que de
    en vez de `cargada`); (c) el reposo entre corridas subio de 7174 a 8314-8364 MB porque lo frio se quedo en
    zram (swap 2732 -> 4111-4156). El sensor mide MemAvailable, que es lo correcto (es lo que ve el OOM), pero
    el numero depende de cuanto frio ya esta comprimido: dos mediciones "en reposo" pueden diferir 1 GB.
-   El swap sigue sin decidir (ruling 9.3): en las tres corridas el swap usado fue de 2732 a 5367 MB sin que
-   eso dijera nada del nivel.
+   El swap sigue sin decidir (ruling 9.3): en las tres corridas el swap usado fue de 2732 a 5388 MB (el
+   maximo, corrida 1, `descarga_diferida` 22:31:59) sin que eso dijera nada del nivel.
 4. **`keep_alive: 0` desde afuera NO corta una request viva; medido 60 s.** En C el smoke mando el evict
    (`prompt: ""`, `keep_alive: 0` a `/api/generate`, lo mismo que hace el vigia) a mitad del stream: el turno
    termino con `done`, sin `error`, 479 chars, 60311 ms (corridas 1 y 2: 53762 ms / 374 chars y 60643 ms / 565
    chars). Ollama aplica el keep_alive nuevo al terminar la request en curso. El contador `en_uso` sigue
    valiendo (el vigia no encola un evict detras de un turno de un minuto: `descarga_diferida` con `en_uso: 1`
    en las tres corridas), pero el peor caso (que el vigia se le adelante al contador) no corta nada.
-5. **El runner no se recrea entre el juez y el chat.** N: `/api/ps` sigue con `context_length` 8192 despues
-   de `/nube /local`; el juez corre con `num_ctx = CHAT_NUM_CTX`. Antes de la Task 3 cada `/nube` recargaba el
-   7b (4096 contra 8192).
+5. **El `num_ctx` unificado ya no recrea el runner, pero bajo `cargada` el `keep_alive: 0` de cada pasada lo
+   descarga y recarga igual entre el juez y el chat.** N: `/api/ps` sigue con `context_length` 8192 despues de
+   `/nube /local` (el juez corre con `num_ctx = CHAT_NUM_CTX`; antes de la Task 3 cada `/nube` recargaba el 7b
+   por 4096 contra 8192). Pero la asercion solo distingue el `num_ctx`, no "runner conservado" de "runner
+   recreado con el mismo `num_ctx`", y la telemetria muestra lo segundo: en las tres corridas N corrio bajo
+   `cargada` (el 7b de A ya estaba en RAM), cada pasada llevo `keep_alive: 0`, y a mitad de N el 7b se
+   descargo tras el juez y se recargo para el turno (corrida 3: 22:46:39, 20 s despues de arrancar N,
+   `modelos_cargados: []` y 4212 MB libres contra 1925 tres segundos antes, PSI 1,51 leyendo el blob; corrida 1:
+   22:28:55, `modelos: []` a mitad de N). N tardo 48-56 s contra 36-42 s de A, que incluye la carga desde
+   disco. Es el costo del ruling 13 del plan (`keep_alive` 0 bajo `cargada`), pendiente de Pedro: la
+   alternativa es un `keep_alive` corto no cero bajo `cargada` (p. ej. `"30s"`) para que las pasadas de un
+   mismo turno compartan el runner.
 6. **El paso C es el borde de la Ally.** `/local` bajo `cargada` con ~5,4 GB "libres" carga el 7b igual (el
    spec lo pide: los gestos locales no se saltan) y la maquina queda en 860-1166 MB de MemAvailable con
    430-944 MB de zram libre (corridas 1, 2 y 3; el 18:25 del terreno tenia 68 kB de zram libre cuando Ollama
@@ -246,4 +258,7 @@ este informe (ninguna prueba carga modelo; `test_carga.py` recorre `CALIBRACION`
   margen del modelo (1280 esta calibrado al RSS real del OOM), o achicar el server (hallazgo 1).
 - **El server que pesa 1,5 GB por el `SentenceTransformer` al importar** (hallazgo 1): entender la causa
   antes que cualquier umbral.
+- **`keep_alive: 0` bajo `cargada` recarga el 7b entre las pasadas de un mismo turno** (hallazgo 5; ruling 13
+  del plan): `/nube` y las reentradas del abismo pagan una carga desde disco por pasada. Alternativa: un
+  `keep_alive` corto no cero bajo `cargada` (`"30s"`), o que el vigia sea el unico que descarga.
 - **El merge de `feat/carga`** (del controlador, `--no-ff`, tras suite + node).
