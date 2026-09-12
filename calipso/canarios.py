@@ -736,16 +736,17 @@ def recortar(secciones, historial, mensaje, num_ctx, contar=None) -> tuple[list,
     return secciones, historial, info
 
 
-def truncado(estimado: int, evaluado: int | None, num_ctx: int | None):
+def truncado(estimado: int | None, evaluado: int | None, num_ctx: int | None):
     """True/False en local; "sin medicion" cuando la pasada no llego al
     done (o la ruta no expone el prompt: suscripcion); None sin techo (api:
-    se estima y se anota, no se juzga). Las tres reglas del spec 2.3 valen
+    se estima y se anota, no se juzga) o sin estimado (la ventana de antes
+    fallo y la fila lo dice: fail-open). Las tres reglas del spec 2.3 valen
     SOLO donde `evaluado` y `estimado` salen del mismo tokenizador (el de
     qwen o su fallback, contra prompt_eval_count de Ollama): en api el
     evaluado lo cuenta el proveedor y la regla del 0.85 seria ruido."""
     if evaluado is None:
         return "sin medicion"
-    if num_ctx is None:
+    if num_ctx is None or estimado is None:
         return None
     if estimado > num_ctx or evaluado >= UMBRALES["truncado_evaluado_alto"] * num_ctx:
         return True

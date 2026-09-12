@@ -3132,15 +3132,27 @@ def _ventana_antes(secciones: list[tuple[str, str]], historial: list[dict],
     CHAT_NUM_CTX), el recorte de lo volatil. En api y suscripcion solo se
     estima (num_ctx None: no hay techo configurado, y `truncado` queda
     None: no se juzga, decision 7). Devuelve (secciones, historial, fila)
-    con la fila de la ventana a medio llenar."""
-    contar, origen = tokenizador.contador(model or dispatch.CONFIG["local"]["model"])
+    con la fila de la ventana a medio llenar. Fail-open (invariantes 1 y
+    3): si el tokenizador o el recorte revientan, el prompt viaja INTACTO
+    y la fila lleva `error`; el canario nunca frena el turno."""
     num_ctx = CHAT_NUM_CTX if route == "local" else None
-    secciones, historial, info = canarios.recortar(secciones, historial, mensaje, num_ctx, contar)
+    try:
+        contar, origen = tokenizador.contador(model or dispatch.CONFIG["local"]["model"])
+        secciones_r, historial_r, info = canarios.recortar(secciones, historial, mensaje,
+                                                           num_ctx, contar)
+    except Exception as e:
+        print(f"[canarios] ventana fallo: {e!r}", file=sys.stderr)
+        fila = {"pasada": pasada, "ruta": route, "estimado": None,
+                "estimado_sin_recorte": None, "num_ctx": num_ctx, "cabe": None,
+                "recorte": [], "no_cabe": False, "tokenizador": "fallback",
+                "evaluado": None, "truncado": None, "done_reason": None,
+                "error": type(e).__name__}
+        return secciones, historial, fila
     fila = {"pasada": pasada, "ruta": route, "estimado": info["estimado_final"],
             "estimado_sin_recorte": info["estimado"], "num_ctx": num_ctx,
             "cabe": info["cabe"], "recorte": info["recorte"], "no_cabe": info["no_cabe"],
             "tokenizador": origen, "evaluado": None, "truncado": None, "done_reason": None}
-    return secciones, historial, fila
+    return secciones_r, historial_r, fila
 
 
 def _ventana_despues(fila: dict, usage_pasada: dict) -> dict:

@@ -134,6 +134,9 @@ def test_truncado_por_pasada():
     assert c.truncado(100, 100, None) is None
     assert c.truncado(1000, 10, None) is None
     assert c.truncado(100, None, None) == "sin medicion"    # suscripcion: no expone el prompt
+    # la ventana de antes fallo (fila con estimado None, fail-open): no se juzga
+    assert c.truncado(None, 100, 8192) is None
+    assert c.truncado(None, None, 8192) == "sin medicion"
 
 
 # --- el tokenizador -----------------------------------------------------------

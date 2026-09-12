@@ -886,6 +886,32 @@ def test_fail_open_si_el_canario_revienta_el_turno_termina_y_la_fila_lo_dice(cha
     assert chat.mensajes()[-1]["meta"]["canarios"]["error"] == "RuntimeError"
 
 
+def test_fail_open_si_la_ventana_de_antes_revienta_el_turno_se_manda_intacto(chat, monkeypatch):
+    """Ola de fix del cierre (punto 2): `_ventana_antes` corre en hilo pero
+    sin red: una excepcion del tokenizador o del recorte caia al except
+    general del turno y en local terminaba en {type: error} sin respuesta
+    (invariantes 1 y 3). Ahora devuelve secciones e historial intactos y
+    una fila que dice el fallo."""
+    chats.append(chat.chat_id, "user", "hola")
+    chats.append(chat.chat_id, "assistant", "hola Pedro")
+
+    def bomba(*a, **k):
+        raise RuntimeError("recorte roto")
+    monkeypatch.setattr(srv.canarios, "recortar", bomba)
+    eventos = chat.turno("hola")
+    tipos = [e["type"] for e in eventos]
+    assert tipos.count("done") == 1 and tipos[-1] == "done" and "error" not in tipos
+    assert texto_visible(eventos) == "hola Pedro"
+    fila = de_tipo(eventos, "canario")[0]["ventana"][0]
+    assert fila["error"] == "RuntimeError" and fila["tokenizador"] == "fallback"
+    assert fila["estimado"] is None and fila["recorte"] == [] and fila["no_cabe"] is False
+    assert fila["cabe"] is None and fila["truncado"] is None and fila["num_ctx"] == srv.CHAT_NUM_CTX
+    assert fila["evaluado"] == 10 and fila["pasada"] == 1 and fila["ruta"] == "local"
+    # el modelo vio el prompt entero: nada se recorto
+    assert [m["role"] for m in chat.modelo.llamadas[0]["messages"]] == ["system", "user", "assistant", "user"]
+    assert chat.telemetria("chat_turn")[0]["canarios"]["ventana"][0]["error"] == "RuntimeError"
+
+
 def test_el_tope_de_tiempo_del_canario_no_frena_el_turno(chat, monkeypatch):
     monkeypatch.setattr(srv.canarios, "TOPE_SEGUNDOS", 0.05)
 
