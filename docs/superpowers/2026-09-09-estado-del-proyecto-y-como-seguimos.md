@@ -300,4 +300,14 @@ fabrica viva.
   reemplazar los contextos armados del banco por los del porton, y el breaker y el contador en /fabrica. Ya
   cerrados en la ola de fix del cierre: la carrera de la PWA al arranque (`loadChats` cuelga de
   `DOMContentLoaded`) y el umbral de recursos para Chromium (`LUGAR_CHROMIUM_MB = 1500`, corrida 3 del smoke
-  con las cuatro capturas de la fase B).
+  con las cuatro capturas de la fase B). **MERGEADO a main (`458f75f`) y DESPLEGADO el 2026-09-11 a las 20:16**
+  (server real reiniciado con main; ningun turno enviado). Cierre en `docs/superpowers/2026-09-11-cierre-canarios/`
+  (README con lo que queda para Pedro; addendum del spec, seccion 9, con 15 rulings para vetar por numero).
+- **La carga (2026-09-11 tarde/noche):** Pedro pidio que todo proceso sea "mindful de los recursos" (lo dijo
+  mientras jugaba y Ollama murio por OOM). Decision suya: bajo carga el chat AVISA y va por suscripcion;
+  `/local` jamas cae a la nube. Spec v2 (tres lentes, 12 rulings revertibles en su seccion 9) en
+  `docs/superpowers/specs/2026-09-11-carga-design.md`; plan de 6 tasks en `docs/superpowers/plans/2026-09-11-carga.md`;
+  rama `feat/carga`, en ejecucion por SDD en un worktree (`.claude/worktrees/carga`) para que el server real
+  siga sirviendo main. Arregla de paso `server.py:2450` (`/local` caia al ranking entero). Para el agente, la
+  regla ya rige: antes de cargar el 7b o abrir Chromium se mide `MemAvailable` (6400 MB para el 7b, 1500 para
+  Chromium) y las suites corren con `nice -n 19`.
