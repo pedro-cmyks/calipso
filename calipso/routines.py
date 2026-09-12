@@ -32,24 +32,24 @@ CALIPSO_HOME = pathlib.Path(os.environ.get(
 
 KINDS = ("reflect", "learn", "backup", "departamento", "catastro", "cierre", "consumo")
 
-# las rutinas y la carga de la maquina (spec carga 2026-09-11, 3.7): bajo
-# `cargada` se pospone TODA rutina vencida; bajo `justa` solo las pesadas
-# (las que cargan el modelo local: `departamento` despierta al jefe via
-# `_pensar_local`; reflect corre `claude -p`, consumo lee JSONL, catastro
-# escanea el disco, backup escribe). Una pospuesta NO pasa por mark_run:
+# las rutinas y la carga de la maquina (spec carga 2026-09-11, 3.7, y el
+# ruling de la ola de fix, punto 5): bajo `cargada` se pospone TODA rutina
+# vencida; bajo `justa` ninguna (el spec posponia `departamento`, la que
+# carga el modelo local via `_pensar_local`; con el server real corriendo
+# `justa` es el reposo de la Ally y el modelo entra). Una pospuesta NO pasa por mark_run:
 # `last_run` queda intacto y sigue vencida al tick siguiente (pasarla por
 # mark_run la empujaria un intervalo entero, 24 h para las diarias). Nunca
 # se saltan: se posponen.
 POSPUESTA = "pospuesta por carga"
-PESADAS = ("departamento",)
 
 
 def se_pospone(kind: str, nivel: str | None) -> bool:
-    if nivel == "cargada":
-        return True
-    if nivel == "justa":
-        return kind in PESADAS
-    return False
+    """Bajo `cargada` toda rutina vencida se pospone; bajo `justa` ninguna
+    (ruling de la ola de fix del 2026-09-11, punto 5: con el server real
+    corriendo `justa` es el estado de reposo de la Ally y quiere decir que
+    el modelo entra, como en `--esperar`; antes `departamento` se posponia
+    tambien bajo justa y no corria nunca en reposo). Sin nivel, nada."""
+    return nivel == "cargada"
 
 
 class ErrorRutinas(Exception):
@@ -306,6 +306,7 @@ def run_due(now: datetime.datetime,
     demas: se registra `error`. Con `nivel` (la carga de la maquina medida por
     el ticker) las vencidas que `se_pospone` NO corren ni pasan por mark_run:
     van a `ran` con `status` POSPUESTA (el ticker las anota en telemetria).
+    Solo `cargada` pospone; bajo `justa` corren todas (ola de fix, punto 5).
     Sin `nivel`, como siempre.
     """
     ran: list[dict[str, Any]] = []
