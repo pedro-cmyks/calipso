@@ -175,3 +175,66 @@ def test_el_turno_local_corre_con_el_contador_tomado_y_lo_suelta(chat, monkeypat
     monkeypatch.setattr(srv.dispatch, "_ollama_chat_chunks", modelo)
     chat.turno("hola")
     assert modelo.visto == 1 and carga.en_uso == 0
+
+
+def test_el_fallback_local_de_un_agente_del_equipo_bajo_cargada_avisa_y_suelta_el_contador(chat, monkeypatch):
+    """Ola de fix, punto 7: si un agente del equipo dinamico (o la sintesis)
+    falla, el fallback iba a `_run_backend_text(local)` sin mirar el nivel,
+    sin marca y sin rastro. Bajo cargada: senal `carga` con gesto `fallback`
+    y aviso "puede tardar o fallar", fila `local_con_aviso`, y el POST corre
+    con `en_uso` tomado; al terminar vuelve a 0."""
+    _extra(monkeypatch, carga_medicion=MEDICION_CARGADA)
+    monkeypatch.setattr(srv, "_should_orchestrate", lambda *a, **k: True)
+    monkeypatch.setattr(srv, "_plan_dynamic_team", lambda *a, **k: {"plan": 1})
+    monkeypatch.setattr(srv.sessions, "active", lambda *a, **k: None)
+    monkeypatch.setattr(srv.orchestrator, "build_team", lambda *a, **k: {
+        "agents": [{"role": "scout", "task": "mira", "model": "claude-sonnet", "persona": "Mariana",
+                    "route": "subscription", "client": "claude"}], "synthesis": ""})
+    monkeypatch.setattr(srv.orchestrator, "agent_system", lambda *a, **k: "s")
+    monkeypatch.setattr(srv.orchestrator, "synthesis_prompt", lambda *a, **k: "u")
+
+    async def agente_que_revienta(ws, inbox, agent, system, task):
+        raise RuntimeError("claude caido")
+    monkeypatch.setattr(srv, "_run_agent_text", agente_que_revienta)
+    vistos = []
+
+    def post(url, payload, headers=None):
+        vistos.append(carga.en_uso)
+        return {"response": "texto local"}
+    monkeypatch.setattr(srv.dispatch, "_http_post_json", post)
+    eventos = chat.turno("arma un plan de la ciudad")
+    # el agente cayo al fallback local y la sintesis corrio local: dos POST
+    # con el contador tomado (el turno del harness es local y ya lo tiene:
+    # el fallback suma el suyo), y al final vuelve a 0
+    assert len(vistos) == 2 and all(u >= 1 for u in vistos) and carga.en_uso == 0
+    senales = de_tipo(eventos, "carga")
+    assert len(senales) == 1 and senales[0]["gesto"] == "fallback" and senales[0]["ruta"] == "local"
+    assert senales[0]["aviso"] == "maquina cargada (480 MB libres): fallback es local, puede tardar o fallar"
+    tipos = [e["type"] for e in eventos]
+    assert tipos.index("carga") < tipos.index("chunk")
+    filas = chat.telemetria("carga")
+    assert [f["accion"] for f in filas] == ["local_con_aviso"]
+    assert filas[0]["gesto"] == "fallback" and filas[0]["chat"] == chat.chat_id
+    assert texto_visible(eventos) == "texto local"
+    hecho = [e for e in de_tipo(eventos, "agent") if e.get("action") == "done"][0]
+    assert hecho["agent"]["fallback_route"] == "local" and hecho["agent"]["fallback_error"] == "claude caido"
+
+
+def test_el_fallback_local_del_equipo_bajo_holgada_no_avisa(chat, monkeypatch):
+    _extra(monkeypatch, carga_medicion=carga.fila(medida("holgada")))
+    monkeypatch.setattr(srv, "_should_orchestrate", lambda *a, **k: True)
+    monkeypatch.setattr(srv, "_plan_dynamic_team", lambda *a, **k: {"plan": 1})
+    monkeypatch.setattr(srv.sessions, "active", lambda *a, **k: None)
+    monkeypatch.setattr(srv.orchestrator, "build_team", lambda *a, **k: {
+        "agents": [{"role": "scout", "task": "mira", "model": "claude-sonnet", "persona": "Mariana",
+                    "route": "subscription", "client": "claude"}], "synthesis": ""})
+    monkeypatch.setattr(srv.orchestrator, "agent_system", lambda *a, **k: "s")
+    monkeypatch.setattr(srv.orchestrator, "synthesis_prompt", lambda *a, **k: "u")
+
+    async def agente_que_revienta(ws, inbox, agent, system, task):
+        raise RuntimeError("claude caido")
+    monkeypatch.setattr(srv, "_run_agent_text", agente_que_revienta)
+    monkeypatch.setattr(srv.dispatch, "_http_post_json", lambda url, payload, headers=None: {"response": "ok"})
+    eventos = chat.turno("arma un plan de la ciudad")
+    assert de_tipo(eventos, "carga") == [] and chat.telemetria("carga") == []
+    assert texto_visible(eventos) == "ok" and carga.en_uso == 0
