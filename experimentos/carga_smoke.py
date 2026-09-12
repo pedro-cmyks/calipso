@@ -25,13 +25,17 @@ Los pasos, en este orden (cada uno imprime su veredicto y sigue):
      sigue con context_length 8192 -> el runner no se recreo.
   M. la medicion con el 7b cargado: en esta maquina eso ya es `cargada`
      (MemAvailable no cuenta al modelo: ruling 9.1). Se anota.
-  V. el vigia: en <= 90 s una fila `descarga` en telemetry.jsonl y /api/ps
-     vacio; el local queda suspendido. Al descargar, MemAvailable vuelve a
-     subir: por eso lo que sigue necesita carga REAL.
+  V. el vigia: como N corrio bajo `cargada` (el 7b adentro ya es cargada)
+     con keep_alive 0, el 7b se va solo al terminar N; se espera /api/ps
+     vacio y se recarga desde afuera con keep_alive "5m" (lo que dejaria un
+     turno bajo holgada) para que sea el VIGIA el que descargue: en <= 90 s
+     una fila `descarga` en telemetry.jsonl y /api/ps vacio; el local queda
+     suspendido. Al descargar, MemAvailable vuelve a subir: por eso lo que
+     sigue necesita carga REAL.
   R. el reservador SIN el modelo cargado: aparta hasta `cargada` (o tope duro)
      -> la calibracion "cargada de verdad" (MemAvailable, PSI, load1, swap en
      ese momento: ES la fila que se anota en carga.CALIBRACION). Se mantiene
-     apartada durante B, C y P.
+     apartada durante B y C (y se completa antes de P: abajo).
   B. un turno sin gesto que por capacidad iria local (`traduce al ingles:
      hola de nuevo`; `hola` a secas rankea opus primero): senal `carga` antes
      del primer chunk con ruta subscription y "contesto por ..." (o, si la
@@ -45,8 +49,11 @@ Los pasos, en este orden (cada uno imprime su veredicto y sigue):
      turno termina con done, sin error y con texto -> keep_alive 0 no corta
      una request viva; despues /api/ps queda vacio en <= 30 s (el keep_alive
      0 del propio turno).
-  P. una rutina `catastro` habilitada (interval 60, sin last_run): en <= 90 s
-     una fila `pospone` y last_run sigue None.
+  P. cargar el 7b en C manda paginas frias de otros procesos a zram y al
+     descargarse sobra memoria (la reserva sola ya no alcanza): el reservador
+     vuelve a apartar hasta `cargada`; despues una rutina `catastro`
+     habilitada (interval 60, sin last_run): en <= 90 s una fila `pospone` y
+     last_run sigue None.
   L. libera la memoria: se espera `holgada` hasta 120 s (o se reporta el
      nivel alcanzado: hoy en reposo la Ally dio `justa`, 5876 MB); la rutina
      corre al tick siguiente (last_run puesto) si el nivel lo permite.
@@ -55,7 +62,12 @@ Los pasos, en este orden (cada uno imprime su veredicto y sigue):
      motivo "local suspendido hasta holgada" (se REPORTA: es el diseno, y el
      dato para el ruling de umbrales de Pedro).
 Todo va a un home temporal; el server real (8000) y ~/.calipso no se tocan.
-El reservador y el server se apagan al final aunque falle un paso.
+El reservador y el server se apagan al final aunque falle un paso, y el 7b
+que deja D (keep_alive 5m) se descarga.
+
+Lo que el reservador aprendio en las corridas 1 y 2 (2026-09-11, informe):
+zram comprime una reserva de paginas casi vacias a nada, asi que aparta bytes
+ALEATORIOS; y el nivel que dejo no sobrevive a que el 7b entre y salga.
 
 Uso: `nice -n 19 .venv/bin/python -m experimentos.carga_smoke` desde la raiz
 del repo. El informe: docs/superpowers/2026-09-11-smoke-carga.md (lo escribe
@@ -99,16 +111,19 @@ ESPERA_TICK_S = 90
 SALIDA_BLOQUEADO = 3
 
 RESERVADOR = r'''
-import gc, sys
+import gc, os, sys
 PASO = int(sys.argv[1]) * 2**20
 bloques = []
 for linea in sys.stdin:
     orden = linea.strip()
     if orden == "mas":
-        b = bytearray(PASO)
-        mv = memoryview(b)
-        for i in range(0, PASO, 4096):
-            mv[i] = 1                 # tocar cada pagina: residente de verdad
+        # bytes ALEATORIOS, no un bytearray tocado: el swap de la Ally es
+        # zram y una pagina casi vacia se comprime a nada, asi que cuando
+        # el 7b cargo (paso C de la corrida 1) el kernel mando la reserva
+        # entera a zram, MemAvailable subio 1 GB y la maquina dejo de estar
+        # cargada (la rutina de P corrio). Lo aleatorio no se comprime:
+        # mandarlo a zram no libera nada y el kernel no gana con eso.
+        b = bytearray(os.urandom(PASO))
         bloques.append(b)
         print(f"ok {len(bloques) * PASO // 2**20}", flush=True)
     elif orden == "libera":
@@ -211,6 +226,18 @@ def _ollama_listo() -> None:
 def ps() -> list[dict]:
     with urllib.request.urlopen(f"{OLLAMA}/api/ps", timeout=10) as r:
         return json.loads(r.read()).get("models", [])
+
+
+def cargar_desde_afuera(keep_alive: str) -> None:
+    """Carga el 7b como lo dejaria un turno bajo holgada (keep_alive 5m):
+    un prompt vacio a /api/generate solo carga el modelo."""
+    req = urllib.request.Request(
+        f"{OLLAMA}/api/generate",
+        data=json.dumps({"model": MODELO, "prompt": "", "stream": False,
+                         "keep_alive": keep_alive}).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=180) as r:
+        r.read()
 
 
 def evict_desde_afuera() -> None:
@@ -459,7 +486,19 @@ def main(argv=None) -> int:
             calibracion.append(("con el 7b + reservador", m))
         res.ok("M cargada", m.nivel == "cargada", linea(m))
 
-        # V. el vigia descarga sin cortar nada
+        # V. el vigia descarga sin cortar nada. En la corrida 1 el 7b ya se
+        # habia ido solo: N corrio bajo cargada y su propio keep_alive 0 lo
+        # descargo antes del tick. Para que sea el VIGIA el que descarga, se
+        # carga el 7b desde afuera con keep_alive "5m" (lo que dejaria un
+        # turno bajo holgada) con la maquina cargada, y se espera la fila.
+        # (Ollama tarda unos segundos en soltar el runner tras un keep_alive
+        # 0: primero se espera a que el ps quede vacio, y recien ahi se
+        # recarga; si N no lo descargo, se sigue con el que hay.)
+        if esperar_ps_vacio(30):
+            cargar_desde_afuera("5m")
+            m = medir()
+            calibracion.append(("con el 7b recargado para el vigia", m))
+            res.nota("V el 7b recargado desde afuera (keep_alive 5m)", linea(m))
         fila = server.esperar_fila("carga", "descarga")
         res.ok("V el vigia descargo el 7b (fila descarga)", fila is not None and fila.get("modelo") == MODELO,
                json.dumps({k: fila.get(k) for k in ("modelo", "ok", "nivel", "mem_disponible_mb")}) if fila else "sin fila en 90 s")
@@ -507,7 +546,13 @@ def main(argv=None) -> int:
         res.ok("C /api/ps vacio tras el turno (keep_alive 0 del propio turno)", esperar_ps_vacio(30),
                json.dumps([x.get("name") for x in ps()]))
 
-        # P. la rutina pospuesta (la reserva sigue: cargada)
+        # P. la rutina pospuesta. La reserva sigue apartada, pero cargar el
+        # 7b en C manda paginas frias de OTROS procesos a zram (comprimidas
+        # 3:1) y al descargarse queda mas memoria libre que antes (corrida
+        # 2: justa en vez de cargada): se vuelve a apartar hasta cargada.
+        p_antes = reservar_hasta_cargada(reservador)
+        calibracion.append(("reservador tras C, para P", p_antes))
+        res.ok("P cargada antes de la rutina", p_antes.nivel == "cargada", linea(p_antes))
         rt = server.http("POST", "/api/routines", {"kind": "catastro", "label": "smoke carga",
                                                    "interval_minutes": 60, "enabled": True})
         rt_id = rt.get("id") or (rt.get("routine") or {}).get("id")
@@ -556,6 +601,13 @@ def main(argv=None) -> int:
         reservador.libera()
         reservador.cerrar()
         server.apagar()
+        # el paso D deja el 7b cargado con keep_alive 5m (holgada): no se
+        # le deja a la maquina de Pedro un modelo que nadie usa
+        try:
+            if any(x.get("name") == MODELO for x in ps()):
+                evict_desde_afuera()
+        except Exception as e:
+            print(f"[smoke] no pude descargar el 7b al final: {e!r}", flush=True)
         print(f"[smoke] server apagado; home {home} (server.log y telemetry.jsonl adentro)", flush=True)
 
     print("\n=== calibracion (para carga.CALIBRACION) ===")

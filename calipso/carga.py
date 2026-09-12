@@ -95,8 +95,8 @@ UMBRALES: dict[str, float | int] = {
     "EVICT_TIMEOUT_S": 10.0,
 }
 
-# La calibracion, anotada y EJECUTABLE (test_carga.py recorre las filas con
-# numeros): escenas reales de la Ally (11638 MiB, 16 hilos), necesidad del 7b
+# La calibracion, anotada y EJECUTABLE (test_carga.py recorre todas las
+# filas): escenas reales de la Ally (11638 MiB, 16 hilos), necesidad del 7b
 # 5746 (4466 + 1280). Los PSI son `avg10` en %; `mem` es MemAvailable en MiB.
 CALIBRACION: list[dict] = [
     {"cuando": "2026-09-11 17:07:59", "escena": "OOM: Ollama muerto mientras Pedro jugaba (swap libre 232 kB)",
@@ -117,11 +117,35 @@ CALIBRACION: list[dict] = [
     {"cuando": "2026-09-11 18:41:37", "escena": "reposo tras el smoke, sin modelo cargado: JUSTA por memoria (5876 entre 5746 y 6770)",
      "mem_disponible_mb": 5876, "necesidad_mb": 5746, "psi_mem_some10": 0.0, "psi_mem_full10": 0.0,
      "psi_cpu_some10": 0.04, "load1": 1.85, "ncpu": 16, "swap_usado_mb": 3615, "nivel": "justa"},
-    # la llena el smoke de la Task 6 (experimentos/carga_smoke.py) con la
-    # medicion del momento en que la maquina llego a `cargada` con carga real
-    {"cuando": None, "escena": "cargada de verdad (reservador del smoke, o Pedro jugando)",
-     "mem_disponible_mb": None, "necesidad_mb": 5746, "psi_mem_some10": None, "psi_mem_full10": None,
-     "psi_cpu_some10": None, "load1": None, "ncpu": 16, "swap_usado_mb": None, "nivel": "cargada"},
+    # Las cinco que siguen las imprimio el smoke de la Task 6 (experimentos/
+    # carga_smoke.py, corrida 3, 22:45-22:51, con el server REAL apagado por el
+    # controlador; docs/superpowers/2026-09-11-smoke-carga.md). `cuando` es el
+    # `medido_en` de cada Carga tal cual salio en el log. Ninguna llego a
+    # `cargada` por PSI: en todas decidio MemAvailable (el PSI mas alto de la
+    # corrida fue 1,51 durante la carga del 7b; el vigia lo vio en 0,76 con
+    # 860 MB libres y 944 MB de zram libre a mitad del turno C).
+    {"cuando": "2026-09-11T22:45:40",
+     "escena": "smoke: el server desechable arriba (~1,5 GB) y el server real APAGADO; /api/ps vacio",
+     "mem_disponible_mb": 7179, "necesidad_mb": 5746, "psi_mem_some10": 0.0, "psi_mem_full10": 0.0,
+     "psi_cpu_some10": 0.0, "load1": 2.02, "ncpu": 16, "swap_usado_mb": 4156, "nivel": "holgada"},
+    {"cuando": "2026-09-11T22:47:15",
+     "escena": "smoke, paso M: con el 7b cargado por /local (num_ctx 8192): cargar el 7b YA es cargada (9.1)",
+     "mem_disponible_mb": 2709, "necesidad_mb": 5746, "psi_mem_some10": 0.28, "psi_mem_full10": 0.28,
+     "psi_cpu_some10": 0.0, "load1": 6.46, "ncpu": 16, "swap_usado_mb": 4194, "nivel": "cargada"},
+    {"cuando": "2026-09-11T22:47:24",
+     "escena": "smoke, paso V: el 7b recien recargado (keep_alive 5m) para que lo descargue el vigia",
+     "mem_disponible_mb": 2469, "necesidad_mb": 5746, "psi_mem_some10": 1.39, "psi_mem_full10": 1.39,
+     "psi_cpu_some10": 0.0, "load1": 5.7, "ncpu": 16, "swap_usado_mb": 4191, "nivel": "cargada"},
+    {"cuando": "2026-09-11T22:47:52",
+     "escena": "cargada de verdad: el reservador del smoke (experimentos/carga_smoke.py, paso R, 1536 MB de "
+               "bytes aleatorios, sin modelo cargado; docs/superpowers/2026-09-11-smoke-carga.md)",
+     "mem_disponible_mb": 5555, "necesidad_mb": 5746, "psi_mem_some10": 0.11, "psi_mem_full10": 0.11,
+     "psi_cpu_some10": 0.0, "load1": 4.14, "ncpu": 16, "swap_usado_mb": 4191, "nivel": "cargada"},
+    {"cuando": "2026-09-11T22:49:08",
+     "escena": "smoke, paso P: el reservador otra vez hasta cargada tras C (2048 MB: cargar el 7b en C mando "
+               "~700 MB frios de otros procesos a zram y al descargarse sobro memoria)",
+     "mem_disponible_mb": 5513, "necesidad_mb": 5746, "psi_mem_some10": 0.03, "psi_mem_full10": 0.03,
+     "psi_cpu_some10": 0.0, "load1": 5.94, "ncpu": 16, "swap_usado_mb": 4887, "nivel": "cargada"},
 ]
 
 # las acciones que llevan las filas `kind: carga` de telemetria (spec 4) y

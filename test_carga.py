@@ -123,14 +123,34 @@ def test_una_senal_no_medida_no_decide():
 
 def test_la_calibracion_anotada_cae_donde_dice():
     """La tabla del modulo es ejecutable: cada escena medida cae en el nivel
-    que dice. La fila 'cargada de verdad' nace sin numeros (la llena el smoke)."""
+    que dice. Desde el smoke del 2026-09-11 (corrida 3) ninguna fila queda sin
+    numeros: la 'cargada de verdad' la lleno el reservador del paso R."""
+    assert carga.CALIBRACION
     for fila in carga.CALIBRACION:
-        if fila["mem_disponible_mb"] is None:
-            continue
+        assert fila["cuando"] and fila["mem_disponible_mb"] is not None, fila["escena"]
         n, _ = carga.nivel(fila["mem_disponible_mb"], fila["necesidad_mb"],
                            fila["psi_mem_some10"], fila["psi_mem_full10"],
                            fila["psi_cpu_some10"], fila["load1"], fila["ncpu"])
         assert n == fila["nivel"], fila["escena"]
+
+
+def test_la_fila_cargada_de_verdad_es_la_del_reservador_del_smoke():
+    """La fila que el plan dejo en None (Task 6) lleva los numeros del paso R de
+    la corrida 3 del smoke: cargada por MemAvailable con PSI casi cero y sin
+    modelo cargado (1536 MB de bytes aleatorios apartados), y la escena dice de
+    donde salieron (el script y el informe)."""
+    filas = [f for f in carga.CALIBRACION if f["escena"].startswith("cargada de verdad")]
+    assert len(filas) == 1
+    fila = filas[0]
+    assert fila["cuando"] == "2026-09-11T22:47:52"
+    assert "experimentos/carga_smoke.py" in fila["escena"]
+    assert "docs/superpowers/2026-09-11-smoke-carga.md" in fila["escena"]
+    assert (fila["mem_disponible_mb"], fila["necesidad_mb"], fila["nivel"]) == (5555, 5746, "cargada")
+    assert carga.nivel(fila["mem_disponible_mb"], fila["necesidad_mb"], fila["psi_mem_some10"],
+                       fila["psi_mem_full10"], fila["psi_cpu_some10"], fila["load1"],
+                       fila["ncpu"]) == ("cargada", "mem 5555 < 5746")
+    # cargada por memoria y nada mas: el PSI no llego ni al umbral de holgada
+    assert fila["psi_mem_some10"] < carga.UMBRALES["PSI_MEM_SOME_HOLGADA"]
 
 
 # --- medir(): con /proc y /api/ps falsos --------------------------------------
