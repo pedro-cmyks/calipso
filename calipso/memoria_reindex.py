@@ -347,8 +347,11 @@ def main(argv: list[str] | None = None, salida=None) -> int:
             except memoria_embed.EmbedError as e:
                 # Ollama caido o el modelo sin bajar: una linea, no un traceback;
                 # la vieja no se toco y la viva a medias converge en la proxima corrida
+                # el nombre para `ollama pull` es el del modelo sin `:latest` (no el
+                # tag de la coleccion, que sanea otros caracteres)
+                modelo = ef.model[:-len(":latest")] if ef.model.endswith(":latest") else ef.model
                 print(f"{nombre}: no se pudo embeber por Ollama ({e}); si el modelo no esta: "
-                      f"ollama pull {memoria_embed.embed_tag(ef.model)}; la coleccion vieja queda intacta, "
+                      f"ollama pull {modelo}; la coleccion vieja queda intacta, "
                       "volver a correr --embeddings", file=salida)
                 return 3
             if r["sin_vieja"]:
