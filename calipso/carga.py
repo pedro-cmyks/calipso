@@ -81,6 +81,20 @@ from calipso import tokenizador
 OLLAMA = "http://localhost:11434"
 NIVELES = ("holgada", "justa", "cargada")
 
+
+def _sin_latest(nombre: str) -> str:
+    return nombre[:-len(":latest")] if nombre.endswith(":latest") else nombre
+
+
+def mismo_modelo(a, b) -> bool:
+    """`bge-m3` y `bge-m3:latest` son el mismo modelo (spec memoria por Ollama
+    2026-09-12, ruling 8.1): /api/ps devuelve el nombre con `:latest` y la
+    config puede traerlo sin. Se normaliza a los DOS lados: sin esto la
+    memoria efectiva no veia 1,2 GB y el vigia nunca descargaba el embedder."""
+    a, b = str(a or ""), str(b or "")
+    return bool(a) and bool(b) and _sin_latest(a) == _sin_latest(b)
+
+
 # `num_ctx` del chat local (era `server.CHAT_NUM_CTX`; vive aca para que el
 # juez de /nube use el MISMO valor sin importar `server` -- ciclo: server ->
 # privacidad.nube -> juez -> juez_llm). Ollama recrea el runner al cambiar
@@ -117,6 +131,11 @@ UMBRALES: dict[str, float | int] = {
     # 6a): bajo carga 0,5 s puede no alcanzar y el vigia no descargaba nada
     "PS_TIMEOUT_TICK_S": 2.0,
     "EVICT_TIMEOUT_S": 10.0,
+    # el embedder de la memoria (bge-m3, 1219 MB en /api/ps) se queda
+    # residente ("5m") solo si MemAvailable FRESCO llega a esto: el embedder
+    # mas 1 GB de margen (ruling de la convivencia, ledger 2026-09-12; ver
+    # keep_alive_embed)
+    "EMBED_RESIDENTE_MB": 2500,
 }
 
 # La calibracion, anotada y EJECUTABLE (test_carga.py recorre todas las
@@ -399,8 +418,9 @@ def medir(modelo: str | None = None, *, leer=None, ps=None, ncpu: int | None = N
         lista = ps()
         if lista is not None:
             modelos = [str(m.get("name", "")) for m in lista if m.get("name")]
+            # `bge-m3:latest` en /api/ps contra `bge-m3` en config: mismo modelo
             modelo_cargado = sum(int(m.get("size_mb") or 0) for m in lista
-                                 if m.get("name") and str(m.get("name")) in propios)
+                                 if m.get("name") and any(mismo_modelo(m.get("name"), p) for p in propios))
             medido["ollama"] = True
     except Exception:
         pass
@@ -446,6 +466,54 @@ def olvidar() -> None:
 # --- las perillas por nivel (spec 2, ultimo punto) ------------------------------
 
 _KEEP_ALIVE = {"holgada": "5m", "justa": "2m", "cargada": "30s"}
+# la tabla PROPIA del embedder de la memoria (bge-m3), ver keep_alive_embed
+_KEEP_ALIVE_EMBED = {"holgada": "5m", "justa": 0, "cargada": 0}
+
+
+def keep_alive_embed(nivel: str | None, disponible_mb: int | None = None,
+                     modelos_cargados: list[str] | None = None, *, leer=None,
+                     modelo_chat: str | None = None):
+    """El keep_alive del embedder de la memoria (spec memoria por Ollama
+    2026-09-12, ruling 8.4), distinto del del 7b: la tabla del 7b esta
+    calibrada para pasadas de un turno que comparten runner; un modelo que se
+    usa al principio (recall) y al final (remember) del turno con 30 s
+    garantiza dos cargas frias, y bajo `justa` no debe convivir con el 7b
+    (los dos juntos ~6,4 GB en una Ally de 11,4 GiB). holgada: 5m (el default
+    de Ollama, explicito porque gana el keep_alive de la ULTIMA request);
+    justa y cargada: 0, embebe y suelta (2 s de carga fria por uso).
+
+    Ruling de la convivencia (ledger 2026-09-12, medido en el smoke): con el
+    7b residente el sensor sale `holgada` por la memoria EFECTIVA (suma los
+    modelos propios cargados) y el embedder se quedaba 5 min al lado del 7b:
+    los dos juntos llevaron la Ally a swap (327 MB de swap libres,
+    psi_mem_full10 5,19). Por eso "5m" exige ademas que la memoria DISPONIBLE
+    llegue a UMBRALES["EMBED_RESIDENTE_MB"] (2500: el embedder de 1219 MB mas
+    1 GB de margen) y que el modelo del chat NO este cargado; si no, 0
+    (embebe y suelta: ~2 s extra por uso mientras el 7b esta cargado).
+    `disponible_mb` se lee FRESCO de /proc/meminfo (microsegundos, sin
+    /api/ps) porque la ultima medicion puede ser la de `_decide`, de ANTES de
+    que el 7b cargara (el remember corre 15-45 s despues, con el 7b ya
+    residente); `modelos_cargados` sale de la ultima medicion (o `[]`), y
+    `modelo_chat` de la config (`local.model`). Si /proc no se puede leer, la
+    tabla por nivel (fail-open). Los tests inyectan `leer`, `disponible_mb` y
+    `modelos_cargados`."""
+    if disponible_mb is None:
+        try:
+            disponible_mb = _meminfo((leer or _leer_proc)("/proc/meminfo"))["MemAvailable"] // 1024
+        except Exception:
+            disponible_mb = None
+    if modelos_cargados is None:
+        modelos_cargados = list(_ultima.modelos_cargados) if _ultima is not None else []
+    if modelo_chat is None:
+        try:
+            modelo_chat = _modelo_configurado()
+        except Exception:
+            modelo_chat = ""
+    if disponible_mb is not None and disponible_mb < UMBRALES["EMBED_RESIDENTE_MB"]:
+        return 0
+    if any(mismo_modelo(m, modelo_chat) for m in modelos_cargados):
+        return 0
+    return _KEEP_ALIVE_EMBED.get(nivel or "holgada", "5m")
 
 
 def keep_alive(nivel: str | None):
@@ -469,13 +537,19 @@ def num_thread(nivel: str | None, ncpu: int | None = None) -> int | None:
     return max(1, (ncpu or os.cpu_count() or 2) // 2)
 
 
-def payload_local(payload: dict, nivel: str | None = None) -> dict:
+_keep_alive_del_nivel = keep_alive     # alias: el parametro de payload_local se llama igual
+
+
+def payload_local(payload: dict, nivel: str | None = None, keep_alive=None) -> dict:
     """Un solo helper para hablar con Ollama (spec 3.6): agrega `keep_alive` de
     primer nivel y `options.num_thread` segun el nivel (el reciente si no viene).
+    `keep_alive=` explicito pisa la tabla del 7b: es para el embedder de la
+    memoria, que tiene la suya (`keep_alive_embed`, ruling 8.4); los seis
+    sitios del chat no lo pasan y quedan como estaban.
     Devuelve un dict NUEVO; no muta `payload` ni sus `options`."""
     nivel = nivel or nivel_reciente()
     nuevo = dict(payload)
-    nuevo["keep_alive"] = keep_alive(nivel)
+    nuevo["keep_alive"] = _keep_alive_del_nivel(nivel) if keep_alive is None else keep_alive
     hilos = num_thread(nivel)
     if hilos is not None:
         nuevo["options"] = {**(payload.get("options") or {}), "num_thread": hilos}
@@ -584,14 +658,25 @@ def ollama_loaded_models(base: str = OLLAMA, timeout: float | None = None) -> li
     return out
 
 
-def ollama_evict(model: str, base: str = OLLAMA, timeout: float | None = None) -> bool:
+def ollama_evict(model: str, base: str = OLLAMA, timeout: float | None = None,
+                 embedding: bool = False) -> bool:
     """Descarga `model` de la RAM de Ollama con una inferencia vacia y
     keep_alive 0. OJO: a un modelo NO cargado esto lo CARGA (ruling 9.12): el
-    vigia solo evicta lo que vio en /api/ps en la misma medicion."""
-    payload = json.dumps({"model": model, "prompt": "", "stream": False,
-                          "keep_alive": 0}).encode()
+    vigia solo evicta lo que vio en /api/ps en la misma medicion. Con
+    `embedding=True` (spec memoria por Ollama 2026-09-12) va por /api/embed:
+    a un modelo de solo embedding (bge-m3, capabilities ['embedding'])
+    /api/generate puede rechazarlo. El `input` es un caracter y no vacio: el
+    vacio podria salir por la rama corta de Ollama sin tocar el runner."""
+    if embedding:
+        ruta = "/api/embed"
+        payload = json.dumps({"model": model, "input": "x", "truncate": True,
+                              "keep_alive": 0}).encode()
+    else:
+        ruta = "/api/generate"
+        payload = json.dumps({"model": model, "prompt": "", "stream": False,
+                              "keep_alive": 0}).encode()
     try:
-        req = urllib.request.Request(f"{base}/api/generate", data=payload, method="POST")
+        req = urllib.request.Request(f"{base}{ruta}", data=payload, method="POST")
         req.add_header("Content-Type", "application/json")
         with urllib.request.urlopen(req, timeout=timeout or UMBRALES["EVICT_TIMEOUT_S"]):
             pass
@@ -656,10 +741,12 @@ def _modelo_configurado() -> str:
 
 def _modelos_configurados() -> set[str]:
     """Los modelos propios para la memoria efectiva desde la terminal: el del
-    chat y el del clasificador (el server suma el de vision si hay)."""
+    chat, el del clasificador y el embedder de la memoria (spec memoria por
+    Ollama 2026-09-12; el server suma el de vision si hay)."""
     from calipso import config as calipso_config
     cfg = calipso_config.load_config()
-    return {cfg["local"]["model"], (cfg.get("classifier") or {}).get("model") or cfg["local"]["model"]}
+    return {cfg["local"]["model"], (cfg.get("classifier") or {}).get("model") or cfg["local"]["model"],
+            calipso_config.EMBED_MODEL}
 
 
 def main(argv: list[str] | None = None, salida=None, medir_=None, dormir=None) -> int:

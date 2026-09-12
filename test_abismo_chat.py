@@ -152,12 +152,34 @@ class Harness:
         `done` numero `hasta_dones` (2 cuando un steer encola otro turno), mas
         lo que siga durante `DRENAJE`: asi "un solo done" es una asercion de
         verdad y no una que solo podria fallar colgandose (un duplicado
-        saldria del mismo camino microsegundos despues del primero)."""
+        saldria del mismo camino microsegundos despues del primero). Antes de
+        cerrar el socket espera las tareas de fondo del server (el remember
+        del turno corre DESPUES del done, spec memoria por Ollama 2026-09-12):
+        las aserciones sobre `memoria.recordado` no son una carrera."""
         with self.cliente.websocket_connect("/ws/chat") as ws:
             ws.send_text(self.paquete(texto, departamento))
             eventos = self.recibir(ws, hasta_dones)
             eventos.extend(lo_que_siga(ws, DRENAJE))
+            self.esperar_fondo()
             return eventos
+
+    @staticmethod
+    def esperar_fondo(plazo: float = 5.0) -> None:
+        """Hasta que ninguna tarea de `srv._TAREAS_DE_FONDO` siga viva. Se
+        llama con el socket ABIERTO: el loop de la app vive en el portal del
+        TestClient y al cerrar el socket una tarea pendiente se cancelaria.
+        Poll desde el hilo del test (el conjunto muta en el otro hilo: un
+        `list()` a mitad de mutacion se reintenta)."""
+        limite = time.monotonic() + plazo
+        while time.monotonic() < limite:
+            try:
+                vivas = [t for t in list(srv._TAREAS_DE_FONDO) if not t.done()]
+            except RuntimeError:
+                continue
+            if not vivas:
+                return
+            time.sleep(0.01)
+        raise AssertionError("quedaron tareas de fondo vivas tras el turno")
 
     @staticmethod
     def recibir(ws, hasta_dones=1, plazo=PLAZO):

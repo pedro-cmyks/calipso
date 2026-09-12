@@ -8,8 +8,9 @@ Mide, no frena. Dos entradas:
         pagina = urllib.request.urlopen(req, timeout=10).read()
         cruce.entro(len(pagina))
 
-    aduana.declarar(quien, proposito="modelo de embeddings",
-                    destino="huggingface.co", motivo=EMBED_MODEL)
+    aduana.declarar_una_vez("whisper", quien, "modelo whisper",
+                            destino="huggingface.co",
+                            motivo="Systran/faster-whisper-tiny")
 
 `cruzar` es un context manager SINCRONO: al salir escribe UNA linea en
 `aduana.jsonl` (bajo CALIPSO_HOME) con `ok` o `fallo` + el nombre de la

@@ -342,3 +342,36 @@ fabrica viva.
   zram; bajo `justa` casi nada cambia. Para el agente, la regla ya rige: antes de cargar el 7b o abrir
   Chromium, `CALIPSO_HOME=$(mktemp -d) .venv/bin/python -m calipso.carga --esperar` (abre con `justa`;
   `--holgada` exige holgada; 1500 MB para Chromium) y las suites con `nice -n 19`.
+- **La memoria embebe por Ollama (2026-09-12):** el server pesaba 1,5 GB antes de servir nada y se midio
+  que era torch con build CUDA (475 MB), la cadena transformers/scipy/sklearn (270) y el tokenizer de
+  MiniLM (295 vivos + 316 de heap que glibc no devuelve), no el modelo ni chroma. Decision de Pedro: los
+  embeddings pasan a `bge-m3` en Ollama y el server se queda sin torch. Spec v2 (tres lentes, 14 rulings)
+  `docs/superpowers/specs/2026-09-12-memoria-embeddings-ollama-design.md`; plan de 4 tasks
+  `docs/superpowers/plans/2026-09-12-memoria-ollama.md`; rama `feat/memoria-ollama` en el worktree
+  `.claude/worktrees/memoria-ollama`. `calipso/memoria_embed.py` (EF `calipso_ollama` pura, `EmbedFalsa`
+  para la suite con `CALIPSO_EMBED_FALSA=1` en conftest), coleccion viva `episodic-bge-m3` al lado de la
+  vieja (no se borra), `remember` con embeddings explicitos sobre la pregunta + 150 palabras y DESPUES del
+  `done`, `recall` de una sola embedding y fail-open visible (`/api/memory`: `sin_reindexar`, `recall_ok`,
+  `ultimo_recall_fallo`; el abismo cierra con `memoria_no_disponible`), `memoria_reindex --embeddings`
+  (server apagado, idempotente), el embedder gobernado por la carga (`keep_alive` propio: justa/cargada 0;
+  vigia por `/api/embed`), umbrales PROVISORIOS re-medidos con `experimentos/recall_banco.py` (vuelta
+  atras: `CALIPSO_RECALL_MIN_SCORE`, `CALIPSO_RECALL_UMBRAL`). Ola de fix del cierre (2026-09-12): el
+  EmbedError conserva el cuerpo del error de Ollama, `keep_alive_embed` mira la memoria DISPONIBLE fresca y
+  si el 7b esta residente (ruling de la convivencia: < 2500 MB o el 7b cargado -> embebe y suelta), el
+  reindex `--embeddings` anuncia el embedder, se niega con la EF falsa sin `--falsa` y dice el motivo si
+  Ollama no contesta (codigo 3), el remember de fondo con tope de 2 en vuelo y espera en el shutdown
+  (`remember_pendiente`), el banco anota el ruido intra-corpus (22 de 63 hits de otro topico cruzan 0.476). **Pendiente del controlador, EN ESTE
+  ORDEN** (el detalle en `docs/superpowers/2026-09-12-smoke-memoria.md`, "Pendiente del controlador"):
+  merge -> reindex del home real con el server apagado (`--vista`, `env -u CALIPSO_EMBED_FALSA ...
+  --embeddings`, evict de bge-m3) -> reinicio -> verificar `GET /api/memory` (`sin_reindexar` 0,
+  `recall_ok` true tras un turno de Pedro) -> recien entonces `pip uninstall` con la lista explicita del
+  spec (seccion 5, ~5 GB; se quedan onnxruntime, tokenizers, huggingface_hub, ctranslate2, faster-whisper),
+  chequeo post-uninstall y el `VmRSS` antes/despues (esperado 1571 -> ~200); `~/.cache/huggingface` (533
+  MB, MiniLM adentro) no se borra. **Vuelta atras rapida** (sin checkout ni pip):
+  `CALIPSO_EMBED_URL=http://127.0.0.1:1` en el entorno del server deja la memoria en fail-open
+  (`recall_fallo` inmediato, el turno sale entero) mientras se decide. **Vuelta atras completa** (spec
+  seccion 5): checkout de `main` + `pip install torch --index-url https://download.pytorch.org/whl/cpu &&
+  pip install sentence-transformers` (torch del indice CPU, ~200 MB, no los 5 GB con CUDA; el
+  `sentence-transformers --index-url .../whl/cpu` de antes estaba roto: reemplazaba PyPI); la coleccion
+  vieja `episodic` sigue intacta en cada home y main la abre tal cual. NO vale `CALIPSO_EMBED_MODEL` como
+  vuelta atras: abriria otra coleccion vacia.

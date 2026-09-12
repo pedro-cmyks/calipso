@@ -18,7 +18,30 @@ CHATS_FRAGMENTO_CHARS = 200
 
 RECALL_N = 12
 RECALL_TOP = 8
-RECALL_UMBRAL = 0.20
+# El umbral de la consulta dirigida del abismo sobre bge-m3 (spec memoria por
+# Ollama 2026-09-12, seccion 3). PROVISORIO, como RECALL_MIN_SCORE del turno:
+# calibrado con experimentos/recall_banco.py por el margen, N chico, se
+# re-mide cuando el corpus crezca; mas bajo que el del turno a proposito (la
+# consulta la escribe el modelo, con menos anclaje que la pregunta de Pedro;
+# el techo del bloque lo pone consulta.etiquetar). Vuelta atras por env.
+# Corrida 2026-09-12 (variante pregunta+150): hit@1 24/24, hit@4 24/24,
+# aciertos min 0.5537, negativas max 0.3987, margen 0.155; este umbral es
+# max(negativas) + 0.25 * margen = 0.4375, redondeado a dos decimales.
+# Ruido intra-corpus (ola de fix del cierre, punto 7): otro episodio del
+# mismo corpus cruza 0.44 en 32 de los 63 hits de otro topico del top-4 de
+# las positivas del banco (recall_banco_resultados.md). Sigue PROVISORIO.
+RECALL_UMBRAL = memoria_procedencia.umbral_por_env("CALIPSO_RECALL_UMBRAL", 0.44)
+
+# el fail-open visible de la memoria (spec memoria por Ollama 2026-09-12,
+# ruling 8.8): si el recall devolvio [] porque la memoria no esta (Ollama
+# caido, coleccion rota), la fuente no puede cerrar con `vacio`. Se levanta
+# con este aviso EXACTO; `consulta.resolver` lo vuelve `_fallo(fuente, aviso)`
+# y `turno.motivo_de_consulta` lo mapea a `memoria_no_disponible`.
+AVISO_MEMORIA_NO_DISPONIBLE = "la memoria no esta disponible"
+
+
+class MemoriaNoDisponible(RuntimeError):
+    pass
 
 _RANGO = re.compile(r"\b(desde|hasta):(\d{4}-\d{2})\b")
 
@@ -116,9 +139,11 @@ def memoria(pregunta: str, mem, consolidado: str | None = None,
     # cortar a RECALL_TOP, como en server._build_context. El techo del
     # bloque entero sigue siendo de `consulta.etiquetar`. La vineta nunca
     # lleva el score (esta fuente tampoco lo pegaba en main).
+    hits = mem.recall(pregunta, n=RECALL_N)
+    if not hits and getattr(mem, "recall_ok", True) is False:
+        raise MemoriaNoDisponible(AVISO_MEMORIA_NO_DISPONIBLE)
     recuerdos = memoria_procedencia.presentar_recuerdos(
-        [h for h in mem.recall(pregunta, n=RECALL_N)
-         if h.get("score", 0) >= RECALL_UMBRAL],
+        [h for h in hits if h.get("score", 0) >= RECALL_UMBRAL],
         RECALL_TOP)
     if recuerdos:
         lineas = "\n".join(r["text"] for r in recuerdos)

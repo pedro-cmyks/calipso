@@ -12,16 +12,17 @@ los tres vivian en la misma linea del turno de chat:
 3. Corria sobre el event loop, a diferencia del `remember` de la meta ocho
    lineas mas arriba, que ya iba por hilo.
 
-Los tres se comprueban sin cargar el modelo de embeddings: el ruteo se prueba
-sobre `Memory.remember` con ambitos falsos, y el sitio de llamada se lee del
-fuente, porque vive adentro de un handler de websocket.
+Los tres se comprueban sin construir una Memory real (abre dos clientes de
+chroma): el ruteo se prueba sobre `Memory.remember` con ambitos falsos, y el
+sitio de llamada se lee del fuente, porque vive adentro de un handler de
+websocket.
 """
 import pathlib
 import re
 
 import pytest
 
-from calipso import memory
+from calipso import memoria_embed, memory
 
 
 class _AmbitoFalso:
@@ -38,8 +39,8 @@ class _AmbitoFalso:
 
 @pytest.fixture
 def mem():
-    """Una Memory sin construir: `__init__` carga los pesos del embebedor
-    (unos siete segundos) y aca no hace falta ni uno."""
+    """Una Memory sin construir: `__init__` abre dos clientes de chroma y aca
+    no hace falta ninguno."""
     m = memory.Memory.__new__(memory.Memory)
     m.glob = _AmbitoFalso("global")
     m.project = _AmbitoFalso("proyecto")
@@ -86,14 +87,22 @@ def turno():
     Acotado por los DOS extremos y no por una cuenta de caracteres: el
     archivo tiene mojibake en otros comentarios, asi que una ventana que se
     pasa de largo da un falso positivo; y una que se queda corta se pierde
-    el `except`. Empieza en el comentario del paso 5 y termina donde arranca
-    el paso siguiente, que guarda el mensaje en el chat."""
+    el `except`. Empieza en el comentario del paso 6 (el remember corre
+    DESPUES del `done` como tarea de fondo, programada justo antes del send
+    del done: spec memoria por Ollama 2026-09-12, ruling 8.3) y termina donde
+    el handler atrapa la desconexion del websocket (la SENTENCIA, con los dos
+    puntos: el comentario del paso 6 nombra ese except entre backticks antes
+    del codigo); el `done` queda adentro."""
     fuente = pathlib.Path(
         memory.__file__).with_name("server.py").read_text(encoding="utf-8")
     i = fuente.index("recordar el intercambio")
-    j = fuente.index("chats.append(chat_id, \"assistant\"", i)
+    j = fuente.index("except WebSocketDisconnect:", i)
     bloque = fuente[i:j]
     assert "mem.remember" in bloque, "el bloque no es el que se cree"
+    assert "_en_fondo(" in bloque, "el remember volvio a esperarse antes del done"
+    assert '{"type": "done"}' in bloque, "el done salio del bloque: el remember quedo despues del send"
+    assert bloque.index("_en_fondo(") < bloque.index('{"type": "done"}'), \
+        "la tarea se crea DESPUES del send del done: un corte en ese send pierde el episodio"
     return bloque
 
 
@@ -141,15 +150,17 @@ class _ColeccionFalsa:
         self.llamadas.append("add")
         self.docs.setdefault(ids[0], documents[0])   # add NO pisa
 
-    def upsert(self, documents, metadatas, ids):
+    def upsert(self, documents, metadatas, ids, embeddings=None):
         self.llamadas.append("upsert")
         self.docs[ids[0]] = documents[0]             # upsert SI pisa
+        self.vectores = embeddings                   # explicitos desde Scope.remember
 
 
 @pytest.fixture
 def ambito():
     s = memory.Scope.__new__(memory.Scope)
     s._col = _ColeccionFalsa()
+    s._embed = memoria_embed.EmbedFalsa()            # remember embebe por afuera, sin red
     return s
 
 

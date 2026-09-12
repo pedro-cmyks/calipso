@@ -431,22 +431,18 @@ import sys  # noqa: E402
 import types  # noqa: E402
 
 
-def test_el_arranque_declara_la_memoria_una_vez(libro, monkeypatch):
+def test_el_arranque_ya_no_declara_la_memoria(libro, monkeypatch):
     """`_declarar_arranque()` NO corre al importar el server: la llama
     `_calentar_probes` en hilo desde `_startup_warm` (con `uvicorn
     calipso.server:app` el import del modulo corre ADENTRO del loop y la
-    aduana no escribiria). Aca se la llama directo, dos veces, con el libro
-    limpio: una sola linea."""
+    aduana no escribiria). Y ya no declara la memoria (spec memoria por
+    Ollama 2026-09-12): el embedder es Ollama en loopback, sin huggingface.co
+    (la entrada `memoria_embed.py:_post_embed` del canario lo documenta). Con
+    la config de la suite (todo loopback) dos llamadas dejan el libro vacio."""
     srv._declarar_arranque()
     srv._declarar_arranque()
-    c, = cruces_del_libro(libro)
-    assert c["declarado"] is True and c["resultado"] is None
-    assert c["quien"] == {"origen": "arranque", "chat": None, "proyecto": srv.ROOT.name,
-                          "gesto": None, "ruta": None, "rutina": None, "departamento": None,
-                          "endpoint": None, "desde": {"credencial": "maquina"}}
-    assert c["proposito"] == "modelo de embeddings"
-    assert c["destino"] == {"host": "huggingface.co", "url": None}
-    assert c["motivo"] == srv.EMBED_MODEL
+    assert cruces_del_libro(libro) == []
+    assert not hasattr(srv, "EMBED_MODEL")
     assert libro.telemetria.de("aduana_en_loop") == []
 
 
@@ -512,7 +508,7 @@ def test_calentar_probes_termina_con_un_base_url_malformado(libro, monkeypatch):
     monkeypatch.setattr(srv, "_backend_availability", lambda: {"ok": True})
     assert srv._calentar_probes() == {"ok": True}
     propositos = [c["proposito"] for c in cruces_del_libro(libro)]
-    assert propositos == ["modelo de embeddings", "modelo fuera de la maquina",
+    assert propositos == ["modelo fuera de la maquina",
                           "probes claude/codex: --version, auth status, login status"]
 
 
@@ -586,15 +582,14 @@ def test_whisper_se_declara_una_vez_dentro_del_hilo(libro, monkeypatch):
 
 def test_los_probes_se_declaran_una_vez_al_calentar(libro, monkeypatch):
     """`_calentar_probes` es el unico lugar del arranque que escribe en el
-    libro: primero `_declarar_arranque` (la memoria; los modelos fuera de la
-    maquina, cero con la config de la suite), despues los probes. Dos
-    llamadas, dos lineas: las banderas `una vez` valen por proceso."""
+    libro: primero `_declarar_arranque` (los modelos fuera de la maquina,
+    cero con la config de la suite; la memoria ya no sale: embebe por Ollama
+    en loopback), despues los probes. Dos llamadas, una linea: las banderas
+    `una vez` valen por proceso."""
     monkeypatch.setattr(srv, "_backend_availability", lambda: {"ok": True})
     assert srv._calentar_probes() == {"ok": True}
     assert srv._calentar_probes() == {"ok": True}
-    memoria, probes = cruces_del_libro(libro)
-    assert memoria["proposito"] == "modelo de embeddings" and memoria["declarado"] is True
-    c = probes
+    c, = cruces_del_libro(libro)
     assert c["declarado"] is True and c["quien"]["origen"] == "arranque"
     assert c["proposito"] == "probes claude/codex: --version, auth status, login status"
     assert c["destino"] == {"host": None, "url": None}
