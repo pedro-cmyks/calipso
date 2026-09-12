@@ -1,7 +1,9 @@
-# La memoria embebe por Ollama: el server sin torch (2026-09-12)
+# La memoria embebe por Ollama: el server sin torch (2026-09-12, v2)
 
-Spec de brainstorming con Pedro, 2026-09-12 (madrugada). Pendiente de revision adversaria. Todo
-archivo:linea es de main `6780bec`.
+Spec de brainstorming con Pedro, 2026-09-12 (madrugada), revisado por tres lentes adversarias (modelo/YAGNI,
+factibilidad por lectura, Codex gpt-5.5): la seccion 8 lista los rulings. Todo archivo:linea es de main
+`6780bec`. Nota: `AGENTS.md:430` ya declaraba "embeddings obligatorios: bge-m3 via Ollama" desde junio; este
+spec lo cumple.
 
 ## 1. De donde sale
 
@@ -37,34 +39,71 @@ queda sin torch: todo modelo vive en Ollama, gobernado por el sensor de carga.
   `register_embedding_function` (asi el esquema persistido se reconstruye sin torch). Llama a
   `POST {base}/api/embed` con `urllib` (el canario de la aduana lo ve: entrada en `EXCEPCIONES`, como
   `carga.py:_ollama_get`) con `{"model": EMBED_MODEL, "input": [...], "truncate": true}` pasado por
-  `carga.payload_local(payload, carga.nivel_reciente())` (`keep_alive` y `num_thread` por nivel: el mismo
-  helper que los otros seis sitios) y dentro de `carga.usando()` (uso suelto: el vigia no descarga a mitad
-  de un embed). Timeout 60 s. Batch nativo: una request por lista.
-- **`EMBED_MODEL`** pasa a ser el nombre en Ollama (`CALIPSO_EMBED_MODEL`, default `bge-m3`), y
-  `EMBED_DIMS` (1024) se lee del `/api/show` una vez o se fija por config. El modelo se suma a
-  `_modelos_de_calipso()` (`server.py`) y a `carga._modelos_configurados()`: su `size` cuenta en la memoria
-  efectiva y el vigia puede descargarlo bajo `cargada`.
+  `carga.payload_local(payload, carga.nivel_reciente(), keep_alive=carga.keep_alive_embed(nivel))` (el mismo
+  helper que los otros seis sitios para `num_thread`, pero con una tabla de `keep_alive` PROPIA del embedder,
+  ruling 8.4: `holgada` `"5m"`, `justa` y `cargada` `0`: embebe y suelta, 2 s por uso, sin convivir con el 7b
+  cuando la memoria esta justa) y dentro de `carga.usando()` (uso suelto: el vigia no descarga a mitad de un
+  embed). El POST vive en una funcion de modulo `_post_embed(url, payload, timeout)` (la clave de
+  `EXCEPCIONES` del canario se arma con nombres de funcion, no de clase). Timeouts distintos por uso (ruling
+  8.7): recall 10 s (el turno sigue sin recuerdos), remember y reindex 120 s por lote. Lotes por tamano
+  (<= 8.000 chars por request; un documento largo va solo), no por cantidad.
+- **`EMBED_MODEL`** pasa a ser el nombre en Ollama tal como lo devuelve `/api/ps`: default
+  **`bge-m3:latest`** (ruling 8.1: `bge-m3` a secas no matchea y la carga no lo veria); vive en
+  `calipso/config.py` (sin chromadb, para que `carga` lo lea sin arrastrar nada) como `CALIPSO_EMBED_MODEL`.
+  `EMBED_DIMS = 1024` fijo por config (no se consulta `/api/show`: `__init__`, `get_config` y
+  `build_from_config` de la EF son puros, chroma los llama al crear y dos veces por `upsert`). El tag de
+  coleccion es el nombre saneado (`bge-m3`: sin `:latest`, sin caracteres invalidos). El modelo se suma a
+  `_modelos_de_calipso()` (`server.py`) y a `carga._modelos_configurados()`, con la comparacion de nombres
+  normalizando `:latest` a ambos lados: su `size` cuenta en la memoria efectiva y el vigia puede descargarlo
+  bajo `cargada` (`ollama_evict` aprende a descargar un modelo de solo embedding por `/api/embed` con
+  `keep_alive: 0`, porque `/api/generate` puede rechazarlo: se verifica en el smoke).
 - **Las colecciones llevan el embedder en el nombre:** `Scope` abre `episodic-<EMBED_TAG>` (tag = nombre del
   modelo saneado, `bge-m3`) en el mismo `chroma.sqlite3`. La coleccion vieja `episodic` (EF
   `sentence_transformer` persistida, 384 dims) queda intacta hasta que el reindex la copie: chroma prohibe
-  cambiar la clase de EF de una coleccion existente y las dimensiones no coinciden (medido).
+  cambiar la clase de EF de una coleccion existente y las dimensiones no coinciden (medido). `reflect`,
+  `recent` y los conteos miran la coleccion viva: los episodios viejos vuelven al reindexar. La vuelta a
+  MiniLM NO es por env (`CALIPSO_EMBED_MODEL` abriria otra coleccion vacia): es checkout de main mas
+  reinstalar torch; la coleccion vieja sigue ahi.
+- **Que se embebe (ruling 8.5):** el documento guardado sigue siendo el par entero, pero el vector se calcula
+  sobre `texto_para_embedding(doc)` = la pregunta de Pedro mas las primeras 150 palabras de la respuesta
+  (MiniLM veia 128 tokens: pregunta y arranque de la respuesta; el par entero de 2-6k chars queda dominado
+  por la respuesta y cuesta 2-5 s). `remember` y el reindex embeben por afuera y hacen `upsert(...,
+  embeddings=[...])`; `recall` consulta con `query_embeddings`. El banco (seccion 3) mide las tres variantes
+  (pregunta sola, pregunta + 150 palabras, par entero) y si otra separa mejor se cambia el numero, no la
+  forma.
 - **El reindex a otro embedder** es un modo nuevo de `calipso/memoria_reindex.py`: `--embeddings` lee
-  `episodic` con `embedding_function=None` (`get` no reconstruye la EF: sin torch), y hace `upsert` de
-  documentos y metadatos con los MISMOS ids en `episodic-<tag>` embebiendo por Ollama en lotes de 16;
-  idempotente (los ids que ya estan se saltan salvo `--forzar`); con el server apagado (o `--forzar`, como
-  hoy); `--vista` cuenta sin embeber. Cubre global, proyectos y departamentos (hoy `ambitos` deja los
-  departamentos afuera: se suman). Al terminar imprime cuantos copio y cuantos quedan; NO borra la vieja.
+  `episodic` (`COLECCION_VIEJA`, solo como origen) con `embedding_function=None` (`get` no reconstruye la EF:
+  sin torch), y hace `upsert` de documentos y metadatos con los MISMOS ids en `episodic-<tag>` embebiendo por
+  Ollama en lotes por tamano; idempotente: para un id que ya esta hace `update(ids, metadatas)` sin
+  documents (los metadatos convergen sin re-embeber). SOLO con el server apagado: en este modo `--forzar` no
+  existe (un corte no atomico entre la vieja y la nueva no tiene arreglo despues); ademas toma la lista de
+  ids antes y despues y, si aparecieron ids durante la corrida, lo dice y no declara `sin_reindexar = 0`.
+  `--vista` cuenta sin embeber e imprime `sin_reindexar` por ambito (el mismo calculo que el server).
+  `--vista/--aplicar` (procedencia) pasan a operar sobre la coleccion VIVA (`episodic-<tag>`); el orden
+  `--embeddings` y luego `--aplicar` (o al reves) converge. Cubre global y proyectos (los departamentos no
+  existen hoy: quedan fuera, ruling 8.9). Al terminar imprime cuantos copio y cuantos quedan; NO borra la
+  vieja.
 - **El server con memoria sin migrar:** `GET /api/memory` devuelve `sin_reindexar: N` por ambito (docs en
   `episodic` que no estan en `episodic-<tag>`), el arranque lo imprime una vez, y la fila
   `kind: memoria, accion: sin_reindexar` va a telemetria. No se niega a arrancar: fail-open.
-- **`recall` fail-open de verdad:** `Scope.recall` y `Memory.recall` atrapan cualquier excepcion (Ollama
-  caido, timeout, coleccion rota) y devuelven `[]` con una fila `kind: memoria, accion: recall_fallo,
-  error`. Hoy el recall del turno corre fuera del `try` del turno (`server.py:4195` contra `:4244`) y una
-  excepcion tumba el websocket: bug preexistente que este cambio arregla de paso. `remember` ya es
-  fail-open en el server (`:4784-4790`) y en la fuente del abismo (`:8535-8537`).
-- **Una sola embedding por turno:** `Memory.recall` embebe la pregunta una vez y consulta ambos ambitos con
-  `query_embeddings` (hoy embebe una vez por ambito: `memory.py:212-213`). Resultados identicos, mitad de
-  costo.
+- **`recall` fail-open de verdad, y visible:** `Scope.recall` y `Memory.recall` atrapan cualquier excepcion
+  (Ollama caido, timeout, coleccion rota) y devuelven `[]` con una fila `kind: memoria, accion:
+  recall_fallo, error`. Hoy el recall del turno corre fuera del `try` del turno (`server.py:4195` contra
+  `:4244`) y una excepcion tumba el websocket: bug preexistente que este cambio arregla de paso. Para que
+  una memoria muerta no quede escondida (ruling 8.8): `GET /api/memory` devuelve `recall_ok` y
+  `ultimo_recall_fallo` (hora y error), y la fuente `memoria` del abismo cierra con motivo
+  `memoria_no_disponible` (no `sin_hits`). `remember` ya es fail-open en el server (`:4784-4790`) y en la
+  fuente del abismo (`:8535-8537`).
+- **Una sola embedding por turno, y ninguna si no hay que buscar:** `Memory.recall` mira primero que ambitos
+  tienen episodios (`count() > 0`, la guardia que hoy vive en `Scope.recall`); si ninguno, devuelve `[]` sin
+  embeber (asi la suite y un home nuevo no tocan Ollama); si alguno, embebe la pregunta UNA vez y consulta
+  con `query_embeddings` (hoy embebe una vez por ambito). `Scope.recall(query, n, embedding=None)` conserva
+  la costura vieja (si no viene el vector, embebe): los dobles de `test_abismo_memoria_recall.py` siguen.
+- **El `remember` del turno pasa a despues del `done` (ruling 8.3):** hoy corre ANTES de `chats.append` y
+  del `done` (`server.py:4784-4790` contra `:4820-4821`) y cuesta 10-40 ms; con bge-m3 costaria 0,4-4 s
+  visibles en `pensando`. Se manda `done` primero y el remember queda como tarea de fondo (`asyncio.to_thread`
+  adentro, mismo `try/except`, fila `remember_fallo` si falla), como ya hace el remember de la meta
+  (`:3883-3891`); las tareas de fondo se guardan en un conjunto del server que el harness puede esperar.
 - **Adios torch:** `memory.py` deja de importar `SentenceTransformerEmbeddingFunction`; nada del repo
   importa `torch`, `transformers` ni `sentence_transformers` (test que lo fija por AST, como el canario).
   `calipso.sh` y `LINUX_MIGRATION.md` dejan de instalarlos; el `pip uninstall` del venv real es un paso del
@@ -75,23 +114,36 @@ queda sin torch: todo modelo vive en Ollama, gobernado por el sensor de carga.
   loopback: no cruza la aduana.
 - **`_switch_project`** (`server.py:1906-1948`) sigue reconstruyendo `Memory` en el loop: ahora es barato
   (la EF no abre nada al construirse). No se toca.
-- **Tests:** `Memory(embed=...)` acepta una EF inyectada; `conftest.py` provee `EmbedFalsa` (hash
-  determinista a 1024 dims, sin red) para todo test que construya `Memory` real (`test_plantel_memoria.py`,
-  `test_memoria_*`); ningun test llama a Ollama. `test_memory.py` (script manual) queda para correr a mano
-  con Ollama.
+- **Tests:** `Memory(embed=...)` acepta una EF inyectada, y ademas `memory.py` elige `EmbedFalsa` (hash
+  determinista a 1024 dims, sin red, en `calipso/memoria_embed.py`) cuando `CALIPSO_EMBED_FALSA=1`, que
+  `conftest.py` fija ANTES de importar `calipso` (como `CALIPSO_HOME`: varios tests importan
+  `calipso.server` a nivel de modulo y eso construye `Memory()` antes de cualquier fixture). Ningun test
+  llama a Ollama. `test_memory.py` (script manual) queda para correr a mano con Ollama. Tests que cambian de
+  letra (enumerados para que la task no los descubra corriendo la suite): `test_aduana_api.py:440-449, :515,
+  :596` (el cruce "modelo de embeddings" a huggingface.co desaparece), `test_carga_vigia.py:143-145` (el set
+  de `_modelos_de_calipso()` suma el embedder), `test_abismo_memoria_recall.py` (dobles con `recall(query,
+  n)`), `test_memoria_reindex.py:183-201` (el fixture con las dos colecciones), docstrings de
+  `test_memoria_carta.py:69-71`, `test_abismo_memoria_recall.py:3-4`, `test_aduana_canario.py:58`,
+  `test_memoria_ambito.py:15`.
 
 ## 3. Los umbrales se re-miden, no se heredan
 
 `RECALL_MIN_SCORE = 0.30` (`server.py:3005`) y `RECALL_UMBRAL = 0.20` (`abismo/fuentes.py:21`) estan
 calibrados sobre MiniLM (score = 1 - distancia coseno). `bge-m3` tiene otra distribucion (similitudes mas
-altas y mas apretadas) y embebe otro texto (el par entero, no 128 tokens). Regla h05: no tocar la letra sin
-re-medir. **Banco de recall** (`experimentos/recall_banco.py`, seco salvo Ollama): sobre el fixture
-`experimentos/fixtures/memoria_smoke_home` (16 episodios) y las 5 filas reales del home, 20-30 consultas con
-el episodio esperado (las del porton de la memoria y las del smoke de los canarios sirven de base), mide
-`hit@1`, `hit@4` y la distribucion de scores de aciertos y de no-aciertos, para MiniLM (con el venv de hoy,
-ANTES de desinstalar torch) y para `bge-m3`. Los umbrales nuevos se eligen para que los aciertos de MiniLM
-sigan pasando y los no-aciertos sigan quedando afuera; se anotan en el modulo con los numeros. Si `bge-m3`
-no iguala el `hit@4` de MiniLM en el banco, se para y se le dice a Pedro (no se aterriza a ciegas).
+altas y mas apretadas) y embebe otro texto. Regla h05: no tocar la letra sin re-medir. **Banco de recall**
+(`experimentos/recall_banco.py`, seco salvo Ollama y, para la condicion MiniLM, el venv con torch: corre
+ANTES de desinstalarlo). Lo que hay hoy no mide nada (ruling 8.6): los 16 episodios del fixture son 8
+preguntas por 2 pasadas (duplicados) y las 4 consultas existentes son la pregunta literal del documento, asi
+que `hit@4` da ~100% con cualquier embedder. El banco se arma asi: por cada uno de los 8 topicos del fixture,
+la pregunta literal mas dos parafrasis escritas a mano (una sobre la pregunta, otra sobre el CONTENIDO de la
+respuesta) y 6-8 consultas negativas (temas ausentes); los duplicados cuentan como UN acierto (hit@1 por
+topico); las 5 filas reales del home entran con consultas escritas a partir de su contenido (es local: no
+sale nada). Se mide para MiniLM y para `bge-m3` en sus tres variantes de texto embebido: `hit@1`, `hit@4`, la
+distribucion de scores y el **margen** `min(score aciertos) - max(score negativas)`. Los umbrales nuevos se
+eligen por el margen (con los aciertos de MiniLM como piso), se anotan en el modulo con los numeros y se
+marcan PROVISORIOS (N chico; se re-miden cuando el corpus crezca), con `CALIPSO_RECALL_MIN_SCORE` y
+`CALIPSO_RECALL_UMBRAL` como vuelta atras por env. Regla de parada: si `bge-m3` no iguala el `hit@1` por
+topico de MiniLM o su margen es negativo, se para y se le dice a Pedro (no se aterriza a ciegas).
 
 ## 4. Invariantes
 
@@ -120,9 +172,21 @@ no iguala el `hit@4` de MiniLM en el banco, se para y se le dice a Pedro (no se 
   recuerdos, con la fila `recall_fallo` y `done`; `_modelos_de_calipso()` incluye el embedder; el AST del
   repo sin `torch`/`transformers`/`sentence_transformers`; la aduana ya no declara embeddings al arranque.
 - El banco de recall con los dos embedders y los umbrales nuevos anotados.
-- Despliegue (controlador): merge, `pip uninstall` de torch/nvidia-*/transformers/sentence-transformers (anotar
-  cuanto disco libera), reindex del home real con el server apagado, reinicio, `VmRSS` del server real antes
-  y despues (esperado: de 1571 MB a ~200), un turno de humo NO (el server real no recibe turnos del agente).
+- El smoke en vivo (server desechable sobre el fixture con las dos colecciones, Ollama real): recall real por
+  bge-m3, `done` antes del remember (medir el tiempo entre el ultimo chunk y `done`), Ollama caido a mitad
+  (recall_fallo + turno entero), reindex sobre una copia, el vigia descargando bge-m3 (por `/api/embed`), y la
+  **convivencia con el 7b bajo `justa`** (ruling 8.4): con el 7b cargado, un turno completo (recall, generacion,
+  remember) midiendo `/api/ps` en cada paso: si Ollama desaloja al 7b para cargar bge-m3, se para y se le dice
+  a Pedro con los numeros (candidatas: saltar el recall bajo justa con el 7b cargado, con fila; cola de
+  remember diferido que el tick drena en holgada).
+- Despliegue (controlador): merge; `pip uninstall` con la lista explicita (~5 GB: sentence-transformers, torch,
+  transformers, triton, nvidia-*, cuda-bindings, cuda-toolkit, cuda-pathfinder, sympy, mpmath, networkx, scipy,
+  scikit-learn, joblib, threadpoolctl, safetensors; se QUEDAN onnxruntime, tokenizers, huggingface_hub,
+  ctranslate2, faster-whisper); chequeo post-uninstall (`import chromadb, ollama, faster_whisper,
+  calipso.server` con home temporal); vuelta atras documentada (`pip install sentence-transformers` con el
+  indice CPU de torch, ~200 MB, y la coleccion vieja intacta); reindex del home real con el server apagado;
+  reinicio; `VmRSS` del server real antes y despues (esperado: de 1571 MB a ~200); un turno de humo NO (el
+  server real no recibe turnos del agente).
 
 ## 6. Lo que NO hace
 
@@ -134,9 +198,48 @@ no iguala el `hit@4` de MiniLM en el banco, se para y se le dice a Pedro (no se 
 
 ## 7. Corte
 
-Una rama `feat/memoria-ollama`, 4 tasks: (1) `memoria_embed.py` + `Memory(embed=)` + `EmbedFalsa` +
-colecciones por tag + recall fail-open y de una sola embedding + tests; (2) `memoria_reindex --embeddings`
-+ `sin_reindexar` en `/api/memory` y el arranque + tests sobre el fixture; (3) el banco de recall con los dos
-embedders y los umbrales nuevos (corre ANTES de sacar torch del venv), la aduana y la carga (modelo en las
-listas, `_declarar_arranque`), el guardia AST anti-torch, `calipso.sh` y docs + tests; (4) el fixture
-regenerado, el smoke en vivo con Ollama (server desechable: recall real, Ollama caido, reindex) y el cierre.
+Una rama `feat/memoria-ollama`, 4 tasks: (1) `memoria_embed.py` (EF, `EmbedFalsa`, `texto_para_embedding`,
+`_post_embed`) + `Memory(embed=)` y `CALIPSO_EMBED_FALSA` + colecciones por tag + recall fail-open, de una
+sola embedding y con guardia + `remember` con embeddings explicitos + tests; (2) `memoria_reindex
+--embeddings` (sin `--forzar`, lotes por tamano, doble lista de ids) + `--vista/--aplicar` sobre la viva +
+`sin_reindexar`, `recall_ok` y `ultimo_recall_fallo` en `/api/memory` y el arranque + el `done` antes del
+remember + tests sobre una copia del fixture; (3) el banco de recall con los dos embedders y las tres
+variantes, los umbrales provisorios con env, la carga (nombre normalizado, `keep_alive_embed`, `ollama_evict`
+para embedding, `_modelos_de_calipso`), la aduana (`_declarar_arranque`, EXCEPCIONES), el guardia
+`sys.modules`/AST anti-torch, docs + tests; (4) el fixture con las dos colecciones (generado UNA vez con
+`--embeddings`, commiteado, README con la receta, test de ids iguales), el smoke en vivo con Ollama (incluida
+la convivencia con el 7b bajo `justa`) y el cierre.
+
+## 8. Rulings de la revision adversaria (2026-09-12; todos revertibles)
+
+1. **Nombre y tag son dos cosas:** `EMBED_MODEL = "bge-m3:latest"` (lo que devuelve `/api/ps`); tag de
+   coleccion `bge-m3`. La carga y el vigia comparan normalizando `:latest`. Sin esto la memoria efectiva
+   no ve 1,2 GB y el vigia nunca descarga el embedder.
+2. **La EF es pura al construirse** (sin red ni disco): chroma la reconstruye al crear y dos veces por
+   `upsert`; con Ollama caido el arranque seguiria siendo fail-open. Dims fijo por config.
+3. **El `remember` va despues del `done`** como tarea de fondo: con bge-m3 costaria 0,4-4 s visibles.
+4. **`keep_alive` propio del embedder** (`holgada` 5m; `justa`/`cargada` 0): la tabla del 7b esta calibrada
+   para pasadas de un turno que comparten runner; un modelo que se usa al principio y al final del turno con
+   30 s garantiza dos cargas frias, y bajo `justa` no debe convivir con el 7b. La convivencia se MIDE en el
+   smoke y, si Ollama desaloja al 7b, se para y se decide con Pedro.
+5. **Se embebe pregunta + 150 palabras de respuesta**, no el par entero (que queda dominado por respuestas
+   de 2-6k chars y cuesta 2-5 s); el documento guardado no cambia. El banco mide las tres variantes.
+6. **El banco de recall mide separacion, no `hit@4` literal:** parafrasis y negativas por topico, duplicados
+   como un acierto, margen como criterio, umbrales provisorios con vuelta atras por env, regla de parada por
+   `hit@1` y margen.
+7. **Timeouts y lotes por uso:** recall 10 s; remember y reindex 120 s por lote; lotes por tamano (<= 8k
+   chars) y un documento largo solo. El techo efectivo de contexto de bge-m3 en Ollama es 4096 tokens (no
+   8192): con 150 palabras no importa.
+8. **Fail-open visible:** `recall_ok`/`ultimo_recall_fallo` en `/api/memory`, motivo `memoria_no_disponible`
+   en el abismo. Una marca en las UIs es YAGNI hasta que haga falta.
+9. **`--embeddings` sin `--forzar`** (server apagado siempre) y con doble lista de ids; `--vista/--aplicar`
+   sobre la viva; departamentos fuera (no existen).
+10. **`CALIPSO_EMBED_FALSA` en `conftest.py`** antes de importar: `Memory(embed=)` solo no alcanza porque
+    los tests importan `calipso.server` a nivel de modulo.
+11. **`EMBED_MODEL` vive en `calipso/config.py`**, no en `memory.py`: `carga` lo lee sin importar chromadb.
+12. **Fixture con las dos colecciones**, generado una vez y commiteado; la condicion "antes" del porton de la
+    memoria (main con MiniLM) muere con el uninstall: se anota.
+13. **La lista de desinstalacion es explicita** (~5 GB) y `calipso.sh`/`LINUX_MIGRATION.md` nunca instalaron
+    torch (lo instalo una mano): no hay nada que sacar de ahi; AGENTS.md se corrige.
+14. **Ni el lector ni el compositor ni el juez tocan la memoria vectorial** (verificado por las lentes): el
+    cambio es de `memory.py`, el reindex, el recall del turno y el abismo.
