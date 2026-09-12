@@ -1,8 +1,9 @@
 # La carga: que Calipso ocupe cuando puede ocupar y se aligere cuando la maquina esta cargada (2026-09-11, v2)
 
 Spec de brainstorming con Pedro, 2026-09-11 (tarde), revisado la misma noche por tres lentes adversarias
-(dos de Claude: modelo/YAGNI y factibilidad por lectura; y Codex gpt-5.5 headless). La v1 esta en el
-commit `0fe7527`; la seccion 9 lista lo que cambio y por que, como rulings revertibles para Pedro. Todo
+(dos de Claude: modelo/YAGNI y factibilidad por lectura; y Codex gpt-5.5 headless): la seccion 9 lista lo
+que cambio y por que, como rulings revertibles para Pedro. Tras construirlo y medirlo, el addendum del
+cierre (seccion 10): el ruling 13 corrige al 9.1 con datos. La v1 esta en el commit `0fe7527`. Todo
 archivo:linea es de main `9077a8e` mas la rama `feat/canarios`.
 
 ## 1. De donde sale
@@ -153,7 +154,7 @@ En orden de impacto, todas con telemetria (`kind: carga`, con la `Carga` y la de
    `discover` son dos GET y los probes son subprocesos CLI de pocos segundos. Se saca la politica de la v1
    (9.8). El vigia arranca con el ticker, como todo.
 9. **Los procesos del agente (yo):** los portones y smokes que usan el 7b o Chromium empiezan por
-   `python -m calipso.carga --esperar` (bloquea hasta `holgada`, midiendo cada 15 s; con `--tope`
+   `python -m calipso.carga --esperar` (bloquea hasta NO `cargada`, ruling 14; `--holgada` exige holgada; midiendo cada 15 s; con `--tope`
    segundos, default 600; **al vencer sale con codigo 3 y no corre nada**), y la suite corre con
    `nice -n 19`. Sin flag, `python -m calipso.carga` imprime la medicion. Es una regla de trabajo del
    agente (memoria del proyecto y REGLAS de los workflows), no codigo del producto salvo el helper.
@@ -284,3 +285,85 @@ de los workflows y el cierre. Corre despues del cierre de los canarios.
 11. **`en_uso` cubre el turno local entero,** no solo la request: entre pasadas del abismo el modelo no
     se descarga.
 12. **Vigia solo evicta lo que vio cargado en la misma medicion** y solo modelos de Calipso.
+
+## 10. Addendum del cierre (2026-09-11/12, noche): rulings tomados al construir, para Pedro
+
+Todo lo de abajo esta en el codigo de `feat/carga`, en el ledger (`docs/superpowers/2026-09-11-cierre-carga/`)
+y medido en el smoke (`docs/superpowers/2026-09-11-smoke-carga.md`, cuatro corridas). Son decisiones del
+controlador que la letra de arriba no tenia o contradice; todas revertibles. Numeradas para vetar por numero.
+
+13. **La memoria efectiva: el modelo cargado cuenta (revierte en parte el 9.1, con datos).** Medido: con el
+    7b cargado y NADA mas, `MemAvailable` baja de 7179 a 2709 MB (< 5746) y el sensor de la v2 decia
+    `cargada`; el vigia habria descargado el 7b a los <= 60 s de todo turno local, suspendido el local y
+    dejado el chat en suscripcion hasta la proxima `holgada` (que con el server real de 1,5 GB puede no
+    llegar): lo contrario de "ocupen cuando puedan ocupar" en el caso mas comun. Ahora el nivel se mide
+    contra `mem_efectiva = MemAvailable + size de los modelos de Calipso que /api/ps de ESA medicion lista`
+    (lo que devolveria un evict); si el ps no responde, `mem_efectiva = MemAvailable` (fail-open). Con el 7b
+    cargado en reposo: 2476 + 5203 = 7679 -> `holgada` (corrida 4) y el vigia no lo toca; el escenario del
+    OOM (500 + 5203 = 5703 < 5746) sigue dando `cargada`: el vigia descarga y el chat va a suscripcion con
+    marca. El ping-pong desaparece por construccion (antes y despues de un evict la memoria efectiva es la
+    misma). Lo que se conserva del 9.1: no hay excepcion "sigue local sin aviso"; el nivel decide y bajo
+    `cargada` siempre hay marca. Costo si esta mal: un 7b parcialmente en zram cuenta como residente; la
+    presion (PSI) sigue decidiendo `cargada` si hay thrash.
+14. **`--esperar` abre con `justa`** (`--holgada` exige holgada). Con el server real corriendo la Ally en
+    reposo mide `justa` (5800-6500 contra 6770) y esperar holgada literal vencia (41 mediciones en la Task
+    1). `justa` = el modelo entra con menos de 1 GB de sobra; el margen es comodidad, no correccion. Es un
+    criterio distinto del de la histeresis del chat (3.4: solo holgada) a proposito: un smoke carga el 7b
+    una vez y de forma explicita.
+15. **`keep_alive` bajo `cargada` es `"30s"`, no 0.** Medido: con 0, cada pasada descargaba el 7b al terminar
+    y la siguiente lo recargaba desde disco: `/nube` (juez + turno) tardo 48-56 s contra 36-42 s de un turno
+    de una pasada (a mitad de N `/api/ps` vacio y 4212 MB libres contra 1925 tres segundos antes). Con 30 s
+    las pasadas de un mismo turno comparten el runner y el vigia descarga en el tick siguiente cuando
+    `en_uso` llega a 0 (el 7b no sobrevive mas de ~90 s despues del turno). El 9.11 protegia del vigia, no
+    del propio keep_alive: ahora protege de los dos.
+16. **El server pesa 1,5 GB antes de servir nada** (`Memory()` con su `SentenceTransformer` al importar
+    `calipso/server.py`; medido 1,57 GB el real, 1,48 el desechable). El smoke corrio con el server real
+    APAGADO por el controlador (sin conexiones desde las 15:31; relanzado y verificado tras cada corrida):
+    con el real arriba mas el desechable la maquina media `cargada` antes de cargar nada. Dato para Pedro
+    (regla suya: entender la causa antes que poner techos): cargar el modelo de embeddings perezoso o en un
+    proceso aparte vale mas que cualquier umbral. Los umbrales (`MARGEN_LIBRE_MB` 1024, `MARGEN_MODELO_MB`
+    1280) quedan como estan: ruling de Pedro.
+17. **Bajo `justa` no se pospone ninguna rutina** (3.7 decia: `departamento`). `justa` es el reposo de la Ally
+    con el server real; `justa` quiere decir que el modelo entra. `cargada` pospone todas.
+18. **Interruptor `CALIPSO_CARGA=off`** (leido por llamada en `carga.medir`): devuelve una `Carga` holgada con
+    `medido` todo en False y `apagado: True`: sin vigia, sin pospuestas, sin marca, sin histeresis, perillas
+    de holgada. Es el rollback en caliente (reinicio del proceso, no revert). Quedan el `num_ctx` unificado
+    del juez y `GET /api/carga`.
+19. **Fail-open de verdad:** `necesidad_mb` atrapa cualquier excepcion (un manifiesto de Ollama que no sea
+    un dict reventaba `medir` y, peor, el ticker se lo tragaba y NINGUNA rutina corria); el tick mide dentro
+    de un `try` (fila `vigia_error`, rutinas como hoy). El PSI se mide por archivo (`medido["psi_mem"]`,
+    `medido["psi_cpu"]`). El tick del vigia usa `PS_TIMEOUT_TICK_S` 2,0 (el chat 0,5) y deja `ps_no_medido`
+    si esta `cargada` sin poder ver los modelos. El vigia suspende ANTES del evict y libera si fallo.
+20. **El contador `en_uso` se toma apenas `_decide` dice local** (antes de los awaits) y se suelta si `/nube`
+    o el ruteo final lo saca de local, en `done`, en las salidas tempranas (`/help`, `/mia`, `/redacta` y
+    `/otra` sin pedido) y al desconectarse el socket. Los fallbacks locales del equipo dinamico bajo
+    `cargada` llevan la senal `carga` (gesto `fallback`) y corren dentro de `usando()`. El juez de `/nube`
+    corre como uso suelto.
+21. **`/model <local>` esta cerrado como `/local`** (veredicto directo: Ollama caido, complejidad 4-5 y
+    `/think` ya no caen al ranking entero); solo `/local` rompe la suspension. Bajo `cargada` el juez de
+    `/nube` corre local sin aviso propio cuando el turno ya iba por suscripcion (la marca, si la hay, es la de
+    la ruta final).
+22. **Rulings de forma del plan** (visibles en `docs/superpowers/plans/2026-09-11-carga.md`, "Decisiones
+    tomadas"): MB = MiB (4466 + 1280 = 5746); el veredicto lleva `carga_medicion` (siempre), `avail`
+    (siempre) y `carga` `{ruta, gesto, motivo}` solo si la carga intervino, y el `why` un sufijo que ve el
+    modelo; la senal y `meta.carga` llevan `{nivel, mem_disponible_mb, motivo, ruta, gesto, aviso}` con el
+    aviso compuesto por el server ("maquina justa (...)" cuando el local esta suspendido); las acciones de
+    telemetria son las seis mas `descarga_diferida`, `descarga_fallida`, `vigia_error`, `ps_no_medido` (no se
+    cuentan); una fila `pospone` por rutina vencida por tick (la Aduana cuenta rutinas distintas); `keep_alive`
+    bajo holgada se manda explicito (`"5m"`: en Ollama gana la ultima request); `CHAT_NUM_CTX` vive en
+    `carga.py` y `server` lo reexporta; `GET /api/carga` sin recorte por sesion (numeros y nombres de
+    modelos) con fila en `ALCANCES` para el tablero.
+23. **Lo que midio el smoke** (cuatro corridas, `carga.CALIBRACION`): con el server desechable arriba y el
+    real apagado, reposo 6673-7179 (justa/holgada, segun cuanto frio hay en zram: dos reposos difieren hasta
+    1 GB); con el 7b cargado 2476-2709 libres (7679-7912 efectivos); `cargada` por memoria con 5403-5615
+    libres sin modelo; el PSI nunca decidio (maximo 16,04 contra 20 en el borde de C). `keep_alive: 0` desde
+    afuera NO corta una request viva (53-60 s medidos). `/local` bajo `cargada` con ~5,4 GB libres carga el
+    7b igual y deja la Ally en 860-1166 MB libres con 430-944 MB de zram libre: es el borde del OOM del 17:07,
+    y es lo que el spec pide (los gestos locales no se saltan). Lo que NO ejercito: `cargada` por PSI o por
+    CPU, `justa` como nivel de un turno con aviso de suspension, un turno con abismo (varias pasadas) bajo
+    `cargada`, Chromium (las UIs las cubren 13 tests de node), y la descarga del vigia con el 7b cargado
+    (imposible sin pasar el tope duro; cubierta por `test_carga_vigia.py`).
+24. **Para Pedro, sin tocar:** las rutinas pospuestas no dejan rastro en `routines.json` ni en el panel (solo
+    telemetria y la Aduana); la marca no se re-emite en el fallback entre suscripciones; el texto del aviso de
+    imagen bajo carga ("instala moondream" aunque este); `recent(20000)` en `GET /api/carga` lee el ledger
+    entero; el `/api/ps` con 0,5 s bajo carga real puede no ver el modelo desde el chat (el tick tiene 2 s).

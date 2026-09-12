@@ -70,6 +70,27 @@ y el `finally` descarga el 7b que deja D (bajo `holgada` sale con `keep_alive: 5
 
 **Corrida 3 (22:45-22:51, home `oypgpdtz`, EXIT=0, 0 fallos).** La que se detalla abajo.
 
+**Corrida 4 (2026-09-12, 00:33-00:41, home `pqa027mg`, EXIT=0, 0 fallos): con el codigo FINAL de la rama
+(`3958ba5`), tras la ola de fix del cierre.** Lo que cambio respecto de la corrida 3 y lo que se vio:
+
+- **El nivel se mide contra la memoria efectiva** (ruling del cierre, seccion 10 del spec): con el 7b cargado
+  y nada mas, M dio `holgada` (`mem=2476 efectiva=7679 (modelo 5203)`), no `cargada` como en la corrida 3
+  (2709 a secas). El paso V cambio de sentido: se esperaron dos ticks (130 s) con el 7b cargado y el vigia
+  NO lo descargo (sin fila `descarga`; `/api/ps` siguio listandolo con el `keep_alive` de 5 min intacto).
+  El camino de la descarga queda cubierto por `test_carga_vigia.py` (no se puede provocar `cargada` con el
+  7b adentro sin pasar el tope duro de 1500 MB: seria el OOM de verdad).
+- **`keep_alive` bajo `cargada` es `"30s"`**: en C el `/api/ps` quedo vacio igual (a los <= 90 s: el
+  keep_alive del turno o el vigia al tick); `keep_alive: 0` desde afuera a mitad del stream no corto la
+  request (53217 ms, 514 chars).
+- **Bajo `justa` no se pospone nada**; bajo `cargada` P se pospuso (`last_run` None) y corrio al liberar
+  (00:39:37). Reposo con el server desechable arriba: `justa` 6673 (el frio en zram varia entre corridas:
+  7165-7179 en las corridas 2 y 3).
+- R: `cargada` con 2048 MB apartados (5524 < 5746); B: suscripcion con marca antes del primer chunk y texto
+  limpio; L: `holgada` 7106; D: local sin senal (la histeresis se levanto sola).
+- 25 aserciones ok, 3 notas, 0 fallos. Calibracion de esta corrida: `con el server desechable arriba`
+  00:33 justa 6673; `con el 7b cargado` 00:35 holgada 2476 (+5203); `reservador sin modelo` 00:37 cargada
+  5524; `reservador tras C, para P` 00:39 cargada 5615 (PSI 0,52).
+
 ## La maquina
 
 Todas las escenas son de la corrida 3, con el server REAL apagado y el desechable arriba (salvo el paso 0).
