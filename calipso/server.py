@@ -3155,11 +3155,12 @@ def _ventana_antes(secciones: list[tuple[str, str]], historial: list[dict],
                 "recorte": [], "no_cabe": False, "tokenizador": "fallback",
                 "evaluado": None, "truncado": None, "done_reason": None,
                 "error": type(e).__name__}
-        return secciones, historial, fila
-    fila = {"pasada": pasada, "ruta": route, "estimado": info["estimado_final"],
-            "estimado_sin_recorte": info["estimado"], "num_ctx": num_ctx,
-            "cabe": info["cabe"], "recorte": info["recorte"], "no_cabe": info["no_cabe"],
-            "tokenizador": origen, "evaluado": None, "truncado": None, "done_reason": None}
+        secciones_r, historial_r = secciones, historial
+    else:
+        fila = {"pasada": pasada, "ruta": route, "estimado": info["estimado_final"],
+                "estimado_sin_recorte": info["estimado"], "num_ctx": num_ctx,
+                "cabe": info["cabe"], "recorte": info["recorte"], "no_cabe": info["no_cabe"],
+                "tokenizador": origen, "evaluado": None, "truncado": None, "done_reason": None}
     if apagado:
         fila["apagado"] = True
     return secciones_r, historial_r, fila
