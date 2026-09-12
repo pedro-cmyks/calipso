@@ -297,6 +297,7 @@ fabrica viva.
   experimentos.canarios_resumen`. Pendiente de Pedro: la regla de `aplica` frente a las confabulaciones
   tecnicas (`sin_anclaje_turnos` vs `sin_anclaje_aplica`), `anclado_solo_en_calipso` en las UIs, el juez de
   privacidad, el techo de contexto por modelo de api, la regla del truncado si Ollama descuenta el cache,
-  reemplazar los contextos armados del banco por los del porton, el breaker y el contador en /fabrica, la
-  carrera de la PWA al arranque (las marcas guardadas no se pintan si el historial llega antes que el modulo),
-  y el umbral de recursos para Chromium (las dos capturas de la fase B del smoke quedaron bloqueadas).
+  reemplazar los contextos armados del banco por los del porton, y el breaker y el contador en /fabrica. Ya
+  cerrados en la ola de fix del cierre: la carrera de la PWA al arranque (`loadChats` cuelga de
+  `DOMContentLoaded`) y el umbral de recursos para Chromium (`LUGAR_CHROMIUM_MB = 1500`, corrida 3 del smoke
+  con las cuatro capturas de la fase B).

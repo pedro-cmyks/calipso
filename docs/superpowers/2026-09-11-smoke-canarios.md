@@ -25,11 +25,13 @@ Huella del home real (`ls -laR --time-style=full-iso ~/.calipso | md5sum`): `38a
 (15:31), `telemetry.jsonl` (01:43) y `global/core/` (junio) no se tocaron. Es el mismo efecto que vio el smoke
 de la aduana. Cierre: 8777 y 11435 libres, `/api/ps` vacio.
 
-Dos corridas. La corrida 1 (18:06-18:15, EXIT=0, 8 turnos) fue con el script antes de dos correcciones que
-ella misma pidio (el turno no guardaba el evento `privacidad` del ws, y las capturas de la PWA salian sin el
-pie por la carrera que se describe abajo); la corrida 2 (18:19-18:37) es la del script final y es la que se
-cita, turno por turno. Los numeros de los turnos coinciden entre las dos corridas salvo 1-3 tokens de
-`estimado` (los recuerdos que cada turno deja al siguiente).
+Cuatro corridas en total. La corrida 1 (18:06-18:15, EXIT=0, 8 turnos) fue con el script antes de dos
+correcciones que ella misma pidio (el turno no guardaba el evento `privacidad` del ws, y las capturas de la PWA
+salian sin el pie por la carrera que se describe abajo); la corrida 2 (18:19-18:37) es la del script final y
+es la que se cita, turno por turno (sus capturas de la fase B quedaron bloqueadas por la regla de recursos);
+el reintento `--fase B` (18:4x) volvio a quedar bloqueado por el mismo umbral; y la corrida 3 (19:02, `--fase B`
+con el umbral propio para Chromium) tomo las cuatro capturas que faltaban. Los numeros de los turnos coinciden
+entre las corridas salvo 1-3 tokens de `estimado` (los recuerdos que cada turno deja al siguiente).
 
 ## Los turnos (fase A: Ollama real)
 
@@ -126,10 +128,11 @@ momento del corte, contra el umbral de 6400 MB que la regla fija para "cargar el
 script salio con codigo 3 y apago todo (server, Ollama falso; puertos libres). Sin el server desechable la
 maquina tenia 6,8 GB: el umbral, calibrado para el 7b (5,4 GB + 1 de margen), no lo pasa un Chromium headless
 (~0,4 GB) mientras el propio server del smoke ocupa 1,7 GB. Las capturas `accion-*.png` y `degenerado-*.png`
-NO estan en `experimentos/canarios_smoke_capturas/`; en la corrida 1 (18:14, con 6490 MB) si se tomaron y
+no se tomaron en la corrida 2 ni en el reintento; en la corrida 1 (18:14, con 6490 MB) si se habian tomado y
 `/fabrica` mostro el pie en las dos (la PWA no, por la carrera de abajo), pero esos PNG se borraron antes de la
-corrida 2. Se retoman con `nice -n 19 .venv/bin/python -m experimentos.canarios_smoke --fase B` (un minuto,
-sin el 7b) cuando haya lugar, o con un umbral propio para Chromium si el controlador lo decide.
+corrida 2. Se retomaron en la corrida 3 (`--fase B`, un minuto, sin el 7b) con el umbral propio para Chromium
+que el controlador decidio (`LUGAR_CHROMIUM_MB = 1500`): las cuatro capturas estan en
+`experimentos/canarios_smoke_capturas/`.
 
 ## Control de cache, calibracion y resumen
 
@@ -177,9 +180,11 @@ ventana: 10 pasadas; recortes: -; truncadas: 1; sin medicion: 2; no cupo: 1; tok
    llega primero, `aplicarCanario` sale sin pintar (index.html:1694) y las marcas guardadas en `meta.canarios`
    no se ven hasta re-abrir el chat. En la corrida 1 paso en las tres capturas de la PWA con marcas (`truncado`, `accion`,
    `degenerado`); en un diagnostico sobre el mismo home gano el modulo y el pie aparecio. Las marcas EN VIVO (senal ws `canario`) no dependen
-   de esto. El smoke lo sortea esperando al modulo y re-abriendo el chat activo (`activateChat`, lo que
-   hace Pedro al tocarlo). Arreglo de una linea para otra tanda: que `renderHistory` corra despues del
-   modulo, o que el modulo re-aplique los pies al cargar. `/fabrica` no lo tiene (carga el chat al tocarlo).
+   de esto. En las corridas 2 y 3 el smoke lo sorteaba esperando al modulo y re-abriendo el chat activo
+   (`activateChat`, lo que hace Pedro al tocarlo). ARREGLADO en la ola de fix del cierre: `loadChats()` cuelga
+   de `DOMContentLoaded` (los module scripts sin async corren antes), el check estatico vive en `test_ui.py`
+   y el smoke ya no re-abre el chat: la captura de la PWA es la prueba del primer pintado. `/fabrica` no lo
+   tenia (carga el chat al tocarlo).
 4. **La respuesta truncada sale como `system` y la atrapa `fuga_de_template`.** Con el system cortado desde
    el principio, lo que el 7b ve empieza en medio del template; la degeneracion lo marca sin que la ventana
    tenga que decirselo. Dos canarios independientes coinciden sobre el mismo turno.

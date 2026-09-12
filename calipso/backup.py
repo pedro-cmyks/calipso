@@ -18,7 +18,9 @@ CALIPSO_HOME = pathlib.Path(os.environ.get(
     "CALIPSO_HOME", os.path.expanduser("~/.calipso")))
 
 # Caches/artefactos que no tiene sentido respaldar (pesan y se regeneran).
-SKIP_DIRS = {"backups", "models", "model_cache", "__pycache__", ".cache"}
+# `tokenizador`: el tokenizer.json del modelo local (11-23 MB), se regenera
+# desde el GGUF de ~/.ollama (calipso/tokenizador.py).
+SKIP_DIRS = {"backups", "models", "model_cache", "__pycache__", ".cache", "tokenizador"}
 
 # Directorios excluidos SOLO en la raiz del home: logs/ lleva el access log
 # que llego a contener el token (revision de seguridad 2026-09-07, C4/C6).

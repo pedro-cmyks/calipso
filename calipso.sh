@@ -11,7 +11,7 @@ if [[ ! -d "$VENV" ]]; then
     python3 -m venv "$VENV"
     source "$VENV/bin/activate"
     pip install --quiet --upgrade pip
-    pip install --quiet chromadb ollama playwright litellm fastapi "uvicorn[standard]" pyotp qrcode pillow
+    pip install --quiet chromadb ollama playwright litellm fastapi "uvicorn[standard]" pyotp qrcode pillow tokenizers==0.22.2
     playwright install chromium
 fi
 

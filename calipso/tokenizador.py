@@ -117,10 +117,22 @@ def _ruta_cache(blob: pathlib.Path) -> pathlib.Path:
     return home() / "tokenizador" / (blob.name + ".json")
 
 
+def _generar_cache(blob: pathlib.Path, cache: pathlib.Path) -> None:
+    """Escribe el tokenizer.json ATOMICO (.json.tmp + os.replace): un corte
+    a mitad de escritura no deja un cache truncado que despues no carga."""
+    _, kv = leer_metadata(blob)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    tmp = cache.with_suffix(".json.tmp")
+    armar(kv).save(str(tmp))
+    os.replace(tmp, cache)
+
+
 def cargar(nombre: str):
     """El Tokenizer del modelo `nombre`, desde el cache o generado desde el
-    GGUF; None si no se puede (y entonces se usa el fallback). Una vez por
-    proceso y por modelo, bajo candado: se llama desde hilos."""
+    GGUF; None si no se puede (y entonces se usa el fallback). Si el cache
+    esta pero no carga (truncado, de otra version), se borra y se regenera
+    UNA vez antes de caer al fallback. Una vez por proceso y por modelo,
+    bajo candado: se llama desde hilos."""
     with _candado:
         if nombre in _cache:
             return _cache[nombre]
@@ -131,10 +143,15 @@ def cargar(nombre: str):
             if blob is not None:
                 cache = _ruta_cache(blob)
                 if not cache.is_file():
-                    _, kv = leer_metadata(blob)
-                    cache.parent.mkdir(parents=True, exist_ok=True)
-                    armar(kv).save(str(cache))
-                tok = Tokenizer.from_file(str(cache))
+                    _generar_cache(blob, cache)
+                    tok = Tokenizer.from_file(str(cache))
+                else:
+                    try:
+                        tok = Tokenizer.from_file(str(cache))
+                    except Exception:      # cache roto: se regenera una vez
+                        cache.unlink(missing_ok=True)
+                        _generar_cache(blob, cache)
+                        tok = Tokenizer.from_file(str(cache))
         except Exception:      # sin tokenizers, GGUF raro, disco: fallback
             tok = None
         _cache[nombre] = tok

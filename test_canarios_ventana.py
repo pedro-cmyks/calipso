@@ -236,3 +236,59 @@ def test_el_tokenizador_real_reproduce_los_ids_de_qwen_y_se_cachea_en_el_home(mo
     # el caso que el fallback subestima: un adjunto con forma de codigo
     codigo = "x = 1\n" * 2000
     assert len(codigo) / contar(codigo) < 2.0
+
+
+def _ollama_falso(tmp_path):
+    """Un manifest y un blob de mentira para `blob_del_modelo`; la metadata
+    la inyecta cada test (un BPE de tres tokens con la forma de qwen2)."""
+    raiz = tmp_path / "ollama" / "manifests" / "registry.ollama.ai" / "library" / "qwen2.5"
+    raiz.mkdir(parents=True)
+    (tmp_path / "ollama" / "blobs").mkdir()
+    (tmp_path / "ollama" / "blobs" / "sha256-abc").write_bytes(b"GGUF")
+    (raiz / "7b").write_text('{"layers": [{"mediaType": "application/vnd.ollama.image.model", "digest": "sha256:abc"}]}')
+    return tmp_path / "ollama"
+
+
+_KV_CHICO = {"tokenizer.ggml.model": "gpt2", "tokenizer.ggml.pre": "qwen2",
+             "tokenizer.ggml.tokens": ["a", "b", "ab", "<|im_end|>"],
+             "tokenizer.ggml.merges": ["a b"], "tokenizer.ggml.token_type": [1, 1, 1, 3]}
+
+
+def test_un_cache_truncado_se_borra_y_se_regenera_una_vez(monkeypatch, tmp_path):
+    """Ola de fix del cierre (punto 8): un tokenizer.json roto (un corte a
+    mitad de escritura) hacia caer al fallback para siempre. Ahora el cache
+    se escribe a .json.tmp + os.replace, y si `Tokenizer.from_file` falla
+    con el cache presente se borra y se regenera UNA vez."""
+    pytest.importorskip("tokenizers")
+    monkeypatch.setenv("OLLAMA_MODELS", str(_ollama_falso(tmp_path)))
+    monkeypatch.setenv("CALIPSO_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(tokenizador, "_cache", {})
+    lecturas = []
+    monkeypatch.setattr(tokenizador, "leer_metadata", lambda blob: lecturas.append(blob) or (3, _KV_CHICO))
+    cache = tmp_path / "home" / "tokenizador" / "sha256-abc.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text('{"version": "1.0", "truncated', encoding="utf-8")
+    contar, origen = tokenizador.contador("qwen2.5:7b")
+    assert origen == "real" and contar("ab") == 1 and contar("ba") == 2
+    assert len(lecturas) == 1 and cache.is_file() and cache.stat().st_size > 100
+    assert not list(cache.parent.glob("*.tmp"))
+    # con el cache sano no se vuelve a leer el GGUF
+    monkeypatch.setattr(tokenizador, "_cache", {})
+    assert tokenizador.contador("qwen2.5:7b")[1] == "real" and len(lecturas) == 1
+
+
+def test_el_cache_del_tokenizador_se_escribe_atomico(monkeypatch, tmp_path):
+    pytest.importorskip("tokenizers")
+    monkeypatch.setenv("OLLAMA_MODELS", str(_ollama_falso(tmp_path)))
+    monkeypatch.setenv("CALIPSO_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(tokenizador, "_cache", {})
+    monkeypatch.setattr(tokenizador, "leer_metadata", lambda blob: (3, _KV_CHICO))
+    escritos = []
+    real = os.replace
+
+    def espia(origen, destino):
+        escritos.append((pathlib.Path(origen).name, pathlib.Path(destino).name))
+        real(origen, destino)
+    monkeypatch.setattr(tokenizador.os, "replace", espia)
+    assert tokenizador.contador("qwen2.5:7b")[1] == "real"
+    assert escritos == [("sha256-abc.json.tmp", "sha256-abc.json")]

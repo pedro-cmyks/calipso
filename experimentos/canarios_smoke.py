@@ -167,7 +167,10 @@ def descargar_7b() -> list[str]:
         if not cargados:
             break
         time.sleep(2)
-    print(f"[recursos] 7b descargado; /api/ps: {cargados or 'vacio'}", flush=True)
+    if cargados:
+        print(f"[recursos] ATENCION: sigue cargado tras el sondeo; /api/ps: {cargados}", flush=True)
+    else:
+        print("[recursos] 7b descargado; /api/ps: vacio", flush=True)
     return cargados
 
 
