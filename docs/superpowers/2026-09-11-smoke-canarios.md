@@ -112,7 +112,13 @@ fuga de reentrada" en las dos UIs (vista en la captura de diagnostico sobre el h
 corrida 1, `diag-pwa.png` / `diag-fabrica.png` en el scratchpad de la sesion). En la corrida 2 este turno no
 llego a correr: el script quedo BLOQUEADO en la captura de `accion` (abajo).
 
-**Las capturas de la fase B quedaron BLOQUEADAS por la regla de recursos.** En la corrida 2 y en el reintento
+**Las capturas de la fase B quedaron BLOQUEADAS por la regla de recursos en la corrida 2 y se tomaron en la
+corrida 3 (19:02).** Ruling del controlador: umbral propio para Chromium (`LUGAR_CHROMIUM_MB = 1500`; el de
+6400 queda para el 7b). La corrida 3 (`--fase B`, home `/tmp/porton-reentrada-vk3w9lmg`, sin el 7b): `accion`
+1009 ms `sin_anclaje=1 aplica=True deg=[]`, `degenerado` 67 ms `deg=['fuga_de_reentrada']`, capturas con
+5916 y 5840 MB disponibles (PSI 0,0 y 0,08): `accion-pwa.png`, `accion-fabrica.png`, `degenerado-pwa.png`,
+`degenerado-fabrica.png` en `experimentos/canarios_smoke_capturas/`; en la PWA el pie `sin verificar (1)` al
+pie de la burbuja de `accion`. Lo que sigue es el registro de la corrida 2. En la corrida 2 y en el reintento
 `--fase B`, con el server desechable arriba (1,7 GB de RSS: el modelo de embeddings de la memoria) y otra
 sesion de `claude` corriendo en la maquina (~0,8 GB con su MCP de playwright), `MemAvailable` se quedo entre
 4991 y 5800 MB durante los 10 minutos de espera (PSI `some avg10` 0,0 todo el tiempo): 5334 MB y 5760 MB en el
@@ -228,9 +234,9 @@ Quedan, en orden de lo que este smoke mostro:
 7. **El breaker** (spec 7: frenar, reintentar o cambiar de ruta con los numeros) y **el contador en /fabrica**
    (YAGNI del spec: primero el resumen por script).
 8. **La carrera de la PWA** (hallazgo 3): una linea en `index.html`, con el smoke como prueba.
-9. **La regla de recursos para Chromium:** el umbral del 7b (6400 MB) bloquea las capturas de la fase B
-   mientras el propio server desechable ocupe 1,7 GB; un umbral propio (~1500 MB) o correr `--fase B` con la
-   maquina vacia.
+9. **La regla de recursos para Chromium:** RESUELTO por el controlador (umbral propio `LUGAR_CHROMIUM_MB =
+   1500`; corrida 3 con las cuatro capturas). Queda como calibracion para el frente de la carga: el umbral
+   se mide contra lo que el paso va a pedir, no contra el 7b siempre.
 10. **Persistir el contexto en produccion: NO** (ruling 9; `CANARIOS_PERSISTIR_CONTEXTO=1` es solo del
     desechable).
 
@@ -240,7 +246,7 @@ Quedan, en orden de lo que este smoke mostro:
   por invocacion): el juez lo dejo local (turno 6); cubierto por `test_abismo_nube.py`.
 - El recorte con `recorte != []`: ningun turno tuvo a la vez algo volatil que sacar y un prompt que no cupiera
   (el del adjunto no tenia historial ni recuerdos); cubierto por los unitarios de `test_canarios_ventana.py`.
-- Las capturas de `accion` y `degenerado` en la corrida 2 (BLOQUEADAS por la regla de recursos: arriba).
+- Nada de la fase B quedo sin ejercitar: las capturas de `accion` y `degenerado` se tomaron en la corrida 3.
 - La ruta api y el orquestador (`_run_dynamic_team`): sin fila de ventana por diseno (plan, huecos declarados).
 
 ## Veredicto
@@ -249,5 +255,6 @@ Los seis turnos con el Ollama real y los dos con el falso dieron lo que la tabla
 lecturas distintas a la ideal y anotadas: el invento se ve solo en `anclado_solo_en_calipso` (fixture
 contaminado, h07) y `/nube` quedo local por el juez (credencial falsa). Las marcas se vieron en las dos UIs
 para `truncado` (tres marcas), `accion` (fabrica, corrida 1) y `degenerado` (las dos, diagnostico); `invento`
-y `sano` sin pie, como corresponde. Pendiente antes del merge: las dos capturas de la fase B (BLOQUEADAS por
-la regla de recursos; `--fase B`, un minuto) y la decision del controlador sobre el umbral de Chromium.
+y `sano` sin pie, como corresponde; las de `accion` y `degenerado` de la corrida 3 (fase B, umbral propio de
+Chromium) estan en `experimentos/canarios_smoke_capturas/`. PASA. Pendiente antes del merge: la revision
+final del cierre (con la carrera de la PWA, hallazgo 3, como candidata a la ola de fix).

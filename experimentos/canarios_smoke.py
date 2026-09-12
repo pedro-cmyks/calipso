@@ -31,7 +31,8 @@ el server real y ~/.calipso no se tocan.
 Regla de recursos (ruling del controlador, 2026-09-11): la Ally tiene
 11,6 GB y Pedro a veces juega en ella. Antes de cargar el 7b (fase A) y
 antes de abrir Chromium se leen MemAvailable y el PSI de memoria; con
-menos de LUGAR_MB disponibles o `some avg10` por encima de PSI_MAX se
+menos de LUGAR_MB disponibles (LUGAR_CHROMIUM_MB para las capturas: Chromium
+headless pesa ~0,4 GB) o `some avg10` por encima de PSI_MAX se
 espera hasta ESPERA_MAX_S midiendo cada 30 s, y si sigue sin lugar el
 script sale con codigo 3 (BLOCKED) sin arrancar ese paso. Al terminar los
 turnos de la fase A el 7b se descarga (keep_alive 0) y se verifica que
@@ -76,8 +77,12 @@ GUIONES_FALSOS = {
     "degenerado": " En que quedamos la otra vez con el presupuesto del taller? Segui exactamente desde ahi, sin repetir.",
 }
 
-# la regla de recursos: 5,4 GB del 7b mas 1 de margen; PSI `some avg10`
+# la regla de recursos: 5,4 GB del 7b mas 1 de margen; PSI `some avg10`.
+# Chromium headless pesa ~0,4 GB: tiene su propio umbral (ruling del
+# controlador, 2026-09-11: el del 7b no lo pasa una captura mientras el
+# server desechable del smoke ocupa 1,7 GB con el modelo de embeddings).
 LUGAR_MB = 6400
+LUGAR_CHROMIUM_MB = 1500
 PSI_MAX = 20.0
 ESPERA_MAX_S = 600
 ESPERA_PASO_S = 30
@@ -102,8 +107,8 @@ def lugar(meminfo: str, psi: str) -> tuple[int, float]:
     return mb, avg10
 
 
-def hay_lugar(mb: int, avg10: float) -> bool:
-    return mb >= LUGAR_MB and avg10 <= PSI_MAX
+def hay_lugar(mb: int, avg10: float, lugar_mb: int = LUGAR_MB) -> bool:
+    return mb >= lugar_mb and avg10 <= PSI_MAX
 
 
 def medir_lugar() -> tuple[int, float]:
@@ -111,18 +116,18 @@ def medir_lugar() -> tuple[int, float]:
                  pathlib.Path("/proc/pressure/memory").read_text(encoding="utf-8"))
 
 
-def esperar_lugar(paso: str) -> None:
+def esperar_lugar(paso: str, lugar_mb: int = LUGAR_MB) -> None:
     """Mide antes de un paso que carga el 7b o abre Chromium; espera hasta
     ESPERA_MAX_S; si no hay lugar, sale con SALIDA_BLOQUEADO (los `finally`
     de arriba apagan lo que este levantado)."""
     limite = time.monotonic() + ESPERA_MAX_S
     while True:
         mb, avg10 = medir_lugar()
-        if hay_lugar(mb, avg10):
+        if hay_lugar(mb, avg10, lugar_mb):
             print(f"[recursos] {paso}: MemAvailable {mb} MB, PSI some avg10 {avg10}: hay lugar", flush=True)
             return
         if time.monotonic() >= limite:
-            print(f"[recursos] {paso}: sin lugar tras {ESPERA_MAX_S} s (MemAvailable {mb} MB < {LUGAR_MB} "
+            print(f"[recursos] {paso}: sin lugar tras {ESPERA_MAX_S} s (MemAvailable {mb} MB < {lugar_mb} "
                   f"o PSI some avg10 {avg10} > {PSI_MAX}): BLOQUEADO, no arranco", flush=True)
             sys.exit(SALIDA_BLOQUEADO)
         print(f"[recursos] {paso}: MemAvailable {mb} MB, PSI some avg10 {avg10}: espero {ESPERA_PASO_S} s",
@@ -426,7 +431,7 @@ def fase_a(args, capturas, resultados, telemetrias) -> None:
         # regla de recursos pide lugar antes de abrirlo
         descargar_7b()
         if not args.sin_capturas:
-            esperar_lugar("capturas de la fase A (Chromium)")
+            esperar_lugar("capturas de la fase A (Chromium)", LUGAR_CHROMIUM_MB)
             for nombre in ("invento", "truncado", "sano"):
                 base._http("POST", f"/api/chats/{resultados[nombre]['chat']}/activate", {}, server.token)
                 capturar(server.token, resultados[nombre]["chat"], capturas, nombre)
@@ -449,7 +454,7 @@ def fase_b(args, capturas, resultados, telemetrias) -> None:
             resultados[nombre] = asyncio.run(turno(server.token, "/local en que quedamos la otra vez con el presupuesto?"))
             print(resumen_del_turno(nombre, resultados[nombre]), flush=True)
             if not args.sin_capturas:
-                esperar_lugar(f"captura de {nombre} (Chromium)")
+                esperar_lugar(f"captura de {nombre} (Chromium)", LUGAR_CHROMIUM_MB)
                 base._http("POST", f"/api/chats/{resultados[nombre]['chat']}/activate", {}, server.token)
                 capturar(server.token, resultados[nombre]["chat"], capturas, nombre)
         telemetrias.append(home_b / "telemetry.jsonl")
