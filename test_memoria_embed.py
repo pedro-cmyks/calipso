@@ -41,9 +41,21 @@ class _Resp:
         return False
 
 
+MEMINFO_HOLGADA = "MemTotal: 11917720 kB\nMemAvailable: 7554048 kB\nSwapTotal: 5958652 kB\nSwapFree: 2256184 kB\n"
+
+
+def _sembrar_meminfo(monkeypatch, disponible_mb: int) -> None:
+    """La lectura FRESCA de /proc/meminfo que `keep_alive_embed` hace por uso
+    (ola de fix, punto 2): sembrada, para que el keep_alive del payload no
+    dependa de la RAM de la maquina que corre la suite."""
+    texto = MEMINFO_HOLGADA.replace("MemAvailable: 7554048 kB", f"MemAvailable: {disponible_mb * 1024} kB")
+    monkeypatch.setattr(carga, "_leer_proc", lambda ruta: texto)
+
+
 @pytest.fixture(autouse=True)
-def _carga_limpia():
+def _carga_limpia(monkeypatch):
     carga.olvidar()
+    _sembrar_meminfo(monkeypatch, 7377)
     yield
     carga.olvidar()
 
@@ -166,6 +178,24 @@ def test_embed_manda_modelo_input_truncate_y_las_perillas_del_nivel(monkeypatch)
         ef.embed(["x"])
         assert vistos[-1]["payload"]["keep_alive"] == 0 == carga.keep_alive_embed(nivel)
         assert vistos[-1]["payload"]["options"] == {"num_thread": carga.num_thread(nivel)}
+
+
+def test_embed_suelta_el_modelo_si_la_memoria_disponible_no_alcanza_o_el_7b_esta_cargado(monkeypatch):
+    """El payload lleva `keep_alive: 0` bajo `holgada` cuando /proc/meminfo
+    FRESCO dice menos de EMBED_RESIDENTE_MB, o cuando la ultima medicion lista
+    al 7b (ola de fix, punto 2: con el 7b residente bge-m3 embebe y suelta)."""
+    vistos = _urlopen_falso(monkeypatch)
+    ef = me.OllamaEmbed()
+    _sembrar_meminfo(monkeypatch, 1800)
+    ef.embed(["x"])
+    assert vistos[-1]["payload"]["keep_alive"] == 0
+    _sembrar_meminfo(monkeypatch, 7000)
+    ef.embed(["x"])
+    assert vistos[-1]["payload"]["keep_alive"] == "5m"
+    carga.medir("qwen2.5:7b", leer=lambda ruta: carga._leer_proc(ruta) if ruta == "/proc/meminfo" else "",
+                ps=lambda: [{"name": "qwen2.5:7b", "size_mb": 5203}], ncpu=16)
+    ef.embed(["x"])
+    assert vistos[-1]["payload"]["keep_alive"] == 0
 
 
 def test_embed_usa_el_timeout_del_llamador_y_toma_el_contador_de_uso(monkeypatch):

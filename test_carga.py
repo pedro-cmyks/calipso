@@ -685,11 +685,47 @@ def test_medir_cuenta_el_embedder_en_la_memoria_efectiva_aunque_ps_diga_latest()
 
 def test_keep_alive_embed_es_la_tabla_propia_del_embedder():
     """holgada 5m; justa y cargada 0: embebe y suelta (ruling 8.4), sin
-    convivir con el 7b cuando la memoria esta justa. La tabla del 7b no cambia."""
-    assert carga.keep_alive_embed("holgada") == "5m" and carga.keep_alive_embed(None) == "5m"
-    assert carga.keep_alive_embed("justa") == 0 and carga.keep_alive_embed("cargada") == 0
+    convivir con el 7b cuando la memoria esta justa. La tabla del 7b no cambia.
+    Con la memoria disponible sembrada holgada y sin el 7b cargado: la tabla."""
+    assert carga.keep_alive_embed("holgada", disponible_mb=7000, modelos_cargados=[]) == "5m"
+    assert carga.keep_alive_embed(None, disponible_mb=7000, modelos_cargados=[]) == "5m"
+    assert carga.keep_alive_embed("justa", disponible_mb=7000, modelos_cargados=[]) == 0
+    assert carga.keep_alive_embed("cargada", disponible_mb=7000, modelos_cargados=[]) == 0
     assert "8.4" in carga.keep_alive_embed.__doc__
     assert carga.keep_alive("justa") == "2m" and carga.keep_alive("cargada") == "30s"
+
+
+def _meminfo_con(disponible_mb: int) -> str:
+    return MEMINFO_HOLGADA.replace("MemAvailable:    7554048 kB", f"MemAvailable: {disponible_mb * 1024} kB")
+
+
+def test_keep_alive_embed_mira_la_memoria_disponible_fresca_y_si_el_7b_esta_residente():
+    """Ruling del ledger (convivencia, ola de fix punto 2): con el 7b residente
+    la medicion sale `holgada` por la memoria EFECTIVA y el embedder se quedaba
+    5 min al lado del 7b (el smoke: 327 MB de swap libres, psi_mem_full10
+    5,19). "5m" solo si MemAvailable FRESCO (de /proc/meminfo, no de la ultima
+    medicion, que puede ser la de `_decide` antes de que el 7b cargara) llega a
+    EMBED_RESIDENTE_MB (2500: el embedder de 1219 mas 1 GB de margen) y el
+    modelo del chat NO esta cargado; si no, 0 (embebe y suelta)."""
+    assert carga.UMBRALES["EMBED_RESIDENTE_MB"] == 2500
+    assert carga.keep_alive_embed("holgada", leer=lector(meminfo=_meminfo_con(1800))) == 0
+    assert carga.keep_alive_embed("holgada", leer=lector(meminfo=_meminfo_con(4000))) == "5m"
+    assert carga.keep_alive_embed("holgada", disponible_mb=1800) == 0
+    assert carga.keep_alive_embed("holgada", disponible_mb=2500) == "5m"
+    # el 7b listado en /api/ps (con o sin :latest): 0 aunque sobre memoria
+    assert carga.keep_alive_embed("holgada", disponible_mb=7000, modelos_cargados=["qwen2.5:7b"]) == 0
+    assert carga.keep_alive_embed("holgada", disponible_mb=7000, modelos_cargados=["qwen2.5:7b:latest"]) == 0
+    assert carga.keep_alive_embed("holgada", disponible_mb=7000, modelos_cargados=["bge-m3:latest"]) == "5m"
+    # sin lista explicita toma la de la ultima medicion (o ninguna)
+    carga.medir("qwen2.5:7b", leer=lector(), ps=lambda: [{"name": "qwen2.5:7b", "size_mb": 5203}], ncpu=16)
+    assert carga.nivel_reciente() == "holgada"
+    assert carga.keep_alive_embed("holgada", disponible_mb=7000) == 0
+    carga.olvidar()
+    assert carga.keep_alive_embed("holgada", disponible_mb=7000) == "5m"
+    # sin lectura de /proc: la tabla por nivel (fail-open)
+    assert carga.keep_alive_embed("holgada", leer=lector(meminfo=None)) == "5m"
+    assert carga.keep_alive_embed("justa", leer=lector(meminfo=None)) == 0
+    assert "2500" in carga.keep_alive_embed.__doc__ and "1219" in carga.keep_alive_embed.__doc__
 
 
 def test_payload_local_acepta_un_keep_alive_propio_sin_tocar_los_seis_sitios():
