@@ -3114,6 +3114,11 @@ def _chunks_for(route: str, system: str, user_msg: str, usage: dict,
         # fallback de ranking vacio (todo lo demas tambien esta caido), asi
         # que degradar a claude no protege a nadie y rompe la promesa de que
         # lo privado no sale de la maquina. Se para y se dice.
+        # el aviso NO es una respuesta (ola de fix del cierre, punto 5): el
+        # turno lo lee en `usage` y salta el remember y el veredicto; el
+        # mensaje si se guarda en el chat, porque Pedro lo leyo
+        usage["aviso_local_caido"] = True
+
         def _local_caido():
             yield ("[Calipso] no puedo contestar esto con el modelo local: "
                    "Ollama no esta disponible. No lo mando a la nube.")
@@ -4200,6 +4205,8 @@ async def ws_chat(ws: WebSocket) -> None:
                                 break
                         for k in ("prompt_tokens", "completion_tokens"):
                             usage[k] = usage.get(k, 0) + usage_pasada.get(k, 0)
+                        if usage_pasada.get("aviso_local_caido"):
+                            usage["aviso_local_caido"] = True
                         ventana.append(_ventana_despues(fila_ventana, usage_pasada))
                         usages.append(dict(usage_pasada))
                         if marca_pendiente is None:
@@ -4364,7 +4371,11 @@ async def ws_chat(ws: WebSocket) -> None:
             # fail-open. Marcan y miden, no frenan (decision de Pedro). El
             # veredicto va a la fila `chat_turn`, al meta del mensaje, a la
             # senal ws (antes del done) y, en dos numeros, al remember.
-            veredicto = await _veredicto_del_turno(
+            # Con Ollama caido `full` es el aviso "[Calipso] no puedo
+            # contestar...", que no es una respuesta: sin veredicto (medirlo
+            # daba 0/0 limpios que iban al remember) y sin remember.
+            aviso_local_caido = bool(usage.get("aviso_local_caido"))
+            veredicto = None if aviso_local_caido else await _veredicto_del_turno(
                 respuesta=full, secciones=secciones_pasada, mensajes=mensajes_pasada,
                 mensaje=mensaje_saliente, bloques=list(estado_abismo.bloques),
                 features=features, usages=usages, ventana=ventana,
@@ -4425,6 +4436,7 @@ async def ws_chat(ws: WebSocket) -> None:
                 agent_team=agent_team,
                 abismo_consultas=estado_abismo.consultas,
                 canarios=veredicto,
+                **({"aviso_local_caido": True} if aviso_local_caido else {}),
                 latency_ms=round((time.perf_counter() - turn_started) * 1000),
                 cost_usd=entry["cost_usd"],
                 **_contexto_persistido(secciones_pasada, mensajes_pasada, estado_abismo.bloques),
@@ -4469,7 +4481,8 @@ async def ws_chat(ws: WebSocket) -> None:
             # `memoria_procedencia.presentar`, nunca crudo.
             # Y los canarios (spec 2026-09-11): dos numeros del veredicto,
             # `degeneracion` y `sin_anclaje` (None si el canario fallo).
-            if full.strip():
+            # El aviso de Ollama caido no entra: no es una respuesta.
+            if full.strip() and not aviso_local_caido:
                 try:
                     await asyncio.to_thread(
                         mem.remember,

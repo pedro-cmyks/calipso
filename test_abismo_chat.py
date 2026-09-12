@@ -938,6 +938,28 @@ def test_con_calipso_canarios_off_el_turno_no_trae_senal_ni_meta_ni_recorte(chat
     assert chat.modelo.llamadas[0]["options"]["num_ctx"] == 30     # el techo de Ollama sigue
 
 
+def test_el_aviso_de_ollama_caido_no_es_una_respuesta(chat, monkeypatch):
+    """Ola de fix del cierre (punto 5): con Ollama caido el aviso "[Calipso]
+    no puedo contestar..." era `full`: entraba a la memoria episodica como
+    "Calipso respondio: ...", el canario lo media limpio (0/0) y esos ceros
+    iban al remember. Ahora el turno lo marca (`usage["aviso_local_caido"]`):
+    no hay remember, no hay veredicto (ni senal ni meta.canarios), la fila
+    chat_turn lo dice; el mensaje SI se guarda en el chat (Pedro lo leyo)."""
+    monkeypatch.setattr(srv, "_http_up", lambda url, timeout=1.5: False)
+    visto = []
+    monkeypatch.setattr(srv.canarios, "veredicto", lambda **k: visto.append(k) or {})
+    eventos = chat.turno("que libro te conte que empece?")
+    tipos = [e["type"] for e in eventos]
+    assert tipos[-1] == "done" and "canario" not in tipos and "error" not in tipos
+    assert "Ollama no esta disponible" in texto_visible(eventos)
+    assert visto == [] and chat.memoria.guardados == []
+    ultimo = chat.mensajes()[-1]
+    assert ultimo["role"] == "assistant" and "Ollama no esta disponible" in ultimo["text"]
+    assert "canarios" not in ultimo["meta"]
+    fila = chat.telemetria("chat_turn")[0]
+    assert fila["aviso_local_caido"] is True and fila["canarios"] is None
+
+
 def test_el_tope_de_tiempo_del_canario_no_frena_el_turno(chat, monkeypatch):
     monkeypatch.setattr(srv.canarios, "TOPE_SEGUNDOS", 0.05)
 
