@@ -6,9 +6,11 @@ sin WebSocket, sin modelo, sin disco.
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 
+from calipso import prompt_compiler
 from calipso.abismo import marca
 
 ABISMO_CONSULTAS_MAX = 3          # consultas por turno (spec seccion 4)
@@ -19,6 +21,37 @@ VERBOS = {"memoria": "buscando en tu memoria",
           "chats": "buscando en tus chats",
           "proyecto": "mirando el repo"}
 INSTRUCCION_CONTINUAR = "Segui exactamente desde ahi, sin repetir."
+# La honestidad en la reentrada (spec canarios 2026-09-11, seccion 4): SOLO
+# cuando hay bloques, la instruccion suma que lo que sigue se basa en lo que
+# subio y en lo que ya tenia, y que si no trae el dato lo diga con esas
+# palabras (la frase entra a PATRONES_FUERTES de la memoria por el banco).
+# Tras un `fallo` la reentrada va sin bloque y lleva la letra de siempre:
+# "se basa SOLO en lo que subio" con nada subido seria un no-saber
+# inducido. LETRA MEDIDA por el porton (experimentos/porton_reentrada.py):
+# atada byte a byte a experimentos/variantes/reentrada-con-bloques.txt y
+# reentrada-sin-bloques.txt (test_abismo_turno.py); no cambiarla sin
+# re-correr el porton.
+INSTRUCCION_CONTINUAR_CON_BLOQUES = (
+    "Segui exactamente desde ahi, sin repetir. Lo que sigue se basa SOLO en lo "
+    "que subio del abismo y en lo que ya tenias en este prompt; si lo que subio "
+    "no trae el dato, decilo con esas palabras en vez de completarlo.")
+# las letras que el canario `fuga_de_reentrada` caza en la respuesta
+LETRAS_REENTRADA = (INSTRUCCION_CONTINUAR, INSTRUCCION_CONTINUAR_CON_BLOQUES)
+# el interruptor del porton: CALIPSO_REENTRADA=vieja manda la letra de
+# siempre aunque haya bloques (la condicion `antes`); cualquier otra cosa o
+# ausente es la letra nueva. Se lee POR LLAMADA, nunca congelado
+LETRA_DEFAULT = "nueva"
+
+
+def letra_activa() -> str:
+    valor = os.environ.get("CALIPSO_REENTRADA", "").strip().lower()
+    return valor if valor in ("vieja", "nueva") else LETRA_DEFAULT
+
+
+def instruccion_de_reentrada(hay_bloques: bool) -> str:
+    if hay_bloques and letra_activa() == "nueva":
+        return INSTRUCCION_CONTINUAR_CON_BLOQUES
+    return INSTRUCCION_CONTINUAR
 
 
 @dataclass
@@ -52,19 +85,27 @@ class EstadoTurno:
         return not self.apagada and self.consultas < ABISMO_CONSULTAS_MAX
 
 
-def prompt_reentrada(system_base: str, bloques: list[str],
-                     tramos_crudos: list[str], mensaje: str) -> tuple[str, str]:
-    """(system, mensaje de usuario) de la pasada sintetica. Los bloques van
-    como append post-compile del system base del turno (construido UNA vez:
-    no se re-corre recall ni economia). El parcial viaja por UNA sola via,
-    el "venias diciendo" del mensaje, nunca como mensaje assistant. El
-    mensaje original tambien viaja: `_history_messages` descarta el ultimo
-    mensaje del chat (el de Pedro), asi que sin esto la reentrada no sabria
-    que se le pregunto."""
-    system = system_base + "".join("\n\n" + b for b in bloques if b)
+def prompt_reentrada(secciones_base: list[tuple[str, str]], bloques: list[str],
+                     tramos_crudos: list[str], mensaje: str,
+                     ) -> tuple[list[tuple[str, str]], str]:
+    """(secciones del system, mensaje de usuario) de la pasada sintetica.
+    Los bloques van como SECCIONES detras de las del system base del turno
+    (construido UNA vez: no se re-corre recall ni economia); cada bloque
+    trae su encabezado `=== Lo que subio del abismo (fuente: X) ===` y
+    `seccion_de_bloque` lo vuelve (titulo, cuerpo), asi el render es byte a
+    byte el append de antes y el recorte de la ventana puede sacar el
+    bloque mas viejo sin partir texto (spec canarios 2.3). El parcial viaja
+    por UNA sola via, el "venias diciendo" del mensaje, nunca como mensaje
+    assistant. El mensaje original tambien viaja: `_history_messages`
+    descarta el ultimo mensaje del chat (el de Pedro), asi que sin esto la
+    reentrada no sabria que se le pregunto."""
+    con_bloques = [b for b in bloques if b]
+    secciones = list(secciones_base) + [prompt_compiler.seccion_de_bloque(b)
+                                        for b in con_bloques]
     venia = "".join(tramos_crudos)
-    usuario = f"{mensaje}\n\nVenias diciendo: {venia}\n{INSTRUCCION_CONTINUAR}"
-    return system, usuario
+    instruccion = instruccion_de_reentrada(bool(con_bloques))
+    usuario = f"{mensaje}\n\nVenias diciendo: {venia}\n{instruccion}"
+    return secciones, usuario
 
 
 def senal(fase: str, fuente: str, **campos) -> dict:

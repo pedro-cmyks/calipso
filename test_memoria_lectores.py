@@ -62,7 +62,8 @@ def test_build_context_presenta_salta_la_basura_y_corta_despues(monkeypatch):
     monkeypatch.setattr(srv, "RECALL_MAX", 4)
     monkeypatch.setattr(srv, "RECALL_MIN_SCORE", 0.30)
     monkeypatch.delenv("MEMORIA_PRESENTAR", raising=False)
-    system = srv._build_context("que libro lei", "runtime", {"type": "chat"})
+    system = srv.prompt_compiler.render_context(
+        srv._build_context("que libro lei", "runtime", {"type": "chat"}))
     assert mem.pedido["n"] == 8
     bloque = system.split("=== Recuerdos relevantes ===\n")[1].split("\n\n===")[0]
     vinetas = [v for v in bloque.split("\n- ") if v]
@@ -78,7 +79,8 @@ def test_build_context_presenta_salta_la_basura_y_corta_despues(monkeypatch):
 def test_build_context_bajo_el_umbral_no_entra_y_sin_hits_no_hay_seccion(monkeypatch):
     mem = _MemoriaConHits([_hit(_par(1), 0.1)])
     monkeypatch.setattr(srv, "mem", mem)
-    system = srv._build_context("hola", "runtime", {"type": "chat"})
+    system = srv.prompt_compiler.render_context(
+        srv._build_context("hola", "runtime", {"type": "chat"}))
     assert "Recuerdos relevantes" not in system
 
 
@@ -86,13 +88,15 @@ def test_build_context_honra_la_variante_del_porton(monkeypatch):
     mem = _MemoriaConHits([_hit(NO_SABER, 0.9)])
     monkeypatch.setattr(srv, "mem", mem)
     monkeypatch.setenv("MEMORIA_PRESENTAR", "B")
-    system = srv._build_context("hola", "runtime", {"type": "chat"})
+    system = srv.prompt_compiler.render_context(
+        srv._build_context("hola", "runtime", {"type": "chat"}))
     assert "Pedro dijo (2026-09-10): quien me presto el libro rosa?" in system
     assert "no tenia el dato" not in system
     # `off` murio en el cierre (ruling 11): exportada, vale como ausente y
     # el par crudo con score de main no vuelve a ningun prompt
     monkeypatch.setenv("MEMORIA_PRESENTAR", "off")
-    system = srv._build_context("hola", "runtime", {"type": "chat"})
+    system = srv.prompt_compiler.render_context(
+        srv._build_context("hola", "runtime", {"type": "chat"}))
     assert f"- (0.9) {NO_SABER}" not in system and "Pedro pregunto:" not in system
     assert "Calipso no tenia el dato entonces (local, 2026-09-10)." in system
 

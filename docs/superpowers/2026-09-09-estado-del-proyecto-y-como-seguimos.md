@@ -276,3 +276,28 @@ fabrica viva.
   7b se cree sus propias respuestas viejas aunque lleven la etiqueta `Calipso contesto (local, fecha)`; la
   procedencia que falta es si esa respuesta salio con el abismo consultado o sin consultar; y el sub-bloque
   `recuerdos` del abismo al techo de 2000 en los 13 eventos pescados de `memoria` del porton (ruling 2).
+- **Los canarios (2026-09-11):** anclaje, degeneracion y ventana miden cada turno del chat sin frenar (fila
+  `chat_turn.canarios`, `meta.canarios`, senal ws `canario`, marcas chicas en las dos UIs; rama `feat/canarios`,
+  spec `docs/superpowers/specs/2026-09-11-canarios-design.md`, 8 tasks por SDD). **Rollback en caliente:**
+  `CALIPSO_CANARIOS=off` en el entorno del server (leido por llamada, `canarios.canarios_activos`) apaga el
+  recorte (la ventana solo estima, con `num_ctx` None y la fila con `apagado`), el veredicto (no corre el
+  hilo), la senal ws `canario`, `meta.canarios` y los dos numeros del remember; cualquier otro valor o ausente
+  es prendido. Bancos: anclaje recall y
+  precision 100% en las tres clases sobre 22 filas reales (hecho 1/0/0, recuerdo 5/0/0, accion 2/0/0 tp/fp/fn),
+  degeneracion 19/19 rotas atrapadas y 0/32 falsas. Porton de la reentrada (N=3, 12 turnos por condicion):
+  vieja 0/0/0 contra nueva 0/0/0 en `sin_anclaje` / `sin_dato` / `sin_dato falso` (2 filas de `nueva` excluidas
+  por un OOM de Ollama); la letra con bloques quedo (`LETRA_DEFAULT = "nueva"`, interruptor
+  `CALIPSO_REENTRADA`). Smoke (`docs/superpowers/2026-09-11-smoke-canarios.md`): el adjunto de 12.000 chars da
+  `estimado 11446 > 8192`, `no_cabe`, `truncado` (`prompt_eval_count 8191`) y el centinela del system se pierde
+  (la respuesta fue `system`, atrapada ademas como `fuga_de_template`); sin adjunto cabe y el centinela vuelve;
+  la accion afirmada sin consulta y la fuga de reentrada reinyectada dan `sin verificar (1)` y `respuesta rara`;
+  el sano no marca; el cache no descuenta (`evaluado == estimado`); calibracion real 1,49 / 3,48 / 3,54
+  chars/token. Dos lecturas: el invento del fixture solo se ve en `anclado_solo_en_calipso` (h07), y `/nube`
+  quedo local porque el juez LLM llama credencial a "libro rosa". Resumen: `.venv/bin/python -m
+  experimentos.canarios_resumen`. Pendiente de Pedro: la regla de `aplica` frente a las confabulaciones
+  tecnicas (`sin_anclaje_turnos` vs `sin_anclaje_aplica`), `anclado_solo_en_calipso` en las UIs, el juez de
+  privacidad, el techo de contexto por modelo de api, la regla del truncado si Ollama descuenta el cache,
+  reemplazar los contextos armados del banco por los del porton, y el breaker y el contador en /fabrica. Ya
+  cerrados en la ola de fix del cierre: la carrera de la PWA al arranque (`loadChats` cuelga de
+  `DOMContentLoaded`) y el umbral de recursos para Chromium (`LUGAR_CHROMIUM_MB = 1500`, corrida 3 del smoke
+  con las cuatro capturas de la fase B).

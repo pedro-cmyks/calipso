@@ -74,6 +74,12 @@ html, body {
 .conversacion .turno { margin-bottom: 12px; white-space: pre-wrap; }
 .conversacion .turno.mio { color: var(--acento); }
 .conversacion .turno.error { color: #ff7b72; }
+/* las marcas del canario al pie del turno de Calipso (spec 2026-09-11,
+   seccion 3): chicas, sin color de alarma; los hechos al tocar */
+.conversacion .turno .pie { font-size: 11px; color: var(--tenue); margin-top: 4px;
+                            white-space: normal; }
+.conversacion .turno .pie summary { cursor: pointer; }
+.conversacion .turno .pie-detalle { white-space: pre-wrap; margin-top: 2px; }
 
 /* El renglon del abismo vive FUERA de .conversacion: pintarConversacion
    indexa sus nodos por posicion y el reset de epoca le vacia el innerHTML. */

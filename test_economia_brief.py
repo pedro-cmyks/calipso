@@ -307,7 +307,8 @@ def test_build_context_en_un_hilo_no_cuelga_el_event_loop(tmp_path, monkeypatch)
 
         tarea_latido = asyncio.create_task(latido())
         tarea_contexto = asyncio.create_task(
-            asyncio.to_thread(srv._build_context, "hola", "runtime", {}))
+            asyncio.to_thread(lambda: prompt_compiler.render_context(
+                srv._build_context("hola", "runtime", {}))))
         await asyncio.sleep(0.15)
         # el candado sigue tomado: el event loop, mientras tanto, no se
         # congelo -- el latido avanzo en paralelo al hilo bloqueado

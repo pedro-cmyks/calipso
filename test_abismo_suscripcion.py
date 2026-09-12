@@ -12,7 +12,7 @@ import textwrap
 import pytest
 
 import calipso.server as srv
-from calipso import jobs
+from calipso import chats, jobs
 from calipso.mapa import pulso as p
 from test_abismo_chat import chat, de_tipo, texto_visible  # noqa: F401  (fixture + helpers)
 from test_abismo_chat import _sembrar_chat_viejo
@@ -388,3 +388,78 @@ def test_en_suscripcion_sin_nube_el_bloque_viaja_con_destino_afuera(chat, cli_fa
     assert abismo[1]["viaje"] == {"destino": "afuera"}
     assert "El nombre de la rosa" in cli_falso.llamadas()[1]["sistema"]
     assert chat.telemetria("abismo")[0]["destino"] == "afuera"
+
+
+# --- los canarios (spec 2026-09-11): el historial que el CLI vio ------------
+
+def test_en_suscripcion_sin_tapar_el_canario_ancla_contra_el_historial_que_el_cli_vio(chat, cli_falso):
+    """Fix round 1 de la Task 5: en /claude y /codex sin tapar el CLI recibe
+    el historial del chat (la "=== Conversacion anterior ===" que arma
+    `_subscription_invocation` desde `_history_messages`), asi que el
+    canario ancla contra ESE historial (spec 2.1: "el historial que viajo")
+    y no contra uno vacio. Antes corria con `mensajes=None`: un nombre o un
+    recuerdo que Calipso repitiera de un turno anterior del mismo chat salia
+    `sin_anclaje` (falso positivo) y, con una senal en la pregunta, la marca
+    visible aparecia sin motivo; y las fuentes `historial_*` no existian."""
+    chats.append(chat.chat_id, "user", "Mariana Quintero me presto el libro rosa")
+    chats.append(chat.chat_id, "assistant", "que bueno, cuando se lo devolves?")
+    cli_falso.guion([{"partes": ["Me dijiste que Mariana Quintero te presto el libro rosa."],
+                      "pausa": 0}])
+    eventos = chat.turno("/claude te conte quien me presto el libro?")
+    # el CLI vio el historial del chat...
+    assert "Pedro: Mariana Quintero me presto el libro rosa" in cli_falso.llamadas()[0]["prompt"]
+    # ...y el canario anclo contra el mismo: el nombre y la afirmacion de
+    # recuerdo en `historial_pedro`, nada sin anclar, la marca no aparece
+    # por un invento que no hubo (aplica por la senal de la pregunta)
+    a = de_tipo(eventos, "canario")[0]["anclaje"]
+    assert a["aplica"] is True and a["aplica_por"] == ["senal:te conte"]
+    assert a["sin_anclaje"] == []
+    assert [(h["tipo"], h["texto"], h["fuentes"]) for h in a["hechos"]] == [
+        ("nombre", "Mariana Quintero", ["historial_pedro"]),
+        ("recuerdo", "Me dijiste que Mariana Quintero te presto el libro rosa.", ["historial_pedro"]),
+    ]
+    assert a["anclado_solo_en_calipso"] == 0
+    assert chat.telemetria("chat_turn")[0]["canarios"]["anclaje"]["sin_anclaje"] == []
+
+
+def test_en_suscripcion_lo_que_calipso_dijo_antes_ancla_solo_en_calipso(chat, cli_falso):
+    """La otra mitad de la invariante 6 en esta ruta: un hecho que solo dijo
+    Calipso en un turno anterior del mismo chat ancla en `historial_calipso`
+    y cuenta en `anclado_solo_en_calipso` (h07), en vez de salir
+    `sin_anclaje` como cuando el historial no llegaba al canario. Y con la
+    reentrada del abismo el historial sigue siendo el mismo en las dos
+    invocaciones: el canario lee el de la ultima."""
+    _sembrar_chat_viejo(["un libro"])
+    chats.append(chat.chat_id, "user", "quien escribio esa novela?")
+    chats.append(chat.chat_id, "assistant", "la escribio Umberto Eco")
+    cli_falso.guion([{"partes": ["Dejame ver ⟦abismo:chats libro⟧"], "pausa": 0},
+                     {"partes": ["y sigo: la novela es de Umberto Eco"], "pausa": 0}])
+    eventos = chat.turno("/claude que libro lei")
+    llamadas = cli_falso.llamadas()
+    assert len(llamadas) == 2
+    assert all("Calipso: la escribio Umberto Eco" in ll["prompt"] for ll in llamadas)
+    a = de_tipo(eventos, "canario")[0]["anclaje"]
+    assert a["aplica_por"] == ["consulta"] and a["sin_anclaje"] == []
+    assert [(h["texto"], h["fuentes"]) for h in a["hechos"]] == [("Umberto Eco", ["historial_calipso"])]
+    assert a["anclado_solo_en_calipso"] == 1
+
+
+def test_en_suscripcion_la_ventana_mide_el_historial_que_el_cli_recibe(chat, cli_falso):
+    """Ola de fix del cierre (punto 6): `_ventana_antes` corria con
+    historial vacio en suscripcion, pero el CLI recibe la "=== Conversacion
+    anterior ===" que `_subscription_invocation` arma desde el chat: el
+    estimado subestimaba justo en las charlas largas. Con `num_ctx` None
+    la ventana solo estima, no recorta: el CLI sigue viendo todo."""
+    cli_falso.guion([{"partes": ["dale"], "pausa": 0}])
+    eventos = chat.turno("/claude hola")
+    sin_historial = de_tipo(eventos, "canario")[0]["ventana"][0]
+    largo = "una linea de historial bien larga para que el estimado se mueva " * 20
+    for _ in range(3):
+        chats.append(chat.chat_id, "user", largo)
+        chats.append(chat.chat_id, "assistant", largo)
+    eventos = chat.turno("/claude hola")
+    con_historial = de_tipo(eventos, "canario")[0]["ventana"][0]
+    assert con_historial["estimado"] > sin_historial["estimado"] + 500
+    assert con_historial["num_ctx"] is None and con_historial["recorte"] == []
+    assert con_historial["cabe"] is None and con_historial["truncado"] == "sin medicion"
+    # (que el CLI recibe ese historial lo fija el test de anclaje de arriba)

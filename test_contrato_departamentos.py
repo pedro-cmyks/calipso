@@ -225,6 +225,6 @@ def test_las_dos_secciones_del_prompt_leen_la_misma_economia(tmp_path,
     monkeypatch.setattr(srv, "_ECO_BASE", home)
     monkeypatch.setenv("CALIPSO_HOME", str(tmp_path))   # el home que NO manda
 
-    prompt = srv._build_context("hola", "runtime")
+    prompt = srv.prompt_compiler.render_context(srv._build_context("hola", "runtime"))
     assert "cristal" in prompt
     assert "no hay ningun departamento que enfocar" not in prompt

@@ -37,7 +37,7 @@ import dispatch  # noqa: E402
 
 FEATS = {"type": "chat", "complexity": 1, "needs_repo": False, "needs_web": False, "private": False}
 RUNTIME = "Ruta usada: local. Modelo: qwen2.5:7b. Persona: Platon."
-system_actual = srv._build_context("hola", RUNTIME, FEATS)
+system_actual = srv.prompt_compiler.render_context(srv._build_context("hola", RUNTIME, FEATS))
 bloque = contrato.bloque_contrato(catastro.nombres())
 assert bloque in system_actual, "el bloque no esta en el system real"
 sin_bloque = system_actual.replace("\n" + bloque, "", 1)

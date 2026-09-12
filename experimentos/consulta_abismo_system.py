@@ -120,7 +120,7 @@ if _CONTRATO_FILE:
     bloque_alt = pathlib.Path(_CONTRATO_FILE).read_text(encoding="utf-8").strip().replace("{repos}", _repos)
 else:
     bloque_alt = bloque
-system_actual = srv._build_context("hola", RUNTIME, FEATS)
+system_actual = pc.render_context(srv._build_context("hola", RUNTIME, FEATS))
 # `_identity_doc` (CALIPSO.md como seccion Constitucion) murio al aterrizar la
 # opcion (a): desde entonces `actual` == identidad-corta + contrato podado, y
 # las variantes sin-constitucion / identidad-corta quedan como historia.

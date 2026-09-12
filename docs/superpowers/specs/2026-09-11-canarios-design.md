@@ -272,3 +272,73 @@ fallback, presupuesto, recorte con intocables, truncado por pasada, tests; (5) e
 hilo antes de `chat_turn`, `meta`, `remember`, senal ws) + `canarios_resumen.py` + tests; (6) las marcas en
 las dos UIs + tests de cliente; (7) la letra de la reentrada con su porton (N=3) y el patron en el banco de
 la memoria; (8) smoke en vivo y cierre. Corre despues del merge de la memoria con procedencia (hecho).
+
+## 9. Addendum del cierre (2026-09-11 noche): rulings tomados al construir, para Pedro
+
+Todo lo de abajo esta en el codigo de `feat/canarios` y en el ledger (`docs/superpowers/2026-09-11-cierre-canarios/`).
+Son decisiones del controlador o del plan que la letra del spec no tenia; todas revertibles. Las
+numero para que Pedro pueda vetarlas por numero.
+
+1. **La letra de la reentrada aterriza si `sin_anclaje` y `sin_dato` FALSO no suben**; un `sin_dato`
+   genuino que sube (el 7b deja de inventar y dice que no lo tiene cuando el bloque no lo trae) es la
+   conducta pedida, no un empeoramiento (seccion 4 decia "no empeora en ninguna de las tres"). El porton
+   del 2026-09-11 dio 0/0/0 contra 0/0/0 (nueva 10 turnos validos, vieja 12): la letra nueva queda **por
+   default, no por evidencia**: `sin_anclaje` no vio el invento del fixture (esta en la episodica del
+   fixture y ancla en `recuerdo_calipso`) y el clasificador de no-saber de la memoria no cuenta los
+   no-saber en palabras propias del 7b ("no tiene registrado", "no encontramos"). Reversible con
+   `CALIPSO_REENTRADA=vieja`. Re-medir con un fixture limpio es otra tanda.
+2. **Clase 2 (afirmaciones de recuerdo):** `anotado` no es senal de recuerdo sino accion (doblaba la marca:
+   2 falsos en el banco); se suman `la ultima discusion` y `la ultima charla`; las palabras de la pregunta
+   de Pedro no anclan; el bigrama ancla solo en fuentes episodicas. **Y del cierre:** una oracion con
+   negacion ANTES de la senal en la misma clausula ("No encontre nada de lo que me dijiste") o que matchea
+   un patron fuerte de no-saber de la memoria que EMPIEZA antes de la senal NO es afirmacion de recuerdo:
+   el no-saber honesto no sale "sin verificar" (era la clase que el spec protege; 7 frases, una real del
+   porton, salian marcadas). El hedge en la cola no salva una confabulacion ("Recuerdo que te conte sobre
+   una trilogia, aunque no recuerdo el autor" se marca). Banco: 27 filas, 100/100 en las tres clases.
+3. **Clase 3 (acciones afirmadas):** `recordo` se coteja contra el `remember` episodico, que corre en todo
+   turno con respuesta: en produccion "anotado"/"lo guarde" nunca salen sin anclaje; la clase mide
+   `consulto`, `repo` (`features.needs_repo`: el brief viajo) y `web`. Cotejar contra una escritura
+   explicita (core, propuesta) es un ruling futuro.
+4. **Degeneracion:** `alfabeto` es una corrida LAXA de 10 letras no latinas (la puntuacion CJK no la corta;
+   con 15 estricto se perdian 5 de 9 casos reales) o mas del 20% del texto; octava senal
+   `fuga_de_template` (linea sola `user`/`assistant`/`system` o `<|im_start|>`): 2 casos reales, y es lo
+   que atrapa la respuesta "system" del turno truncado del smoke.
+5. **Ventana en api y suscripcion:** solo estiman; `num_ctx` y `truncado` son `null` (sin techo
+   configurado por modelo; la regla del 0,85 seria ruido entre dos tokenizadores); suscripcion deja una
+   fila por invocacion con "sin medicion"; la marca "Ollama trunco" solo en local. El estimado de
+   suscripcion incluye la "Conversacion anterior" que el CLI recibe (arreglado en el cierre). Techo por
+   modelo de api: pendiente.
+6. **Presupuesto y recorte:** `presupuesto(secciones, historial, mensaje, contar)` sin bloques (viajan como
+   secciones) ni `num_ctx` (lo compara `recortar`); el recorte de recuerdos saca la ultima vineta (menor
+   score); `recortar` solo toca "Recuerdos relevantes", "Repo", "Resultados web" y los bloques del abismo
+   anteriores al de esta pasada; el "Estado real" del spec es la seccion "Estado operativo". No reserva
+   lugar para la respuesta (`cabe` compara contra `CHAT_NUM_CTX` entero): un `reserva_respuesta` es
+   calibracion pendiente.
+7. **Turnos tapados:** el anclaje corre sobre el texto crudo ENTERO del turno (`crudo_total` en
+   suscripcion/orquestador; `full` en streaming), no sobre `tramos_crudos`.
+8. **`CANARIOS_PERSISTIR_CONTEXTO=1`** (excepcion declarada de la invariante 7): solo en el server
+   desechable; la fila `chat_turn` lleva system, historial y bloques; en produccion no existe y no se pone
+   ni para medir.
+9. **`aplica`:** la regla no se amplia a confabulaciones tecnicas (un `git log` inventado sin senal de
+   Pedro va a la fila y al `remember`, no a la UI); insumo para decidirlo: `sin_anclaje_turnos` contra
+   `sin_anclaje_aplica` del resumen. `consulta` cuenta cualquier consulta del abismo, incluida `proyecto`.
+10. **Donde se ve:** `anclado_solo_en_calipso` no tiene marca visible (YAGNI: va a la fila y al resumen);
+    un solo `details` por mensaje. La carrera de la PWA al arrancar (las marcas de `meta.canarios` no se
+    veian hasta re-abrir el chat) se arreglo en el cierre (`loadChats` tras `DOMContentLoaded`).
+11. **El porton no persistio el contexto exacto** (el banco de anclaje arma el contexto de las filas del
+    porton); no hay filas creativas (el corpus no tiene); el piso del banco de la memoria no se sube en
+    esta rama. El smoke no ejercito `/nube` tapado (el juez LLM llamo credencial a "libro rosa": es del
+    ruteo Fase 2) ni un recorte con `recorte != []` (cubierto por unitarios). Con 0 filas validas en una
+    condicion el porton no decide (`None`), y compara solo las dos cuentas del ruling 1.
+12. **Fail-open:** cubre el veredicto (tope 2 s en hilo) y, desde el cierre, tambien `_ventana_antes` (si
+    el tokenizador o el recorte levantan, el prompt viaja intacto y la fila lleva `error`).
+13. **Huecos declarados:** el orquestador no tiene fila de ventana y va con historial vacio; `/redacta` no
+    pasa por el canario; un turno `steered` no cuenta como cortada; la regla de recursos del agente
+    (`MemAvailable` antes de cargar el 7b, umbral propio de 1500 MB para Chromium).
+14. **Interruptor y aviso (del cierre):** `CALIPSO_CANARIOS=off` (leido por llamada) apaga recorte,
+    veredicto, senal y `meta.canarios` sin reiniciar: es el rollback en caliente. El aviso "[Calipso] no
+    puedo contestar... Ollama no esta disponible" ya no entra a la memoria episodica ni al canario como si
+    fuera una respuesta (era preexistente en main; el porton lo excluia por texto).
+15. **Lo que la primera tanda no mide:** si Calipso dijo que no sabe (`sin_dato` por turno) no esta en
+    telemetria; `y/o` y `km/h` salen como archivo; un titulo tras "novela/libro" arrastra cola
+    conversacional ("El nombre de la rosa me gusta"). Calibracion con telemetria real: siguiente tanda.

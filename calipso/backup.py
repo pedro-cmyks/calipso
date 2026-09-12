@@ -21,9 +21,11 @@ CALIPSO_HOME = pathlib.Path(os.environ.get(
 SKIP_DIRS = {"backups", "models", "model_cache", "__pycache__", ".cache"}
 
 # Directorios excluidos SOLO en la raiz del home: logs/ lleva el access log
-# que llego a contener el token (revision de seguridad 2026-09-07, C4/C6).
-# Un "logs" anidado en un proyecto es una carpeta comun y se respalda.
-SKIP_DIRS_RAIZ = {"logs"}
+# que llego a contener el token (revision de seguridad 2026-09-07, C4/C6);
+# tokenizador/ es el tokenizer.json del modelo local (11-23 MB) que se
+# regenera desde el GGUF de ~/.ollama (calipso/tokenizador.py). Un "logs" o
+# un "tokenizador" anidado en un proyecto es una carpeta comun y se respalda.
+SKIP_DIRS_RAIZ = {"logs", "tokenizador"}
 
 # La credencial del servidor NO se respalda: se regenera. Un zip con el
 # token y la semilla TOTP adentro esquivaba el unico NUNCA del motor de

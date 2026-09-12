@@ -151,6 +151,12 @@
   .msg.bot .narrbtn:hover { color: var(--text); border-color: var(--accent2); }
   .msg.bot .narrbtn.speaking { opacity: 1; color: var(--accent2); border-color: var(--accent2); }
   .msg.bot .msg-text { display: block; padding-right: 90px; }
+  /* las marcas del canario al pie del mensaje (spec 2026-09-11, seccion 3):
+     chicas, del color de los meta, sin alarma; los hechos al tocar */
+  .msg.bot .msg-foot { display: block; white-space: normal; margin-top: 6px;
+                       font-size: 11px; color: var(--muted); }
+  .msg.bot .msg-foot summary { cursor: pointer; }
+  .msg.bot .msg-foot .msg-foot-detalle { white-space: pre-wrap; margin-top: 2px; }
   .artifact-card { margin-top: 8px; border: 1px solid var(--border2); border-radius: 8px;
                    background: var(--bg); overflow: hidden; white-space: normal; }
   .artifact-head { display: flex; align-items: center; gap: 8px; padding: 7px 8px;
@@ -582,6 +588,10 @@
 import {pareceSvg, extraerSvgDelTexto, sanearSvg, dimensionesSvg}
   from "/static/fabrica/svg.js";
 window.SvgSeguro = {pareceSvg, extraerSvgDelTexto, sanearSvg, dimensionesSvg};
+// las marcas del canario: el mismo modulo puro que usa la fabrica, asi las
+// dos UIs dicen lo mismo (calipso/web/fabrica/canarios.js, con node --test)
+import {textosDeCanario} from "/static/fabrica/canarios.js";
+window.Canarios = {textosDeCanario};
 </script>
 <script>
 if ("serviceWorker" in navigator) {
@@ -781,7 +791,13 @@ window.addEventListener("keydown", e => {
 });
 loadTree();
 loadProject();
-loadChats();
+// el historial se pinta recien con el DOM listo: el <script type="module">
+// que cuelga window.Canarios corre antes de DOMContentLoaded, y si
+// loadChats() corria suelto en el parseo llegaba primero y las marcas
+// guardadas en meta.canarios no se veian hasta re-abrir el chat (smoke de
+// los canarios, hallazgo 3). Si el modulo falla, DOMContentLoaded dispara
+// igual: fail-open con la guarda de aplicarCanario
+document.addEventListener("DOMContentLoaded", () => loadChats());
 setupSplitters();
 
 const changesPanel = document.getElementById("changesPanel");
@@ -1677,6 +1693,26 @@ function addMsg(cls, text) {
   messages.appendChild(div); messages.scrollTop = messages.scrollHeight;
   return div;
 }
+function aplicarCanario(el, veredicto) {
+  // el pie va al FINAL de la burbuja (despues de la artifact-card, si la
+  // hay); se reemplaza si ya habia uno. Todo por textContent: son textos del
+  // modelo. `window.Canarios` lo cuelga el script type=module de arriba
+  if (!el || !window.Canarios) return;
+  const marcas = window.Canarios.textosDeCanario(veredicto);
+  const viejo = el.querySelector(".msg-foot");
+  if (viejo) viejo.remove();
+  if (!marcas.length) return;
+  const pie = document.createElement("details");
+  pie.className = "msg-foot";
+  const resumen = document.createElement("summary");
+  resumen.textContent = marcas.map(m => m.texto).join(" | ");
+  pie.appendChild(resumen);
+  const detalle = document.createElement("div");
+  detalle.className = "msg-foot-detalle";
+  detalle.textContent = marcas.map(m => m.detalle).filter(Boolean).join("\n");
+  pie.appendChild(detalle);
+  el.appendChild(pie);
+}
 function appendBotText(el, text) {
   const span = el?.querySelector?.(".msg-text");
   if (span) span.textContent += text || "";
@@ -2178,7 +2214,8 @@ function renderHistory(chat) {
   stopAbismo();
   processEls.clear(); agentEls.clear();
   for (const msg of (chat?.messages || [])) {
-    addMsg(msg.role === "user" ? "user" : "bot", msg.text || "");
+    const el = addMsg(msg.role === "user" ? "user" : "bot", msg.text || "");
+    if (msg.role !== "user" && msg.meta && msg.meta.canarios) aplicarCanario(el, msg.meta.canarios);
     if (msg.meta && (msg.meta.route || msg.meta.model)) {
       addMsg("meta", `$ ${msg.meta.route || "ruta"} - ${msg.meta.model || ""}`);
     }
@@ -2419,6 +2456,10 @@ function connect() {
       messages.scrollTop = messages.scrollHeight;
     } else if (m.type === "error") {
       stopThinking(); stopAbismo(); addMsg("meta", "! " + m.text);
+    } else if (m.type === "canario") {
+      // llega ANTES del done, sobre la burbuja que se esta cerrando; con
+      // steer no hay burbuja (botEl ya es null) y no se pinta nada
+      if (botEl) aplicarCanario(botEl, m);
     } else if (m.type === "done") {
       stopThinking(); stopAbismo();
       if (_autoNarrate && botEl) {

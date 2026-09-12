@@ -86,7 +86,7 @@ python3 --version
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install chromadb ollama playwright litellm fastapi "uvicorn[standard]" pyotp qrcode pillow
+python -m pip install chromadb ollama playwright litellm fastapi "uvicorn[standard]" pyotp qrcode pillow tokenizers==0.22.2
 python -m playwright install chromium
 ```
 

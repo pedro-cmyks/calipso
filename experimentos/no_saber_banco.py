@@ -39,6 +39,17 @@ DATO = "dato"
 
 # (etiqueta, respuesta, de donde / por que)
 BANCO: list[tuple[str, str, str]] = [
+    # --- la frase inducida por la letra nueva de la reentrada (canarios, 4)
+    (SIN_DATO, "Lo que subio del abismo no trae el dato del presupuesto del taller, Pedro. "
+               "¿Queres que busque en otro lado?",
+     "reentrada-con-bloques: la frase pedida, tal cual"),
+    (SIN_DATO, "Revise lo que subio: no trae ese dato. Si me decis el mes, lo busco de nuevo.",
+     "reentrada-con-bloques: la variante con 'ese'"),
+    (DATO, "Mariana Quintero te presto el libro rosa el 20 de agosto, en la charla de ese dia, y "
+           "quedaste en devolverselo cuando lo terminaras; ella te lo recordo y vos dijiste que "
+           "lo tenias a medio leer, asi que la devolucion sigue pendiente hasta que lo termines. "
+           "Lo que subio no trae el dato de si ya lo devolviste, eso no lo se.",
+     "reentrada-con-bloques: el dato primero y la frase despues de 250 chars no degrada"),
     # --- el fixture del porton: los 5 no-saber ---
     (SIN_DATO,
      "Estaré encantado de ayudarte una vez que tenga acceso a esa información. "

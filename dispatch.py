@@ -457,6 +457,9 @@ def _ollama_text_chunks(url: str, payload: dict, usage: dict | None = None):
                 if usage is not None:
                     usage["prompt_tokens"] = obj.get("prompt_eval_count", 0)
                     usage["completion_tokens"] = obj.get("eval_count", 0)
+                    # "length" cuando Ollama corto por num_predict/contexto:
+                    # el canario `cortada` lo lee (spec canarios 2.2)
+                    usage["done_reason"] = obj.get("done_reason")
                 break
     finally:
         resp.close()
@@ -485,6 +488,7 @@ def _ollama_chat_chunks(url: str, payload: dict, usage: dict | None = None):
                 if usage is not None:
                     usage["prompt_tokens"] = obj.get("prompt_eval_count", 0)
                     usage["completion_tokens"] = obj.get("eval_count", 0)
+                    usage["done_reason"] = obj.get("done_reason")
                 break
     finally:
         resp.close()

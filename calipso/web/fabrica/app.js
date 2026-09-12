@@ -14,6 +14,7 @@ import {disposicion, escapar, textoDeTarjeta, posicionDeTarjeta,
         resumenDeAvisos, textoDeCosto, textoDeFoco,
         textoDeEmpleado, textoDeRazonamiento} from "./paneles.js";
 import {crearChat, textoDeAbismo} from "./chat.js";
+import {textosDeCanario} from "./canarios.js";
 import {crearPulso, empleadosDe, estadoVisible} from "./pulso.js";
 import {textoDeMesa} from "./mesa.js";
 import {textoDePlantel} from "./plantel.js";
@@ -1122,7 +1123,32 @@ const campo = document.getElementById("texto");
 // Calipso esta escribiendo mientras lo escribe. La UI vieja de este mismo
 // repo ya hace append incremental (calipso/web/index.html, appendBotText).
 const nodosDeTurno = [];
+// por turno: el texto que se pinto (para no releer textContent, que con el
+// pie adentro ya no es solo el texto) y el nodo del pie con las marcas del
+// canario, si lo hay. Asignar textContent al div borra sus hijos: cuando el
+// texto cambia el pie se da por perdido y se vuelve a colgar
+const textosPintados = [];
+const piesDeTurno = [];
 let avisoPasajero = null;
+
+/** Las marcas del canario al pie del turno: un <details> con el resumen
+ *  en el summary y los hechos adentro (al tocar), todo por textContent. */
+function pintarPie(i, div, turno) {
+  const marcas = textosDeCanario(turno.canarios);
+  if (!marcas.length) return;
+  if (piesDeTurno[i]) return;          // ya esta colgado y el veredicto no cambia
+  const pie = document.createElement("details");
+  pie.className = "pie";
+  const resumen = document.createElement("summary");
+  resumen.textContent = marcas.map(m => m.texto).join(" | ");
+  pie.appendChild(resumen);
+  const detalle = document.createElement("div");
+  detalle.className = "pie-detalle";
+  detalle.textContent = marcas.map(m => m.detalle).filter(Boolean).join("\n");
+  pie.appendChild(detalle);
+  div.appendChild(pie);
+  piesDeTurno[i] = pie;
+}
 
 function claseDeTurno(t) {
   return "turno" + (t.quien === "pedro" ? " mio" : "") +
@@ -1142,16 +1168,24 @@ function pintarConversacion(turnos) {
     div.className = claseDeTurno(turnos[i]);
     div.textContent = turnos[i].texto;   // textContent no necesita escapado
     nodosDeTurno.push(div);
+    textosPintados.push(turnos[i].texto);
+    piesDeTurno.push(null);
     conversacion.appendChild(div);
+    pintarPie(i, div, turnos[i]);        // el historial cargado trae meta.canarios
   }
   // el unico turno que cambia mientras llegan chunks es el ultimo: al resto
   // del historial no se lo vuelve a tocar
   const i = turnos.length - 1;
   if (i < 0) return;
   const div = nodosDeTurno[i];
-  if (div.textContent !== turnos[i].texto) div.textContent = turnos[i].texto;
+  if (textosPintados[i] !== turnos[i].texto) {
+    div.textContent = turnos[i].texto;
+    textosPintados[i] = turnos[i].texto;
+    piesDeTurno[i] = null;               // textContent se llevo el pie
+  }
   const clase = claseDeTurno(turnos[i]);
   if (div.className !== clase) div.className = clase;
+  pintarPie(i, div, turnos[i]);          // la senal llega antes del done
 }
 
 // El reloj del pondering vive aca y no en el reductor (que no tiene reloj):
@@ -1211,6 +1245,8 @@ const chat = crearChat(estado => {
     // se cargo otro chat: los nodos del anterior no se reciclan
     ultimaEpoca = estado.epoca;
     nodosDeTurno.length = 0;
+    textosPintados.length = 0;
+    piesDeTurno.length = 0;
     avisoPasajero = null;
     conversacion.innerHTML = "";
   }

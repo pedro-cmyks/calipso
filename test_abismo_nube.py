@@ -43,13 +43,13 @@ def test_en_nube_el_bloque_viaja_tapado_con_el_mapa_del_mensaje_y_se_ve(chat, mo
     _juez_que_tapa_nombres(monkeypatch)
     # el chat viejo nombra a Ana y NO a Marta: asi el marcador del bloque
     # solo puede salir del mapa que ya tapo el mensaje (ver abajo)
-    _sembrar_chat_viejo(["con Ana hablamos del libro de cocina"])
+    _sembrar_chat_viejo(["con Ana hablamos del libro de cocina el 20 de agosto"])
     # historial previo del MISMO chat: sin el, `_history_messages` devolveria
     # [] igual y la asercion de "sin historial" seria vacua
     chats.append(chat.chat_id, "user", "hola")
     chats.append(chat.chat_id, "assistant", "hola Pedro")
     chat.modelo.guiones = [["Le dije a [ID_1] que ", "⟦abismo:chats libro⟧", " fin"],
-                           ["y seguimos"]]
+                           ["y seguimos: fue el 20 de agosto con [ID_2]"]]
     eventos = _turno_con_un_solo_done(chat, "/nube /api que hablamos con Marta y Ana del libro")
     tapado = [e for e in eventos if e["type"] == "privacidad"][0]
     assert tapado["action"] == "tapado"
@@ -74,6 +74,23 @@ def test_en_nube_el_bloque_viaja_tapado_con_el_mapa_del_mensaje_y_se_ve(chat, mo
     assert "Marta" not in json.dumps(chat.modelo.llamadas)
     assert "Ana" not in json.dumps(chat.modelo.llamadas)
     assert [m["role"] for m in segunda["messages"]] == ["system", "user"]
+    # el canario del turno tapado: corre sobre el texto CRUDO ENTERO (los dos
+    # tramos, con marcadores) contra el contexto tapado que viajo; los
+    # marcadores no son hechos, la fecha que solo dijo el ultimo tramo ancla
+    # en el bloque tapado y nada sale sin anclar
+    v = de_tipo(eventos, "canario")[0]
+    assert v["anclaje"]["tapado"] is True and v["anclaje"]["sin_anclaje"] == []
+    assert not any("[ID_" in h["texto"] for h in v["anclaje"]["hechos"])
+    assert [(h["texto"], h["fuentes"]) for h in v["anclaje"]["hechos"] if h["tipo"] == "fecha"] == [
+        ("20 de agosto", ["bloque"])]
+    assert [f["ruta"] for f in v["ventana"]] == ["api", "api"]
+    assert v["ventana"][0]["num_ctx"] is None and v["ventana"][0]["recorte"] == []
+    # api: se estima y se anota, no se juzga (decision 7): la pasada 1 se
+    # corto en la marca antes del done ("sin medicion"); la 2 llego al done
+    # con prompt_tokens=10 contra un system de cientos de tokens y aun asi
+    # NO es "truncado" (None: sin techo no se compara)
+    assert [f["truncado"] for f in v["ventana"]] == ["sin medicion", None]
+    assert "cocina" not in json.dumps(v)
     assert segunda["messages"][1]["content"].startswith("que hablamos con [ID_1] y [ID_2] del libro")
     assert "Venias diciendo: Le dije a [ID_1] que " in segunda["messages"][1]["content"]
     # ni la marca ni el bloque se persisten, se recuerdan o se telemetrian
@@ -174,6 +191,31 @@ def test_en_nube_por_suscripcion_los_tramos_vuelven_crudos(chat, cli_falso, monk
     # lo persistido es lo repuesto que Pedro vio, sin bloque
     assert chat.mensajes()[-1]["text"] == "Le dije a Marta que y seguimos"
     assert "Lo que subio" not in (chat.tmp / "chats.json").read_text(encoding="utf-8")
+
+
+def test_en_nube_por_suscripcion_el_canario_no_ve_el_historial_que_no_viajo(chat, cli_falso, monkeypatch):
+    """La contracara del anclaje contra el historial en suscripcion sin tapar
+    (fix round 1 de la Task 5): tapado, la conversacion no viaja
+    (chat_id_nube=None, Fase 2a) y el canario tampoco la ve. Un turno local
+    previo del mismo chat no es fuente de anclaje ni entra al contexto que
+    el desechable persiste: el hecho que solo estaba ahi sale
+    `sin_anclaje`, no anclado en un historial que el CLI no recibio."""
+    _juez_que_tapa_nombres(monkeypatch)
+    monkeypatch.setenv("CANARIOS_PERSISTIR_CONTEXTO", "1")
+    chats.append(chat.chat_id, "user", "el libro que me presto Marta es de cocina, de Paula Ortiz")
+    chats.append(chat.chat_id, "assistant", "que bueno ese libro de Marta")
+    cli_falso.guion([{"partes": ["Le dije a [ID_1] que el libro es de Paula Ortiz"], "pausa": 0}])
+    eventos = _turno_con_un_solo_done(chat, "/nube /claude que libro me presto Marta")
+    assert texto_visible(eventos) == "Le dije a Marta que el libro es de Paula Ortiz"
+    llamadas = cli_falso.llamadas()
+    assert len(llamadas) == 1 and "Conversaci" not in llamadas[0]["prompt"]
+    assert "cocina" not in json.dumps(llamadas) and "Marta" not in json.dumps(llamadas)
+    fila = chat.telemetria("chat_turn")[0]
+    assert fila["contexto"]["historial"] == []
+    a = fila["canarios"]["anclaje"]
+    assert a["tapado"] is True
+    assert [(h["tipo"], h["texto"]) for h in a["sin_anclaje"]] == [("nombre", "Paula Ortiz")]
+    assert not any("historial" in f for h in a["hechos"] for f in h["fuentes"])
 
 
 def test_en_nube_por_suscripcion_reponer_no_le_da_al_filtro_una_marca_que_el_detector_no_vio(chat, cli_falso, monkeypatch):
