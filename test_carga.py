@@ -94,6 +94,21 @@ def test_sin_blob_la_necesidad_es_el_default(tmp_path, monkeypatch):
     assert carga.necesidad_mb(None) == carga.UMBRALES["NECESIDAD_DEFAULT_MB"]
 
 
+def test_un_manifiesto_que_no_es_dict_no_revienta_la_necesidad_ni_medir(tmp_path, monkeypatch):
+    """Fail-open de verdad (ola de fix, punto 4): un manifiesto de Ollama que
+    es JSON valido pero no dict (`[1]`) levantaba AttributeError en
+    `tokenizador.blob_del_modelo`; `necesidad_mb` solo atrapaba OSError y
+    `_decide` reventaba en cada turno. Ahora: NECESIDAD_DEFAULT_MB y `medir`
+    no levanta."""
+    monkeypatch.setenv("OLLAMA_MODELS", str(tmp_path))
+    manifiesto = tmp_path / "manifests" / "registry.ollama.ai" / "library" / "qwen2.5"
+    manifiesto.mkdir(parents=True)
+    (manifiesto / "7b").write_text("[1]", encoding="utf-8")
+    assert carga.necesidad_mb("qwen2.5:7b") == carga.UMBRALES["NECESIDAD_DEFAULT_MB"]
+    c = carga.medir("qwen2.5:7b", leer=lector(), ps=lambda: [], ncpu=16)
+    assert c.necesidad_mb == carga.UMBRALES["NECESIDAD_DEFAULT_MB"] and c.nivel == "holgada"
+
+
 # --- nivel(): pura sobre numeros ------------------------------------------------
 
 def test_los_tres_niveles_por_memoria():

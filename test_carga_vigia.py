@@ -116,6 +116,24 @@ def test_bajo_holgada_o_justa_el_vigia_no_toca_nada(tick):
     assert tick["evictados"] == [] and carga.local_suspendido is False
 
 
+def test_una_medicion_que_revienta_no_se_lleva_las_rutinas_y_deja_vigia_error(tick, monkeypatch):
+    """Fail-open en el tick (ola de fix, punto 4): `_medir_carga()` estaba
+    fuera del try y si levantaba, el ticker se lo tragaba y NINGUNA rutina
+    corria, en silencio. Ahora: fila `vigia_error` con el error y las
+    rutinas corren sin nivel (como hoy)."""
+    def revienta():
+        raise AttributeError("'list' object has no attribute 'get'")
+    monkeypatch.setattr(srv, "_medir_carga", revienta)
+    rt = calipso_routines.add("catastro", "cat", 60, enabled=True)
+    corridas = []
+    ran = srv._tick_con_carga(AHORA, {"catastro": lambda r: corridas.append(r["id"])})
+    assert corridas == [rt["id"]]
+    assert ran == [{"id": rt["id"], "kind": "catastro", "status": "ok"}]
+    fila = _de(tick["filas"], "vigia_error")[0]
+    assert "'list' object" in fila["error"] and "nivel" not in fila
+    assert tick["evictados"] == [] and _de(tick["filas"], "pospone") == []
+
+
 def test_un_vigia_que_revienta_no_se_lleva_las_rutinas_y_las_pospuestas_dejan_fila(tick, monkeypatch):
     def revienta(modelo):
         raise RuntimeError("ollama colgado")

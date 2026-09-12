@@ -263,7 +263,11 @@ def _loadavg(texto: str) -> float:
 def necesidad_mb(modelo: str | None) -> int:
     """Blob del GGUF del modelo (~/.ollama, `tokenizador.blob_del_modelo`) mas
     MARGEN_MODELO_MB; NECESIDAD_DEFAULT_MB si no se encuentra. Una sola fuente
-    (ruling 9.5): el `size` de /api/ps solo existe cuando ya se cargo."""
+    (ruling 9.5): el `size` de /api/ps solo existe cuando ya se cargo.
+    Fail-open de verdad (ola de fix, punto 4): CUALQUIER error del manifiesto
+    (un JSON valido que no es dict, `[1]`, levanta AttributeError en
+    `blob_del_modelo`) da el default; antes solo se atrapaba OSError y
+    `_decide` reventaba en cada turno."""
     if not modelo:
         return int(UMBRALES["NECESIDAD_DEFAULT_MB"])
     try:
@@ -271,7 +275,7 @@ def necesidad_mb(modelo: str | None) -> int:
         if blob is None:
             return int(UMBRALES["NECESIDAD_DEFAULT_MB"])
         return blob.stat().st_size // 2**20 + int(UMBRALES["MARGEN_MODELO_MB"])
-    except OSError:
+    except Exception:
         return int(UMBRALES["NECESIDAD_DEFAULT_MB"])
 
 

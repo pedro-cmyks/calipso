@@ -5727,12 +5727,19 @@ def _tick_con_carga(now: datetime.datetime, handlers: dict) -> list[dict]:
     """Un tick del ticker, sincrono (corre en el to_thread): mide la carga,
     corre el vigia (un fallo suyo va a telemetria y NO se lleva las rutinas:
     el `except Exception: continue` del ticker tragaria todo sin ruido) y
-    corre las rutinas vencidas con el nivel; las pospuestas dejan su fila."""
-    medida = _medir_carga()
+    corre las rutinas vencidas con el nivel; las pospuestas dejan su fila.
+    La medicion tambien va adentro del try (ola de fix, punto 4): si `medir`
+    levanta, fila `vigia_error` con el error y las rutinas corren sin nivel
+    (como hoy); antes el ticker se lo tragaba y ninguna rutina corria."""
+    medida = None
     try:
+        medida = _medir_carga()
         _vigia_del_modelo(medida)
     except Exception as e:
-        telemetry.log_event("carga", accion="vigia_error", error=str(e), **carga.fila(medida))
+        telemetry.log_event("carga", accion="vigia_error", error=str(e),
+                            **(carga.fila(medida) if medida is not None else {}))
+    if medida is None:
+        return calipso_routines.run_due(now, handlers)
     ran = calipso_routines.run_due(now, handlers, nivel=medida.nivel)
     for r in ran:
         if r["status"] == calipso_routines.POSPUESTA:
