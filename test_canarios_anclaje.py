@@ -240,3 +240,45 @@ def test_aplica_solo_por_consulta_o_por_senal_en_la_pregunta():
     assert c.anclaje("hola", _ctx(), _turno("retomamos el trabajo"))["aplica"] is False
     assert c.anclaje("hola", _ctx(), _turno("retoma lo que dejamos"))["aplica_por"] == [
         "senal:que dejamos", "senal:retoma"]
+
+
+def test_el_no_saber_honesto_con_senal_no_sale_sin_verificar():
+    """Ola de fix del cierre (punto 1): la negacion vale para toda la
+    oracion cuando esta ANTES de la senal sin coma, dos puntos ni punto y
+    coma en el medio ("No encontre nada de lo que me dijiste"), o pegada
+    DESPUES de una senal de marco ("En la ultima conversacion no quedo
+    definido"); y una oracion que matchea un patron fuerte de no-saber de
+    la memoria con procedencia no afirma nada. Sin esto, "que si no sabe
+    que no diga" salia marcado como sin verificar."""
+    honestos = [
+        ("te dije lo de mi hermana?",
+         "No encontre nada de lo que me dijiste sobre tu hermana. Contame y lo anoto."),
+        ("te dije lo del bar?", "No tengo guardado el link que me dijiste del bar."),
+        ("te dije lo de mi hermana?",
+         "No hay nada en mis recuerdos sobre la ultima vez que hablamos de tu hermana."),
+        (banco.M_PRESU,
+         "No tengo ese dato: la ultima vez no quedo nada anotado sobre el presupuesto del taller"),
+        (banco.M_PRESU, "En la ultima conversacion no quedo definido el monto; no lo tengo"),
+        (banco.M_PRESU, "No me consta que en la ultima conversacion hayamos cerrado una cifra"),
+        (banco.M_PRESU,
+         "Segun los recuerdos que tengo, no encontramos el presupuesto exacto del taller la ultima vez"),
+    ]
+    for mensaje, respuesta in honestos:
+        v = c.anclaje(respuesta, _ctx(mensaje_pedro=mensaje), _turno(mensaje))
+        assert v["aplica"] is True, (respuesta, v["aplica_por"])
+        assert v["sin_anclaje"] == [], (respuesta, v["sin_anclaje"])
+        fila = c.veredicto(respuesta=respuesta, secciones=[], mensajes=None, mensaje=mensaje,
+                           bloques=[], features={}, usages=[], ventana=[],
+                           hizo=_turno()["hizo"], consultas=0, steered=False, tapado=False)
+        assert fila["anclaje"]["sin_anclaje"] == [], respuesta
+    # el control: la afirmacion positiva con la senal sigue marcada
+    v = c.anclaje("La ultima vez hablamos de la trilogia de Mariana",
+                  _ctx(mensaje_pedro=banco.M_LIBRO), _turno(banco.M_LIBRO))
+    assert [s["tipo"] for s in v["sin_anclaje"]] == ["recuerdo"]
+
+
+def test_los_patrones_fuertes_del_canario_son_los_de_la_memoria():
+    """La lista vive en memoria_procedencia (pura: os, re, unicodedata) y
+    el canario la importa; si algun dia se copia, este test la ata."""
+    from calipso import memoria_procedencia
+    assert c.PATRONES_FUERTES is memoria_procedencia.PATRONES_FUERTES

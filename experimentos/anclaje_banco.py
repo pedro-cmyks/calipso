@@ -183,6 +183,25 @@ FILAS = [
           "Pedro, en nuestra última conversación sobre el presupuesto, no hablamos de detalles específicos ya que la economía de la fabrica aún no está sembrada.",
           _ctx("en que quedamos la otra vez que discutimos lo del presupuesto?"), TURNO_NORMAL, 0, {},
           nota="screening:17 (cha-decision): 'no hablamos de' es honesto, la negacion no afirma"),
+    # --- el no-saber honesto con una senal de memoria (ola de fix del cierre,
+    # punto 1): la negacion antes de la senal o el patron fuerte de no-saber
+    # de la memoria con procedencia; nada que marcar, la marca si aplica ----
+    _fila("nosabe-hermana", "te dije lo de mi hermana?",
+          "No encontre nada de lo que me dijiste sobre tu hermana. Contame y lo anoto.",
+          _ctx("te dije lo de mi hermana?"), TURNO_NORMAL, 0, {},
+          nota="sintetica: 'no ... me dijiste' con la negacion lejos de la senal"),
+    _fila("nosabe-bar", "te dije lo del bar?",
+          "No tengo guardado el link que me dijiste del bar.",
+          _ctx("te dije lo del bar?"), TURNO_NORMAL, 0, {},
+          nota="sintetica: idem, con 'no tengo' que no es patron fuerte"),
+    _fila("nosabe-recuerdos", "te dije lo de mi hermana?",
+          "No hay nada en mis recuerdos sobre la ultima vez que hablamos de tu hermana.",
+          _ctx("te dije lo de mi hermana?"), TURNO_NORMAL, 0, {},
+          nota="sintetica: dos senales ('la ultima vez', 'hablamos de') bajo una negacion"),
+    _fila("presu-nosabe-real", M_PRESU,
+          "Segun los recuerdos que tengo, no encontramos el presupuesto exacto del taller la ultima vez",
+          _ctx(M_PRESU, bloque=BLOQUE_MEMORIA_PRESU), TURNO_CONSULTO, 3, {},
+          nota="porton nueva/3/presupuesto (real): la negacion en el tramo anterior a 'la ultima vez'"),
 ]
 
 CLASES = ("hecho", "recuerdo", "accion")

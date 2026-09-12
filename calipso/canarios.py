@@ -21,6 +21,10 @@ import unicodedata
 
 from calipso import prompt_compiler
 from calipso.abismo import turno as abismo_turno
+# la lista de no-saber fuertes de la memoria con procedencia (modulo puro:
+# os, re, unicodedata; no arrastra disco ni server). Una oracion que la
+# matchea no afirma un recuerdo aunque lleve una senal
+from calipso.memoria_procedencia import PATRONES_FUERTES
 
 # --- tope de tiempo (invariante 3): el server lo aplica con wait_for -------
 TOPE_SEGUNDOS = 2.0
@@ -364,18 +368,40 @@ def _contenido(oracion_norm: str, senal: str) -> list[str]:
             if len(p) >= minimo and p not in STOPWORDS]
 
 
+# una palabra entera de negacion; vale para todo el tramo de la oracion que
+# la sigue hasta una coma, dos puntos o punto y coma ("No encontre nada de lo
+# que me dijiste": honesto; "No tengo ese dato: la ultima vez ..." corta en
+# los dos puntos y la senal se juzga sola)
+_NEGACION_ANTES = re.compile(r"(?<![a-z])(no|nunca|jamas|tampoco)(?![a-z])[^,:;]*$")
+_NEGACION_PEGADA = r"(no|nunca|jamas|tampoco)"
+
+
 def _senal_en(oracion_norm: str, senales) -> str | None:
     """La primera senal que aparece como palabras enteras ('te conte' no
-    esta en 'este contexto'); None si alguna senal de la oracion lleva un
-    'no' adelante ('no hablamos de detalles' es honesto)."""
+    esta en 'este contexto'); None si alguna senal de la oracion esta
+    negada: con la negacion pegada adelante ('no hablamos de detalles'),
+    pegada atras ('en la ultima conversacion no quedo definido': la senal
+    es un marco y el verbo negado viene despues), o en cualquier lugar del
+    tramo anterior sin puntuacion en el medio ('no encontre nada de lo que
+    me dijiste'). Ola de fix del cierre, punto 1: el no-saber honesto con
+    una senal de memoria no puede salir 'sin verificar'."""
     positiva = None
     for s in senales:
-        m = re.search(r"(?<![a-z])(no )?" + re.escape(s) + r"(?![a-z])", oracion_norm)
-        if m and m.group(1):
+        m = re.search(r"(?<![a-z])(" + _NEGACION_PEGADA + r" )?" + re.escape(s)
+                      + r"(?![a-z])( " + _NEGACION_PEGADA + r"(?![a-z]))?", oracion_norm)
+        if not m:
+            continue
+        if m.group(1) or m.group(3):
             return None       # una senal negada: la oracion no afirma un recuerdo
-        if m and positiva is None:
+        if _NEGACION_ANTES.search(oracion_norm[:m.start()]):
+            return None
+        if positiva is None:
             positiva = s
     return positiva
+
+
+def _es_no_saber(oracion_norm: str) -> bool:
+    return any(re.search(p, oracion_norm) for p in PATRONES_FUERTES)
 
 
 def afirmaciones_de_recuerdo(respuesta: str) -> list[dict]:
@@ -386,7 +412,7 @@ def afirmaciones_de_recuerdo(respuesta: str) -> list[dict]:
         o = normalizar(oracion)
         if o.endswith("?") or o.startswith("¿") or "?" in oracion:
             continue
-        if _OFERTA.search(o):
+        if _OFERTA.search(o) or _es_no_saber(o):
             continue
         senal = _senal_en(o, SENALES_RESPUESTA)
         if senal is None:
