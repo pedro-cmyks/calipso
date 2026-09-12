@@ -43,6 +43,6 @@ Corrido el 2026-09-11T17:12 (arbol `c1e61ea`) sobre el fixture `experimentos/fix
 - `nueva/2/presupuesto`: el aviso del server (Ollama no estaba); clase `confabula`, sin_anclaje 0, sin_dato no, sdf no (no suman).
 - `nueva/2/mariana`: ruta `subscription/opus`, no local; clase `dato`, sin_anclaje 0, sin_dato no, sdf no (no suman).
 
-## Aterrizaje (regla del spec, seccion 6)
+## Aterrizaje (regla del spec, seccion 6, con el ruling 2 del ledger)
 
-La letra nueva no empeora en ninguna de las tres: queda `LETRA_DEFAULT = "nueva"`. Se leyo con 2 filas excluidas (las de arriba).
+La letra nueva no sube en `sin_anclaje` ni en `sin_dato falso` (un `sin_dato` genuino que sube no es empeorar, ruling 2): queda `LETRA_DEFAULT = "nueva"`. Se leyo con 2 filas excluidas (las de arriba).

@@ -18,9 +18,12 @@ fue a subscription/opus (server.py: el filtro de force_route cae al
 ranking entero) y otro fue el aviso del server; un "no trae el dato" de
 Opus habria contado como sin_dato de `nueva` y mandado LETRA_DEFAULT a
 "vieja" por un modelo que no esta bajo prueba.
-Regla de aterrizaje: la letra nueva queda (LETRA_DEFAULT="nueva") solo si
-NO empeora en ninguna de las tres; si empeora en alguna, LETRA_DEFAULT pasa
-a "vieja" y el informe lo dice. Molde: experimentos/porton_memoria.py
+Regla de aterrizaje (ruling 2 del ledger): la letra nueva queda
+(LETRA_DEFAULT="nueva") solo si NO sube en `sin_anclaje` ni en `sin_dato
+falso`; un `sin_dato` genuino que sube es la conducta pedida, no decide.
+Si sube en alguna de las dos, LETRA_DEFAULT pasa a "vieja" y el informe lo
+dice; sin filas validas en una condicion, no se decide. Molde:
+experimentos/porton_memoria.py
 (server desechable uvicorn en 8776, home restaurado desde el fixture por
 condicion y por pasada, jamas ~/.calipso ni el server real; Ollama real en
 11434 con qwen2.5:7b; `websockets` del .venv). Ademas persiste, por fila,
@@ -326,13 +329,28 @@ def totales(filas: list[dict]) -> dict:
     return t
 
 
+# las dos que deciden (ruling 2 del ledger de los canarios, 2026-09-11): la
+# letra nueva aterriza si `sin_anclaje` no sube y `sin_dato FALSO` (no-saber
+# con la verdad en el bloque) no sube; un `sin_dato` GENUINO que sube (el 7b
+# deja de inventar y dice que no lo tiene cuando el bloque no lo trae) es la
+# conducta que Pedro pidio ("que si no sabe que no diga"), no un
+# empeoramiento. La letra del spec ("no empeora en ninguna de las tres") se
+# corrige con este ruling; reversible con CALIPSO_REENTRADA=vieja
+CLAVES_QUE_DECIDEN = ("sin_anclaje", "sin_dato_falso")
+
+
 def aterriza_nueva(t: dict) -> bool | None:
-    """La regla del spec: solo si no empeora en NINGUNA de las tres. None si
-    falta una condicion."""
+    """True si la letra nueva no sube en `sin_anclaje` ni en `sin_dato
+    falso` (ruling 2 del ledger; `sin_dato` genuino no decide). None si
+    falta una condicion o alguna no tiene filas validas: sobre 0/0/0 el
+    `all` daba True vacuo y el informe aterrizaba sin una sola medicion
+    del 7b (ola de fix del cierre, punto 7)."""
     if "vieja" not in t or "nueva" not in t:
         return None
     v, n = t["vieja"], t["nueva"]
-    return all(n[k] <= v[k] for k in ("sin_anclaje", "sin_dato", "sin_dato_falso"))
+    if v["turnos"] == 0 or n["turnos"] == 0:
+        return None
+    return all(n[k] <= v[k] for k in CLAVES_QUE_DECIDEN)
 
 
 def resumen(filas: list[dict]) -> str:
@@ -378,16 +396,20 @@ def resumen(filas: list[dict]) -> str:
         lineas.append(f"- `{f['condicion']}/{f['pasada']}/{f['pregunta']}`: {motivo}; clase `{f['clase']}`, "
                       f"sin_anclaje {f['sin_anclaje']}, sin_dato {'si' if f['sin_dato'] else 'no'}, "
                       f"sdf {'si' if f['sin_dato_falso'] else 'no'} (no suman).")
-    lineas += ["", "## Aterrizaje (regla del spec, seccion 6)", ""]
+    lineas += ["", "## Aterrizaje (regla del spec, seccion 6, con el ruling 2 del ledger)", ""]
     veredicto = aterriza_nueva(t)
     nota = f" Se leyo con {len(excluidas)} filas excluidas (las de arriba)." if excluidas else ""
-    if veredicto is None:
+    sin_validas = [c for c in ("vieja", "nueva") if c in t and t[c]["turnos"] == 0]
+    if sin_validas:
+        lineas.append("; ".join(f"sin filas validas en {c}: no se decide" for c in sin_validas) + "." + nota)
+    elif veredicto is None:
         lineas.append("Falta una condicion: no se decide." + nota)
     elif veredicto:
-        lineas.append("La letra nueva no empeora en ninguna de las tres: queda `LETRA_DEFAULT = \"nueva\"`." + nota)
+        lineas.append("La letra nueva no sube en `sin_anclaje` ni en `sin_dato falso` (un `sin_dato` genuino "
+                      "que sube no es empeorar, ruling 2): queda `LETRA_DEFAULT = \"nueva\"`." + nota)
     else:
-        lineas.append("La letra nueva empeora en alguna de las tres: `LETRA_DEFAULT` pasa a `\"vieja\"` "
-                      "(la letra queda en el archivo de variantes como medida, sin aterrizar)." + nota)
+        lineas.append("La letra nueva sube en `sin_anclaje` o en `sin_dato falso`: `LETRA_DEFAULT` pasa a "
+                      "`\"vieja\"` (la letra queda en el archivo de variantes como medida, sin aterrizar)." + nota)
     return "\n".join(lineas) + "\n"
 
 

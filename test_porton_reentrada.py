@@ -80,6 +80,49 @@ def test_aterriza_nueva_sin_una_condicion_no_decide():
     assert porton.aterriza_nueva(porton.totales([_fila("nueva", "libro", "x")])) is None
 
 
+def test_con_cero_filas_validas_en_una_condicion_el_porton_no_decide():
+    """Ola de fix del cierre (punto 7): con todas las filas de `nueva`
+    invalidas los totales daban 0/0/0 y `aterriza_nueva` devolvia True
+    (vacuo): el informe decia que quedaba la letra nueva sin una sola
+    medicion del 7b."""
+    filas = [
+        _fila("vieja", "libro_rosa", "Mariana Quintero te presto el libro rosa."),
+        _fila("vieja", "presupuesto", "no tengo el detalle"),
+        _fila("nueva", "libro_rosa", AVISO),
+        _fila("nueva", "presupuesto", "Lo que subio no trae el dato", "subscription/opus"),
+    ]
+    t = porton.totales(filas)
+    assert t["nueva"]["turnos"] == 0 and t["nueva"]["excluidas"] == 2
+    assert porton.aterriza_nueva(t) is None
+    md = porton.resumen(filas)
+    assert "queda `LETRA_DEFAULT" not in md and "pasa a `\"vieja\"`" not in md
+    assert "sin filas validas en nueva: no se decide" in md
+    # y al reves, sin filas validas en vieja
+    t = porton.totales([_fila("vieja", "libro_rosa", AVISO), _fila("nueva", "libro_rosa", "x")])
+    assert porton.aterriza_nueva(t) is None
+    assert "sin filas validas en vieja: no se decide" in porton.resumen(
+        [_fila("vieja", "libro_rosa", AVISO), _fila("nueva", "libro_rosa", "x")])
+
+
+def test_un_sin_dato_genuino_que_sube_no_es_empeorar():
+    """Ruling 2 del ledger: la letra aterriza si `sin_anclaje` y `sin_dato
+    falso` no suben; un `sin_dato` GENUINO que sube (el 7b deja de
+    inventar y dice que no lo tiene cuando el bloque no lo trae) es la
+    conducta que Pedro pidio, no un empeoramiento."""
+    filas = [
+        _fila("vieja", "presupuesto", "quedamos en 120 dolares"),
+        _fila("nueva", "presupuesto", "Lo que subio no trae el dato", bloques=["otra cosa"]),
+    ]
+    assert filas[1]["sin_dato"] and not filas[1]["sin_dato_falso"]
+    t = porton.totales(filas)
+    assert t["nueva"]["sin_dato"] == 1 > t["vieja"]["sin_dato"] == 0
+    assert porton.aterriza_nueva(t) is True
+    # pero un sin_dato FALSO que sube si empeora
+    filas[1] = _fila("nueva", "presupuesto", "Lo que subio no trae el dato",
+                     bloques=["quedamos en 120 dolares"])
+    assert porton.aterriza_nueva(porton.totales(filas)) is False
+
+
 def test_el_informe_muestra_la_ruta_y_lista_las_excluidas_aparte():
     filas = [
         _fila("vieja", "libro_rosa", "Mariana Quintero te presto el libro rosa."),
