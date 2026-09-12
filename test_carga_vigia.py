@@ -140,11 +140,35 @@ def test_jamas_evicta_lo_que_no_vio_cargado_ni_lo_que_no_es_de_calipso(tick):
     assert tick["evictados"] == [] and _de(tick["filas"], "descarga") == []
 
 
-def test_los_tres_modelos_de_calipso_son_los_de_config_y_el_de_vision(monkeypatch):
+def test_los_modelos_de_calipso_son_los_de_config_el_embedder_y_el_de_vision(monkeypatch):
     assert srv._modelos_de_calipso() == {srv.dispatch.CONFIG["local"]["model"],
-                                         srv.dispatch.CONFIG["classifier"]["model"]}
+                                         srv.dispatch.CONFIG["classifier"]["model"],
+                                         srv.calipso_config.EMBED_MODEL}
+    assert "bge-m3:latest" in srv._modelos_de_calipso()
     monkeypatch.setattr(srv.attachments, "ollama_vision_model", lambda: "moondream")
     assert "moondream" in srv._modelos_de_calipso()
+
+
+def test_bajo_cargada_el_embedder_listado_se_descarga_por_api_embed_sin_suspender(tick, monkeypatch):
+    """El embedder es de Calipso (memoria efectiva y vigia, ruling 8.1) pero no
+    es el modelo del chat: se descarga por el ramal /api/embed y NO suspende
+    el local (la histeresis es del 7b). Con el 7b al lado, los dos, y la
+    suspension es por el 7b. `bge-m3` sin `:latest` en /api/ps tambien matchea."""
+    evictados_embed = []
+    monkeypatch.setattr(srv, "_ollama_evict_embedding", lambda modelo: evictados_embed.append(modelo) or True)
+    tick["correr"](medida("cargada", modelos=["bge-m3:latest"]))
+    assert evictados_embed == ["bge-m3:latest"] and tick["evictados"] == []
+    assert carga.local_suspendido is False
+    fila = _de(tick["filas"], "descarga")[0]
+    assert fila["modelo"] == "bge-m3:latest" and fila["ok"] is True and fila["nivel"] == "cargada"
+    tick["correr"](medida("cargada", modelos=["qwen2.5:7b", "bge-m3"]))
+    assert tick["evictados"] == ["qwen2.5:7b"] and evictados_embed == ["bge-m3:latest", "bge-m3"]
+    assert carga.local_suspendido is True
+    monkeypatch.setattr(srv, "_ollama_evict_embedding", lambda modelo: False)
+    carga.olvidar()
+    tick["correr"](medida("cargada", modelos=["bge-m3:latest"]))
+    assert _de(tick["filas"], "descarga_fallida")[-1]["modelo"] == "bge-m3:latest"
+    assert carga.local_suspendido is False
 
 
 def test_medir_carga_del_server_pasa_los_modelos_de_calipso_como_propios(monkeypatch):

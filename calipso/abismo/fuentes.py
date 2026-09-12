@@ -18,7 +18,16 @@ CHATS_FRAGMENTO_CHARS = 200
 
 RECALL_N = 12
 RECALL_TOP = 8
-RECALL_UMBRAL = 0.20
+# El umbral de la consulta dirigida del abismo sobre bge-m3 (spec memoria por
+# Ollama 2026-09-12, seccion 3). PROVISORIO, como RECALL_MIN_SCORE del turno:
+# calibrado con experimentos/recall_banco.py por el margen, N chico, se
+# re-mide cuando el corpus crezca; mas bajo que el del turno a proposito (la
+# consulta la escribe el modelo, con menos anclaje que la pregunta de Pedro;
+# el techo del bloque lo pone consulta.etiquetar). Vuelta atras por env.
+# Corrida 2026-09-12 (variante pregunta+150): hit@1 24/24, hit@4 24/24,
+# aciertos min 0.5537, negativas max 0.3987, margen 0.155; este umbral es
+# max(negativas) + 0.25 * margen = 0.4375, redondeado a dos decimales.
+RECALL_UMBRAL = memoria_procedencia.umbral_por_env("CALIPSO_RECALL_UMBRAL", 0.44)
 
 # el fail-open visible de la memoria (spec memoria por Ollama 2026-09-12,
 # ruling 8.8): si el recall devolvio [] porque la memoria no esta (Ollama

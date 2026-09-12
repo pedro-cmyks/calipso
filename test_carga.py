@@ -661,3 +661,69 @@ def test_el_smoke_parsea_y_su_paso_v_es_el_del_ruling():
     assert "mem_efectiva_mb >= necesidad_mb" in doc
     assert "7082-7352" in doc and "server real apagado" in doc
     assert "V el vigia NO descargo el 7b" in fuente
+
+
+# --- el embedder de la memoria (spec memoria por Ollama 2026-09-12, rulings 8.1 y 8.4) ---
+
+def test_mismo_modelo_normaliza_latest_a_los_dos_lados():
+    assert carga.mismo_modelo("bge-m3:latest", "bge-m3") and carga.mismo_modelo("bge-m3", "bge-m3:latest")
+    assert carga.mismo_modelo("qwen2.5:7b", "qwen2.5:7b")
+    assert not carga.mismo_modelo("qwen2.5:7b", "qwen2.5:3b")
+    assert not carga.mismo_modelo("bge-m3:latest", "bge-m3:v2")
+    assert not carga.mismo_modelo("", "bge-m3") and not carga.mismo_modelo(None, None)
+
+
+def test_medir_cuenta_el_embedder_en_la_memoria_efectiva_aunque_ps_diga_latest():
+    ps = lambda: [{"name": "bge-m3:latest", "size_mb": 1219, "expires_at": ""}]
+    c = carga.medir("qwen2.5:7b", leer=lector(), ps=ps, ncpu=16,
+                    modelos_propios={"qwen2.5:7b", "bge-m3"})
+    assert c.modelo_cargado_mb == 1219 and c.mem_efectiva_mb == c.mem_disponible_mb + 1219
+    assert c.modelos_cargados == ["bge-m3:latest"]
+    ajeno = carga.medir("qwen2.5:7b", leer=lector(), ps=ps, ncpu=16, modelos_propios={"qwen2.5:7b"})
+    assert ajeno.modelo_cargado_mb == 0
+
+
+def test_keep_alive_embed_es_la_tabla_propia_del_embedder():
+    """holgada 5m; justa y cargada 0: embebe y suelta (ruling 8.4), sin
+    convivir con el 7b cuando la memoria esta justa. La tabla del 7b no cambia."""
+    assert carga.keep_alive_embed("holgada") == "5m" and carga.keep_alive_embed(None) == "5m"
+    assert carga.keep_alive_embed("justa") == 0 and carga.keep_alive_embed("cargada") == 0
+    assert "8.4" in carga.keep_alive_embed.__doc__
+    assert carga.keep_alive("justa") == "2m" and carga.keep_alive("cargada") == "30s"
+
+
+def test_payload_local_acepta_un_keep_alive_propio_sin_tocar_los_seis_sitios():
+    base = {"model": "bge-m3:latest", "input": ["x"], "truncate": True}
+    p = carga.payload_local(base, "justa", keep_alive=carga.keep_alive_embed("justa"))
+    assert p["keep_alive"] == 0 and p["options"] == {"num_thread": carga.num_thread("justa")}
+    assert carga.payload_local(base, "justa")["keep_alive"] == "2m"
+    assert carga.payload_local(base, "holgada", keep_alive="5m") == {**base, "keep_alive": "5m"}
+    assert base == {"model": "bge-m3:latest", "input": ["x"], "truncate": True}    # no muta
+
+
+def test_ollama_evict_de_un_modelo_de_embedding_va_por_api_embed(monkeypatch):
+    """A un modelo de solo embedding /api/generate puede rechazarlo: el ramal
+    nuevo manda un /api/embed con keep_alive 0 (un `input` de un caracter:
+    el vacio podria salir por la rama corta de Ollama sin tocar el runner).
+    El camino del 7b queda byte a byte."""
+    vistos = []
+
+    def urlopen(req, timeout=None):
+        vistos.append((req.full_url, json.loads(req.data.decode()), timeout))
+        return _Resp(b"{}")
+    monkeypatch.setattr(carga.urllib.request, "urlopen", urlopen)
+    assert carga.ollama_evict("bge-m3:latest", embedding=True) is True
+    assert vistos == [("http://localhost:11434/api/embed",
+                       {"model": "bge-m3:latest", "input": "x", "truncate": True, "keep_alive": 0},
+                       carga.UMBRALES["EVICT_TIMEOUT_S"])]
+    assert carga.ollama_evict("qwen2.5:7b") is True
+    assert vistos[-1][0] == "http://localhost:11434/api/generate"
+    monkeypatch.setattr(carga.urllib.request, "urlopen",
+                        lambda req, timeout=None: (_ for _ in ()).throw(OSError("x")))
+    assert carga.ollama_evict("bge-m3:latest", embedding=True) is False
+
+
+def test_los_modelos_configurados_suman_el_embedder():
+    from calipso import config as calipso_config
+    assert carga._modelos_configurados() == {"qwen2.5:7b", "qwen2.5:3b", calipso_config.EMBED_MODEL}
+    assert "bge-m3:latest" in carga._modelos_configurados()

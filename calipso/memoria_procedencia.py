@@ -283,3 +283,20 @@ def presentar_recuerdos(hits: list[dict], tope: int, *,
         if len(salida) >= tope:
             break
     return salida
+
+
+# --- los umbrales del recall (spec memoria por Ollama 2026-09-12, seccion 3) ----
+
+def umbral_por_env(nombre: str, default: float, alias: str | None = None) -> float:
+    """El umbral de recall por env: `nombre` manda, `alias` (el nombre viejo)
+    sigue valiendo, y un valor roto o vacio cae al default (un env mal
+    tipeado no puede impedir que arranque el server: server.py y
+    abismo/fuentes.py lo leen al importarse). Es la vuelta atras de los
+    umbrales PROVISORIOS calibrados con experimentos/recall_banco.py."""
+    for clave in (nombre, alias):
+        if clave and os.environ.get(clave, "") != "":
+            try:
+                return float(os.environ[clave])
+            except ValueError:
+                return default
+    return default

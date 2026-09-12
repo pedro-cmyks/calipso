@@ -158,12 +158,14 @@ def test_embed_manda_modelo_input_truncate_y_las_perillas_del_nivel(monkeypatch)
     v, = vistos
     assert v["url"] == "http://127.0.0.1:11434/api/embed" and v["content_type"] == "application/json"
     assert v["payload"] == {"model": "bge-m3:latest", "input": ["hola", "chau"], "truncate": True,
-                            "keep_alive": carga.keep_alive("holgada")}
+                            "keep_alive": "5m"}
     assert v["timeout"] == me.TIMEOUT_REMEMBER_S
-    monkeypatch.setattr(carga, "nivel_reciente", lambda: "cargada")
-    ef.embed(["x"])
-    assert vistos[-1]["payload"]["keep_alive"] == carga.keep_alive("cargada")
-    assert vistos[-1]["payload"]["options"] == {"num_thread": carga.num_thread("cargada")}
+    # la tabla PROPIA del embedder (ruling 8.4): justa y cargada 0 (embebe y suelta)
+    for nivel in ("justa", "cargada"):
+        monkeypatch.setattr(carga, "nivel_reciente", lambda n=nivel: n)
+        ef.embed(["x"])
+        assert vistos[-1]["payload"]["keep_alive"] == 0 == carga.keep_alive_embed(nivel)
+        assert vistos[-1]["payload"]["options"] == {"num_thread": carga.num_thread(nivel)}
 
 
 def test_embed_usa_el_timeout_del_llamador_y_toma_el_contador_de_uso(monkeypatch):

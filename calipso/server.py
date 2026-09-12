@@ -101,7 +101,7 @@ from calipso import memoria_procedencia  # noqa: E402
 from calipso import tokenizador  # noqa: E402
 from calipso import verification  # noqa: E402
 from calipso.tools import commands as calipso_commands  # noqa: E402
-from calipso.memory import EMBED_MODEL, Memory, leer_carta  # noqa: E402
+from calipso.memory import Memory, leer_carta  # noqa: E402
 
 # RaÃƒÂ­z del proyecto que Calipso muestra/edita. Por defecto, el cwd.
 ROOT = pathlib.Path(os.environ.get("CALIPSO_ROOT", os.getcwd())).resolve()
@@ -2170,22 +2170,20 @@ def _declarar_modelos_fuera(quien: aduana.Quien) -> int:
 
 def _declarar_arranque() -> None:
     """Lo que sale al arrancar el proceso, declarado UNA vez (spec seccion
-    7). La memoria sale a huggingface.co al construirse (`SentenceTransformer`
-    sin `local_files_only`: metadatos + un HEAD por archivo aunque el cache
-    este completo): se declara ACA y no en `Memory.__init__`, porque
-    `_switch_project` reconstruye la memoria en el loop y chromadb cachea
-    el modelo por clase (no vuelve a salir). NO se llama a nivel de modulo:
-    con `uvicorn calipso.server:app` (asi arranca el shell de escritorio,
-    ver `_instalar_filtro_de_token`, y asi levanta el smoke) el import del
+    7): hoy, solo los modelos fuera de la maquina. La memoria YA NO sale
+    (spec memoria por Ollama 2026-09-12): embebe por `POST /api/embed` en
+    loopback (`memoria_embed._post_embed`, entrada del canario) y
+    `Memory.__init__` no abre red ni disco; whisper sigue declarando lo suyo
+    al primer uso. NO se llama a nivel de modulo: con `uvicorn
+    calipso.server:app` (asi arranca el shell de escritorio, ver
+    `_instalar_filtro_de_token`, y asi levanta el smoke) el import del
     modulo corre ADENTRO del loop (uvicorn 0.49: `Server._serve` ->
     `config.load()`), la aduana detectaria el loop y NO escribiria
-    (`aduana_en_loop`), y la memoria quedaria sin declarar. Se llama desde
-    `_calentar_probes`, en `to_thread` desde `_startup_warm`, donde el
-    candado se puede tomar. Con `python calipso/server.py` daria igual."""
+    (`aduana_en_loop`). Se llama desde `_calentar_probes`, en `to_thread`
+    desde `_startup_warm`, donde el candado se puede tomar. Con `python
+    calipso/server.py` daria igual."""
     quien = aduana.Quien(origen="arranque", proyecto=_proyecto(),
                          desde={"credencial": "maquina"})
-    aduana.declarar_una_vez("memoria", quien, "modelo de embeddings",
-                            destino="huggingface.co", motivo=EMBED_MODEL)
     _declarar_modelos_fuera(quien)
 
 
@@ -3030,7 +3028,20 @@ def _harness_context(verdict: dict, used_route: str, model: str, note: str | Non
 # estable al inicio (cacheable -> 90% descuento en sub/api), volátil al final,
 # presupuestado, y just-in-time (no precargar archivos del repo).
 CONTEXT_CORE_MAX = int(os.environ.get("CALIPSO_CORE_MAX", "3000"))
-RECALL_MIN_SCORE = float(os.environ.get("CALIPSO_RECALL_MIN", "0.30"))
+# El umbral del recall del turno (score = 1 - distancia coseno) sobre bge-m3
+# (spec memoria por Ollama 2026-09-12, seccion 3). PROVISORIO: bge-m3 tiene
+# otra distribucion que MiniLM (similitudes mas altas y mas apretadas) y
+# embebe otro texto; el numero se elige por el MARGEN del banco
+# `experimentos/recall_banco.py` (min(aciertos) - max(negativas)) con los
+# aciertos de MiniLM como piso, sobre N chico (16 episodios del fixture + 5
+# reales): se re-mide cuando el corpus crezca. Los numeros de la corrida
+# estan en experimentos/recall_banco_resultados.md. Vuelta atras por env:
+# CALIPSO_RECALL_MIN_SCORE (el viejo CALIPSO_RECALL_MIN sigue valiendo).
+# Corrida 2026-09-12 (variante pregunta+150, la de produccion): hit@1 24/24,
+# hit@4 24/24, reales 5/5, aciertos min 0.5537, negativas max 0.3987, margen
+# 0.155 (MiniLM: hit@1 22/24, margen 0.0629); el umbral es el punto medio.
+RECALL_MIN_SCORE = memoria_procedencia.umbral_por_env(
+    "CALIPSO_RECALL_MIN_SCORE", 0.476, alias="CALIPSO_RECALL_MIN")
 RECALL_MAX = int(os.environ.get("CALIPSO_RECALL_MAX", "4"))
 REPO_BRIEF_MAX = int(os.environ.get("CALIPSO_REPO_BRIEF_MAX", "4500"))
 
@@ -5762,9 +5773,13 @@ async def api_transcribe(request: Request, audio: UploadFile = File(...)) -> dic
 
 def _modelos_de_calipso() -> set[str]:
     """Los nombres que el vigia puede descargar (spec carga 3.3, ruling 9.12):
-    el del chat, el del clasificador y el de vision si hay. Jamas otro: un
-    `prompt: ""` con keep_alive 0 a un modelo NO cargado lo CARGA."""
-    nombres = {dispatch.CONFIG["local"]["model"], dispatch.CONFIG["classifier"]["model"]}
+    el del chat, el del clasificador, el embedder de la memoria (spec memoria
+    por Ollama 2026-09-12, ruling 8.1: `bge-m3:latest`, que es lo que /api/ps
+    devuelve; la comparacion normaliza `:latest` a los dos lados) y el de
+    vision si hay. Jamas otro: un `prompt: ""` con keep_alive 0 a un modelo
+    NO cargado lo CARGA."""
+    nombres = {dispatch.CONFIG["local"]["model"], dispatch.CONFIG["classifier"]["model"],
+               calipso_config.EMBED_MODEL}
     vm = attachments.ollama_vision_model()
     if vm:
         nombres.add(vm)
@@ -5773,6 +5788,12 @@ def _modelos_de_calipso() -> set[str]:
 
 # el hook de la descarga: los tests lo reemplazan con un espia
 _ollama_evict = carga.ollama_evict
+
+
+def _ollama_evict_embedding(nombre: str) -> bool:
+    """El hook de la descarga del embedder: por /api/embed (a un modelo de
+    solo embedding /api/generate puede rechazarlo). Los tests lo reemplazan."""
+    return carga.ollama_evict(nombre, embedding=True)
 
 
 def _fila_sin_modelo(medida: carga.Carga) -> dict:
@@ -5797,11 +5818,23 @@ def _vigia_del_modelo(medida: carga.Carga) -> list[str]:
     de_calipso = _modelos_de_calipso()
     fila = _fila_sin_modelo(medida)
     for nombre in medida.modelos_cargados:
-        if nombre not in de_calipso:
+        if not any(carga.mismo_modelo(nombre, propio) for propio in de_calipso):
             continue
         if carga.en_uso > 0:
             telemetry.log_event("carga", accion="descarga_diferida", modelo=nombre,
                                 en_uso=carga.en_uso, **fila)
+            continue
+        if carga.mismo_modelo(nombre, calipso_config.EMBED_MODEL):
+            # el embedder de la memoria no es el modelo del chat: se descarga
+            # por /api/embed y SIN histeresis (suspender el local por descargar
+            # bge-m3 seria castigar al chat por un modelo que no es el suyo);
+            # si el 7b tambien esta listado, cae en este mismo bucle con la
+            # suspension de siempre
+            ok = _ollama_evict_embedding(nombre)
+            if ok:
+                descargados.append(nombre)
+            telemetry.log_event("carga", accion=("descarga" if ok else "descarga_fallida"),
+                                modelo=nombre, ok=ok, **fila)
             continue
         # se suspende ANTES del evict (ola de fix, punto 6b): en la ventana
         # del evict un `_decide` veia holgada y recargaba. Si el evict falla
@@ -8835,7 +8868,7 @@ async def _startup_warm() -> None:
     except Exception:
         pass
     try:
-        await asyncio.to_thread(_calentar_probes)  # declara la memoria y los probes, pre-calienta el cache
+        await asyncio.to_thread(_calentar_probes)  # declara los modelos fuera y los probes, pre-calienta el cache
     except Exception:
         pass
     try:

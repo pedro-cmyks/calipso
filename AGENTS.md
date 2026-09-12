@@ -427,8 +427,14 @@ Rutas:
 - Global: `~/.calipso/global/{core,chroma}`.
 - Proyecto: `<repo>/.calipso/core` + `~/.calipso/projects/<slug>/chroma`.
 
-Embeddings obligatorios: `bge-m3` via Ollama, por soporte multilingue. No usar el
-default ingles de Chroma para ranking en espanol.
+Embeddings obligatorios: `bge-m3` via Ollama (`POST /api/embed`, `calipso/memoria_embed.py`;
+`CALIPSO_EMBED_MODEL`, default `bge-m3:latest`, 1024 dims), por soporte multilingue. El server
+NO importa torch ni sentence-transformers (`test_memoria_sin_torch.py` lo fija; spec
+`docs/superpowers/specs/2026-09-12-memoria-embeddings-ollama-design.md`). La coleccion viva es
+`episodic-<tag>` (`episodic-bge-m3`); la vieja `episodic` (MiniLM, 384 dims) queda intacta hasta
+que `python -m calipso.memoria_reindex --embeddings` (server apagado) la copie; `GET /api/memory`
+muestra `sin_reindexar`, `recall_ok` y `ultimo_recall_fallo`. El recall es fail-open (fila
+`kind: memoria`). No usar el default ingles de Chroma para ranking en espanol.
 
 ## Mapa del repo
 

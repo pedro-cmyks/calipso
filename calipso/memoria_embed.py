@@ -51,7 +51,7 @@ from calipso import memoria_procedencia
 TIMEOUT_RECALL_S = 10.0       # el turno sigue sin recuerdos (ruling 8.7)
 TIMEOUT_REMEMBER_S = 120.0    # remember y reindex, por lote
 LOTE_CHARS = 8000             # lotes por tamano, no por cantidad
-PALABRAS_RESPUESTA = 150      # ruling 8.5; el banco mide 0 / 150 / par entero (10_000); lo fija el Step 10 de la Task 3
+PALABRAS_RESPUESTA = 150      # ruling 8.5; el banco 2026-09-12 midio 0 / 150 / par entero (10_000): 150 separa mejor (margen 0.155 contra 0.0849 del par y -0.0036 de la pregunta sola)
 PALABRAS_OTRO = 300           # un documento que no es un par (meta, ficha del jefe): fijo, no depende del de arriba
 
 
@@ -153,7 +153,8 @@ class OllamaEmbed(EmbeddingFunction[Documents]):
         with carga.usando():
             for lote in lotes(textos):
                 payload = carga.payload_local(
-                    {"model": self.model, "input": lote, "truncate": True}, nivel)
+                    {"model": self.model, "input": lote, "truncate": True}, nivel,
+                    keep_alive=carga.keep_alive_embed(nivel))
                 datos = _post_embed(f"{self.url}/api/embed", payload, timeout or self.timeout)
                 vectores = datos.get("embeddings") if isinstance(datos, dict) else None
                 if not isinstance(vectores, list) or len(vectores) != len(lote):
