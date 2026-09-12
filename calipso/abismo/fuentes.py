@@ -20,6 +20,17 @@ RECALL_N = 12
 RECALL_TOP = 8
 RECALL_UMBRAL = 0.20
 
+# el fail-open visible de la memoria (spec memoria por Ollama 2026-09-12,
+# ruling 8.8): si el recall devolvio [] porque la memoria no esta (Ollama
+# caido, coleccion rota), la fuente no puede cerrar con `vacio`. Se levanta
+# con este aviso EXACTO; `consulta.resolver` lo vuelve `_fallo(fuente, aviso)`
+# y `turno.motivo_de_consulta` lo mapea a `memoria_no_disponible`.
+AVISO_MEMORIA_NO_DISPONIBLE = "la memoria no esta disponible"
+
+
+class MemoriaNoDisponible(RuntimeError):
+    pass
+
 _RANGO = re.compile(r"\b(desde|hasta):(\d{4}-\d{2})\b")
 
 
@@ -116,9 +127,11 @@ def memoria(pregunta: str, mem, consolidado: str | None = None,
     # cortar a RECALL_TOP, como en server._build_context. El techo del
     # bloque entero sigue siendo de `consulta.etiquetar`. La vineta nunca
     # lleva el score (esta fuente tampoco lo pegaba en main).
+    hits = mem.recall(pregunta, n=RECALL_N)
+    if not hits and getattr(mem, "recall_ok", True) is False:
+        raise MemoriaNoDisponible(AVISO_MEMORIA_NO_DISPONIBLE)
     recuerdos = memoria_procedencia.presentar_recuerdos(
-        [h for h in mem.recall(pregunta, n=RECALL_N)
-         if h.get("score", 0) >= RECALL_UMBRAL],
+        [h for h in hits if h.get("score", 0) >= RECALL_UMBRAL],
         RECALL_TOP)
     if recuerdos:
         lineas = "\n".join(r["text"] for r in recuerdos)

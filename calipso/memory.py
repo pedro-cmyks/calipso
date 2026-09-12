@@ -163,6 +163,12 @@ class Scope:
     def count(self) -> int:
         return self._col.count()
 
+    def sin_reindexar(self) -> int:
+        """Los episodios de la coleccion vieja `episodic` que todavia no estan
+        en la viva (spec memoria por Ollama, invariante 3). Mismo calculo que
+        el reindex (`memoria_embed.sin_reindexar`); solo ids, sin EF."""
+        return memoria_embed.sin_reindexar(self._client)
+
 
 REFLECT_PROMPT = (
     "Eres el proceso de memoria de Calipso. Lee estos intercambios entre Pedro "
@@ -273,6 +279,11 @@ class Memory:
         self.recall_ok = True
         hits.sort(key=lambda h: h["score"], reverse=True)
         return hits[:n]
+
+    def sin_reindexar(self) -> dict[str, int]:
+        """Por ambito de la lectura combinada (`{"global": N, "project": N}`):
+        lo que `GET /api/memory` devuelve y el arranque anuncia."""
+        return {s.name: s.sin_reindexar() for s in self._scopes}
 
     # --- escritura ---
     def remember(self, text: str, scope: str = "auto", **meta) -> str:

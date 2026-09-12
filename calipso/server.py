@@ -2431,6 +2431,34 @@ def _backend_quota_low() -> dict:
         capabilities.load_backends(), _connector_health())
 
 
+# --- las tareas de fondo del server (spec memoria por Ollama 2026-09-12, ruling 8.3) ---
+# El remember del turno corre DESPUES del `done` como tarea del loop; el
+# conjunto las retiene (asyncio solo guarda referencias debiles) y el harness
+# de los tests lo espera (`Harness.esperar_fondo`) para que las aserciones
+# sobre la memoria no sean una carrera.
+_TAREAS_DE_FONDO: set[asyncio.Task] = set()
+
+
+def _en_fondo(coro) -> asyncio.Task:
+    tarea = asyncio.create_task(coro)
+    _TAREAS_DE_FONDO.add(tarea)
+    tarea.add_done_callback(_TAREAS_DE_FONDO.discard)
+    return tarea
+
+
+def _anunciar_memoria() -> None:
+    """En hilo desde `_startup_warm`: cuantos episodios de la coleccion vieja
+    `episodic` faltan en `episodic-<tag>` por ambito (spec memoria por Ollama,
+    invariante 3: se ve hasta que sea 0). Una linea por ambito con pendientes
+    y la fila `kind: memoria, accion: sin_reindexar`. No se niega a arrancar
+    (fail-open): si el chroma esta roto, el try del arranque se lo traga."""
+    for ambito, n in mem.sin_reindexar().items():
+        if n:
+            print(f"[calipso] memoria: {n} episodios sin reindexar en {ambito} "
+                  f"(python -m calipso.memoria_reindex --embeddings, con el server apagado)")
+            telemetry.log_event("memoria", accion="sin_reindexar", ambito=ambito, n=n)
+
+
 def _medir_carga(ps_timeout: float | None = None) -> carga.Carga:
     """El sensor de la maquina (spec carga, seccion 2), por un hook: los tests
     lo reemplazan con una Carga fija (nada de la suite mide /proc ni hace
@@ -4745,51 +4773,10 @@ async def ws_chat(ws: WebSocket) -> None:
             if veredicto is not None:
                 await ws.send_json({"type": "canario", **veredicto})
 
-            # 5) recordar el intercambio (episodica)
-            #
-            # Tres cosas se arreglaron aca el 2026-08-31, y las tres son la
-            # misma clase de error: lo que se guarda mal se recupera mal, y
-            # nadie se entera porque no levanta ninguna excepcion.
-            #
-            # 1. El literal tenia las dos vocales acentuadas doble-encodeadas
-            #    (el mojibake clasico: una A con tilde donde va la vocal), asi
-            #    que la cadena rota se EMBEBIA tal cual y cada intercambio
-            #    degradaba su propia recuperacion. No se transcribe aca a
-            #    proposito: escribirla para explicarla es como vuelve.
-            # 2. Iba a `scope="auto"`, que es "el proyecto si hay proyecto"
-            #    (memory.py:187-194) -- y el chat SIEMPRE tiene proyecto. O
-            #    sea que la vida de Pedro se archivaba bajo el repo que
-            #    tuviera abierto, y el ambito global termino con cero filas
-            #    despues de dos meses. Va a global: en la conversacion la
-            #    constante es Pedro, el repo es la variable. Lo que si es
-            #    del proyecto lo escriben los que hablan del proyecto
-            #    (reflect, el bibliotecario, el jefe de departamento).
-            # 3. Corria sobre el event loop, a diferencia del `remember` de
-            #    la meta ocho lineas mas arriba (:2377), que ya va por hilo.
-            #
-            # Y la procedencia (spec 2026-09-11, seccion 2): el par sigue
-            # siendo el documento (el embedding no cambia), pero la pregunta
-            # es la LIMPIA (`chat_msg`, sin el `/local` de adelante) y los
-            # metadatos dicen quien contesto de verdad: `ruta` es la USADA
-            # (`used_route`: local tras un fallback, orchestrator con equipo,
-            # subscription con el alterno; `route` sigue siendo la decidida),
-            # `modelo` el que contesto, `chat` el id y `procedencia=1` la
-            # marca para contar y para la idempotencia del reindex. Lo que
-            # sea None lo descarta `Scope.remember`. Se lee con
-            # `memoria_procedencia.presentar`, nunca crudo.
-            # Y los canarios (spec 2026-09-11): dos numeros del veredicto,
-            # `degeneracion` y `sin_anclaje` (None si el canario fallo).
-            # El aviso de Ollama caido no entra: no es una respuesta.
-            if full.strip() and not aviso_local_caido:
-                try:
-                    await asyncio.to_thread(
-                        mem.remember,
-                        f"Pedro pregunto: {chat_msg}\nCalipso respondio: {full.strip()}",
-                        scope="global", route=verdict["route"], kind="chat",
-                        ruta=used_route, modelo=model, chat=chat_id, procedencia=1,
-                        **canarios.resumen_de_remember(veredicto))
-                except Exception:
-                    pass    # recordar no puede voltear un turno ya contestado
+            # 5) el mensaje al chat. El remember del intercambio (episodica)
+            # corre como tarea de fondo que arranca cuando el `done` ya salio
+            # (spec memoria por Ollama 2026-09-12, ruling 8.3): es el paso 6,
+            # al final de este turno.
             if full.strip():
                 chats.append(chat_id, "assistant", full.strip(), {
                     "route": used_route,
@@ -4818,6 +4805,56 @@ async def ws_chat(ws: WebSocket) -> None:
             _last_features = features
             _last_verdict = verdict
             uso_local.soltar()
+            # 6) recordar el intercambio (episodica), como tarea de fondo que
+            # corre DESPUES del `done` (spec memoria por Ollama 2026-09-12,
+            # ruling 8.3): con bge-m3 el embedding cuesta 0,4-4 s y antes se
+            # ESPERABA antes del done, visible en `pensando`; el molde es el
+            # remember de la meta (mas arriba), que ya iba despues de su done.
+            # La tarea se PROGRAMA justo antes del send del done (create_task
+            # no ejecuta nada: el remember arranca en la siguiente vuelta del
+            # loop y va a un hilo, asi que el done sale igual de rapido) y no
+            # despues: si el cliente corta justo en ese send, `send_json`
+            # levanta y salta al `except WebSocketDisconnect`; con la tarea ya
+            # creada el episodio se guarda igual (antes de este cambio tambien
+            # se guardaba: corria antes del done).
+            #
+            # Tres cosas se arreglaron aca el 2026-08-31, y las tres son la
+            # misma clase de error: lo que se guarda mal se recupera mal, y
+            # nadie se entera porque no levanta ninguna excepcion.
+            # 1. El literal tenia las dos vocales acentuadas doble-encodeadas
+            #    (el mojibake clasico: una A con tilde donde va la vocal), asi
+            #    que la cadena rota se EMBEBIA tal cual. No se transcribe aca
+            #    a proposito: escribirla para explicarla es como vuelve.
+            # 2. Iba a `scope="auto"`, que es "el proyecto si hay proyecto" --
+            #    y el chat SIEMPRE tiene proyecto: la vida de Pedro se
+            #    archivaba bajo el repo que tuviera abierto. Va a global: en
+            #    la conversacion la constante es Pedro, el repo es la variable.
+            # 3. Corria sobre el event loop: va por hilo (`asyncio.to_thread`).
+            #
+            # Y la procedencia (spec 2026-09-11, seccion 2): el par sigue
+            # siendo el documento, la pregunta es la LIMPIA (`chat_msg`, sin
+            # el `/local` de adelante) y los metadatos dicen quien contesto
+            # de verdad: `ruta` es la USADA (`used_route`), `modelo` el que
+            # contesto, `chat` el id y `procedencia=1` la marca. Lo que sea
+            # None lo descarta `Scope.remember`. Los canarios suman
+            # `degeneracion` y `sin_anclaje`. El aviso de Ollama caido no
+            # entra: no es una respuesta. Un fallo (Ollama caido al embeber,
+            # chroma roto) deja la fila `kind: memoria, accion: remember_fallo`:
+            # recordar no puede voltear un turno ya contestado, pero tampoco
+            # puede fallar en silencio (fail-open visible, ruling 8.8).
+            if full.strip() and not aviso_local_caido:
+                episodio = f"Pedro pregunto: {chat_msg}\nCalipso respondio: {full.strip()}"
+                meta_episodio = dict(
+                    scope="global", route=verdict["route"], kind="chat",
+                    ruta=used_route, modelo=model, chat=chat_id, procedencia=1,
+                    **canarios.resumen_de_remember(veredicto))
+
+                async def _recordar(texto=episodio, meta=meta_episodio):
+                    try:
+                        await asyncio.to_thread(mem.remember, texto, **meta)
+                    except Exception as e:
+                        telemetry.log_event("memoria", accion="remember_fallo", error=str(e)[:300])
+                _en_fondo(_recordar())
             await ws.send_json({"type": "done"})
     except WebSocketDisconnect:
         pass
@@ -5318,11 +5355,17 @@ def api_costs(month: str | None = None) -> dict:
 
 @app.get("/api/memory")
 def api_memory() -> dict:
-    """Estado de la memoria (para el panel / debugging)."""
+    """Estado de la memoria (para el panel / debugging), con lo que la memoria
+    por Ollama deja a la vista (spec 2026-09-12, ruling 8.8): cuantos episodios
+    viejos faltan en la coleccion viva por ambito, y si el ultimo recall salio
+    (`recall_ok`) o cuando y por que fallo (`ultimo_recall_fallo`)."""
     return {
         "core": mem.load_core(),
         "global_episodes": mem.glob.count(),
         "project_episodes": mem.project.count() if mem.project else 0,
+        "sin_reindexar": mem.sin_reindexar() if hasattr(mem, "sin_reindexar") else {},
+        "recall_ok": bool(getattr(mem, "recall_ok", True)),
+        "ultimo_recall_fallo": getattr(mem, "ultimo_recall_fallo", None),
     }
 
 
@@ -8793,6 +8836,10 @@ async def _startup_warm() -> None:
         pass
     try:
         await asyncio.to_thread(_calentar_probes)  # declara la memoria y los probes, pre-calienta el cache
+    except Exception:
+        pass
+    try:
+        await asyncio.to_thread(_anunciar_memoria)  # sin_reindexar por ambito: una linea y una fila (fail-open)
     except Exception:
         pass
     await asyncio.to_thread(_asegurar_rutina_catastro)

@@ -16,7 +16,7 @@ from calipso.abismo import marca
 ABISMO_CONSULTAS_MAX = 3          # consultas por turno (spec seccion 4)
 FASES = ("pondering", "pescado", "fallo")
 MOTIVOS = ("vacio", "credencial", "solo_hondo", "juez_local_caido",
-           "tipo_desconocido", "error")
+           "tipo_desconocido", "memoria_no_disponible", "error")
 VERBOS = {"memoria": "buscando en tu memoria",
           "chats": "buscando en tus chats",
           "proyecto": "mirando el repo"}
@@ -131,8 +131,15 @@ def senal(fase: str, fuente: str, **campos) -> dict:
 def motivo_de_consulta(resultado: dict) -> str:
     """El motivo de la senal `fallo` a partir de lo que devolvio
     `consulta.resolver`: la pesca vacia es `vacio` (el aviso exacto de
-    consulta._fallo, "la consulta no trajo nada"); todo lo demas, `error`."""
-    return "vacio" if resultado.get("aviso") == "la consulta no trajo nada" else "error"
+    consulta._fallo, "la consulta no trajo nada"); la memoria muerta es
+    `memoria_no_disponible` (el aviso exacto de fuentes.MemoriaNoDisponible,
+    spec memoria por Ollama, ruling 8.8); todo lo demas, `error`."""
+    aviso = resultado.get("aviso")
+    if aviso == "la consulta no trajo nada":
+        return "vacio"
+    if aviso == "la memoria no esta disponible":
+        return "memoria_no_disponible"
+    return "error"
 
 
 def cortar_en_marca(texto: str) -> tuple[str, marca.Marca | None]:

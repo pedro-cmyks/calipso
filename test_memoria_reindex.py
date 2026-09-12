@@ -4,10 +4,16 @@ cantidad, preserva las claves viejas y agrega `procedencia` y `ruta`; es
 idempotente; cuenta lo que no parsea; se niega con el puerto ocupado y
 sigue con `--forzar`. Al final, sobre una copia del fixture real del porton.
 
-Los chromas de prueba se arman SIN modelo (embeddings explicitos): asi el
-test tarda medio segundo y no depende del cache de HuggingFace. El del
-fixture real trae la funcion de embeddings persistida y `update` la carga
-(offline, del cache; ~5 s la primera vez en el proceso)."""
+Y el reindex a otro embedder (spec memoria por Ollama 2026-09-12):
+`--embeddings` copia `episodic` a `episodic-<tag>` con los MISMOS ids,
+documentos y metadatos, embebiendo por lotes (aca con EmbedFalsa: la suite
+no toca Ollama); es idempotente (un id que ya esta solo converge sus
+metadatos); no admite `--forzar`; toma la lista de ids antes y despues;
+`--vista` imprime `sin_reindexar` sin embeber; y `--vista/--aplicar` operan
+sobre la viva si existe (si no, sobre la vieja: los dos ordenes convergen).
+
+Los chromas de prueba se arman SIN modelo (embeddings explicitos de 3 dims
+en la vieja): asi el test tarda medio segundo y no depende de nada."""
 from __future__ import annotations
 
 import io
@@ -18,6 +24,7 @@ import socket
 import chromadb
 import pytest
 
+from calipso import memoria_embed as me
 from calipso import memoria_reindex as mr
 
 FIXTURE = pathlib.Path(__file__).resolve().parent / "experimentos" / "fixtures" / "memoria_smoke_home"
@@ -39,8 +46,8 @@ def _sembrar(chroma_dir: pathlib.Path, filas: list[tuple[str, str, dict]]):
     return col
 
 
-def _leer(chroma_dir: pathlib.Path) -> dict:
-    col = chromadb.PersistentClient(path=str(chroma_dir)).get_collection("episodic")
+def _leer(chroma_dir: pathlib.Path, nombre: str = "episodic") -> dict:
+    col = chromadb.PersistentClient(path=str(chroma_dir)).get_collection(nombre, embedding_function=None)
     g = col.get(include=["documents", "metadatas", "embeddings"])
     return {"count": col.count(), "ids": list(g["ids"]), "docs": list(g["documents"]),
             "metas": list(g["metadatas"]),
@@ -166,6 +173,8 @@ def test_un_directorio_chroma_sin_la_coleccion_se_salta(home):
     d = home / "projects" / "otro" / "chroma"
     chromadb.PersistentClient(path=str(d))          # crea el sqlite, sin coleccion
     codigo, texto = _correr("--vista")
+    assert codigo == 0 and "projects/otro: sin coleccion episodic-bge-m3 ni episodic (se salta)" in texto
+    codigo, texto = _correr("--embeddings")
     assert codigo == 0 and "projects/otro: sin coleccion episodic (se salta)" in texto
 
 
@@ -200,3 +209,133 @@ def test_sobre_una_copia_del_fixture_real(tmp_path, monkeypatch):
     assert all(m["procedencia"] == 1 and m["ruta"] == "local" and m["route"] == "local"
                for m in despues["metas"])
     assert "global: nada que escribir" in _correr("--aplicar")[1]
+
+
+# --- el reindex a otro embedder: --embeddings (spec memoria por Ollama 2026-09-12) ---
+
+VIVA = me.COLECCION_VIVA
+
+
+def _por_id(leido: dict) -> dict:
+    return {i: (d, m) for i, d, m in zip(leido["ids"], leido["docs"], leido["metas"])}
+
+
+def test_embeddings_copia_la_vieja_a_la_viva_con_los_mismos_ids_documentos_y_metadatos(home):
+    g = home / "global" / "chroma"
+    antes = _leer(g)
+    codigo, texto = _correr("--embeddings")
+    assert codigo == 0, texto
+    assert f"global: 6 copiados a {VIVA}, 0 ya estaban (metadatos actualizados), sin_reindexar 0" in texto
+    assert f"projects/var-home-pedro-calipso: 2 copiados a {VIVA}" in texto
+    assert "OJO" not in texto
+    assert _leer(g) == antes                                   # la vieja no se toca
+    viva = _leer(g, VIVA)
+    assert sorted(viva["ids"]) == sorted(antes["ids"]) and viva["count"] == 6
+    assert _por_id(viva) == _por_id(antes)
+    assert all(len(e) == 1024 for e in viva["emb"])
+    falsa = me.EmbedFalsa()
+    for i, d, e in zip(viva["ids"], viva["docs"], viva["emb"]):
+        esperado = falsa.embed([me.texto_para_embedding(d)])[0]
+        assert max(abs(a - b) for a, b in zip(e, esperado)) < 1e-6, i
+    # la viva quedo con la EF calipso_ollama persistida: el server la abre sin conflicto
+    col = chromadb.PersistentClient(path=str(g)).get_collection(VIVA)
+    assert col.configuration_json["embedding_function"]["name"] == "calipso_ollama"
+
+
+def test_embeddings_es_idempotente_y_converge_los_metadatos_en_los_dos_ordenes(home):
+    g = home / "global" / "chroma"
+    # orden A: --embeddings, luego --aplicar (sobre la viva), luego --embeddings otra vez
+    assert _correr("--embeddings")[0] == 0
+    codigo, texto = _correr("--aplicar")
+    assert codigo == 0 and "global: 4 episodios reindexados; count 6 -> 6" in texto
+    assert f"(procedencia sobre {VIVA})" in texto
+    despues_a = _leer(g, VIVA)
+    assert _por_id(despues_a)["m1"][1]["procedencia"] == 1
+    codigo, texto = _correr("--embeddings")
+    assert codigo == 0 and f"global: 0 copiados a {VIVA}, 6 ya estaban (metadatos actualizados), sin_reindexar 0" in texto
+    assert _leer(g, VIVA) == despues_a                         # update mergea: la procedencia queda
+    assert _por_id(_leer(g))["m1"][1].get("procedencia") is None   # la vieja sigue sin marcar
+
+
+def test_aplicar_antes_de_embeddings_tambien_converge(home):
+    g = home / "global" / "chroma"
+    codigo, texto = _correr("--aplicar")                       # no hay viva: cae a la vieja
+    assert codigo == 0 and "global: 4 episodios reindexados" in texto
+    assert "(procedencia sobre episodic)" in texto
+    assert _por_id(_leer(g))["m1"][1]["procedencia"] == 1
+    assert _correr("--embeddings")[0] == 0
+    viva = _por_id(_leer(g, VIVA))
+    assert viva["m1"][1] == {"ts": "2026-09-10T20:58:05", "route": "local", "kind": "chat",
+                             "procedencia": 1, "ruta": "local"}
+    assert "global: nada que escribir" in _correr("--aplicar")[1]
+
+
+def test_vista_imprime_sin_reindexar_sin_embeber_ni_crear_la_viva(home):
+    g = home / "global" / "chroma"
+    # el parche vive en su propio contexto: un `monkeypatch.undo()` desharia
+    # tambien el CALIPSO_HOME del fixture `home` y el reindex caeria al home real
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(me, "embeber", lambda *a, **k: (_ for _ in ()).throw(AssertionError("--vista embebio")))
+        codigo, texto = _correr("--vista")
+    assert codigo == 0
+    assert f"global: 6 en episodic, sin {VIVA}, sin_reindexar 6 (procedencia sobre episodic)" in texto
+    assert f"projects/var-home-pedro-calipso: 2 en episodic, sin {VIVA}, sin_reindexar 2" in texto
+    assert me.ids_de(chromadb.PersistentClient(path=str(g)), VIVA) is None
+    assert _correr("--embeddings")[0] == 0
+    codigo, texto = _correr("--vista")
+    assert f"global: 6 en episodic, 6 en {VIVA}, sin_reindexar 0 (procedencia sobre {VIVA})" in texto
+    # un episodio nuevo en la vieja (un server viejo que siguio escribiendo) vuelve a contar
+    chromadb.PersistentClient(path=str(g)).get_collection("episodic", embedding_function=None).add(
+        ids=["m7"], documents=[CHAT_DATO], metadatas=[{"ts": "2026-09-12T10:00:00", "kind": "chat"}],
+        embeddings=[[0.7, 0.2, 0.3]])
+    assert "sin_reindexar 1" in _correr("--vista")[1]
+    codigo, texto = _correr("--embeddings")
+    assert f"global: 1 copiados a {VIVA}, 6 ya estaban" in texto and "sin_reindexar 0" in texto
+
+
+def test_embeddings_se_niega_con_el_puerto_ocupado_y_no_admite_forzar(home, monkeypatch):
+    # con el puerto LIBRE (el fixture deja CALIPSO_PORT=1) --forzar tambien se rechaza: no existe en este modo
+    codigo, texto = _correr("--embeddings", "--forzar")
+    assert codigo == 2 and "no admite --forzar" in texto
+    assert me.ids_de(chromadb.PersistentClient(path=str(home / "global" / "chroma")), VIVA) is None
+    escucha = socket.socket()
+    escucha.bind(("127.0.0.1", 0))
+    escucha.listen(1)
+    monkeypatch.setenv("CALIPSO_PORT", str(escucha.getsockname()[1]))
+    try:
+        codigo, texto = _correr("--embeddings")
+        assert codigo == 2 and "no admite --forzar" in texto
+        codigo, texto = _correr("--embeddings", "--forzar")
+        assert codigo == 2 and "no admite --forzar" in texto
+        assert me.ids_de(chromadb.PersistentClient(path=str(home / "global" / "chroma")), VIVA) is None
+    finally:
+        escucha.close()
+
+
+def test_embeddings_detecta_ids_aparecidos_durante_la_corrida(home, monkeypatch):
+    g = home / "global" / "chroma"
+    real = me.embeber
+
+    def embeber_y_escribir_en_la_vieja(ef, textos, timeout=None):
+        chromadb.PersistentClient(path=str(g)).get_collection("episodic", embedding_function=None).add(
+            ids=["tarde"], documents=[CHAT_DATO], metadatas=[{"ts": "2026-09-12T10:00:00"}],
+            embeddings=[[0.9, 0.2, 0.3]])
+        monkeypatch.setattr(me, "embeber", real)        # una sola vez
+        return real(ef, textos, timeout=timeout)
+    monkeypatch.setattr(me, "embeber", embeber_y_escribir_en_la_vieja)
+    codigo, texto = _correr("--embeddings")
+    assert codigo == 0
+    assert "OJO: aparecieron 1 ids en episodic durante la corrida" in texto
+    assert "global: 6 copiados" in texto and "sin_reindexar 1" in texto
+
+
+def test_embeddings_copia_sin_metadatos_y_deja_sin_reindexar_lo_que_no_tiene_documento(tmp_path, monkeypatch):
+    monkeypatch.setenv("CALIPSO_HOME", str(tmp_path))
+    monkeypatch.setenv("CALIPSO_PORT", "1")
+    col = _sembrar(tmp_path / "global" / "chroma", [])
+    col.add(ids=["r1"], documents=[CHAT_DATO], embeddings=[[0.1, 0.2, 0.3]])       # sin meta
+    col.add(ids=["r2"], embeddings=[[0.2, 0.2, 0.3]])                              # sin documento
+    codigo, texto = _correr("--embeddings")
+    assert codigo == 0 and "global: 1 copiados" in texto and "sin_reindexar 1" in texto
+    viva = _leer(tmp_path / "global" / "chroma", VIVA)
+    assert viva["ids"] == ["r1"] and viva["metas"] == [None]
