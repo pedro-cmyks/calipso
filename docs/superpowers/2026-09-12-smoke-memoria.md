@@ -18,7 +18,10 @@ en el script commiteado. La corrida 1 sirve igual: midio la maquina en `justa` (
 niveles cuentan cosas distintas. Salidas, `server.log`, telemetrias y `resultados.json` de las dos en
 `.superpowers/sdd/2026-09-12-memoria-ollama/smoke-memoria-*` (directorio ignorado por git). Tras cada corrida:
 server desechable apagado, proxy cerrado, el 7b y bge-m3 descargados con `keep_alive 0`, `/api/ps`
-`{"models":[]}`.
+`{"models":[]}`. OJO: en las dos corridas esa descarga la hizo el implementador A MANO (el `finally` del
+script solo apagaba el server y cortaba el proxy); desde la ola de fix del cierre (punto 4) el script la
+hace solo: `descargar_modelos` evicta bge-m3 por `/api/embed` y el 7b, directo a 11434, espera `/api/ps`
+vacio hasta 30 s y deja la linea `[nota] Z descarga de los dos modelos`.
 
 Umbrales vigentes (Task 3, provisorios): `RECALL_MIN_SCORE = 0.476` (el turno) y `RECALL_UMBRAL = 0.44` (la
 consulta del abismo).

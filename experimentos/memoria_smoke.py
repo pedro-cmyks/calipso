@@ -27,6 +27,10 @@ Pasos:
   J  la convivencia con el 7b (ruling 8.4): con el 7b cargado, un turno completo midiendo /api/ps
      antes, tras el done y tras el remember; si el 7b desaparece mientras bge-m3 esta, PARADA
      (se le dice a Pedro con los numeros; candidatas en el spec)
+  Z  el cierre (en el finally, pase lo que pase): el server apagado, el proxy cortado y los DOS
+     modelos descargados (carga.ollama_evict de bge-m3 por /api/embed y del 7b, directo a 11434),
+     esperando /api/ps vacio hasta 30 s; una linea [nota] con /api/ps. En las dos corridas del
+     2026-09-12 la descarga fue a mano; desde este commit la hace el script.
 
 Salida: una linea [ok]/[FALLO]/[nota] por paso, el resumen y `resultados.json` en el home del smoke.
 El informe se escribe a mano en docs/superpowers/2026-09-12-smoke-memoria.md. Codigos: 0 ok, 1 con
@@ -408,6 +412,22 @@ class Resultados:
         return sum(1 for _, c, _ in self.filas if not c)
 
 
+def descargar_modelos(R: "Resultados") -> None:
+    """El cierre del smoke (ola de fix del cierre, punto 4): descarga bge-m3
+    (por /api/embed con keep_alive 0) y el 7b, DIRECTO a 11434 (el proxy ya
+    esta cortado) y espera ver /api/ps vacio hasta 30 s. Antes solo se
+    apagaba el server y los dos modelos quedaban residentes hasta 5 min
+    (en las dos corridas los descargo el implementador a mano)."""
+    try:
+        embed_fuera = carga.ollama_evict(EMBED, embedding=True)
+        chat_fuera = carga.ollama_evict(MODELO)
+        vacio = esperar_ps(lambda l: not l, 30)
+        R.nota("Z descarga de los dos modelos", f"evict {EMBED} {embed_fuera}, {MODELO} {chat_fuera}; "
+                                                f"/api/ps vacio en <= 30 s: {vacio}; /api/ps {nombres(ps())}")
+    except Exception as e:                       # el cierre no tapa el resultado del smoke
+        R.nota("Z descarga de los dos modelos", f"no se pudo descargar: {e!r}")
+
+
 # --- el smoke ------------------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> int:
@@ -520,6 +540,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         server.apagar()
         proxy.cortar()
+        descargar_modelos(R)
     print("\n== resumen ==")
     for paso, cond, detalle in R.filas:
         print(f"  [{'ok' if cond else 'FALLO'}] {paso}: {detalle[:160]}")
