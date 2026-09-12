@@ -1,6 +1,6 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
-import {textoDeAduana, filtrar, desdeClave, claveDe} from "./aduana.js";
+import {textoDeAduana, textoDeMaquina, filtrar, desdeClave, claveDe} from "./aduana.js";
 
 const CRUCE = {
   ts: "2026-09-10T15:04:05", id: "cr_0123456789ab",
@@ -197,4 +197,43 @@ test("null, undefined o un objeto sin cruces no revientan", () => {
   assert.match(textoDeAduana(undefined), /Ningun cruce hoy/);
   assert.match(textoDeAduana({activa: true, ciudad: {}}), /Ningun cruce hoy/);
   assert.match(textoDeAduana({cruces: [{}]}), /class="cruce"/);
+});
+
+// --- la maquina (spec carga 2026-09-11, seccion 4) ---------------------------
+
+const MAQUINA = {medicion: {nivel: "cargada", motivo: "mem 480 < 5746", mem_disponible_mb: 480,
+                            necesidad_mb: 5746, psi_mem_some10: 0.16, psi_mem_full10: 0.16,
+                            psi_cpu_some10: 0.46, load1: 9.96, ncpu: 16, swap_usado_mb: 5819,
+                            modelos_cargados: ["qwen2.5:7b", "<b>x</b>"],
+                            medido: {meminfo: true, psi: true, loadavg: true, ollama: true}},
+                 hoy: {suscripcion: 3, local_con_aviso: 1, descarga: 1, pospone: 2, sin_3b: 0, sin_vision: 0}};
+
+test("la linea la maquina va adelante con nivel, memoria, presion, cargados y las cuentas del dia", () => {
+  const html = textoDeAduana(datos([]), {}, MAQUINA);
+  assert.ok(html.indexOf("la maquina") < html.indexOf("cruces hoy"));
+  assert.match(html, /class="maquina"/);
+  assert.match(html, /<span>nivel<\/span><span>cargada<\/span>/);
+  assert.match(html, /480 MB libres, necesita 5746 \(mem 480 &lt; 5746\)/);
+  assert.match(html, /mem 0\.16\/0\.16, cpu 0\.46, load1 9\.96\/16, swap usado 5819 MB/);
+  assert.match(html, /qwen2\.5:7b, &lt;b&gt;x&lt;\/b&gt;/);
+  assert.ok(!html.includes("<b>x</b>"));
+  assert.match(html, /3 a suscripcion, 1 local con aviso, 1 descarga\(s\), 2 pospuesta\(s\)/);
+});
+
+test("sin maquina no hay linea ni undefined, y los filtros la conservan", () => {
+  const sin = textoDeAduana(datos([CRUCE]), {});
+  assert.ok(!sin.includes("la maquina") && !sin.includes("undefined"));
+  assert.equal(textoDeMaquina(null), "");
+  assert.equal(textoDeMaquina({hoy: {}}), "");
+  const con = textoDeAduana(datos([CRUCE]), {origen: "turno"}, MAQUINA);
+  assert.match(con, /la maquina/);
+});
+
+test("sin nada medido dice sin medir y ninguno cargado", () => {
+  const html = textoDeMaquina({medicion: {nivel: "holgada", modelos_cargados: [],
+                                          medido: {meminfo: false, psi: false, loadavg: false, ollama: false}},
+                               hoy: {}});
+  assert.match(html, /<span>nivel<\/span><span>sin medir<\/span>/);
+  assert.match(html, /<span>cargados<\/span><span>ninguno<\/span>/);
+  assert.match(html, /0 a suscripcion, 0 local con aviso, 0 descarga\(s\), 0 pospuesta\(s\)/);
 });

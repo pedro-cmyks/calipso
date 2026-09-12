@@ -80,6 +80,13 @@ html, body {
                             white-space: normal; }
 .conversacion .turno .pie summary { cursor: pointer; }
 .conversacion .turno .pie-detalle { white-space: pre-wrap; margin-top: 2px; }
+/* la marca de la carga como CABECERA del turno de Calipso (spec carga
+   2026-09-11, seccion 4): el aviso del server en el summary, los numeros al
+   tocar; sin color de alarma */
+.conversacion .turno .cabecera { font-size: 11px; color: var(--tenue); margin-bottom: 4px;
+                                 white-space: normal; }
+.conversacion .turno .cabecera summary { cursor: pointer; }
+.conversacion .turno .cabecera-detalle { white-space: pre-wrap; margin-top: 2px; }
 
 /* El renglon del abismo vive FUERA de .conversacion: pintarConversacion
    indexa sus nodos por posicion y el reset de epoca le vacia el innerHTML. */
@@ -555,6 +562,11 @@ html, body {
   border: 1px solid var(--linea); border-radius: 4px; background: var(--panel);
 }
 .aduana-panel .resumen { font-size: 13px; font-weight: 600; }
+/* la linea "la maquina" (spec carga): el mismo cuadro que los totales */
+.aduana-panel .maquina {
+  border: 1px solid var(--linea); border-radius: 6px; padding: 6px 8px;
+  background: var(--panel); display: flex; flex-direction: column; gap: 3px;
+}
 .aduana-panel .totales {
   border: 1px solid var(--linea); border-radius: 6px; padding: 6px 8px;
   background: var(--panel); display: flex; flex-direction: column; gap: 3px;

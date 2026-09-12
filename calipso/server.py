@@ -1138,6 +1138,22 @@ def api_aduana(request: Request, desde: str | None = None, hasta: str | None = N
     return respuesta
 
 
+@app.get("/api/carga")
+def api_carga() -> dict:
+    """La carga de la maquina ahora (spec carga 2026-09-11, seccion 4): la
+    medicion del sensor y las cuentas del dia derivadas de telemetria
+    (`kind: carga`, por `accion`). `def` y no `async def`: mide /proc y hace
+    el GET /api/ps de 0,5 s en el threadpool, nunca en el loop. Reemplaza a
+    GET /api/resources. Sin recorte por sesion: son numeros y nombres de
+    modelos (nada de Pedro); el tablero lo ve por ALCANCES, el lector no
+    llega (403 por el guard)."""
+    medida = _medir_carga()
+    # `recent` lee el ledger entero y corta las ultimas N lineas (todas las
+    # kinds): 20000 para que un dia largo no deje las cuentas cortas
+    return {"medicion": carga.fila(medida),
+            "hoy": carga.cuentas_del_dia(telemetry.recent(20000))}
+
+
 # Defensa en profundidad de _safe (revision de seguridad 2026-09-07, C2):
 # aunque ROOT quedara siendo ancestro de estas carpetas (una raiz de catastro
 # rara, un symlink), las credenciales de Pedro y el estado de Calipso no se

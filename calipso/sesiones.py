@@ -92,6 +92,7 @@ ALCANCES: dict[str, tuple] = {
         ("/api/plantel", ("GET",)),       # ver el interruptor, no tocarlo
         ("/api/routines", ("GET",)),      # ver las rutinas, no correrlas
         ("/api/aduana", ("GET",)),        # ver los cruces (sin carga ni chat: lo recorta el endpoint)
+        ("/api/carga", ("GET",)),         # la maquina: la medicion y las cuentas del dia (numeros, sin datos de Pedro)
         ("/api/economia/bus/", ("POST",)),          # LA MESA
         ("/api/permisos/solicitudes/", ("POST",)),  # firmar solicitudes
     ),

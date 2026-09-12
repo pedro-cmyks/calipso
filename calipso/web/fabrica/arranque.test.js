@@ -56,6 +56,15 @@ function nodo(id, etiqueta = "div") {
       this.oyentes.get(tipo).push(f);
     },
     appendChild(n) { this.hijos.push(n); return n; },
+    insertBefore(n, ref) {
+      // como el navegador: un nodo que ya esta en el arbol se MUEVE, no se
+      // duplica; sin `ref` (o con una que no es hija) va al final
+      const i = this.hijos.indexOf(n);
+      if (i >= 0) this.hijos.splice(i, 1);
+      const j = ref ? this.hijos.indexOf(ref) : -1;
+      if (j < 0) this.hijos.push(n); else this.hijos.splice(j, 0, n);
+      return n;
+    },
     removeChild(n) {
       const i = this.hijos.indexOf(n);
       if (i < 0) throw new Error("removeChild sobre un nodo que no es hijo");
@@ -89,6 +98,10 @@ function nodo(id, etiqueta = "div") {
     enumerable: true, configurable: true,
   });
   n.escriturasDeTexto = () => escriturasDeTexto;
+  // el primer hijo, para `insertBefore(cab, div.firstChild)`; asignar
+  // textContent NO borra `hijos` aca (en el navegador si): por eso app.js
+  // MUEVE la cabecera con insertBefore en vez de crearla de nuevo
+  Object.defineProperty(n, "firstChild", {get: () => n.hijos[0] || null});
   return n;
 }
 
@@ -190,6 +203,15 @@ function montarNavegador() {
     if (String(url).includes("/activate")) {
       // un chat guardado con un mensaje de Calipso que trae meta.canarios:
       // el historial cargado tiene que pintar su pie (spec canarios, 3)
+      // idem con meta.carga: la cabecera de la carga (spec carga, 4)
+      if (String(url).includes("c-carga")) {
+        return Promise.resolve({ok: true, json: async () => (
+          {id: "c-carga", title: "carga", messages: [
+            {role: "user", text: "hola"},
+            {role: "assistant", text: "hola desde la nube", meta: {route: "subscription", carga: {
+              nivel: "cargada", mem_disponible_mb: 480, motivo: "mem 480 < 5746", ruta: "subscription",
+              gesto: null, aviso: "maquina cargada (480 MB libres): contesto por Mariana"}}}]})});
+      }
       if (String(url).includes("c-canario")) {
         return Promise.resolve({ok: true, json: async () => (
           {id: "c-canario", title: "canario", messages: [
@@ -809,4 +831,48 @@ test("un veredicto limpio no cuelga nada, y el historial cargado pinta su pie", 
   assert.equal(pie.className, "pie");
   assert.equal(pie.hijos[0].textContent, "sin verificar (1)");
   assert.equal(pie.hijos[1].textContent, "recuerdo: una trilogia");
+});
+
+// --- la marca de la carga: cabecera del turno, un nodo que se reutiliza -----
+
+test("la carga antes del primer chunk sale como cabecera del turno y sobrevive a los chunks y al canario", () => {
+  socket.dice({type: "done"});
+  socket.dice({type: "thinking"});
+  socket.dice({type: "carga", nivel: "cargada", mem_disponible_mb: 480, motivo: "mem 480 < 5746",
+               ruta: "local", gesto: "/local",
+               aviso: "maquina cargada (480 MB libres): /local es local, puede tardar o fallar"});
+  const antes = conversacion.hijos.length;
+  socket.dice({type: "chunk", text: "hola"});
+  assert.equal(conversacion.hijos.length, antes + 1, "la senal sola no abre turno; el chunk si");
+  const turno = conversacion.hijos.at(-1);
+  assert.equal(turno.textContent, "hola");
+  const cab = turno.hijos[0];
+  assert.equal(cab.className, "cabecera");
+  assert.equal(cab.hijos[0].textContent, "maquina cargada (480 MB libres): /local es local, puede tardar o fallar");
+  assert.equal(cab.hijos[1].textContent, "nivel cargada, 480 MB libres, motivo: mem 480 < 5746, ruta: local, gesto: /local");
+  socket.dice({type: "chunk", text: " Pedro"});
+  assert.equal(turno.textContent, "hola Pedro");
+  assert.equal(turno.hijos[0], cab, "la cabecera se recreo en vez de moverse");
+  assert.equal(turno.hijos.length, 1);
+  socket.dice({type: "canario", anclaje: {aplica: true, sin_anclaje: [{tipo: "recuerdo", texto: "x"}]},
+               degeneracion: [], ventana: []});
+  socket.dice({type: "done"});
+  assert.equal(turno.hijos.length, 2);
+  assert.equal(turno.hijos[0], cab);
+  assert.equal(turno.hijos[1].className, "pie");
+  assert.equal(cab.innerHTML, "", "la cabecera se pinto por innerHTML");
+});
+
+test("un turno sin carga no lleva cabecera, y el historial cargado pinta la suya", async () => {
+  socket.dice({type: "thinking"});
+  socket.dice({type: "chunk", text: "todo bien"});
+  socket.dice({type: "done"});
+  assert.equal(conversacion.hijos.at(-1).hijos.length, 0);
+  const lista = nav.nodos.get("lista-chats");
+  for (const f of lista.oyentes.get("click") || []) f({target: {dataset: {id: "c-carga"}}});
+  await new Promise(r => setTimeout(r, 0));
+  const cargado = conversacion.hijos.at(-1);
+  assert.equal(cargado.textContent, "hola desde la nube");
+  assert.equal(cargado.hijos[0].className, "cabecera");
+  assert.equal(cargado.hijos[0].hijos[0].textContent, "maquina cargada (480 MB libres): contesto por Mariana");
 });

@@ -8,9 +8,14 @@
 import {crearSocketQueReconecta} from "./socket.js";
 
 export function estadoInicial() {
+  // `cargaPendiente`: la marca de carga del turno que viene (spec carga
+  // 2026-09-11, 3.2). La senal llega ANTES del primer chunk, cuando el turno
+  // de Calipso todavia no existe: se guarda aca y el chunk que abre el turno
+  // se la lleva puesta. thinking/done/error/cargar la limpian
   return {turnos: [], pensando: false, chatId: null, ruta: null,
           modelo: null, costo_usd: 0, tokens: 0, costo_mm: 0, cuenta: null,
-          conectado: false, epoca: 0, streamViejo: false, abismo: null};
+          conectado: false, epoca: 0, streamViejo: false, abismo: null,
+          cargaPendiente: null};
 }
 
 export function paquete(texto, chatId, departamento = null) {
@@ -22,12 +27,14 @@ export function paquete(texto, chatId, departamento = null) {
 }
 
 export function turnosDeHistorial(mensajes) {
-  // `canarios` viaja SOLO cuando el mensaje guardado lo trae (meta.canarios):
-  // los turnos sin marca siguen siendo {quien, texto, abierto} exactos
+  // `canarios` y `carga` viajan SOLO cuando el mensaje guardado los trae
+  // (meta.canarios, meta.carga): los turnos sin marca siguen siendo
+  // {quien, texto, abierto} exactos
   return (mensajes || []).map(m => ({
     quien: m.role === "user" ? "pedro" : "calipso",
     texto: m.text || "", abierto: false,
-    ...(m.meta && m.meta.canarios ? {canarios: m.meta.canarios} : {})}));
+    ...(m.meta && m.meta.canarios ? {canarios: m.meta.canarios} : {}),
+    ...(m.meta && m.meta.carga ? {carga: m.meta.carga} : {})}));
 }
 
 // Eventos del turno que `cargar()` deja en vuelo: el socket es uno solo y
@@ -38,7 +45,7 @@ export function turnosDeHistorial(mensajes) {
 // el caso de la conexion cortada: el servidor lo manda tambien en medio de
 // un turno normal (ruta local sin fallback) y sigue con cost/done despues.
 const EVENTOS_DEL_STREAM = new Set(["chunk", "done", "meta", "cost", "chat",
-                                     "error", "abismo", "canario"]);
+                                     "error", "abismo", "canario", "carga"]);
 
 export function aplicarEvento(estado, ev) {
   const e = {...estado, turnos: [...estado.turnos]};
@@ -60,20 +67,39 @@ export function aplicarEvento(estado, ev) {
       // abismo vivo hasta el `done` del turno siguiente: el `thinking` del
       // turno nuevo lo apaga, y `n` no cuenta desde un fantasma
       e.abismo = null;
+      e.cargaPendiente = null;
       break;
+    case "carga": {
+      // la marca de la carga (spec carga 3.2) llega ANTES del primer chunk:
+      // queda pendiente hasta que el chunk abra el turno de Calipso. Si el
+      // turno YA esta abierto (el fallback suscripcion -> local despues de
+      // que salio texto, decision 12), la marca pisa la del turno
+      const {type, ...marca} = ev;
+      const ultimo = e.turnos.at(-1);
+      if (e.pensando && ultimo && ultimo.quien === "calipso" && ultimo.abierto) {
+        e.turnos[e.turnos.length - 1] = {...ultimo, carga: marca};
+        e.cargaPendiente = null;
+      } else {
+        e.cargaPendiente = marca;
+      }
+      break;
+    }
     case "chunk": {
       const ultimo = e.turnos.at(-1);
       if (e.pensando && ultimo && ultimo.quien === "calipso" && ultimo.abierto) {
         e.turnos[e.turnos.length - 1] = {...ultimo,
                                          texto: ultimo.texto + (ev.text || "")};
       } else {
-        e.turnos.push({quien: "calipso", texto: ev.text || "", abierto: true});
+        e.turnos.push({quien: "calipso", texto: ev.text || "", abierto: true,
+                       ...(e.cargaPendiente ? {carga: e.cargaPendiente} : {})});
+        e.cargaPendiente = null;
       }
       break;
     }
     case "done": {
       e.pensando = false;
       e.abismo = null;
+      e.cargaPendiente = null;
       const ultimo = e.turnos.at(-1);
       if (ultimo && ultimo.abierto) {
         e.turnos[e.turnos.length - 1] = {...ultimo, abierto: false};
@@ -125,6 +151,7 @@ export function aplicarEvento(estado, ev) {
     case "error":
       e.pensando = false;
       e.abismo = null;
+      e.cargaPendiente = null;
       e.turnos.push({quien: "error", texto: "error: " + (ev.text || ""),
                      abierto: false});
       break;
@@ -214,7 +241,7 @@ export function crearChat(alCambiar, ConstructorWS = WebSocket) {
       estado = {...estado, chatId: chat.id,
                 turnos: turnosDeHistorial(chat.messages),
                 epoca: estado.epoca + 1,
-                pensando: false, abismo: null,
+                pensando: false, abismo: null, cargaPendiente: null,
                 ruta: null, modelo: null, costo_usd: 0,
                 tokens: 0, costo_mm: 0, cuenta: null, streamViejo: true};
       alCambiar(estado);
