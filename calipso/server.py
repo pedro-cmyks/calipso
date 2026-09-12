@@ -8876,11 +8876,12 @@ def _asegurar_rutina_consumo() -> None:
 
 
 def _calentar_probes() -> dict:
-    """En hilo (`to_thread` desde `_startup_warm`): declara UNA vez la memoria
-    y los modelos fuera de la maquina (`_declarar_arranque`; no puede ir a
-    nivel de modulo: con `uvicorn calipso.server:app` el import corre en el
-    loop) y los probes `claude/codex --version`, `auth status`, `login
-    status`, y calienta el cache. `_subscription_probe` queda SIN llamada a
+    """En hilo (`to_thread` desde `_startup_warm`): declara UNA vez los
+    modelos fuera de la maquina (`_declarar_arranque`; la memoria ya no sale:
+    embebe por Ollama en loopback; no puede ir a nivel de modulo: con
+    `uvicorn calipso.server:app` el import corre en el loop) y los probes
+    `claude/codex --version`, `auth status`, `login status`, y calienta el
+    cache. `_subscription_probe` queda SIN llamada a
     la aduana a proposito: se alcanza desde el loop via `_harness_context`
     en cada turno, y ahi el candado no se puede tomar (spec seccion 3)."""
     _declarar_arranque()
@@ -8894,7 +8895,8 @@ def _calentar_probes() -> dict:
 @app.on_event("startup")
 async def _startup_warm() -> None:
     # cada paso con su try: un `discover` que levanta (Ollama caido, una
-    # config rara) no se lleva la declaracion de la memoria ni los probes
+    # config rara) no se lleva la declaracion de los modelos de afuera, los
+    # probes ni el anuncio de la memoria (sin_reindexar)
     try:
         found = await asyncio.to_thread(discovery.discover, True)
         if found["added"]:

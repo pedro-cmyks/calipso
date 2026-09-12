@@ -355,11 +355,23 @@ fabrica viva.
   `ultimo_recall_fallo`; el abismo cierra con `memoria_no_disponible`), `memoria_reindex --embeddings`
   (server apagado, idempotente), el embedder gobernado por la carga (`keep_alive` propio: justa/cargada 0;
   vigia por `/api/embed`), umbrales PROVISORIOS re-medidos con `experimentos/recall_banco.py` (vuelta
-  atras: `CALIPSO_RECALL_MIN_SCORE`, `CALIPSO_RECALL_UMBRAL`). **Pendiente del controlador tras el
-  merge:** `pip uninstall` con la lista explicita del spec (seccion 5, ~5 GB; se quedan onnxruntime,
-  tokenizers, huggingface_hub, ctranslate2, faster-whisper), chequeo post-uninstall, el reindex del home
-  real (`--embeddings` con el server apagado), reinicio, y el `VmRSS` antes/despues (esperado 1571 -> ~200).
-  **Vuelta atras** (spec seccion 5): checkout de `main` + `pip install sentence-transformers --index-url
-  https://download.pytorch.org/whl/cpu` (el indice CPU de torch, ~200 MB, no los 5 GB con CUDA); la
-  coleccion vieja `episodic` sigue intacta en cada home y main la abre tal cual. NO vale
-  `CALIPSO_EMBED_MODEL` como vuelta atras: abriria otra coleccion vacia.
+  atras: `CALIPSO_RECALL_MIN_SCORE`, `CALIPSO_RECALL_UMBRAL`). Ola de fix del cierre (2026-09-12): el
+  EmbedError conserva el cuerpo del error de Ollama, `keep_alive_embed` mira la memoria DISPONIBLE fresca y
+  si el 7b esta residente (ruling de la convivencia: < 2500 MB o el 7b cargado -> embebe y suelta), el
+  reindex `--embeddings` anuncia el embedder, se niega con la EF falsa sin `--falsa` y dice el motivo si
+  Ollama no contesta (codigo 3), el remember de fondo con tope de 2 en vuelo y espera en el shutdown
+  (`remember_pendiente`). **Pendiente del controlador, EN ESTE
+  ORDEN** (el detalle en `docs/superpowers/2026-09-12-smoke-memoria.md`, "Pendiente del controlador"):
+  merge -> reindex del home real con el server apagado (`--vista`, `env -u CALIPSO_EMBED_FALSA ...
+  --embeddings`, evict de bge-m3) -> reinicio -> verificar `GET /api/memory` (`sin_reindexar` 0,
+  `recall_ok` true tras un turno de Pedro) -> recien entonces `pip uninstall` con la lista explicita del
+  spec (seccion 5, ~5 GB; se quedan onnxruntime, tokenizers, huggingface_hub, ctranslate2, faster-whisper),
+  chequeo post-uninstall y el `VmRSS` antes/despues (esperado 1571 -> ~200); `~/.cache/huggingface` (533
+  MB, MiniLM adentro) no se borra. **Vuelta atras rapida** (sin checkout ni pip):
+  `CALIPSO_EMBED_URL=http://127.0.0.1:1` en el entorno del server deja la memoria en fail-open
+  (`recall_fallo` inmediato, el turno sale entero) mientras se decide. **Vuelta atras completa** (spec
+  seccion 5): checkout de `main` + `pip install torch --index-url https://download.pytorch.org/whl/cpu &&
+  pip install sentence-transformers` (torch del indice CPU, ~200 MB, no los 5 GB con CUDA; el
+  `sentence-transformers --index-url .../whl/cpu` de antes estaba roto: reemplazaba PyPI); la coleccion
+  vieja `episodic` sigue intacta en cada home y main la abre tal cual. NO vale `CALIPSO_EMBED_MODEL` como
+  vuelta atras: abriria otra coleccion vacia.

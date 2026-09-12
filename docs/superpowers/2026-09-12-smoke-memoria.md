@@ -151,18 +151,43 @@ de la tabla.
   cambio del modelo. Tambien vale decidir "nada": el turno con los dos modelos residentes tardo 14-17 s bajo
   `holgada`-por-efectiva, y despues del uninstall la Ally tendra ~1,3 GB mas.
 
-## Pendiente del controlador
+## Pendiente del controlador: el despliegue, en este orden
 
-- Merge de `feat/memoria-ollama`; `pip uninstall` con la lista del spec (seccion 5: sentence-transformers,
-  torch, transformers, triton, nvidia-*, cuda-bindings, cuda-toolkit, cuda-pathfinder, sympy, mpmath,
-  networkx, scipy, scikit-learn, joblib, threadpoolctl, safetensors; se QUEDAN onnxruntime, tokenizers,
-  huggingface_hub, ctranslate2, faster-whisper); chequeo post-uninstall
-  (`CALIPSO_HOME=$(mktemp -d) .venv/bin/python -c "import chromadb, ollama, faster_whisper, calipso.server"`);
-  reindex del home real con el server apagado (`--vista` y luego `--embeddings`, y descargar bge-m3 al
-  terminar: la CLI lo deja con `keep_alive 5m`); reinicio; `VmRSS` del server real antes y despues; la
-  coleccion vieja queda (otra tanda cuando `sin_reindexar` sea 0 en todos los homes).
-- Vuelta atras (spec seccion 5): checkout de `main` + `pip install sentence-transformers --index-url
-  https://download.pytorch.org/whl/cpu` (el indice CPU de torch, ~200 MB); la coleccion `episodic` sigue
-  intacta y main la abre tal cual; NO vale `CALIPSO_EMBED_MODEL` (abriria otra coleccion vacia).
-- El ruling de la convivencia (arriba): con Pedro, antes o despues del merge; el codigo de hoy no desaloja
-  nada y el smoke lo deja medido.
+El `pip uninstall` va AL FINAL (ola de fix del cierre, punto 6): hasta que `GET /api/memory` diga que la
+memoria nueva anda, torch sigue en el venv y `main` sigue siendo una vuelta atras completa.
+
+1. Merge de `feat/memoria-ollama` (el checkout principal esta en `main`, lo sirve el server real).
+2. Reindex del home real con el server apagado, desde la raiz del repo, con Ollama arriba y `bge-m3` bajado
+   (`ollama pull bge-m3`): `.venv/bin/python -m calipso.memoria_reindex --vista` (mira los conteos;
+   `sin_reindexar` por ambito), `env -u CALIPSO_EMBED_FALSA .venv/bin/python -m calipso.memoria_reindex
+   --embeddings` (imprime `embedder: OllamaEmbed bge-m3:latest 1024 dims @ ...`; si Ollama no contesta
+   devuelve 3 con el motivo y se vuelve a correr), y descargar bge-m3 al terminar (la CLI lo deja con
+   `keep_alive 5m`: `carga.ollama_evict("bge-m3:latest", embedding=True)` o un POST a `/api/embed` con
+   `keep_alive 0`). El home real tiene 5 episodios vivos: < 5 s.
+3. Reinicio del server real.
+4. Verificar `GET /api/memory`: `sin_reindexar` en 0 en todos los ambitos y, tras un turno de Pedro,
+   `recall_ok` true y `ultimo_recall_fallo` null. Si no cierra, la vuelta atras RAPIDA de abajo.
+5. Recien entonces `pip uninstall` con la lista del spec (seccion 5: sentence-transformers, torch,
+   transformers, triton, nvidia-*, cuda-bindings, cuda-toolkit, cuda-pathfinder, sympy, mpmath, networkx,
+   scipy, scikit-learn, joblib, threadpoolctl, safetensors; se QUEDAN onnxruntime, tokenizers,
+   huggingface_hub, ctranslate2, faster-whisper); chequeo post-uninstall (`CALIPSO_HOME=$(mktemp -d)
+   .venv/bin/python -c "import chromadb, ollama, faster_whisper, calipso.server"`); `VmRSS` del server real
+   antes y despues. `~/.cache/huggingface` (533 MB, MiniLM adentro) NO se borra: es lo que hace instantanea
+   la vuelta atras completa. La coleccion vieja `episodic` queda (otra tanda cuando `sin_reindexar` sea 0 en
+   todos los homes).
+
+Vueltas atras:
+
+- **Rapida, sin checkout ni pip** (mientras se decide): `CALIPSO_EMBED_URL=http://127.0.0.1:1` en el
+  entorno del server deja la memoria en fail-open: `recall_fallo` inmediato (conexion rechazada, sin
+  esperar el timeout), el turno sale entero sin recuerdos, `remember_fallo` en cada turno y `/api/memory`
+  con `recall_ok` false. Se quita la variable y se reinicia para volver.
+- **Completa** (spec seccion 5): checkout de `main` + `pip install torch --index-url
+  https://download.pytorch.org/whl/cpu && pip install sentence-transformers` (torch del indice CPU, ~200
+  MB, y recien despues sentence-transformers desde PyPI: un solo `pip install sentence-transformers
+  --index-url .../whl/cpu` REEMPLAZA PyPI por el indice de torch y no encuentra el paquete); la coleccion
+  `episodic` sigue intacta y main la abre tal cual, con MiniLM desde `~/.cache/huggingface`; NO vale
+  `CALIPSO_EMBED_MODEL` (abriria otra coleccion vacia).
+- El ruling de la convivencia (arriba) quedo implementado en la ola de fix del cierre (punto 2):
+  `keep_alive_embed` mira la memoria DISPONIBLE fresca (< 2500 MB -> 0) y si el 7b esta residente (-> 0);
+  los numeros de J y del R1 caliente de este informe son del codigo anterior.

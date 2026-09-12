@@ -243,9 +243,9 @@ La autoridad es el spec de la capa de sesion,
   del server que no sea un modelo (DuckDuckGo y las paginas, Chromium, `gh`,
   `git` de red, npm, pip, `playwright install`, el registry de npm) pasa por
   `with aduana.cruzar(quien, proposito, destino, carga)` en la funcion que hace
-  la llamada, y lo que sale desde adentro de una libreria (huggingface.co al
-  arrancar, whisper, los probes de los CLIs, vision por SDK, `reflect`) se
-  `declara`. Cada cruce es una linea en `~/.calipso/aduana.jsonl` (0600,
+  la llamada, y lo que sale desde adentro de una libreria (whisper al primer
+  uso, los probes de los CLIs, vision por SDK, `reflect`; la memoria ya no
+  sale: embebe por Ollama en loopback) se `declara`. Cada cruce es una linea en `~/.calipso/aduana.jsonl` (0600,
   append-only, fail-open con aviso) con QUIEN lo disparo (origen, chat, proyecto,
   gesto, ruta, rutina, endpoint, `desde` = maquina o sesion) y que se fue (la
   consulta hasta 500 chars, o tamano + hash + 3 lineas de un cuerpo), saneado
