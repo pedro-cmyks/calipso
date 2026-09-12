@@ -3134,8 +3134,11 @@ def _ventana_antes(secciones: list[tuple[str, str]], historial: list[dict],
     None: no se juzga, decision 7). Devuelve (secciones, historial, fila)
     con la fila de la ventana a medio llenar. Fail-open (invariantes 1 y
     3): si el tokenizador o el recorte revientan, el prompt viaja INTACTO
-    y la fila lleva `error`; el canario nunca frena el turno."""
-    num_ctx = CHAT_NUM_CTX if route == "local" else None
+    y la fila lleva `error`; el canario nunca frena el turno. Con
+    CALIPSO_CANARIOS=off solo estima (num_ctx None: no recorta) y la fila
+    lleva `apagado`."""
+    apagado = not canarios.canarios_activos()
+    num_ctx = CHAT_NUM_CTX if route == "local" and not apagado else None
     try:
         contar, origen = tokenizador.contador(model or dispatch.CONFIG["local"]["model"])
         secciones_r, historial_r, info = canarios.recortar(secciones, historial, mensaje,
@@ -3152,6 +3155,8 @@ def _ventana_antes(secciones: list[tuple[str, str]], historial: list[dict],
             "estimado_sin_recorte": info["estimado"], "num_ctx": num_ctx,
             "cabe": info["cabe"], "recorte": info["recorte"], "no_cabe": info["no_cabe"],
             "tokenizador": origen, "evaluado": None, "truncado": None, "done_reason": None}
+    if apagado:
+        fila["apagado"] = True
     return secciones_r, historial_r, fila
 
 
@@ -3179,10 +3184,14 @@ def _contexto_persistido(secciones, mensajes, bloques) -> dict:
                          "bloques": list(bloques)}}
 
 
-async def _veredicto_del_turno(**campos) -> dict:
+async def _veredicto_del_turno(**campos) -> dict | None:
     """`canarios.veredicto` en hilo (invariante 4) con tope de tiempo y
     fail-open (invariante 3): si levanta o se pasa de `TOPE_SEGUNDOS`, el
-    turno se entrega igual y el fallo va a la fila `chat_turn`."""
+    turno se entrega igual y el fallo va a la fila `chat_turn`. None con
+    CALIPSO_CANARIOS=off (sin correr el hilo): el server no manda la senal
+    ni escribe `meta.canarios`, y `resumen_de_remember` da dos None."""
+    if not canarios.canarios_activos():
+        return None
     try:
         return await asyncio.wait_for(asyncio.to_thread(canarios.veredicto, **campos),
                                       timeout=canarios.TOPE_SEGUNDOS)
@@ -4421,8 +4430,10 @@ async def ws_chat(ws: WebSocket) -> None:
                 **_contexto_persistido(secciones_pasada, mensajes_pasada, estado_abismo.bloques),
             )
             # la senal a las dos UIs, ANTES del done: se aplica sobre el
-            # mensaje que se esta cerrando
-            await ws.send_json({"type": "canario", **veredicto})
+            # mensaje que se esta cerrando (no hay senal sin veredicto:
+            # CALIPSO_CANARIOS=off)
+            if veredicto is not None:
+                await ws.send_json({"type": "canario", **veredicto})
 
             # 5) recordar el intercambio (episodica)
             #
@@ -4474,7 +4485,7 @@ async def ws_chat(ws: WebSocket) -> None:
                     "model": model,
                     "client": verdict.get("client"),
                     "agent_team": agent_team,
-                    "canarios": veredicto,
+                    **({"canarios": veredicto} if veredicto is not None else {}),
                 })
                 current_chat = chats.get(chat_id)
                 if current_chat:

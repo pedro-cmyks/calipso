@@ -278,7 +278,11 @@ fabrica viva.
   `recuerdos` del abismo al techo de 2000 en los 13 eventos pescados de `memoria` del porton (ruling 2).
 - **Los canarios (2026-09-11):** anclaje, degeneracion y ventana miden cada turno del chat sin frenar (fila
   `chat_turn.canarios`, `meta.canarios`, senal ws `canario`, marcas chicas en las dos UIs; rama `feat/canarios`,
-  spec `docs/superpowers/specs/2026-09-11-canarios-design.md`, 8 tasks por SDD). Bancos: anclaje recall y
+  spec `docs/superpowers/specs/2026-09-11-canarios-design.md`, 8 tasks por SDD). **Rollback en caliente:**
+  `CALIPSO_CANARIOS=off` en el entorno del server (leido por llamada, `canarios.canarios_activos`) apaga el
+  recorte (la ventana solo estima, con `num_ctx` None y la fila con `apagado`), el veredicto (no corre el
+  hilo), la senal ws `canario`, `meta.canarios` y los dos numeros del remember; cualquier otro valor o ausente
+  es prendido. Bancos: anclaje recall y
   precision 100% en las tres clases sobre 22 filas reales (hecho 1/0/0, recuerdo 5/0/0, accion 2/0/0 tp/fp/fn),
   degeneracion 19/19 rotas atrapadas y 0/32 falsas. Porton de la reentrada (N=3, 12 turnos por condicion):
   vieja 0/0/0 contra nueva 0/0/0 en `sin_anclaje` / `sin_dato` / `sin_dato falso` (2 filas de `nueva` excluidas

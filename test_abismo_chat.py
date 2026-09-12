@@ -912,6 +912,32 @@ def test_fail_open_si_la_ventana_de_antes_revienta_el_turno_se_manda_intacto(cha
     assert chat.telemetria("chat_turn")[0]["canarios"]["ventana"][0]["error"] == "RuntimeError"
 
 
+def test_con_calipso_canarios_off_el_turno_no_trae_senal_ni_meta_ni_recorte(chat, monkeypatch):
+    """Ola de fix del cierre (punto 4): el rollback en caliente. Con
+    CALIPSO_CANARIOS=off (leido por llamada) no corre el veredicto, no sale
+    la senal `canario`, el meta del mensaje no lleva `canarios`, los dos
+    numeros del remember quedan en None y el recorte no corre aunque el
+    prompt no quepa (la ventana solo estima, con num_ctx None)."""
+    monkeypatch.setenv("CALIPSO_CANARIOS", "off")
+    chats.append(chat.chat_id, "user", "hola")
+    chats.append(chat.chat_id, "assistant", "hola Pedro")
+    monkeypatch.setattr(srv, "CHAT_NUM_CTX", 30)          # con el recorte activo saca el historial
+    visto = []
+    monkeypatch.setattr(srv.canarios, "veredicto", lambda **k: visto.append(k))
+    eventos = chat.turno("que libro te conte que empece?")
+    tipos = [e["type"] for e in eventos]
+    assert tipos[-1] == "done" and "canario" not in tipos and "error" not in tipos
+    assert texto_visible(eventos) == "hola Pedro"
+    assert visto == []
+    assert "canarios" not in chat.mensajes()[-1]["meta"]
+    assert chat.telemetria("chat_turn")[0]["canarios"] is None
+    _, _, meta_mem = chat.memoria.guardados[0]
+    assert meta_mem["degeneracion"] is None and meta_mem["sin_anclaje"] is None
+    # el historial viajo entero: nada se recorto
+    assert [m["role"] for m in chat.modelo.llamadas[0]["messages"]] == ["system", "user", "assistant", "user"]
+    assert chat.modelo.llamadas[0]["options"]["num_ctx"] == 30     # el techo de Ollama sigue
+
+
 def test_el_tope_de_tiempo_del_canario_no_frena_el_turno(chat, monkeypatch):
     monkeypatch.setattr(srv.canarios, "TOPE_SEGUNDOS", 0.05)
 

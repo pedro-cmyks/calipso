@@ -10,11 +10,17 @@ no cabe- y la llama el server ANTES de mandar, anotando lo que saco.
 Umbrales en un solo lugar (UMBRALES), calibrados contra
 experimentos/anclaje_banco.py y experimentos/degeneracion_banco.py; las
 notas de calibracion estan al lado de cada numero.
+
+El interruptor: CALIPSO_CANARIOS=off (leido POR LLAMADA en
+`canarios_activos`, el patron de `abismo.turno.letra_activa`) apaga en
+caliente el recorte, el veredicto, la senal ws, `meta.canarios` y los dos
+numeros del remember. Leer un env no es disco ni red: el modulo sigue puro.
 """
 from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import time
 import unicodedata
@@ -28,6 +34,13 @@ from calipso.memoria_procedencia import PATRONES_FUERTES
 
 # --- tope de tiempo (invariante 3): el server lo aplica con wait_for -------
 TOPE_SEGUNDOS = 2.0
+
+
+def canarios_activos() -> bool:
+    """El rollback en caliente (ola de fix del cierre, punto 4): False solo
+    con CALIPSO_CANARIOS=off (sin distinguir mayusculas); ausente, vacio o
+    cualquier otro valor es prendido. Se lee por llamada, nunca congelado."""
+    return os.environ.get("CALIPSO_CANARIOS", "on").strip().lower() != "off"
 
 # --- umbrales, en un solo lugar --------------------------------------------
 UMBRALES = {

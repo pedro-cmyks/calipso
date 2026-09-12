@@ -139,6 +139,38 @@ def test_truncado_por_pasada():
     assert c.truncado(None, None, 8192) == "sin medicion"
 
 
+# --- el interruptor ------------------------------------------------------------
+
+def test_canarios_activos_lee_el_env_por_llamada(monkeypatch):
+    """CALIPSO_CANARIOS=off apaga los canarios en caliente (ola de fix del
+    cierre, punto 4); ausente, vacio o cualquier otra cosa: prendidos."""
+    monkeypatch.delenv("CALIPSO_CANARIOS", raising=False)
+    assert c.canarios_activos() is True
+    monkeypatch.setenv("CALIPSO_CANARIOS", "off")
+    assert c.canarios_activos() is False
+    monkeypatch.setenv("CALIPSO_CANARIOS", "OFF")
+    assert c.canarios_activos() is False
+    monkeypatch.setenv("CALIPSO_CANARIOS", "on")
+    assert c.canarios_activos() is True
+    monkeypatch.setenv("CALIPSO_CANARIOS", "")
+    assert c.canarios_activos() is True
+
+
+def test_con_los_canarios_apagados_la_ventana_de_antes_estima_sin_recortar(monkeypatch):
+    import calipso.server as srv
+    monkeypatch.setenv("CALIPSO_CANARIOS", "off")
+    monkeypatch.setattr(srv, "CHAT_NUM_CTX", 5)
+    monkeypatch.setattr(tokenizador, "cargar", lambda nombre: None)
+    historial = [{"role": "user", "content": "hola"}, {"role": "assistant", "content": "hola Pedro"}]
+    secciones, hist, fila = srv._ventana_antes(SECCIONES, historial, "hola", "local", None, 1)
+    assert fila["apagado"] is True and fila["num_ctx"] is None and fila["recorte"] == []
+    assert fila["cabe"] is None and fila["estimado"] > 5
+    assert secciones == SECCIONES and hist == historial
+    monkeypatch.delenv("CALIPSO_CANARIOS")
+    _, hist, fila = srv._ventana_antes(SECCIONES, historial, "hola", "local", None, 1)
+    assert "apagado" not in fila and fila["num_ctx"] == 5 and hist == []
+
+
 # --- el tokenizador -----------------------------------------------------------
 
 def test_sin_gguf_el_contador_es_el_fallback_de_3_3(monkeypatch, tmp_path):
