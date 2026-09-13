@@ -241,18 +241,28 @@ def git_local(args: list[str], cwd: str | None = None,
 
 
 def clonar_para_goal(proyecto: str, destino: str, rama: str) -> dict:
-    """`git clone <proyecto> <destino>` (hardlinks entre repos del mismo
-    filesystem: segundos) + `git checkout -b <rama>`. Siempre un clon,
-    nunca un worktree (ruling 15.4: un worktree comparte .git, .venv y el
-    checkout que sirve el server real). Un fallo deja `destino` sin crear
-    y `error` con el stderr."""
+    """`git clone --no-hardlinks <proyecto> <destino>` + `git checkout -b
+    <rama>`. Siempre un clon, nunca un worktree (ruling 15.4: un worktree
+    comparte .git, .venv y el checkout que sirve el server real). Copia
+    REAL de los objetos: un clone local por defecto los enlaza (hardlink)
+    con el origen, y el origen es el checkout que sirve el server; con el
+    enlace, una escritura in-place sobre `.git/objects` desde un golpe
+    corromperia el proyecto real (invariante 5). El .git de Calipso pesa
+    unos MB: la copia cuesta lo mismo que el enlace. Un `destino` que ya
+    existe es un error y NO se toca (un reintento tras un crash o la
+    reconciliacion del arranque no puede llevarse el trabajo de los golpes
+    anteriores); un fallo del clone no deja nada (git limpia lo que el
+    mismo creo); un fallo del checkout borra el clon recien creado (ese
+    si es nuestro). `error` lleva el stderr."""
     origen = pathlib.Path(proyecto).expanduser()
     if not (origen / ".git").exists():
         return {"ok": False, "clon": None, "rama": rama,
                 "error": f"{origen} no es un repo git"}
-    rc, _, err = git_local(["clone", "--quiet", str(origen), destino])
+    if pathlib.Path(destino).exists():
+        return {"ok": False, "clon": None, "rama": rama,
+                "error": f"{destino} ya existe"}
+    rc, _, err = git_local(["clone", "--no-hardlinks", "--quiet", str(origen), destino])
     if rc != 0:
-        shutil.rmtree(destino, ignore_errors=True)
         return {"ok": False, "clon": None, "rama": rama, "error": err.strip() or f"git clone exit {rc}"}
     rc, _, err = git_local(["checkout", "-q", "-b", rama], cwd=destino)
     if rc != 0:

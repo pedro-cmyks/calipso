@@ -346,11 +346,13 @@ def update(project_root: str | None, goal_id: str, **changes: Any) -> dict[str, 
     goal = load(project_root, goal_id)
     if not goal:
         return None
+    if goal.get("tope") and (changes.get("status") or changes.get("blocker")):
+        # un goal que corre (spec seccion 3, invariante 2): ni complete ni
+        # nada por aca; solo transicionar (que valida y apunta activo.json).
+        # `blocker` cuenta como status: escribia BLOCKED directo y dejaba al
+        # goal donde el runner no puede estacionarlo ni fallarlo (invariante 6)
+        raise ValueError("un goal que corre solo cambia de status por goals.transicionar")
     if "status" in changes and changes["status"]:
-        if goal.get("tope"):
-            # un goal que corre (spec seccion 3, invariante 2): ni complete ni
-            # nada por aca; solo transicionar (que valida y apunta activo.json)
-            raise ValueError("un goal que corre solo cambia de status por goals.transicionar")
         status = str(changes["status"])
         if status not in VALID_STATES:
             raise ValueError(f"estado invalido: {status}")

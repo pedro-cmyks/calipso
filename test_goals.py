@@ -219,7 +219,20 @@ def test_update_no_escribe_status_en_un_goal_que_corre(home, repo):
     with pytest.raises(ValueError, match="transicionar"):
         goals.update(None, g["id"], status="complete")
     assert goals.load(None, g["id"])["status"] == goals.PROPOSED
+    # `blocker` era la otra puerta al status: el boton bloquear de la goal bar
+    # vieja manda {status: blocked, blocker}; el PUT rechaza status, pero
+    # blocker solo escribia BLOCKED directo y dejaba al goal fuera de
+    # TRANSICIONES (ni waiting ni failed desde ahi: invariante 6)
+    with pytest.raises(ValueError, match="transicionar"):
+        goals.update(None, g["id"], blocker="falta Tailscale")
+    en_disco = goals.load(None, g["id"])
+    assert en_disco["status"] == goals.PROPOSED and en_disco["blockers"] == []
+    assert not [e for e in goals.events(None, g["id"]) if e.get("action") == "updated"]
     assert goals.update(None, g["id"], title="otro")["title"] == "otro"     # el resto sigue
+    # y el runner sigue pudiendo estacionar y fallar el goal
+    goals.transicionar(g["id"], goals.ACTIVE)
+    assert goals.transicionar(g["id"], goals.WAITING, motivo="sonda")["status"] == goals.WAITING
+    assert goals.transicionar(g["id"], goals.FAILED, motivo="sonda")["status"] == goals.FAILED
 
 
 # --- golpes.jsonl, consumo y tope ---------------------------------------------
@@ -442,6 +455,44 @@ def test_clonar_para_goal_falla_limpio(home, tmp_path):
     r = github.clonar_para_goal(str(tmp_path / "no-existe"), str(tmp_path / "clon"), "goal/x")
     assert r["ok"] is False and r["error"]
     assert not (tmp_path / "clon").exists()
+
+
+def test_clonar_para_goal_no_borra_un_destino_que_ya_existe(home, repo, tmp_path):
+    """Un `destino` que la funcion no creo no se toca: un reintento del runner
+    tras un crash (o la reconciliacion del arranque) sobre `dir_goal(id)/repo`
+    ya clonado no puede llevarse el trabajo de los golpes anteriores."""
+    destino = tmp_path / "clon"
+    destino.mkdir()
+    (destino / "trabajo.txt").write_text("de un golpe anterior\n", encoding="utf-8")
+    r = github.clonar_para_goal(str(repo), str(destino), "goal/x")
+    assert r["ok"] is False and r["clon"] is None and "ya existe" in r["error"]
+    assert (destino / "trabajo.txt").read_text(encoding="utf-8") == "de un golpe anterior\n"
+
+
+def test_clonar_para_goal_con_rama_invalida_borra_solo_su_clon(home, repo, tmp_path):
+    """Si falla el `checkout -b`, el clon recien creado (ese SI es nuestro)
+    se borra y `destino` queda sin crear."""
+    destino = tmp_path / "clon"
+    r = github.clonar_para_goal(str(repo), str(destino), "goal/..rota")
+    assert r["ok"] is False and r["error"]
+    assert not destino.exists()
+
+
+def test_clonar_para_goal_copia_los_objetos_sin_enlaces_duros(home, repo, tmp_path):
+    """Invariante 5: el checkout que sirve el server no es escribible desde un
+    golpe. Un clone local por defecto ENLAZA (hardlink) los objetos con el
+    origen: una escritura in-place sobre `.git/objects/xx/yyy` en el clon
+    corromperia el objeto del proyecto real. Copia real: `st_nlink == 1` y
+    otro inodo que el del origen."""
+    destino = tmp_path / "clon"
+    assert github.clonar_para_goal(str(repo), str(destino), "goal/x")["ok"] is True
+    sueltos = [p for p in (destino / ".git" / "objects").rglob("*")
+               if p.is_file() and p.parent.name not in ("info", "pack")]
+    assert len(sueltos) >= 3                     # blob, tree y commit del fixture
+    for objeto in sueltos:
+        assert objeto.stat().st_nlink == 1, objeto
+        gemelo = repo / ".git" / "objects" / objeto.parent.name / objeto.name
+        assert gemelo.exists() and gemelo.stat().st_ino != objeto.stat().st_ino
 
 
 def main() -> int:
