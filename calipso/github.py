@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import pathlib
 import re
 import shutil
 import subprocess
@@ -215,6 +216,102 @@ def git_runner(cwd: str | None = None, timeout: int = 10,
             return (1, "", str(e))
 
     return run
+
+
+def git_local(args: list[str], cwd: str | None = None,
+              timeout: int = 120) -> tuple[int, str, str]:
+    """git LOCAL para el clon del goal (spec 2026-09-13, ruling 15.4):
+    clone de una ruta, checkout -b, diff --stat, fetch de una ruta local.
+    NO va por `git_runner`: `clone`/`fetch` estan en GIT_DE_RED y un clon
+    local cruzaria la aduana con destino None (Trampa 11), y `git_runner`
+    anula el gitconfig global (sin identidad no hay commit desde el
+    server). El escudo por entorno queda (core.fsmonitor, diff.external,
+    core.pager). Entra al canario de la aduana como `git local:`."""
+    exe = shutil.which("git.exe") or shutil.which("git")
+    if not exe:
+        return (127, "", "git no esta en PATH")
+    env = env_git_blindado(anular_global=False)
+    try:
+        proc = subprocess.run(
+            [exe, *args], cwd=cwd, env=env, text=True, capture_output=True,
+            encoding="utf-8", errors="replace", timeout=timeout)
+        return (proc.returncode, proc.stdout or "", proc.stderr or "")
+    except Exception as e:
+        return (1, "", str(e))
+
+
+def clonar_para_goal(proyecto: str, destino: str, rama: str) -> dict:
+    """`git clone <proyecto> <destino>` (hardlinks entre repos del mismo
+    filesystem: segundos) + `git checkout -b <rama>`. Siempre un clon,
+    nunca un worktree (ruling 15.4: un worktree comparte .git, .venv y el
+    checkout que sirve el server real). Un fallo deja `destino` sin crear
+    y `error` con el stderr."""
+    origen = pathlib.Path(proyecto).expanduser()
+    if not (origen / ".git").exists():
+        return {"ok": False, "clon": None, "rama": rama,
+                "error": f"{origen} no es un repo git"}
+    rc, _, err = git_local(["clone", "--quiet", str(origen), destino])
+    if rc != 0:
+        shutil.rmtree(destino, ignore_errors=True)
+        return {"ok": False, "clon": None, "rama": rama, "error": err.strip() or f"git clone exit {rc}"}
+    rc, _, err = git_local(["checkout", "-q", "-b", rama], cwd=destino)
+    if rc != 0:
+        shutil.rmtree(destino, ignore_errors=True)
+        return {"ok": False, "clon": None, "rama": rama, "error": err.strip() or f"git checkout exit {rc}"}
+    return {"ok": True, "clon": destino, "rama": rama, "error": None}
+
+
+def diff_stat(clon: str) -> str:
+    """`git diff --stat HEAD` mas los archivos sin seguimiento (uno por
+    linea, `?? ruta`): lo que el martillo dejo en el clon tras el golpe."""
+    rc, out, _ = git_local(["diff", "--stat", "HEAD"], cwd=clon)
+    partes = [out.strip()] if rc == 0 and out.strip() else []
+    rc, out, _ = git_local(["status", "--porcelain", "--untracked-files=all"], cwd=clon)
+    if rc == 0:
+        sin = [l for l in out.splitlines() if l.startswith("??")]
+        if sin:
+            partes.append("\n".join(sin))
+    return "\n".join(partes)
+
+
+DIFF_COMPLETO_MAX = 60_000
+
+
+def diff_completo(clon: str, maximo: int = DIFF_COMPLETO_MAX) -> str:
+    """El diff REAL para el revisor (spec seccion 6.2 y ruling 15.1: 'el juez
+    ve el diff real'): `git diff HEAD` mas el contenido de cada archivo sin
+    seguimiento (cabecera `?? ruta` y sus lineas con `+`), recortado a
+    `maximo` caracteres con una marca. `diff_stat` sigue siendo lo que va
+    al ledger y al prompt del martillo. `--no-ext-diff` porque el escudo
+    de `env_git_blindado` pone `diff.external=""` y con eso git 2.55
+    intenta correr un comando vacio para la salida en parche (`external
+    diff died`, rc 128); `--stat` no pasa por ahi."""
+    partes: list[str] = []
+    rc, out, _ = git_local(["diff", "--no-ext-diff", "HEAD"], cwd=clon)
+    if rc == 0 and out.strip():
+        partes.append(out.rstrip("\n"))
+    rc, out, _ = git_local(["status", "--porcelain", "--untracked-files=all"], cwd=clon)
+    if rc == 0:
+        for l in out.splitlines():
+            if not l.startswith("??"):
+                continue
+            ruta = l[3:].strip()
+            try:
+                contenido = (pathlib.Path(clon) / ruta).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            partes.append(f"?? {ruta}\n" + "\n".join("+" + x for x in contenido.splitlines()))
+    texto = "\n".join(partes)
+    if len(texto) > maximo:
+        texto = texto[:maximo] + f"\n[... diff recortado a {maximo} caracteres]"
+    return texto
+
+
+def traer_rama(proyecto: str, clon: str, rama: str) -> tuple[int, str, str]:
+    """Trae la rama del clon al repo de origen SIN mergear (`git fetch
+    <clon> rama:rama`, ruta local, sin red): el merge es de Pedro
+    (compuerta `merge`, pregunta)."""
+    return git_local(["fetch", "--quiet", clon, f"{rama}:{rama}"], cwd=proyecto)
 
 
 def _json(stdout: str, fallback: Any) -> Any:

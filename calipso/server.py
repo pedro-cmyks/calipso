@@ -3122,54 +3122,13 @@ def _repo_brief(raiz: pathlib.Path) -> str:
 
 
 def _goal_context() -> str:
-    goal = goals.active(str(ROOT))
+    """El goal activo en el system del turno (spec goals 2026-09-13,
+    seccion 2): solo estado, ultimo golpe y lo que espera; nunca el ledger.
+    Un goal viejo (sin `tope`) sigue mostrandose con la misma letra."""
+    goal = goals.activo()
     if not goal:
         return ""
-    criteria = goal.get("criteria") or []
-    done = sum(1 for c in criteria if c.get("done"))
-    lines = [
-        "=== Meta activa ===",
-        f"id: {goal.get('id')}",
-        f"titulo: {goal.get('title')}",
-        f"estado: {goal.get('status')}",
-        f"objetivo: {goal.get('objective')}",
-        f"criterios: {done}/{len(criteria)} cumplidos",
-    ]
-    if criteria:
-        lines.append("criterios de listo:")
-        for item in criteria[:8]:
-            mark = "x" if item.get("done") else " "
-            lines.append(f"- [{mark}] {item.get('text', '')}")
-    subtasks = goal.get("subtasks") or []
-    if subtasks:
-        lines.append("subtareas:")
-        for item in subtasks[:8]:
-            lines.append(f"- {item.get('status', 'pending')}: {item.get('text', '')}")
-    evidence = goal.get("evidence") or []
-    if evidence:
-        lines.append("evidencia reciente:")
-        for item in evidence[-5:]:
-            lines.append(f"- {item.get('kind')}: {item.get('text')}")
-    blockers = goal.get("blockers") or []
-    if blockers:
-        lines.append("bloqueos:")
-        for item in blockers[-3:]:
-            lines.append(f"- {item.get('text')}")
-    return "\n".join(lines)
-
-
-def _goal_response(goal: dict) -> str:
-    criteria = "\n".join(
-        f"- [ ] {item.get('text', '')}" for item in (goal.get("criteria") or []))
-    subtasks = "\n".join(
-        f"- {item.get('text', '')}" for item in (goal.get("subtasks") or []))
-    return (
-        f"Listo. Active la meta: {goal.get('title')}\n\n"
-        f"Criterios de listo:\n{criteria}\n\n"
-        f"Primeras subtareas:\n{subtasks}\n\n"
-        "La voy a mantener como meta activa y voy a asociar trabajos, evidencia "
-        "y bloqueos futuros a ella. No la marco completa sin evidencia."
-    )
+    return goals.contexto_recortado(goal)
 
 
 _SISTEMA_NUBE_MINIMO = (
@@ -3861,7 +3820,7 @@ async def ws_chat(ws: WebSocket) -> None:
     if ws is None:
         return                      # sin hash no se vigila: ya cerro 1008
     await ws.accept()
-    active_goal = goals.active(str(ROOT))
+    active_goal = goals.activo()
     if active_goal:
         await ws.send_json({"type": "goal", "action": "active", "goal": active_goal})
     sentinel = object()
@@ -3940,30 +3899,6 @@ async def ws_chat(ws: WebSocket) -> None:
             fallbacks: list[dict] = []
             # avisa de inmediato que está pensando (los probes pueden tardar)
             await ws.send_json({"type": "thinking"})
-
-            goal_objective = goals.detect(user_msg)
-            if goal_objective:
-                goal = goals.create(str(ROOT), goal_objective)
-                reply = _goal_response(goal)
-                await ws.send_json({"type": "goal", "action": "active", "goal": goal})
-                await ws.send_json({"type": "chunk", "text": reply})
-                chats.append(chat_id, "assistant", reply, {
-                    "route": "goal",
-                    "goal_id": goal["id"],
-                })
-                current_chat = chats.get(chat_id)
-                if current_chat:
-                    await ws.send_json({"type": "chat", "action": "updated",
-                                        "chat": _chat_view(current_chat)})
-                await ws.send_json({"type": "done"})
-                try:
-                    await asyncio.to_thread(
-                        mem.remember,
-                        f"Pedro definio una meta: {goal_objective}\nCalipso creo Goal Mode: {goal['id']}",
-                        route="goal", kind="goal")
-                except Exception:
-                    pass
-                continue
 
             # 1) routing a nivel de MODELO (afinidad x costo x tier x intensidad)
             #    en un hilo: los probes de suscripción son síncronos y NO deben
@@ -4840,14 +4775,6 @@ async def ws_chat(ws: WebSocket) -> None:
                 if current_chat:
                     await ws.send_json({"type": "chat", "action": "updated",
                                         "chat": _chat_view(current_chat)})
-            # 5b) auto-cierre de meta: si la activa quedó completa, notificar
-            _active = goals.active(str(ROOT))
-            if _active and _active.get("status") == "complete":
-                await ws.send_json({
-                    "type": "goal", "action": "auto_closed",
-                    "goal_id": _active.get("id"),
-                    "title": _active.get("title"),
-                })
 
             _last_features = features
             _last_verdict = verdict
@@ -5525,22 +5452,42 @@ def api_telemetry(limit: int = 100) -> dict:
     return {"events": telemetry.recent(limit)}
 
 
+def _goal_con_consumo(goal: dict) -> dict:
+    """La vista de un goal para la lista: el goal mas `consumo` (golpes,
+    minutos, unidades contra el tope). Un goal viejo sin tope tiene
+    consumo en cero."""
+    try:
+        return {**goal, "consumo": goals.consumo(goal)}
+    except Exception:
+        return {**goal, "consumo": {"golpes": 0, "minutos": 0, "unidades": 0, "mm": 0}}
+
+
 @app.get("/api/goals")
 def api_goals(limit: int = 50) -> dict:
+    activo = goals.activo()
     return {
-        "active": goals.active(str(ROOT)),
-        "goals": goals.list_goals(str(ROOT), limit),
+        "activo": _goal_con_consumo(activo) if activo else None,
+        "active": _goal_con_consumo(activo) if activo else None,   # la PWA vieja lee `active`
+        "goals": [_goal_con_consumo(g) for g in goals.list_goals(str(ROOT), limit)],
     }
 
 
 @app.post("/api/goals")
 def api_goal_create(body: GoalBody) -> dict:
+    """Crea un goal `proposed` (nunca activo: lo activa el dale, ruling
+    15.3). `objective` con la gramatica de /goal (hasta:/tope:/en:/raiz:)."""
     if not body.objective.strip():
         raise HTTPException(status_code=400, detail="falta objective")
-    goal = goals.create(
-        str(ROOT), body.objective, title=body.title,
-        criteria=body.criteria, subtasks=body.subtasks,
-        make_active=body.make_active)
+    d = goals.parse_goal_texto(body.objective)
+    try:
+        goal = goals.crear(
+            d["texto"] or body.objective, proyecto=(d["en"] or str(ROOT)),
+            titulo=body.title,
+            criterio=goals.parse_criterio(d["hasta"]) if d["hasta"] else None,
+            tope=d["tope"] or None,
+            compuertas={"raices": [d["raiz"]] if d["raiz"] else []})
+    except goals.ErrorGoal as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return {"goal": goal}
 
 
@@ -5554,22 +5501,21 @@ def api_goal(goal_id: str) -> dict:
 
 @app.put("/api/goals/{goal_id}")
 def api_goal_update(goal_id: str, body: GoalUpdateBody) -> dict:
+    """Titulo, objetivo, criterios, subtareas, bloqueo. `status` y `active`
+    se RECHAZAN (ruling 15.3): las transiciones van por dale/no/parar/segui
+    y por `goals.transicionar`."""
     changes = body.dict(exclude_unset=True)
-    make_active = changes.pop("active", None)
+    if "status" in changes or "active" in changes:
+        raise HTTPException(
+            status_code=400,
+            detail="status y active no se editan por PUT: usa dale/no/parar/segui")
     try:
         goal = goals.update(str(ROOT), goal_id, **changes)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if not goal:
         raise HTTPException(status_code=404, detail="meta no existe")
-    if make_active is True:
-        goals.set_active(str(ROOT), goal_id)
-        goal = goals.load(str(ROOT), goal_id) or goal
-    elif make_active is False:
-        active = goals.active(str(ROOT))
-        if active and active.get("id") == goal_id:
-            goals.set_active(str(ROOT), None)
-    return {"goal": goal, "active": goals.active(str(ROOT))}
+    return {"goal": goal, "active": goals.activo()}
 
 
 @app.post("/api/goals/{goal_id}/evidence")
@@ -5579,61 +5525,6 @@ def api_goal_evidence(goal_id: str, body: GoalEvidenceBody) -> dict:
     if not goal:
         raise HTTPException(status_code=404, detail="meta no existe")
     return {"goal": goal}
-
-
-@app.post("/api/goals/{goal_id}/advance")
-def api_goal_advance(goal_id: str) -> dict:
-    result = developer.advance_goal(str(ROOT), goal_id)
-    if not result:
-        raise HTTPException(status_code=404, detail="meta no existe")
-    return result
-
-
-class DraftBody(BaseModel):
-    file_path: str
-
-
-@app.post("/api/goals/{goal_id}/draft")
-async def api_goal_draft(goal_id: str, body: DraftBody) -> dict:
-    brief = developer.draft_brief(str(ROOT), goal_id, body.file_path)
-    if not brief:
-        raise HTTPException(status_code=404, detail="meta sin subtarea activa o archivo no editable")
-
-    job = brief["job"]
-    try:
-        raw = await asyncio.to_thread(
-            _run_subscription_text,
-            "claude", brief["system"], brief["user_msg"], "sonnet")
-        new_content = developer._strip_fences(raw)
-    except Exception as exc:
-        jobs.update(str(ROOT), job["id"], status="failed", error=str(exc))
-        raise HTTPException(status_code=502, detail=f"agente fallo: {exc}") from exc
-
-    # Registrar propuesta
-    change_id = uuid.uuid4().hex[:12]
-    item = {
-        "id": change_id,
-        "path": body.file_path,
-        "source": f"goal_draft:{goal_id}",
-        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
-    }
-    PENDING_CHANGES[change_id] = {**item, "content": new_content}
-    diff = _proposal_diff(body.file_path, new_content)
-
-    jobs.write_artifact(str(ROOT), job["id"], "draft.md", new_content)
-    jobs.write_artifact(str(ROOT), job["id"], "draft.diff", diff)
-    jobs.update(str(ROOT), job["id"], status="done",
-                proposal_id=change_id, artifact="draft.diff")
-    goals.add_evidence(
-        str(ROOT), goal_id, "proposal",
-        f"Borrador generado para {body.file_path} (propuesta {change_id})",
-        job_id=job["id"], artifact="draft.diff")
-
-    return {
-        "proposal": {**item, "diff": diff},
-        "job": jobs.load(str(ROOT), job["id"]),
-        "subtask": brief["subtask"],
-    }
 
 
 @app.put("/api/goals/{goal_id}/criteria/{criterion_id}")

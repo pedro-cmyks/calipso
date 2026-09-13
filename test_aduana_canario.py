@@ -56,6 +56,7 @@ EXCEPCIONES: dict[str, str] = {
     # --- git local ---
     "calipso/catastro.py:_git": "git local: rev-parse/log/status sobre el catastro",
     "calipso/server.py:_git": "git local: /api/git/* sobre ROOT",
+    "calipso/github.py:git_local": "git local: el clon del goal (clone de una ruta, checkout -b, diff --stat, fetch de una ruta local; spec goals 2026-09-13, ruling 15.4). Sin remoto: nunca sale de la maquina",
     "calipso/tools/commands.py:run": "subprocesos de la allowlist: git local y tests; `test_memory` habla con Ollama en loopback desde OTRO proceso (test_memory.py construye Memory() -> POST /api/embed) y llama reflect -> `claude -p`, fuera de la aduana: limite conocido, como los CLIs agentes",
     # --- muertos en Linux ---
     "calipso/server.py:api_connector_action": "muerto en Linux: Popen con CREATE_NEW_CONSOLE (solo Windows); cuando se arregle cruza como gesto",

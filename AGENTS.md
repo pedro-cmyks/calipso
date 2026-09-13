@@ -120,6 +120,19 @@
   `/api/jobs`, `/api/jobs/{job_id}` y
   `/api/jobs/{job_id}/artifacts/{name}`; el panel Trabajo puede listar jobs
   recientes y abrir su detalle/evidencia.
+- **El goal que corre** (spec `docs/superpowers/specs/2026-09-13-goals-design.md`):
+  `/goal <texto> [hasta: ...] [tope: 2h | 20 golpes | 60 unidades] [en: <repo>]
+  [raiz: <dir>]` crea un goal `proposed` con criterio medible, tope y compuertas;
+  `/goal dale` lo arranca en un clon del repo (`~/.calipso/goals/<id>/repo`,
+  rama `goal/<id>`) con Claude Code o Codex como manos dentro del sandbox nativo
+  del CLI mas el hook fail-closed `calipso/goals_hook.py`; el runner
+  (`calipso/goals_runner.py`) golpea, mide carga/cuota/tope, juzga (criterio
+  medible o revisor de OTRA familia) y deja el goal `waiting` para Pedro; nunca
+  `complete` sin su dale. `goals.transicionar` es la unica puerta de `status`;
+  `activo.json` es global; `golpes.jsonl` es el ledger por golpe. `detect`
+  (`meta: ...` interceptando el turno), `check_auto_close`, `PUT status/active`
+  y los endpoints `advance`/`draft` se retiraron. Pestana Goals en `/fabrica`;
+  `#goalBar` de la PWA de solo lectura.
 - **Goal Mode minimo** (`calipso/goals.py`): detecta lenguaje natural tipo
   `meta: ...`, crea meta persistente con criterios/subtareas/evidencia, mantiene
   meta activa por proyecto y la muestra en Goal Bar. Endpoints `/api/goals`,

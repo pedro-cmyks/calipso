@@ -257,7 +257,7 @@ def chat(tmp_path, monkeypatch):
     # los tests de esa fuente inyectan el suyo
     monkeypatch.setattr(srv.catastro, "obtener", lambda nombre: None)
     monkeypatch.setattr(srv.goals, "active", lambda raiz: None)
-    monkeypatch.setattr(srv.goals, "detect", lambda texto: None)
+    monkeypatch.setattr(srv.goals, "activo", lambda: None)
     modelo = ModeloEspia([["hola ", "Pedro"]])
     monkeypatch.setattr(srv.dispatch, "_ollama_chat_chunks", modelo)
     monkeypatch.setattr(srv.dispatch, "_sse_text_chunks", modelo)
@@ -403,7 +403,7 @@ def test_la_pasada_sintetica_no_repite_nada_del_turno(chat, monkeypatch):
     """Los catorce salteos del spec, medidos: meta, cost, chat/updated,
     thinking y done salen una vez; el pulso abre y cierra un solo escritorio;
     chat_turn se escribe una vez y cuenta la consulta; y los cuatro que el
-    fixture patchea sin contar (_decide, goals.detect, _sistema_del_turno,
+    fixture patchea sin contar (_decide, goals.activo, _sistema_del_turno,
     _cobrar_turno) corren UNA vez: si una regresion los moviera adentro del
     bucle exterior, esto lo ve (todos se resuelven como globales del modulo
     en el momento de la llamada, asi que el monkeypatch alcanza)."""
@@ -413,8 +413,8 @@ def test_la_pasada_sintetica_no_repite_nada_del_turno(chat, monkeypatch):
         llamadas["decide"] += 1
         return _decide_local(*a, **k)
     monkeypatch.setattr(srv, "_decide", decide)
-    monkeypatch.setattr(srv.goals, "detect",
-                        lambda texto: llamadas.__setitem__("goals", llamadas["goals"] + 1))
+    monkeypatch.setattr(srv.goals, "activo",
+                        lambda: llamadas.__setitem__("goals", llamadas["goals"] + 1))
     sistema_real = srv._sistema_del_turno
 
     def sistema(*a, **k):
