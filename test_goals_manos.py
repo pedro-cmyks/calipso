@@ -552,6 +552,32 @@ def test_sin_nulos_deja_el_veredicto_de_codex_como_el_de_claude():
 
 # --- el detector de secretos sobre el ledger ---------------------------------------------
 
+def test_tapar_no_tapa_rutas_de_archivo_pero_si_los_secretos_adentro():
+    """Smoke corrida 5: la regla de entropia del detector (_TOKEN) marcaba la
+    ruta del goal en el PROMPT (`/tmp/goals-smoke-<x>/Descargas`) y el
+    martillo pidio la raiz literal "[SECRETO]"; en produccion tapa 43/300
+    rutas de clon y 286/300 de contrato.md (ids hex al azar). Una ruta de
+    archivo no es un secreto; lo que SI lo es (prefijos, hex de 32, PEM,
+    JWT) se tapa aunque venga dentro de una ruta."""
+    from calipso.privacidad import detector as det
+    rutas = ["/tmp/goals-smoke-dqz8nryc/Descargas", "/home/pedro/.calipso/goals/goal_0123456789ab/contrato.md",
+             "ls -la /tmp/goals-smoke-dqz8nryc/trabajo/goal_0123456789ab/repo",
+             "cp /etc/hostname ~/goals-smoke-dqz8nryc/Descargas/notas.txt", "./trabajo/goal_0123456789ab/repo/x.py"]
+    assert any(det.detectar_secretos(r) for r in rutas)          # el detector solo las marcaria
+    for r in rutas:
+        assert gm.tapar(r) == (r, 0), r
+    blob = "QWxhZGRpbjpvcGVuIHNlc2FtZQ1234567890xyzABC"
+    assert det.detectar_secretos(blob)                            # un blob opaco de alta entropia
+    assert gm.tapar(blob) == ("[SECRETO]", 1)
+    for con_secreto in ["/tmp/x/ghp_abcdefghijklmnopqrstuvwxyz0123", "/tmp/x/0123456789abcdef0123456789abcdef/y",
+                        "token ghp_abcdefghijklmnopqrstuvwxyz0123 en /tmp/goals-smoke-dqz8nryc/Descargas"]:
+        texto, n = gm.tapar(con_secreto)
+        assert n >= 1 and "[SECRETO]" in texto and "ghp_" not in texto and "0123456789abcdef0123456789abcdef" not in texto
+    fila, n = gm.tapar_fila({"comandos": [{"cmd": "cp /etc/hostname /tmp/goals-smoke-dqz8nryc/Descargas/notas.txt"}],
+                             "veredicto_del_golpe": {"compuerta": {"forma": {"raiz": "/tmp/goals-smoke-dqz8nryc/Descargas"}}}})
+    assert n == 0 and fila["veredicto_del_golpe"]["compuerta"]["forma"]["raiz"] == "/tmp/goals-smoke-dqz8nryc/Descargas"
+
+
 def test_tapar_y_tapar_fila():
     texto, n = gm.tapar("token ghp_abcdefghijklmnopqrstuvwxyz0123 y una clave -----BEGIN PRIVATE KEY----- x")
     assert n == 2 and "ghp_" not in texto and "[SECRETO]" in texto

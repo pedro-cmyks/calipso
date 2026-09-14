@@ -21,6 +21,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 import pathlib
 import signal
 import shutil
@@ -841,10 +842,37 @@ def sondear_hook(compuertas_path: str, *, hook_python: str | None = None,
 # el detector de secretos sobre lo que va al ledger y al prompt
 # --------------------------------------------------------------------------
 
+# una ruta de archivo: absoluta, ~/ o ./ y ../, dos o mas barras, segmentos de
+# caracteres de ruta (sin + ni =, que son de base64) y cortos
+_RE_RUTA = re.compile(r"^(?:~|\.{1,2})?/(?:[A-Za-z0-9_.\-]+/)+[A-Za-z0-9_.\-]*$")
+
+
+def _es_secreto_explicito(t: str) -> bool:
+    """Lo que el detector marca por una REGLA (prefijo conocido, JWT, PEM,
+    cadena de conexion, hex de 32+, base32), no por entropia."""
+    d = detector
+    if any(rx.search(t) for rx in (d._PREFIJOS, d._JWT, d._PEM, d._CONN, d._HEX)):
+        return True
+    return any(re.search(r"[2-7]", m.group(0)) for m in d._BASE32.finditer(t))
+
+
+def _es_ruta(t: str) -> bool:
+    """Un tramo que solo la regla de entropia del detector marcaria y que es
+    una ruta de archivo (smoke corrida 5: `/tmp/goals-smoke-<x>/Descargas`
+    tapada en el prompt; en produccion 43/300 rutas de clon y 286/300 de
+    contrato.md con ids hex al azar). Una ruta no es un secreto; un secreto
+    DENTRO de una ruta (`/tmp/x/ghp_...`, un hex de 32) sigue siendo
+    explicito y se tapa igual."""
+    return (bool(_RE_RUTA.match(t)) and t.count("/") >= 2
+            and all(len(seg) <= 64 for seg in t.split("/")) and not _es_secreto_explicito(t))
+
+
 def tapar(texto: str) -> tuple[str, int]:
     """Molde aduana._tapar_todo: los tramos del detector, del mas largo al
-    mas corto, reemplazados por [SECRETO]. Devuelve (texto, cuantos)."""
-    tramos = detector.detectar_secretos(texto or "")
+    mas corto, reemplazados por [SECRETO]. Devuelve (texto, cuantos). Las
+    rutas de archivo que el detector marca solo por entropia no se tapan
+    (`_es_ruta`): el prompt y el ledger del goal estan hechos de rutas."""
+    tramos = [t for t in detector.detectar_secretos(texto or "") if not _es_ruta(t["texto"])]
     for t in sorted(tramos, key=lambda x: len(x["texto"]), reverse=True):
         texto = texto.replace(t["texto"], "[SECRETO]")
     return texto, len(tramos)
