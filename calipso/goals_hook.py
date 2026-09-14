@@ -14,8 +14,11 @@ Que decide:
             clon y de su venv); deniega lo que no sabe parsear (compuestos:
             `;`, `&&`, `||`, `|`, `$(`, backticks, redirecciones; heredocs;
             envoltorios: bash -c, sh -c, eval, source, xargs, env, nohup,
-            setsid, find -exec/-delete; git -C, --git-dir, worktree,
-            update-ref, branch -D, remote, fetch, pull, clone, config); lo
+            setsid, find -exec/-delete; codigo inline de un interprete en
+            cualquier posicion: python -c/-Ic, node -e/-p/--eval, ruby -e,
+            perl -e/-E, php -r; npx; git -C, --git-dir, worktree,
+            update-ref, branch -D, remote, fetch, pull, clone, rebase
+            --exec/-x/-i, config que escribe o sale del clon); lo
             NUNCA (gh, git push, sudo, pkexec, su, rpm-ostree
             rebase|reset|rollback, flatpak remote-delete|remote-modify,
             mail, sendmail, rm o cat sobre las rutas protegidas -- tambien
@@ -87,13 +90,30 @@ COMPUESTOS = (";", "&&", "||", "|", "$(", "`", ">", "<", "<<", "&")
 ENVOLTORIOS = {"bash", "sh", "zsh", "dash", "fish", "eval", "source", ".", "xargs", "env",
                "nohup", "setsid", "exec", "command", "builtin", "watch", "script", "ssh",
                "scp", "sftp", "rsync", "nc", "ncat", "telnet"}
+# Los interpretes y shells que ejecutan lo que reciben por argv. Con codigo
+# inline el hook no puede leer lo que ejecutan: se deniega en CUALQUIER
+# posicion de la argv (el smoke adversario paso `python3 -I -S -c` porque
+# solo se miraba argv[1:3]) y tambien dentro de un cluster de flags cortas
+# (`-Ic`, `-uc`, `-OOc`, `-pe`), leyendo el cluster como el interprete: una
+# letra que toma valor (`-m`, `-W`, `-X` de python) se lleva el resto. El
+# nombre se compara sin version (python3.12 -> python). Un script del clon
+# (`python archivo.py`, `./script.sh`, `bash script.sh`), `make` y `npm run`
+# siguen pasando: un goal de codigo corre sus tests y sus scripts, y lo que
+# corre adentro lo contiene el sandbox (residuo declarado en la adenda del
+# cierre: el hook es una segunda capa por nombre).
+INTERPRETES = {"python", "pypy", "node", "ruby", "perl", "php", "sh", "bash", "zsh", "dash", "busybox"}
+LETRAS_INLINE = frozenset("ceE")
+LETRAS_INLINE_POR_EXE = {"node": frozenset("p"), "php": frozenset("r")}
+LETRAS_CON_VALOR = {"python": "mWXQ", "pypy": "mWXQ", "node": "r", "ruby": "rIC", "perl": "IM"}
+OPCIONES_INLINE = ("--eval", "--print")
+SHELLS = {"bash", "sh", "zsh", "dash"}
 # Comandos simples que no salen del clon ni tocan el sistema. Todo lo demas
 # (salvo las familias de abajo) se deniega: la lista es blanca a proposito.
 ALLOW_EXES = {
     "ls", "cat", "head", "tail", "wc", "grep", "rg", "find", "sed", "awk", "cut", "sort", "uniq",
     "tr", "echo", "printf", "pwd", "mkdir", "touch", "cp", "mv", "diff", "which", "true", "false",
     "test", "[", "stat", "file", "basename", "dirname", "realpath", "readlink", "date", "sleep",
-    "tee", "tree", "du", "df", "ps", "python", "python3", "pytest", "node", "npx", "cargo", "go",
+    "tee", "tree", "du", "df", "ps", "python", "python3", "pytest", "node", "cargo", "go",
     "make", "cmake", "gcc", "g++", "cc", "rustc", "ruby", "bundle", "black", "ruff", "mypy",
     "flake8", "isort", "pyright", "tsc", "eslint", "prettier", "jq", "tar", "unzip", "zip",
     "gzip", "gunzip", "sha256sum", "md5sum", "chmod", "ln", "seq", "xxd", "hexdump", "less",
@@ -104,13 +124,18 @@ GIT_PERMITIDOS = {"status", "diff", "log", "show", "add", "commit", "checkout", 
                   "restore", "branch", "stash", "rev-parse", "ls-files", "mv", "rm", "tag",
                   "merge", "rebase", "reset", "blame", "grep", "describe", "shortlog", "cherry-pick",
                   "revert", "clean", "init", "apply", "format-patch", "diff-tree", "cat-file",
-                  "rev-list", "name-rev", "symbolic-ref"}
-GIT_PROHIBIDOS = {"push", "fetch", "pull", "clone", "remote", "worktree", "update-ref", "config",
+                  "rev-list", "name-rev", "symbolic-ref", "config"}
+GIT_PROHIBIDOS = {"push", "fetch", "pull", "clone", "remote", "worktree", "update-ref",
                   "submodule", "lfs", "svn", "p4", "ls-remote", "send-email", "request-pull",
                   "gc", "reflog", "filter-branch", "replace", "notes", "daemon", "instaweb",
                   "credential", "credential-store", "credential-cache", "archive", "bundle"}
 GIT_OPCIONES_PROHIBIDAS = ("-C", "--git-dir", "--work-tree", "--exec-path", "-c", "--config-env",
                            "--namespace")
+# `git config` solo de consulta: un alias `!cmd` es un envoltorio y un
+# `core.hooksPath`/`credential.helper` una escalada; y solo sobre la config
+# que ve el clon: `--file` leeria cualquier INI (`~/.aws/credentials`).
+GIT_CONFIG_LEE = ("--get", "--get-all", "--list", "-l", "--get-regexp")
+GIT_CONFIG_FUERA = ("--file", "-f", "--blob", "--global", "--system", "--edit", "-e")
 # Los ejecutables que miran rutas: cada token con pinta de ruta pasa por las
 # protegidas (NUNCA) y, los que escriben, por la auto-escalada. curl/wget
 # ademas: el archivo que subirian es un dato de Pedro antes que un hecho web.
@@ -570,6 +595,64 @@ def _nunca(familia: str | None, motivo: str, forma: dict | None = None) -> tuple
     return familia or "NUNCA", f"NUNCA: {motivo}", forma
 
 
+def _codigo_inline(exe: str, argv: list[str]) -> str | None:
+    """El token de argv[1:] que es codigo inline para este interprete
+    (INTERPRETES), en cualquier posicion; None si no hay o no es uno."""
+    base = exe.rstrip("0123456789.")
+    if base not in INTERPRETES:
+        return None
+    letras = LETRAS_INLINE | LETRAS_INLINE_POR_EXE.get(base, frozenset())
+    con_valor = LETRAS_CON_VALOR.get(base, "")
+    for tok in argv[1:]:
+        if tok.startswith("--"):
+            if tok.split("=", 1)[0] in OPCIONES_INLINE:
+                return tok
+            continue
+        if len(tok) < 2 or not tok.startswith("-"):
+            continue
+        for ch in tok[1:]:
+            if not ch.isalpha():
+                break
+            if ch in letras:
+                return tok
+            if ch in con_valor:
+                break
+    return None
+
+
+def _script_del_clon(argv: list[str], compuertas: dict) -> pathlib.Path | None:
+    """`bash script.sh [args]`: el script (el primer argumento, sin flags,
+    sin variable ni glob) resuelto dentro del clon y fuera de la
+    auto-escalada; None si la forma es otra (entonces es un envoltorio)."""
+    if len(argv) < 2 or argv[1].startswith("-"):
+        return None
+    tok = argv[1]
+    if _tiene_variable(tok) or "{" in tok or any(ch in tok for ch in GLOB):
+        return None
+    p = _resolver(tok, compuertas.get("cwd"))
+    if _en_alcance(p, compuertas) != "repo" or _auto_escalada(p, compuertas):
+        return None
+    return p
+
+
+def _rebase_ejecuta(resto: list[str]) -> str | None:
+    """El token de `git rebase` que ejecuta una cadena que el hook no ve
+    (`--exec`/`-x`, tambien pegado o en un cluster: `-ix`) o abre el editor
+    de la lista (`-i`/`--interactive`, donde viven las lineas exec). Las
+    letras que toman valor (`-X`, `-s`, `-S`, `-C`) se llevan el resto."""
+    for t in resto:
+        if t.startswith("--"):
+            if t.split("=", 1)[0] in ("--exec", "--interactive"):
+                return t
+        elif t.startswith("-") and len(t) > 1:
+            for ch in t[1:]:
+                if ch in "xi":
+                    return t
+                if ch in "XsSC":
+                    break
+    return None
+
+
 def _familia_git(argv: list[str]) -> tuple[str | None, str, dict | None]:
     resto = argv[1:]
     for tok in resto:
@@ -584,6 +667,16 @@ def _familia_git(argv: list[str]) -> tuple[str | None, str, dict | None]:
         return "DENEGAR", "git branch -D: fuera del allow-list", None
     if sub not in GIT_PERMITIDOS:
         return "DENEGAR", f"git {sub}: fuera del allow-list del clon", None
+    if sub == "rebase":
+        tok = _rebase_ejecuta(resto)
+        if tok:
+            return "DENEGAR", f"git rebase {tok}: ejecuta una cadena que el hook no ve", None
+    if sub == "config":
+        if not any(t in GIT_CONFIG_LEE for t in resto):
+            return "DENEGAR", "git config escribe: un alias !cmd es un envoltorio", None
+        fuera = next((t for t in resto if t in GIT_CONFIG_FUERA or t.startswith("--file=")), None)
+        if fuera:
+            return "DENEGAR", f"git config {fuera}: sale de la config del clon", None
     return None, f"git {sub} en el clon", None
 
 
@@ -600,10 +693,15 @@ def familia_de_argv(argv: list[str], compuertas: dict) -> tuple[str | None, str,
     if exe in NUNCA_EXES:
         familia = FAMILIA_DEL_EXE_NUNCA.get(exe)
         return _nunca(familia, f"{exe}: {familia or 'escalar privilegios'} no se hace desde un golpe")
+    tok = _codigo_inline(exe, argv)
+    if tok:
+        return "DENEGAR", f"{exe} {tok}: codigo inline: el hook no puede leer lo que ejecuta", None
+    if exe in SHELLS and _script_del_clon(argv, compuertas) is not None:
+        return None, f"{exe} {argv[1]}: script del clon (lo que corre adentro lo contiene el sandbox)", None
     if exe in ENVOLTORIOS:
         return "DENEGAR", f"{exe}: envoltorio, no se ve adentro", None
-    if exe in ("python", "python3", "node", "ruby", "perl") and any(t in ("-c", "-e") for t in argv[1:3]):
-        return "DENEGAR", f"{exe} -c/-e: no se ve adentro", None
+    if exe == "npx":
+        return "DENEGAR", "npx ejecuta paquetes arbitrarios", None
     if donde == "ruta_fuera":
         return "DENEGAR", f"{argv[0]}: ejecutable fuera del clon y de su venv", None
     cwd = compuertas.get("cwd")

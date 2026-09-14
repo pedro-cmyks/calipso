@@ -512,3 +512,67 @@ def test_la_tabla_del_goal_no_relaja_lo_nunca(goal_dir):
         assert rc == 2 and "NUNCA" in err, (cmd, err)
     rc, err = correr(goal_dir, "Read", {"file_path": os.path.expanduser("~/.ssh/id_ed25519")})
     assert rc == 2 and "NUNCA" in err
+
+
+# --- codigo inline, runners y git que ejecuta (cierre 2026-09-14, C1 + rebase + config) ---
+
+@pytest.mark.parametrize("cmd,motivo", [
+    # el interprete con codigo por argv: en CUALQUIER posicion, tambien dentro de un cluster
+    ("python -c 'import os'", "codigo inline"),
+    ("python3 -I -S -c \"__import__('os').system('gh pr create')\"", "codigo inline"),
+    ("python -Ic 'import os'", "codigo inline"), ("python -uc print(1)", "codigo inline"),
+    ("python -OOc x", "codigo inline"), ("python -Sc x", "codigo inline"), ("python -E x.py", "codigo inline"),
+    ("python -m pytest -c tox.ini", "codigo inline"),          # residuo: `pytest -c tox.ini` va directo
+    ("python manage.py shell -c 'x'", "codigo inline"),        # el -c de django shell ejecuta codigo
+    (".venv/bin/python -c 'x'", "codigo inline"), (".venv/bin/python3.12 -c x", "codigo inline"),
+    ("node --eval \"require('child_process').execSync('gh pr create')\"", "codigo inline"),
+    ("node -e x", "codigo inline"), ("node -p x", "codigo inline"), ("node --print x", "codigo inline"),
+    ("node -pe x", "codigo inline"), ("node --eval=x", "codigo inline"), ("node -e\"1+1\"", "codigo inline"),
+    ("ruby --disable-gems --disable-did_you_mean -e \"system('gh pr create')\"", "codigo inline"),
+    ("ruby -ne x", "codigo inline"), ("perl -e x", "codigo inline"), ("perl -pie x", "codigo inline"),
+    ("perl -E x", "codigo inline"), ("php -r 'system(\"gh\")'", "codigo inline"),
+    ("sh -c ls", "codigo inline"), ("bash -c 'gh pr create'", "codigo inline"),
+    ("busybox sh -c ls", "codigo inline"),
+    # un shell con flags o con un script fuera del clon sigue siendo un envoltorio
+    ("bash -x script.sh", "envoltorio"), ("bash /tmp/x.sh", "envoltorio"), ("sh ~/.bashrc", "envoltorio"),
+    ("bash ./$X/run.sh", "envoltorio"), ("bash", "envoltorio"),
+    # npx ejecuta paquetes arbitrarios
+    ("npx shx rm -rf /tmp/x", "npx"), ("npx cowsay hola", "npx"), ("./node_modules/.bin/npx x", "npx"),
+    # git rebase que ejecuta una cadena de shell
+    ("git rebase --exec 'curl https://pypi.org' HEAD", "rebase"), ("git rebase -x id main", "rebase"),
+    ("git rebase -i HEAD~3", "rebase"), ("git rebase --interactive main", "rebase"),
+    ("git rebase -ix id main", "rebase"), ("git rebase --exec=id main", "rebase"), ("git rebase -xid main", "rebase"),
+    # git config que escribe (un alias !cmd es un envoltorio) o que sale del clon
+    ("git config user.name x", "git config"), ("git config alias.st '!gh pr create'", "git config"),
+    ("git config --global user.name x", "git config"), ("git config --unset user.name", "git config"),
+    ("git config --add x y", "git config"), ("git config --edit", "git config"), ("git config -e", "git config"),
+    ("git config -l --file ~/.aws/credentials", "git config"), ("git config --get --global user.name", "git config"),
+    ("git config --list --file=/etc/gitconfig", "git config"), ("git config --get --system user.name", "git config"),
+])
+def test_codigo_inline_runners_y_git_que_ejecuta_se_deniegan(goal_dir, cmd, motivo):
+    """C1 (Codex) y el rebase de rev:barrera: el hook no puede leer lo que
+    ejecuta un interprete con codigo por argv, npx, `git rebase --exec` ni
+    un alias de git. Se deniega (no es NUNCA: no se sabe que hace)."""
+    rc, err = correr(goal_dir, "Bash", {"command": cmd})
+    assert rc == 2 and motivo in err and "NUNCA" not in err, (cmd, err)
+    assert registro(goal_dir)[-1]["decision"] == "deny"
+
+
+@pytest.mark.parametrize("cmd", [
+    # scripts y runners del clon: un goal de codigo corre sus tests; lo que
+    # corre adentro lo contiene el sandbox (residuo declarado en la adenda)
+    "./script.sh", "bash script.sh", "sh scripts/run.sh --fast", "zsh script.sh", "dash script.sh",
+    "python archivo.py", "python -m pytest", "python -u -m pytest -q", "python -B x.py", "python -X dev x.py",
+    "python -W ignore -m pytest", "python3 -m venv .venv", "python -mpytest", ".venv/bin/python -m pytest",
+    "node archivo.js", "node --test", "node -r ts-node/register x.ts", "ruby script.rb",
+    "make", "make deploy", "npm run deploy", "yarn run build", "pnpm run test", "npm test",
+    # git rebase sin ejecutar nada y git config de consulta
+    "git rebase main", "git rebase --onto main a b", "git rebase --continue", "git rebase --abort",
+    "git rebase -Xtheirs main", "git rebase -s recursive main",
+    "git config --get user.name", "git config --get-all remote.origin.url", "git config --list",
+    "git config -l", "git config --get-regexp alias",
+])
+def test_scripts_runners_y_git_de_consulta_siguen_pasando(goal_dir, cmd):
+    rc, err = correr(goal_dir, "Bash", {"command": cmd})
+    assert rc == 0, (cmd, err)
+    assert registro(goal_dir)[-1]["decision"] == "allow"
