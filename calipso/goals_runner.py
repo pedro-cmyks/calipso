@@ -566,7 +566,10 @@ def estacionar_retomar(goal: dict, preguntar: Callable) -> dict:
     g = goals.load(None, goal["id"]) or goal
     espera = dict(g.get("espera") or {})
     motivo = str(espera.get("motivo") or "")
-    vez = 1 + sum(1 for e in goals.events(None, g["id"]) if e.get("action") == "retomar_estacionado")
+    # todos los eventos (no los ultimos 200 del default): una vez repetida
+    # devolveria una solicitud vieja ya contestada
+    vez = 1 + sum(1 for e in goals.events(None, g["id"], limit=100_000)
+                  if e.get("action") == "retomar_estacionado")
     titulo = f"goal: {g.get('title')} -- {_motivo_legible(g, espera)}: seguir?"[:200]
     s = preguntar(g, "retomar", {"motivo": motivo, "vez": vez}, titulo, vez) or {}
     espera["solicitud"] = s.get("id")
