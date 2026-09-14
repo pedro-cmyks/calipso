@@ -2684,12 +2684,27 @@ def _cancelar_tarea(tarea) -> None:
         _LOOP_PRINCIPAL.call_soon_threadsafe(tarea.cancel)
 
 
+def _goals_apagados() -> bool:
+    """El interruptor de produccion (rev:lente-riesgo): `CALIPSO_GOALS=off`
+    (o 0, no) apaga la funcion entera sin tocar nada en disco: ni la
+    propuesta gasta la cabeza, ni dale/segui transicionan, ni se lanza
+    ningun bucle (tampoco la reconciliacion del arranque). Se lee del
+    entorno en cada llamada: alcanza con reiniciar el server con la
+    variable. Default: encendido."""
+    return os.environ.get("CALIPSO_GOALS", "on").strip().lower() in ("off", "0", "no")
+
+
+APAGADOS = "goals apagados por CALIPSO_GOALS=off"
+
+
 def _lanzar_bucle(goal_id: str) -> None:
     """Desde el loop (los endpoints y el turno corren en el): crea el
     runner y su tarea si no hay una viva. Desde un hilo (la reconciliacion
     en to_thread) la programa en el loop principal con
     call_soon_threadsafe; sin loop principal (tests sincronos) no hace
-    nada: el que llama decide."""
+    nada: el que llama decide. Con CALIPSO_GOALS=off no lanza nada."""
+    if _goals_apagados():
+        return
     vivo = _GOALS_EN_CURSO.get(goal_id)
     if vivo and not vivo["tarea"].done():
         return
@@ -4405,6 +4420,8 @@ def _arrancar_goal(goal_id: str, tope: dict | None = None, raiz: str | None = No
     goal = goals.load(None, goal_id)
     if goal is None:
         raise goals.ErrorGoal(f"goal inexistente: {goal_id}")
+    if _goals_apagados():
+        raise goals.ErrorGoal(APAGADOS)      # un active sin runner seria un goal muerto en silencio
     if goal.get("status") != goals.PROPOSED:
         raise goals.ErrorGoal("dale solo arranca un goal proposed; para uno waiting usa segui")
     if goal.get("privado"):
@@ -4480,6 +4497,8 @@ def _retomar_goal(goal_id: str, nota: str | None = None, con: str | None = None,
     goal = goals.load(None, goal_id)
     if goal is None:
         raise goals.ErrorGoal(f"goal inexistente: {goal_id}")
+    if _goals_apagados():
+        raise goals.ErrorGoal(APAGADOS)
     if con:
         if con not in goals.MANOS:
             raise goals.ErrorGoal(f"manos invalidas: {con!r} (son {goals.MANOS})")
@@ -4541,6 +4560,10 @@ async def _atender_goal(texto: str, features: dict, chat_id: str | None,
         if verbo == "estado":
             g = activo or _ultimo_proposed()
             return (goals.resumen(g) if g else "no hay ningun goal activo ni propuesto"), False
+        if _goals_apagados():
+            # el interruptor: ni la propuesta gasta la cabeza (leer el
+            # estado, arriba, sigue valiendo)
+            return APAGADOS, True
         if verbo == "dale":
             if activo and activo.get("status") == goals.WAITING \
                     and (activo.get("espera") or {}).get("motivo") == "cumplido":

@@ -905,3 +905,43 @@ def test_parar_estaciona_retomar_en_el_inbox_y_segui_la_cierra(goal_home, chat, 
     assert len(s) == 1 and s[0]["accion"]["forma"]["vez"] == 2
     chat.cliente.post(f"/api/goals/{g['id']}/segui", json={"nota": "sigue"})
     assert permisos_almacen.abiertas() == [] and goals.load(None, g["id"])["status"] == goals.ACTIVE
+
+
+@pytest.mark.parametrize("valor", ["off", "0", "no", "OFF"])
+def test_calipso_goals_off_apaga_la_funcion_entera(goal_home, chat, repo, monkeypatch, valor):
+    """rev:lente-riesgo importante: no habia interruptor para apagar la
+    funcion si algo sale mal en produccion (el server relanzaba bucles en
+    cada arranque y cada /goal gastaba una llamada de opus). `CALIPSO_GOALS`
+    (default on): off|0|no -> `_atender_goal` contesta sin gastar la
+    cabeza, `_lanzar_bucle` no lanza nada (dale, segui, propuesta,
+    reconciliacion) y dale/segui no transicionan (un active sin runner
+    seria un goal muerto en silencio)."""
+    _proponer(chat, repo)                                          # con la funcion encendida
+    g = goals.list_goals()[0]
+    monkeypatch.setenv("CALIPSO_GOALS", valor)
+    llamadas = []
+    monkeypatch.setattr(srv, "_cabeza_del_goal", lambda *a, **k: llamadas.append(1) or dict(PROPUESTA))
+    eventos = chat.turno(f"/goal ordena el README en: {repo}")
+    assert "goals apagados por CALIPSO_GOALS=off" in _dicho(eventos) and llamadas == []
+    assert "goals apagados" in _dicho(chat.turno("/goal dale"))
+    assert goals.load(None, g["id"])["status"] == goals.PROPOSED
+    r = chat.cliente.post(f"/api/goals/{g['id']}/dale")
+    assert r.status_code == 409 and "CALIPSO_GOALS" in r.json()["detail"]
+    with pytest.raises(goals.ErrorGoal, match="CALIPSO_GOALS"):
+        srv._retomar_goal(g["id"])
+    runners = []
+    monkeypatch.setattr(srv, "_runner_de", lambda gid: runners.append(gid))
+    srv._lanzar_bucle(g["id"])
+    assert srv._reconciliar_goals() == [g["id"]] and runners == []   # tocado, pero sin bucle
+    assert srv._GOALS_EN_CURSO == {}
+    # el estado sigue leyendose
+    assert "proposed" in texto_visible(chat.turno("/goal estado"))
+
+
+def test_calipso_goals_on_por_defecto(goal_home, chat, repo, monkeypatch):
+    monkeypatch.delenv("CALIPSO_GOALS", raising=False)
+    assert srv._goals_apagados() is False
+    monkeypatch.setenv("CALIPSO_GOALS", "on")
+    assert srv._goals_apagados() is False
+    monkeypatch.setenv("CALIPSO_GOALS", "")
+    assert srv._goals_apagados() is False
