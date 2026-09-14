@@ -27,6 +27,7 @@ import {textoDeInbox, contadorDeInbox} from "./inbox.js";
 import {textoDeAparatos, contadorDeAparatos,
         alcanceDe} from "./aparatos.js";
 import {textoDeAduana} from "./aduana.js";
+import {textoDeGoals, contadorDeGoals} from "./goals.js";
 
 const lienzo = document.getElementById("mapa");
 const sinFabrica = document.getElementById("sin-fabrica");
@@ -846,6 +847,87 @@ cajaAduana?.addEventListener("change", evento => {
   cajaAduana.innerHTML = textoDeAduana(datosAduana, filtrosAduana, maquinaAduana);
 });
 
+// --- Goals: los goals que corren, lo que esperan y su ledger --------------
+//
+// La septima sub-pestana (spec goals 2026-09-13, seccion 10). Con badge (los
+// `waiting`: algo espera a Pedro) y con intervalo de 60 s (molde Aparatos):
+// un golpe termina solo, y "esperando a Pedro" tiene que verse sin buscarlo.
+// No hay push al ws fuera de un turno: es sondeo.
+const cajaGoals = document.getElementById("goals");
+const badgeGoals = document.getElementById("badge-goals");
+let mensajeGoals = null;
+
+async function pintarGoals() {
+  // guarda de arranque.test.js: el DOM de mentira no tiene ni la caja ni el badge
+  if (!cajaGoals && !badgeGoals) return;
+  const sinLista = texto => {
+    if (cajaGoals) cajaGoals.innerHTML = `<div class="vacio">${texto}</div>`;
+    pintarBadge(badgeGoals, 0);
+  };
+  try {
+    const r = await fetch("/api/goals?limit=20");
+    if (!r.ok) {
+      sinLista(r.status === 401 || r.status === 403
+        ? "Solo desde la Ally, un navegador o un tablero."
+        : "No se pudo leer los goals.");
+      return;
+    }
+    const datos = await r.json();
+    let golpes = [];
+    if (datos?.activo?.id) {
+      // el ledger solo del activo: el resto se lee por id al abrirlo
+      const re = await fetch(`/api/goals/${encodeURIComponent(datos.activo.id)}/estado`).catch(() => null);
+      if (re && re.ok) golpes = (await re.json().catch(() => ({}))).golpes || [];
+    }
+    pintarBadge(badgeGoals, contadorDeGoals(datos));
+    if (cajaGoals) {
+      cajaGoals.innerHTML = (mensajeGoals ? `<div class="aviso">${mensajeGoals}</div>` : "") +
+        textoDeGoals(datos, golpes);
+    }
+  } catch (_) {
+    sinLista("No se pudo leer los goals.");
+  }
+}
+
+function avisarEnGoals(texto) {
+  mensajeGoals = texto;
+  pintarGoals();
+  setTimeout(() => {
+    if (mensajeGoals === texto) { mensajeGoals = null; pintarGoals(); }
+  }, 5000);
+}
+
+cajaGoals?.addEventListener("click", async evento => {
+  const boton = evento.target.closest("button[data-goal]");
+  if (!boton) return;
+  const accion = boton.dataset.goal;
+  const id = boton.dataset.id;
+  const tarjeta = boton.closest(".goal") || boton;
+  const botones = tarjeta.querySelectorAll ? tarjeta.querySelectorAll("button") : [boton];
+  for (const b of botones) b.disabled = true;
+  try {
+    const cuerpo = {};
+    if (accion === "segui") {
+      const nota = tarjeta.querySelector?.(`input[data-nota-de="${CSS.escape(id)}"]`);
+      if (nota && nota.value.trim()) cuerpo.nota = nota.value.trim();
+    }
+    const r = await fetch(`/api/goals/${encodeURIComponent(id)}/${accion}`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(cuerpo)});
+    if (!r.ok) {
+      let detalle = "no se pudo";
+      try { detalle = (await r.json()).detail || detalle; } catch (_) {}
+      alert(detalle);
+    } else {
+      avisarEnGoals(`listo: ${accion}`);
+    }
+  } finally {
+    for (const b of botones) b.disabled = false;
+    await pintarGoals();
+  }
+});
+pintarGoals();
+
 for (const boton of document.querySelectorAll("#submesa button")) {
   boton.addEventListener("click", () => {
     const vista = boton.dataset.vista;
@@ -859,6 +941,7 @@ for (const boton of document.querySelectorAll("#submesa button")) {
     cajaPermisos?.classList.toggle("oculto", vista !== "permisos");
     cajaAparatos?.classList.toggle("oculto", vista !== "aparatos");
     cajaAduana?.classList.toggle("oculto", vista !== "aduana");
+    cajaGoals?.classList.toggle("oculto", vista !== "goals");
     // igual que la pestana global de "Mesa" (spec seccion 9): sin esto,
     // tocar una sub-pestana muestra la foto del momento en que cargo la
     // pagina.
@@ -867,6 +950,7 @@ for (const boton of document.querySelectorAll("#submesa button")) {
     if (vista === "permisos") pintarPermisos();
     if (vista === "aparatos") pintarAparatos();
     if (vista === "aduana") pintarAduana();
+    if (vista === "goals") pintarGoals();
   });
 }
 
@@ -1409,6 +1493,10 @@ setInterval(pintarPermisos, 60_000).unref?.();
 // nuevo sin que Pedro recargue. Contra los 10 minutos que vive un
 // golpe, 60 s deja de sobra para verlo y contestarlo.
 setInterval(pintarAparatos, 60_000).unref?.();
+// Y los goals (spec goals 2026-09-13, seccion 10): no hay push al ws
+// fuera de un turno; un golpe que termino o un goal que quedo esperando a
+// Pedro aparece por este sondeo.
+setInterval(pintarGoals, 60_000).unref?.();
 
 const panelCentro = document.getElementById("panel-centro");
 const panelRazonamiento = document.getElementById("razonamiento");

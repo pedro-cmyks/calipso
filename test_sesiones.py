@@ -401,6 +401,8 @@ def test_los_alcances_son_la_tabla_del_spec():
     ("/api/routines", "GET"),
     ("/api/aduana", "GET"),                   # ver los cruces (sin carga ni chat: lo recorta el endpoint)
     ("/api/carga", "GET"),                    # la maquina: numeros y nombres de modelos
+    ("/api/goals", "GET"),                    # ver los goals (spec goals 2026-09-13)
+    ("/api/goals/goal_abc/estado", "GET"),
 ])
 def test_el_tablero_ve_toda_la_fabrica(path, metodo):
     assert sesiones.permite("tablero", path, metodo) is True
@@ -451,6 +453,13 @@ def test_el_tablero_firma_la_mesa_y_los_permisos(path):
     ("/api/routines/abc", "PUT"),
     ("/api/routines/abc", "DELETE"),
     ("/api/routines/abc/run", "POST"),
+    # un goal se arranca, para y cierra desde la Ally o el navegador, no desde un tablero
+    ("/api/goals", "POST"),
+    ("/api/goals/goal_abc/dale", "POST"),
+    ("/api/goals/goal_abc/no", "POST"),
+    ("/api/goals/goal_abc/parar", "POST"),
+    ("/api/goals/goal_abc/segui", "POST"),
+    ("/api/goals/goal_abc", "PUT"),
     # la conversacion es del navegador, no de la mesa
     ("/api/chats", "GET"),
     ("/ws/chat", "GET"),

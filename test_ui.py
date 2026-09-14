@@ -38,6 +38,17 @@ def test_la_pwa_carga_los_chats_tras_el_domcontentloaded():
     assert carga_los_chats_tras_el_dom(HTML.read_text(encoding="utf-8"))
 
 
+def test_la_goal_bar_es_de_solo_lectura_y_sondea():
+    """spec goals 2026-09-13, ruling 15.3: la #goalBar no transiciona nada;
+    se refresca por sondeo cada 60 s."""
+    text = HTML.read_text(encoding="utf-8")
+    for boton in ("goalAdvance", "goalVerify", "goalEvidence", "goalBlock", "goalComplete", "goalCancel",
+                  "goalPatch", "auto_closed"):
+        assert boton not in text, boton
+    assert 'id="goalOpen"' in text and "function loadGoal()" in text
+    assert "setInterval(loadGoal, 60_000)" in text and "/api/goals?limit=1" in text
+
+
 def main() -> int:
     fails: list[str] = []
     text = HTML.read_text(encoding="utf-8")
