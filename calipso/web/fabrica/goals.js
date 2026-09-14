@@ -36,6 +36,43 @@ export function esperaDe(goal) {
   return partes.join(" - ");
 }
 
+// Como se sigue por el chat cuando la espera no dice nada mas (HELP_TEXT
+// del server): el tope se levanta con `tope:`, la cuota se esquiva con la
+// otra familia, el cumplido se cierra con dale o se devuelve con nota, y
+// todo lo demas es `/goal segui <nota>`.
+const INSTRUCCION = {
+  tope: "/goal segui tope: <N golpes | Nm | N unidades>",
+  cuota: "/goal segui con: claude|codex (la otra familia)",
+  cumplido: "/goal dale = cerrar; /goal segui <nota> = no esta cumplido, segui",
+};
+const INSTRUCCION_DEFECTO = "/goal segui <nota>";
+
+/** La instruccion por el chat de un goal waiting: la opcion "por el chat:"
+ *  que dejo el runner (goals_runner.OPCIONES_RETOMAR) si vino, y si no la
+ *  de la tabla por motivo. Vacia fuera de waiting. */
+export function instruccionDe(goal) {
+  if (goal?.status !== "waiting") return "";
+  const e = goal.espera || {};
+  const delRunner = (Array.isArray(e.opciones) ? e.opciones : [])
+    .map(o => String(o ?? "")).find(o => /^por el chat:/i.test(o.trim()));
+  if (delRunner) return delRunner.trim().replace(/^por el chat:\s*/i, "");
+  return INSTRUCCION[e.motivo] || INSTRUCCION_DEFECTO;
+}
+
+/** Las opciones de la espera (si = ..., no = ...) como lista, sin la de "por
+ *  el chat" (esa va aparte, como instruccion), y la instruccion. Todo por
+ *  escapar: las opciones las escribe el runner, pero el diagnostico de una
+ *  no convergencia lleva texto del martillo. */
+function opcionesDe(goal) {
+  if (goal?.status !== "waiting") return "";
+  const e = goal.espera || {};
+  const opciones = (Array.isArray(e.opciones) ? e.opciones : [])
+    .map(o => String(o ?? "")).filter(o => o.trim() && !/^por el chat:/i.test(o.trim()));
+  const lista = opciones.length
+    ? `<ul class="opciones">${opciones.map(o => `<li>${escapar(o)}</li>`).join("")}</ul>` : "";
+  return lista + `<div class="tenue">por el chat: ${escapar(instruccionDe(goal))}</div>`;
+}
+
 function filaDeGolpe(g) {
   const v = g?.veredicto_del_golpe || {};
   const cabeza = g?.fase === "inicio"
@@ -97,7 +134,7 @@ export function tarjetaDeGoal(goal, golpes = [], notas = {}) {
     `<div class="fila"><span class="tenue">${escapar(goal?.id || "")} - manos ${escapar(goal?.manos || "?")}</span>` +
     `<span>${escapar(consumoDe(goal))}</span></div>` +
     (goal?.criterio ? `<div class="tenue">criterio: ${escapar(JSON.stringify(goal.criterio))}</div>` : "") +
-    (espera ? `<div class="espera">esperando a Pedro: ${escapar(espera)}</div>` : "") +
+    (espera ? `<div class="espera">esperando a Pedro: ${escapar(espera)}</div>${opcionesDe(goal)}` : "") +
     (goal?.plan?.length ? `<div class="tenue">plan: ${escapar(goal.plan.join(" -> "))}</div>` : "") +
     ((golpes || []).length ? `<details><summary>ledger (${escapar((golpes || []).length)} golpes)</summary>` +
       (golpes || []).slice().reverse().map(filaDeGolpe).join("") + `</details>` : "") +

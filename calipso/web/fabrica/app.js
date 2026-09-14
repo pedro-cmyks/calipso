@@ -527,8 +527,13 @@ async function pintarPermisos() {
       return;
     }
     const datos = await r.json();
-    cajaPermisos.innerHTML = textoDePermisos(datos, mensajePermisos);
     pintarBadgeDePermisos(datos);
+    // la nota de una solicitud de un goal no se pierde al repintar: mismo
+    // molde que pintarGoals (mientras el foco esta en una nota, solo el
+    // badge; fuera de eso lo escrito se repone en el value)
+    const foco = typeof document !== "undefined" ? document.activeElement : null;
+    if (foco?.dataset?.notaDe && cajaPermisos.contains?.(foco)) return;
+    cajaPermisos.innerHTML = textoDePermisos(datos, mensajePermisos, notasEscritas(cajaPermisos));
   } catch (_) {
     cajaPermisos.innerHTML = '<div class="vacio">No se pudo leer los permisos.</div>';
     pintarBadgeDePermisos(null);
@@ -561,10 +566,15 @@ cajaPermisos?.addEventListener("click", async evento => {
   try {
     let r;
     if (accion === "responder") {
+      // la nota (solo la dibuja una solicitud de familia goal): el runner
+      // la aplica como nota de Pedro; vacia no viaja
+      const cuerpo = {respuesta: boton.dataset.respuesta};
+      const nota = tarjeta.querySelector?.(`input[data-nota-de="${CSS.escape(id)}"]`);
+      if (nota && nota.value.trim()) cuerpo.nota = nota.value.trim();
       r = await fetch(
         `/api/permisos/solicitudes/${encodeURIComponent(id)}/responder`,
         {method: "POST", headers: {"Content-Type": "application/json"},
-         body: JSON.stringify({respuesta: boton.dataset.respuesta})});
+         body: JSON.stringify(cuerpo)});
     } else if (accion === "revocar") {
       r = await fetch(
         `/api/permisos/concedidos/${encodeURIComponent(id)}/revocar`,

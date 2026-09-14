@@ -1,7 +1,7 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
 import {textoDeGoals, tarjetaDeGoal, contadorDeGoals, consumoDe, esperaDe,
-        notasEscritas} from "./goals.js";
+        notasEscritas, instruccionDe} from "./goals.js";
 
 const BASE = {
   id: "goal_abc123", title: "saludo.py con hola() y su test", objective: "crea saludo.py",
@@ -117,4 +117,41 @@ test("la nota que Pedro tipea en un waiting sobrevive al repintado", () => {
   // el goal sin nota nace sin value, y sin el mapa tampoco
   assert.doesNotMatch(html.slice(html.indexOf('data-nota-de="goal_otro"')), /value=/);
   assert.doesNotMatch(tarjetaDeGoal(w), /value=/);
+});
+
+test("la espera trae las opciones del runner y la instruccion por el chat", () => {
+  // cierre 2026-09-14 (Pedro no se pierde): un waiting por tope, cuota o no
+  // convergencia lleva `espera.opciones` (goals_runner.OPCIONES_RETOMAR) y
+  // la tarjeta las lista; y siempre dice como seguir por el chat: la opcion
+  // "por el chat:" del runner si vino, si no `/goal segui <nota>` (para
+  // tope, `/goal segui tope: ...`).
+  const tope = {...BASE, status: "waiting", espera: {motivo: "tope", tope: "golpes",
+    opciones: ["si = seguir con el tope ampliado un 50 %", "no = cancelar el goal",
+               "por el chat: /goal segui tope: <N golpes | Nm | N unidades>"]}};
+  assert.equal(instruccionDe(tope), "/goal segui tope: <N golpes | Nm | N unidades>");
+  const html = tarjetaDeGoal(tope);
+  assert.match(html, /<li>si = seguir con el tope ampliado un 50 %<\/li>/);
+  assert.match(html, /<li>no = cancelar el goal<\/li>/);
+  assert.match(html, /por el chat: \/goal segui tope: &lt;N golpes \| Nm \| N unidades&gt;/);
+  // sin opciones (la pregunta del martillo, una compuerta, el cumplido): la instruccion igual
+  const pregunta = {...BASE, status: "waiting", espera: {motivo: "pregunta", pregunta: "pytest o unittest?"}};
+  assert.equal(instruccionDe(pregunta), "/goal segui <nota>");
+  assert.match(tarjetaDeGoal(pregunta), /por el chat: \/goal segui &lt;nota&gt;/);
+  assert.doesNotMatch(tarjetaDeGoal(pregunta), /<ul/);
+  // tope sin opciones (un goal viejo): la instruccion del tope
+  assert.equal(instruccionDe({...BASE, status: "waiting", espera: {motivo: "tope", tope: "minutos"}}),
+               "/goal segui tope: <N golpes | Nm | N unidades>");
+  // el cumplido: cerrar o devolverlo con nota
+  const c = instruccionDe({...BASE, status: "waiting", espera: {motivo: "cumplido"}});
+  assert.match(c, /\/goal dale/);
+  assert.match(c, /\/goal segui <nota>/);
+  // fuera de waiting no hay instruccion ni opciones
+  assert.equal(instruccionDe(BASE), "");
+  assert.equal(instruccionDe(null), "");
+  assert.doesNotMatch(tarjetaDeGoal(BASE), /por el chat/);
+  // las opciones tambien pasan por escapar
+  const malo = "<img src=x onerror=alert(1)>";
+  const m = tarjetaDeGoal({...tope, espera: {motivo: "tope", opciones: [malo, 42, null]}});
+  assert.doesNotMatch(m, /<img/);
+  assert.match(m, /&lt;img/);
 });
