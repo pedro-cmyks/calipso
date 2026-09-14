@@ -9,11 +9,14 @@ Operaciones y formas CONCRETAS (nunca clases abiertas):
   cerrar      {"goal": id, "n": n}               el checkpoint cumplido: si = complete
   pregunta    {"goal": id, "n": n, "pregunta"}   la pregunta del veredicto
   raiz_nueva  {"goal": id, "raiz": ruta}         una raiz fuera del repo
+  retomar     {"goal": id, "motivo", "vez": k}   un waiting sin nada que sondear (tope, cuota,
+                                                 no convergencia, parado, server reiniciado):
+                                                 si = seguir (tope ampliado si era tope), no = cancelar
   compuerta   {"goal": id, "familia", "forma"}   una familia de la tabla (instalar_home, ...)
   comando     {"goal": id, "argv": [...], "comando"}  lo que decide el hook, por el motor
   archivo     {"goal": id, "tool", "ruta"}       idem para las herramientas de archivo
 
-Las cuatro primeras preguntan SIEMPRE (siempre_pregunta): un "si para
+Las cinco primeras preguntan SIEMPRE (siempre_pregunta): un "si para
 siempre" sobre "arrancar cualquier goal" no existe. `compuerta` va por la
 tabla del goal (`detalle["niveles"]`): directo/pregunta/nunca. `comando` y
 `archivo` reusan las MISMAS funciones puras del hook (goals_hook.familia_de_
@@ -34,7 +37,7 @@ from .acciones import (Accion, Veredicto, NIVEL_DIRECTO, NIVEL_NUNCA, NIVEL_PREG
                        registrar_clasificador, registrar_cobertura)
 
 FAMILIA = "goal"
-OPERACIONES = ("dale", "cerrar", "pregunta", "compuerta", "raiz_nueva", "comando", "archivo")
+OPERACIONES = ("dale", "cerrar", "pregunta", "compuerta", "raiz_nueva", "retomar", "comando", "archivo")
 # La tabla de Pedro (goals.COMPUERTAS), copiada para no importar `goals`
 # desde el paquete permisos (que tiene que poder negar aunque el resto del
 # repo no importe); test_goals_permisos la compara con la de goals.py.
@@ -105,7 +108,7 @@ def clasificar_goal(a: Accion, techos: dict) -> Veredicto:
     op = a.operacion
     forma = a.forma or {}
     detalle = a.detalle or {}
-    if op in ("dale", "cerrar", "pregunta", "raiz_nueva"):
+    if op in ("dale", "cerrar", "pregunta", "raiz_nueva", "retomar"):
         return Veredicto(NIVEL_PREGUNTA, f"goal {op}: lo decide Pedro, cada vez", True)
     if op == "compuerta":
         familia = forma.get("familia")

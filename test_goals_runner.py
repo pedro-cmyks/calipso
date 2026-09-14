@@ -269,8 +269,9 @@ def test_tope_de_golpes(home, tmp_path):
     assert r.iteracion()["accion"] == "golpe"
     it = r.iteracion()
     assert it["accion"] == "golpe" and it["estado"] == goals.WAITING
-    assert goals.load(None, g["id"])["espera"] == {"motivo": "tope", "tope": "golpes",
-                                                    "consumo": goals.consumo(goals.load(None, g["id"]))}
+    e = goals.load(None, g["id"])["espera"]
+    assert e["motivo"] == "tope" and e["tope"] == "golpes" and e["consumo"] == goals.consumo(goals.load(None, g["id"]))
+    assert e["solicitud"] == "sol_1" and e["opciones"]                  # Pedro no se pierde: hay que sondear
     assert len(f.llamadas["manos"]) == 2
 
 
@@ -294,6 +295,163 @@ def test_tope_de_mm_no_frena_en_cero(home, tmp_path):
     f = Falsas(resultados=[resultado("sigo")])
     g = goal_activo(home, tmp_path, tope={"golpes": 9, "minutos": 60, "unidades": 60, "mm": 0})
     assert f.runner(g["id"]).iteracion()["estado"] == goals.ACTIVE
+
+
+# --- Pedro no se pierde: la solicitud `retomar` (cierre 2026-09-14) ---------------------------
+
+def _retomar_estacionada(f, g):
+    e = goals.load(None, g["id"])["espera"]
+    s = [p for p in f.llamadas["preguntar"] if p["operacion"] == "retomar"][-1]
+    assert e["solicitud"] == s["id"] and s["forma"]["motivo"] == e["motivo"] and s["forma"]["vez"] >= 1
+    assert e["opciones"] and e["consumo"]["golpes"] >= 0
+    return s
+
+
+def test_cada_waiting_sin_martillo_deja_una_solicitud_retomar(home, tmp_path):
+    """rev:lente-spec: un waiting por tope, cuota o no convergencia no tenia
+    solicitud, no aparecia en el inbox ni en el chat y Pedro se perdia justo
+    ahi. Ahora cada uno estaciona `retomar` (familia goal, siempre
+    pregunta) con el motivo, el consumo contra el tope y las opciones, y el
+    titulo dice `goal: <titulo> -- <motivo>: seguir?`."""
+    # tope
+    f = Falsas(resultados=[resultado("sigo")])
+    g = goal_activo(home, tmp_path, tope={"golpes": 1, "minutos": 60, "unidades": 60})
+    r = f.runner(g["id"])
+    assert r.iteracion()["estado"] == goals.WAITING
+    s = _retomar_estacionada(f, g)
+    e = goals.load(None, g["id"])["espera"]
+    assert e["motivo"] == "tope" and "tope" in s["forma"]["motivo"]
+    assert any("50" in o for o in e["opciones"]) and any("/goal segui tope:" in o for o in e["opciones"])
+    goals.transicionar(g["id"], goals.CANCELLED, "x")
+    # cuota (por la lectura pasiva)
+    f = Falsas(resultados=[resultado("sigo")],
+               consumo={"codex_used_percent": 95.0, "claude_limite": False, "resets_at": FUTURO})
+    g = goal_activo(home, tmp_path, manos="codex")
+    assert f.runner(g["id"]).iteracion()["accion"] == "cuota"
+    assert goals.load(None, g["id"])["espera"]["motivo"] == "cuota" and _retomar_estacionada(f, g)
+    assert any("con: claude" in o for o in goals.load(None, g["id"])["espera"]["opciones"])
+    goals.transicionar(g["id"], goals.CANCELLED, "x")
+    # cuota (por el fallo del CLI)
+    f = Falsas(resultados=[resultado(exit=1, stderr="You've hit your usage limit.")])
+    g = goal_activo(home, tmp_path)
+    assert f.runner(g["id"]).iteracion()["accion"] == "cuota"
+    assert goals.load(None, g["id"])["espera"]["motivo"] == "cuota" and _retomar_estacionada(f, g)
+    goals.transicionar(g["id"], goals.CANCELLED, "x")
+    # no convergencia
+    f = Falsas(resultados=[resultado("sigo")])
+    f.diff_valor = ""
+    g = goal_activo(home, tmp_path)
+    r = f.runner(g["id"])
+    for _ in (1, 2):
+        r.iteracion()
+    assert r.iteracion()["estado"] == goals.WAITING
+    e = goals.load(None, g["id"])["espera"]
+    assert e["motivo"] == "no_convergencia" and _retomar_estacionada(f, g) and "tres golpes" in e["diagnostico"]
+    assert any("cambiar el plan" in o for o in e["opciones"])
+    goals.transicionar(g["id"], goals.CANCELLED, "x")
+    # lo que transiciona el server (parado, apagado, reiniciado) usa el mismo estacionador
+    g = goal_activo(home, tmp_path)
+    goals.transicionar(g["id"], goals.WAITING, "server reiniciado", motivo_detalle={"git_status": ""})
+    f = Falsas()
+    goal = gr.estacionar_retomar(goals.load(None, g["id"]), f.preguntar)
+    assert goal["espera"]["solicitud"] == "sol_1" and goal["espera"]["motivo"] == "server reiniciado"
+    assert f.llamadas["preguntar"][0]["forma"] == {"motivo": "server reiniciado", "vez": 1}
+    assert goals.events(None, g["id"])[-1]["action"] == "retomar_estacionado"
+    # una segunda vez: otra solicitud (vez 2), nunca la misma forma
+    goals.transicionar(g["id"], goals.ACTIVE, "x")
+    goals.transicionar(g["id"], goals.WAITING, "parado por Pedro")
+    goal = gr.estacionar_retomar(goals.load(None, g["id"]), f.preguntar)
+    assert f.llamadas["preguntar"][1]["forma"] == {"motivo": "parado por Pedro", "vez": 2}
+    assert goal["espera"]["solicitud"] == "sol_2"
+    # sin motor de permisos (preguntar devuelve None) la espera queda sin solicitud, sin reventar
+    goals.transicionar(g["id"], goals.ACTIVE, "x")
+    goals.transicionar(g["id"], goals.WAITING, "parado por Pedro")
+    goal = gr.estacionar_retomar(goals.load(None, g["id"]), lambda *a, **k: None)
+    assert goal["espera"]["solicitud"] is None
+
+
+def test_el_si_a_retomar_sigue_y_amplia_el_tope_cuando_toca(home, tmp_path):
+    f = Falsas(resultados=[resultado("sigo")])
+    g = goal_activo(home, tmp_path, tope={"golpes": 2, "minutos": 60, "unidades": 60})
+    r = f.runner(g["id"])
+    assert r.iteracion()["estado"] == goals.ACTIVE
+    assert r.iteracion()["estado"] == goals.WAITING
+    s = _retomar_estacionada(f, g)
+    assert r.iteracion()["accion"] == "esperando"
+    f.solicitudes[s["id"]] = "aprobada"
+    it = r.iteracion()
+    assert it["accion"] == "retomado" and it["estado"] == goals.ACTIVE
+    g2 = goals.load(None, g["id"])
+    assert g2["tope"] == {"golpes": 3, "minutos": 90, "unidades": 90, "mm": 0}      # ampliado un 50 %
+    assert r.iteracion()["accion"] == "golpe" and len(f.llamadas["manos"]) == 3
+    assert r.iteracion()["estado"] == goals.WAITING                                   # tope de nuevo: 3 golpes
+    s2 = _retomar_estacionada(f, g)
+    assert s2["id"] != s["id"] and s2["forma"]["vez"] == 2
+    # cuota: el si retoma sin tocar el tope
+    goals.transicionar(g["id"], goals.CANCELLED, "x")
+    f = Falsas(resultados=[resultado("sigo")],
+               consumo={"codex_used_percent": 95.0, "claude_limite": False, "resets_at": FUTURO})
+    g = goal_activo(home, tmp_path, manos="codex")
+    r = f.runner(g["id"])
+    assert r.iteracion()["accion"] == "cuota"
+    f.solicitudes[_retomar_estacionada(f, g)["id"]] = "aprobada"
+    assert r.iteracion()["accion"] == "retomado" and goals.load(None, g["id"])["tope"]["golpes"] == 6
+
+
+def test_el_no_a_retomar_cancela_con_nota(home, tmp_path):
+    f = Falsas(resultados=[resultado("sigo")])
+    g = goal_activo(home, tmp_path, tope={"golpes": 1, "minutos": 60, "unidades": 60})
+    r = f.runner(g["id"])
+    assert r.iteracion()["estado"] == goals.WAITING
+    f.solicitudes[_retomar_estacionada(f, g)["id"]] = "negada"
+    it = r.iteracion()
+    assert it["accion"] == "cancelado" and it["estado"] == goals.CANCELLED
+    g2 = goals.load(None, g["id"])
+    assert g2["motivo_cierre"].startswith("Pedro dijo que no") and goals.activo() is None
+    assert r.iteracion()["accion"] == "nada"
+
+
+def test_la_nota_de_la_solicitud_llega_al_martillo(home, tmp_path):
+    """El carril 3 guarda `nota` en la solicitud respondida; el runner la
+    recibe de `evaluar_solicitud` (una tupla (estado, nota) o un dict) y la
+    aplica como nota de Pedro: el golpe siguiente la lleva en el prompt."""
+    f = Falsas(resultados=[resultado("preguntar", "necesito saber", pregunta="pytest o unittest?"),
+                           resultado("sigo")])
+    g = goal_activo(home, tmp_path)
+    r = f.runner(g["id"])
+    assert r.iteracion()["accion"] == "pregunta"
+    sid = f.llamadas["preguntar"][-1]["id"]
+    evaluar_base = f.evaluar
+    f.solicitudes[sid] = "aprobada"
+    r.evaluar_solicitud = lambda s: (evaluar_base(s), "pytest, con fixtures")
+    assert r.iteracion()["accion"] == "retomado"
+    assert goals.load(None, g["id"])["ultima_nota"] == "pytest, con fixtures"
+    assert r.iteracion()["accion"] == "golpe"
+    assert "NOTA DE PEDRO: pytest, con fixtures" in f.llamadas["manos"][-1]["prompt"]
+    # la forma dict tambien; y sobre un retomar por tope la nota entra igual
+    goals.transicionar(g["id"], goals.WAITING, "tope", motivo_detalle={"tope": "golpes", "solicitud": "sol_t"})
+    f.solicitudes["sol_t"] = "aprobada"
+    r.evaluar_solicitud = lambda s: {"estado": evaluar_base(s), "nota": "tres golpes mas"}
+    assert r.iteracion()["accion"] == "retomado"
+    g2 = goals.load(None, g["id"])
+    assert g2["ultima_nota"] == "tres golpes mas" and g2["tope"]["golpes"] == 9
+    # el no al cerrar con nota: la nota es lo que falta
+    goals.transicionar(g["id"], goals.WAITING, "cumplido", motivo_detalle={"solicitud": "sol_c"})
+    f.solicitudes["sol_c"] = "negada"
+    r.evaluar_solicitud = lambda s: (evaluar_base(s), "falta el README")
+    assert r.iteracion()["respuesta"] == "no"
+    assert goals.load(None, g["id"])["ultima_nota"] == "falta el README"
+
+
+def test_un_waiting_sin_solicitud_no_gira_en_vano(home, tmp_path):
+    """rev:manos-runner y rev:lente-spec: un waiting sin solicitud dejaba la
+    tarea del goal leyendo goal.json cada tick sin nada que sondear.
+    `_esperando` sin solicitud devuelve `nada` (el bucle termina; dale/segui
+    relanzan)."""
+    g = goal_activo(home, tmp_path)
+    goals.transicionar(g["id"], goals.WAITING, "parado por Pedro")
+    it = Falsas().runner(g["id"]).iteracion()
+    assert it["accion"] == "nada" and it["estado"] == goals.WAITING and it["motivo"] == "parado por Pedro"
 
 
 # --- no convergencia, JSON invalido, timeout ----------------------------------------------
@@ -1721,7 +1879,7 @@ def test_el_bucle_viejo_no_borra_la_entrada_nueva(home, tmp_path, monkeypatch):
     import asyncio
     monkeypatch.setattr(gr, "GOAL_TICK_S", 0.05)
     g = goal_activo(home, tmp_path)
-    goals.transicionar(g["id"], goals.WAITING, "parado por Pedro")
+    goals.transicionar(g["id"], goals.WAITING, "parado por Pedro", motivo_detalle={"solicitud": "sol_x"})
     f = Falsas()
     viejo, nuevo = f.runner(g["id"]), f.runner(g["id"])
 

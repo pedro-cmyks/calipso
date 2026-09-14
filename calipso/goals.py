@@ -735,23 +735,48 @@ def nota_de_pedro(goal_id: str, texto: str) -> dict[str, Any]:
 
 
 RESPUESTAS_QUE_APLICAN = ("pregunta", "compuerta", "raiz_nueva")
+# Los waiting que no esperan nada del martillo sino a Pedro (ruling del
+# cierre 2026-09-14, "Pedro no se pierde"): cada uno estaciona una solicitud
+# `retomar` (si = seguir, no = cancelar) para que aparezca en el inbox.
+MOTIVOS_RETOMAR = ("tope", "cuota", "no_convergencia", "parado por Pedro", "server apagado",
+                   "server reiniciado")
+FACTOR_TOPE_RETOMAR = 1.5
 
 
-def aplicar_respuesta(goal_id: str, respuesta: str) -> dict[str, Any]:
-    """Lo que la respuesta de Pedro a una espera `compuerta`/`raiz_nueva`/
-    `pregunta` cambia en el goal ANTES de retomar (decision 16): `aprobada`
-    sobre una compuerta suma la preautorizacion al goal (decision 9) y
-    reescribe compuertas.json (el hook la lee); sobre una raiz nueva suma la
-    raiz; y siempre deja la nota en el ledger. NO transiciona: eso es del
-    que llama. La llaman el runner (el si del inbox) y `_retomar_goal` (un
-    `/goal segui` es un si): un si sin aplicar dejaria al hook denegando y
-    al martillo preguntando de nuevo. Sobre otra espera no toca nada."""
+def ampliar_tope(goal: dict[str, Any], factor: float = FACTOR_TOPE_RETOMAR) -> dict[str, Any]:
+    """El si de Pedro a un waiting por tope: golpes, minutos y unidades
+    suben `factor` (redondeo hacia arriba; `mm` no, lo gobierna la ruta
+    api). Recarga antes de escribir (last-writer-wins) y deja el evento."""
+    g = load(None, goal["id"])
+    if g is None:
+        raise ErrorGoal(f"goal inexistente: {goal['id']}")
+    viejo = {**TOPE_DEFECTO, **(g.get("tope") or {})}
+    nuevo = dict(viejo)
+    for k in ("golpes", "minutos", "unidades"):
+        nuevo[k] = int(-(-viejo[k] * factor // 1))
+    g["tope"] = validar_tope(nuevo)
+    escribir(g)
+    event(None, goal["id"], "tope_ampliado", de=viejo, a=g["tope"], factor=factor)
+    return g
+
+
+def aplicar_respuesta(goal_id: str, respuesta: str, nota: str | None = None) -> dict[str, Any]:
+    """Lo que la respuesta de Pedro a una espera cambia en el goal ANTES de
+    retomar (decision 16): `aprobada` sobre una compuerta suma la
+    preautorizacion al goal (decision 9) y reescribe compuertas.json (el
+    hook la lee); sobre una raiz nueva suma la raiz; sobre un `tope`
+    (solicitud `retomar`) amplia el tope un 50 %; y siempre deja la nota en
+    el ledger, con la `nota` que Pedro escribio al responder (carril 3:
+    `solicitud["nota"]`) si la hubo. NO transiciona: eso es del que llama.
+    La llaman el runner (el si del inbox) y `_retomar_goal` (un `/goal
+    segui` es un si): un si sin aplicar dejaria al hook denegando y al
+    martillo preguntando de nuevo. Sobre otra espera no toca nada."""
     goal = load(None, goal_id)
     if goal is None:
         raise ErrorGoal(f"goal inexistente: {goal_id}")
     espera = goal.get("espera") or {}
     motivo = espera.get("motivo")
-    if motivo not in RESPUESTAS_QUE_APLICAN:
+    if motivo not in RESPUESTAS_QUE_APLICAN and motivo not in MOTIVOS_RETOMAR:
         return goal
     si = respuesta == "aprobada"
     c = goal.setdefault("compuertas", {})
@@ -764,8 +789,18 @@ def aplicar_respuesta(goal_id: str, respuesta: str) -> dict[str, Any]:
         c["raices"] = list(c.get("raices") or []) + validar_raices([espera["raiz"]])
     escribir(goal)
     escribir_compuertas(goal)
-    nota_de_pedro(goal_id, f"Pedro respondio: {'si' if si else 'no'} a: "
-                           f"{espera.get('pregunta') or motivo}")
+    if si and motivo == "tope":
+        ampliar_tope(goal)
+    texto = f"Pedro respondio: {'si' if si else 'no'} a: {espera.get('pregunta') or motivo}"
+    if nota:
+        texto += f" -- {nota}"
+    nota_de_pedro(goal_id, texto)
+    if nota:
+        # la nota tal cual es lo que el martillo lee en el prompt (NOTA DE
+        # PEDRO): el "respondio si a" es para el ledger, no para el
+        g = load(None, goal_id)
+        g["ultima_nota"] = nota
+        escribir(g)
     return load(None, goal_id)
 
 

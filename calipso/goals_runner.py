@@ -48,7 +48,11 @@ Cada vuelta, con el goal `active`:
   8. no convergencia (tres golpes sin diff nuevo, la misma falta dos veces,
      el mismo comando fallando igual) -> `waiting` con diagnostico y
      opciones; y el tope, de nuevo.
-Con el goal `waiting` mira la solicitud (aprobada/negada) y retoma o cierra.
+Con el goal `waiting` mira la solicitud (aprobada/negada) y retoma o cierra;
+todo waiting que no espera nada del martillo (tope, cuota, no convergencia;
+parado y server apagado/reiniciado los estaciona el server) lleva una
+solicitud `retomar` (`estacionar_retomar`: Pedro no se pierde), y sin
+solicitud la vuelta devuelve `nada` (el bucle no gira en vano).
 Nunca levanta: cualquier excepcion deja el goal `failed` con motivo
 (invariante 6); un ErrorGoal (otro goal en curso) deja evento y telemetria,
 nunca pasa en silencio.
@@ -510,6 +514,72 @@ def _modelo_claude(goal: dict) -> str | None:
 
 
 # --------------------------------------------------------------------------
+# Pedro no se pierde: la solicitud `retomar` de un waiting sin martillo
+# --------------------------------------------------------------------------
+
+OPCIONES_RETOMAR = {
+    "tope": ("si = seguir con el tope ampliado un 50 %",
+             "no = cancelar el goal",
+             "por el chat: /goal segui tope: <N golpes | Nm | N unidades>"),
+    "cuota": ("si = reintentar cuando la ventana se libere",
+              "no = cancelar el goal",
+              "por el chat: /goal segui con: claude|codex (la otra familia)"),
+    "no_convergencia": OPCIONES_NO_CONVERGENCIA,
+}
+OPCIONES_RETOMAR_DEFECTO = ("si = seguir donde quedo", "no = cancelar el goal",
+                            "por el chat: /goal segui <nota>")
+
+
+def _motivo_legible(goal: dict, espera: dict) -> str:
+    """Lo que Pedro lee en el titulo de la solicitud: el motivo con el
+    consumo contra el tope (tope), la familia (cuota) o el diagnostico
+    (no convergencia)."""
+    motivo = str(espera.get("motivo") or "")
+    t = {**goals.TOPE_DEFECTO, **(goal.get("tope") or {})}
+    c = goals.consumo(goal)
+    consumo = (f"{c['golpes']}/{t['golpes']} golpes, {c['minutos']}/{t['minutos']} min, "
+               f"{c['unidades']}/{t['unidades']} unidades")
+    if motivo == "tope":
+        return f"tope de {espera.get('tope') or '?'} alcanzado ({consumo})"
+    if motivo == "cuota":
+        return f"cuota de {espera.get('manos') or goal.get('manos')} agotada ({consumo})"
+    if motivo == "no_convergencia":
+        return f"no converge: {str(espera.get('diagnostico') or '')[:80]} ({consumo})"
+    return f"{motivo} ({consumo})"
+
+
+def estacionar_retomar(goal: dict, preguntar: Callable) -> dict:
+    """Un waiting que no espera nada del martillo (goals.MOTIVOS_RETOMAR:
+    tope, cuota, no convergencia, parado, server apagado/reiniciado) no
+    aparecia en el inbox ni en el chat y Pedro se perdia justo ahi
+    (rev:lente-spec, ruling del cierre). Estaciona una solicitud `retomar`
+    (familia goal, siempre pregunta) por `preguntar(goal, "retomar", forma,
+    titulo, n)` = `_estacionar_para_pedro` en el server, con la forma
+    `{motivo, vez}` (la vez la hace unica: la pared de corrida y la
+    idempotencia por forma del motor devolverian la solicitud ANTERIOR,
+    ya contestada, y el goal retomaria solo), el titulo `goal: <titulo> --
+    <motivo>: seguir?` y, en la espera, el consumo y las opciones. Deja
+    `espera.solicitud` (recarga antes de escribir) y el evento
+    `retomar_estacionado`. La usa el runner al dejar waiting por tope,
+    cuota o no convergencia, y el server al parar, apagar y reconciliar.
+    Sin motor (preguntar devuelve None) la espera queda sin solicitud."""
+    g = goals.load(None, goal["id"]) or goal
+    espera = dict(g.get("espera") or {})
+    motivo = str(espera.get("motivo") or "")
+    vez = 1 + sum(1 for e in goals.events(None, g["id"]) if e.get("action") == "retomar_estacionado")
+    titulo = f"goal: {g.get('title')} -- {_motivo_legible(g, espera)}: seguir?"[:200]
+    s = preguntar(g, "retomar", {"motivo": motivo, "vez": vez}, titulo, vez) or {}
+    espera["solicitud"] = s.get("id")
+    espera["consumo"] = goals.consumo(g)
+    espera.setdefault("opciones", list(OPCIONES_RETOMAR.get(motivo, OPCIONES_RETOMAR_DEFECTO)))
+    espera["vez"] = vez
+    g["espera"] = espera
+    goals.escribir(g)
+    goals.event(None, g["id"], "retomar_estacionado", motivo=motivo, vez=vez, solicitud=s.get("id"))
+    return g
+
+
+# --------------------------------------------------------------------------
 # el runner
 # --------------------------------------------------------------------------
 
@@ -638,17 +708,33 @@ class Runner:
             return {"accion": "failed", "estado": goals.FAILED, "error": str(exc)}
 
     # -- waiting --
+    @staticmethod
+    def _respuesta(r) -> tuple[str | None, str | None]:
+        """Lo que devuelve `evaluar_solicitud`: 'aprobada' | 'negada' | None,
+        o con la nota que Pedro escribio al responder (carril 3, `solicitud
+        ["nota"]`) como (estado, nota) o {estado, nota}."""
+        if isinstance(r, tuple):
+            return (r[0] if r else None), (str(r[1]) if len(r) > 1 and r[1] else None)
+        if isinstance(r, dict):
+            return r.get("estado"), (str(r["nota"]) if r.get("nota") else None)
+        return r, None
+
     def _esperando(self, goal: dict) -> dict:
         espera = goal.get("espera") or {}
         sid = espera.get("solicitud")
         if not sid:
-            return {"accion": "esperando", "estado": goal["status"], "motivo": espera.get("motivo")}
-        r = self.evaluar_solicitud(sid)
+            # nada que sondear: el bucle termina (dale/segui relanzan). Un
+            # waiting sin solicitud no deberia existir (cada motivo estaciona
+            # la suya), pero si existe no gira en vano leyendo goal.json
+            return {"accion": "nada", "estado": goal["status"], "motivo": espera.get("motivo")}
+        r, nota = self._respuesta(self.evaluar_solicitud(sid))
         if r is None:
             return {"accion": "esperando", "estado": goal["status"], "motivo": espera.get("motivo")}
         motivo = espera.get("motivo")
         if motivo == "dale":
             if r == "aprobada":
+                if nota:
+                    goals.nota_de_pedro(self.goal_id, nota)
                 return self._retomar(goal, espera, "dale de Pedro (inbox)")
             g = goals.transicionar(self.goal_id, goals.CANCELLED, "no de Pedro (inbox)")
             self._limpiar_preautorizadas(g)
@@ -658,7 +744,7 @@ class Runner:
                 g = goals.transicionar(self.goal_id, goals.COMPLETE, "dale final de Pedro (inbox)")
                 self._limpiar_preautorizadas(g)
                 return {"accion": "complete", "estado": g["status"]}
-            goals.nota_de_pedro(self.goal_id, "Pedro dijo que no esta cumplido: falta algo")
+            goals.nota_de_pedro(self.goal_id, nota or "Pedro dijo que no esta cumplido: falta algo")
             g = goals.load(None, self.goal_id)
             g["espera"] = {**espera, "solicitud": None, "respuesta": "no"}
             goals.escribir(g)
@@ -666,8 +752,18 @@ class Runner:
         if motivo in goals.RESPUESTAS_QUE_APLICAN:
             # la preautorizacion / la raiz / la nota: lo mismo que aplica
             # /goal segui por el chat (goals.aplicar_respuesta, Task 1)
-            goal = goals.aplicar_respuesta(self.goal_id, r)
+            goal = goals.aplicar_respuesta(self.goal_id, r, nota=nota)
             return self._retomar(goal, goal.get("espera") or espera, f"respuesta de Pedro: {r}")
+        if motivo in goals.MOTIVOS_RETOMAR:
+            # la solicitud `retomar`: si = seguir (con el tope ampliado si
+            # era tope: aplicar_respuesta), no = cancelar
+            if r == "aprobada":
+                goal = goals.aplicar_respuesta(self.goal_id, r, nota=nota)
+                return self._retomar(goal, goal.get("espera") or espera, f"retomar de Pedro (inbox): {motivo}")
+            g = goals.transicionar(self.goal_id, goals.CANCELLED,
+                                   "Pedro dijo que no" + (f": {nota}" if nota else ""))
+            self._limpiar_preautorizadas(g)
+            return {"accion": "cancelado", "estado": g["status"]}
         return {"accion": "esperando", "estado": goal["status"], "motivo": motivo}
 
     def _retomar(self, goal: dict, espera: dict, motivo: str) -> dict:
@@ -752,6 +848,7 @@ class Runner:
         cuota = self._cuota(goal)
         if cuota:
             g = goals.transicionar(self.goal_id, goals.WAITING, "cuota", motivo_detalle=cuota)
+            estacionar_retomar(g, self.preguntar)
             return {"accion": "cuota", "estado": g["status"], **cuota}
         # 4. el golpe
         if self.manos is None:
@@ -838,6 +935,7 @@ class Runner:
             detalle = {"motivo": "cuota", "detalle": gm.texto_de_fallo(resultado).strip()[-300:],
                        "resets_at": None, "manos": goal.get("manos")}
             g = goals.transicionar(self.goal_id, goals.WAITING, "cuota", motivo_detalle=detalle)
+            estacionar_retomar(g, self.preguntar)
             return {"accion": "cuota", "estado": g["status"], "n": n}
         # 7. el veredicto
         accion = "golpe"
@@ -855,6 +953,7 @@ class Runner:
             g = goals.transicionar(self.goal_id, goals.WAITING, "no_convergencia",
                                    motivo_detalle={"diagnostico": diag,
                                                    "opciones": list(OPCIONES_NO_CONVERGENCIA)})
+            estacionar_retomar(g, self.preguntar)
             return {"accion": accion, "estado": g["status"], "n": n, "diagnostico": diag}
         goal = goals.load(None, self.goal_id)
         tope = goals.tope_alcanzado(goal)
@@ -919,6 +1018,7 @@ class Runner:
     def _waiting_tope(self, goal: dict, tope: str, motivo: str) -> dict:
         g = goals.transicionar(self.goal_id, goals.WAITING, motivo,
                                motivo_detalle={"tope": tope, "consumo": goals.consumo(goal)})
+        estacionar_retomar(g, self.preguntar)
         return {"accion": "tope", "estado": g["status"], "tope": tope}
 
     def _failed(self, motivo: str) -> dict:

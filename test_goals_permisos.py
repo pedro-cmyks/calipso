@@ -50,6 +50,7 @@ def accion(op, forma, detalle=None, titulo="x"):
 
 def test_la_familia_esta_registrada(home):
     assert "goal" in acciones.familias()
+    assert "retomar" in pg.OPERACIONES                 # cierre 2026-09-14: todo waiting sin solicitud la estaciona
 
 
 def test_la_tabla_por_defecto_es_la_de_pedro():
@@ -66,6 +67,7 @@ def test_la_tabla_por_defecto_es_la_de_pedro():
     ("cerrar", {"goal": "goal_x", "n": 3}),
     ("pregunta", {"goal": "goal_x", "n": 2, "pregunta": "pytest o unittest?"}),
     ("raiz_nueva", {"goal": "goal_x", "raiz": "/tmp/otro"}),
+    ("retomar", {"goal": "goal_x", "motivo": "tope", "vez": 1}),
 ])
 def test_las_preguntas_del_goal_preguntan_siempre(home, op, forma):
     v = acciones.clasificar(accion(op, forma))

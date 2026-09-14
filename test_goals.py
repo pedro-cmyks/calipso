@@ -391,11 +391,43 @@ def test_aplicar_respuesta_preautoriza_suma_la_raiz_y_deja_la_nota(home, repo, t
     assert goals.aplicar_respuesta(g["id"], "aprobada")["compuertas"]["raices"] == [str(raiz)]
     notas = [e for e in goals.events(None, g["id"]) if e["action"] == "nota_pedro"]
     assert len(notas) == 3 and "Pedro respondio: no" in notas[0]["texto"]
-    # sobre una espera que no es de esas (tope, cumplido...) no toca nada
+    # sobre una espera que no es de esas ni de las de `retomar` (cumplido) no toca nada
     goals.transicionar(g["id"], goals.ACTIVE)
-    goals.transicionar(g["id"], goals.WAITING, "tope", motivo_detalle={"tope": "golpes"})
+    goals.transicionar(g["id"], goals.WAITING, "cumplido", motivo_detalle={"solicitud": "sol_3"})
     assert goals.aplicar_respuesta(g["id"], "aprobada")["compuertas"]["raices"] == [str(raiz)]
     assert len([e for e in goals.events(None, g["id"]) if e["action"] == "nota_pedro"]) == 3
+
+
+def test_ampliar_tope_y_la_respuesta_a_retomar(home, repo):
+    """Ruling del cierre (Pedro no se pierde): un waiting por tope, cuota,
+    no convergencia, parado o server reiniciado tiene una solicitud
+    `retomar`; el si sobre un tope lo amplia un 50 % (golpes, minutos,
+    unidades; mm no) antes de retomar, y la `nota` de la solicitud (el
+    carril 3 la agrega al responder) entra al ledger como nota de Pedro."""
+    g = goals.crear("x", proyecto=str(repo), tope={"golpes": 6, "minutos": 10, "unidades": 5})
+    g2 = goals.ampliar_tope(g, 1.5)
+    assert g2["tope"] == {"golpes": 9, "minutos": 15, "unidades": 8, "mm": 0}
+    assert goals.load(None, g["id"])["tope"] == g2["tope"]
+    assert goals.events(None, g["id"])[-1]["action"] == "tope_ampliado"
+    goals.transicionar(g["id"], goals.ACTIVE)
+    goals.transicionar(g["id"], goals.WAITING, "tope", motivo_detalle={"tope": "golpes", "solicitud": "sol_1"})
+    g3 = goals.aplicar_respuesta(g["id"], "aprobada", nota="dale, tres golpes mas")
+    assert g3["tope"]["golpes"] == 14 and g3["tope"]["minutos"] == 23 and g3["status"] == goals.WAITING
+    assert g3["ultima_nota"] == "dale, tres golpes mas"
+    notas = [e for e in goals.events(None, g["id"]) if e["action"] == "nota_pedro"]
+    assert "dale, tres golpes mas" in notas[-1]["texto"] and "Pedro respondio: si" in notas[-1]["texto"]
+    # negada: no toca el tope; sin nota no anota nada raro
+    goals.transicionar(g["id"], goals.ACTIVE)
+    goals.transicionar(g["id"], goals.WAITING, "cuota", motivo_detalle={"manos": "claude", "solicitud": "sol_2"})
+    g4 = goals.aplicar_respuesta(g["id"], "negada")
+    assert g4["tope"]["golpes"] == 14 and g4["ultima_nota"] == "Pedro respondio: no a: cuota"
+    # la nota tambien sobre una compuerta
+    goals.transicionar(g["id"], goals.ACTIVE)
+    goals.transicionar(g["id"], goals.WAITING, "pregunta", motivo_detalle={"pregunta": "a o b?", "solicitud": "s3"})
+    g5 = goals.aplicar_respuesta(g["id"], "aprobada", nota="b")
+    assert g5["ultima_nota"] == "b"
+    assert "tope" in goals.MOTIVOS_RETOMAR and "cuota" in goals.MOTIVOS_RETOMAR
+    assert set(goals.MOTIVOS_RETOMAR) >= {"no_convergencia", "parado por Pedro", "server apagado", "server reiniciado"}
 
 
 def test_propuesta_sin_modelo(home, repo):
