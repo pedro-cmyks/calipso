@@ -40,12 +40,14 @@ Que decide:
             `.claude/`, `.git/hooks/`, `.git/config` del clon (el martillo no
             se auto-escala); fuera = pregunta raiz_nueva.
   Read/Glob/Grep  el clon, las raices y lo que esta fuera del home (`/etc`,
-            `/usr`, `/` a secas); las rutas protegidas y el home a secas
-            NUNCA; el resto del home de Pedro = pregunta raiz_nueva (lo
-            mismo para cat, ls, grep, find, jq... por Bash: lo que el
-            martillo lee viaja a la suscripcion). El resto del
-            confinamiento lo hace `--restricted` (los file tools no salen
-            de los working directories).
+            `/usr`); las rutas protegidas, el home a secas y un ancestro
+            del home (`/`, `/var/home`: recorrerlo abarca el home y el
+            sandbox no lo tapa) NUNCA; el resto del home de Pedro =
+            pregunta raiz_nueva (lo mismo para cat, grep, find, jq... por
+            Bash: lo que el martillo lee viaja a la suscripcion; solo ls,
+            stat y file sin -R pueden mirar `/` o `/var/home` a secas).
+            El resto del confinamiento lo hace `--restricted` (los file
+            tools no salen de los working directories).
   WebFetch/WebSearch  solo con dominios declarados; el host tiene que estar
             en la lista (son in-process: el sandbox no las filtra, Trampa 8).
 
@@ -181,6 +183,12 @@ ESCRITORES = {"cp", "mv", "ln", "install", "sed", "tee", "touch", "mkdir", "chmo
 # allow (C3 del cierre). `tr` no lee archivos y queda fuera; `jq` lee los
 # archivos de entrada (y los de --slurpfile/--rawfile/-f/-L), no el filtro.
 LECTORES = ("ls", "diff", "sort", "uniq", "cut", "od", "strings", "tree", "du", "sha256sum", "md5sum", "jq")
+# Los unicos que pueden mirar un ANCESTRO del home (`ls /`, `ls -la
+# /var/home`, `stat /`, `file /`): sin `-R`/`--recursive` no entran al
+# home. Cualquier otro exe con un ancestro como ruta (grep -r, find, tree,
+# du, cp -r, tar -c, curl -T, cat, diff -r...) es NUNCA: abarca el home y el
+# sandbox no lo tapa (re-review del carril 1).
+LEEN_SIN_RECORRER = ("ls", "stat", "file")
 EXES_CON_RUTAS = set(EXES_DE_RUTAS) | set(EXES_QUE_TOCAN) | set(SUBEN_ARCHIVOS) | ESCRITORES | set(LECTORES)
 # Las opciones que toman valor (letras cortas, largas sin `=`): al buscar los
 # argumentos posicionales de un escritor se saltan sus valores, si no
@@ -315,19 +323,29 @@ class Abarca(pathlib.PosixPath):
     (`ls /` lista el sistema)."""
 
 
+def _abarca_el_home(p: pathlib.Path) -> bool:
+    """Un ANCESTRO del home (`/`, `/var`, `/var/home`, `~/..`): recorrerlo,
+    copiarlo, archivarlo, borrarlo o cambiarle permisos abarca el home
+    entero, y el sandbox NO lo tapa (solo DENY_READ; el resto del home es
+    legible desde adentro). El home mismo y lo que cuelga de el no son
+    ancestros: van por _protegida/_bajo_home. `p` viene resuelta."""
+    return p != _home_resuelto() and _dentro(_home_resuelto(), p)
+
+
 def _protegida(p: pathlib.Path) -> bool:
-    """Lo que no se borra ni se escribe jamas: una protegida, el home o
-    `/` a secas (`rm -rf /`, `cp -t/`, `tar -x -C/`)."""
-    return _home_o_raiz(p) or _bajo_protegida(p)
+    """Lo que no se borra ni se escribe jamas: una protegida, el home, `/`
+    a secas o un ancestro del home (`rm -rf /`, `cp -t/`, `tar -x -C/`,
+    `rm -rf ~/..`, `chmod -R 777 /var/home`)."""
+    return _home_o_raiz(p) or _abarca_el_home(p) or _bajo_protegida(p)
 
 
 def _protegida_para_leer(p: pathlib.Path) -> bool:
     """Lo que no se lee jamas: una protegida, el home a secas (el padre de
     todas: listarlo o recorrerlo las toca) y el padre de un glob que abarca
-    el home o `/`. `/` a secas se lee: es el sistema, y lo que esta fuera
-    del home es allow (C3 del cierre); recorrerlo (`grep -r x /`) es lo
-    mismo que recorrer `/var` o `/var/home`: el hook no modela la
-    recursion desde un ancestro del home, esa barrera es el sandbox."""
+    el home o `/`. Un ancestro del home a secas (`/`, `/var/home`) queda
+    fuera de aca a proposito: recorrerlo (`grep -r x /`, `find /`, `du`,
+    `cp -r`, `tar -c`) es NUNCA por _abarca_el_home, pero `ls /`, `stat /`
+    y `file /` sin -R no entran al home y siguen allow (LEEN_SIN_RECORRER)."""
     return isinstance(p, Abarca) or p == _home_resuelto() or _bajo_protegida(p)
 
 
@@ -591,13 +609,88 @@ def _flags_cortas(argv: list[str]) -> str:
     return "".join(x[1:] for x in argv if x.startswith("-") and not x.startswith("--"))
 
 
+def _recursivo(argv: list[str]) -> bool:
+    """`-R` (en un cluster tambien: `-laR`) o `--recursive`: ls entra a
+    los subdirectorios."""
+    return "--recursive" in argv or "R" in _flags_cortas(argv)
+
+
+def _contra(base: str | None, tok: str) -> str:
+    """`tok` visto desde `base` (el `-C` vigente de tar): pegado como texto,
+    no resuelto, para que _resolver_formas siga viendo los globs, las
+    llaves y las variables. Una absoluta o un `~` (bash lo expande antes
+    que tar) no cambian."""
+    if base is None or tok.startswith(("/", "~")):
+        return tok
+    return base.rstrip("/") + "/" + tok
+
+
+def _candidatos_de_tar(argv: list[str]) -> list[str]:
+    """Los tokens de tar que pueden ser una ruta, con los OPERANDOS (los
+    miembros) vistos desde el `-C dir` anterior: GNU tar aplica cada -C al
+    recorrer los nombres, asi que `tar -cf o.tar -C / var/home/pedro/.ssh`
+    archiva la protegida (contra el cwd del clon no se veia); un -C
+    relativo se encadena con el anterior. El -f, -T y -X se abren contra el
+    cwd inicial (medido con tar 1.35) y van tal cual. Estilo viejo (`tar
+    cf o.tar ...`): los valores vienen en orden."""
+    out: list[str] = []
+    base: str | None = None
+    pendientes: list[str] = []
+    for i, tok in enumerate(argv[1:], 1):
+        if pendientes:
+            letra = pendientes.pop(0)
+            if letra == "C":
+                base = _contra(base, tok)
+                out.append(base)
+            else:
+                out.append(tok)
+            continue
+        if tok.startswith("--"):
+            opcion, _, val = tok.partition("=")
+            if opcion == "--directory":
+                if val:
+                    base = _contra(base, val)
+                    out.append(base)
+                else:
+                    pendientes.append("C")
+            elif opcion in ("--file", "--files-from", "--exclude-from"):
+                if val:
+                    out.append(val)
+                else:
+                    pendientes.append("f")
+            elif val:
+                out.append(val)
+            continue
+        viejo = i == 1 and not tok.startswith("-") and tok.isalpha()
+        if viejo or (tok.startswith("-") and len(tok) > 1):
+            cuerpo = tok if viejo else tok[1:]
+            for k, ch in enumerate(cuerpo):
+                if ch in "fCTX":
+                    resto = cuerpo[k + 1:]
+                    if viejo or not resto:
+                        pendientes.append(ch)
+                    elif ch == "C":
+                        base = _contra(base, resto)
+                        out.append(base)
+                    else:
+                        out.append(resto)
+                    if not viejo:
+                        break
+            continue
+        out.append(_contra(base, tok))
+    return out
+
+
 def _candidatos_de_ruta(exe: str, argv: list[str]) -> list[str]:
     """Los tokens de argv[1:] que pueden ser una ruta: los que no son
     opcion, el valor de `--opcion=valor` y lo pegado a una opcion corta
     (`-C/x`, `-C/`; no el valor de `-F` de awk, pegado o separado);
     para curl/wget, ademas, lo que sigue a `@` (`-d @archivo`,
     `-F campo=@archivo`, `--data-urlencode nombre@archivo`) y nunca las
-    URLs (esas van por dominio)."""
+    URLs (esas van por dominio). tar aparte: sus operandos se ven desde
+    el -C anterior."""
+    if exe == "tar":
+        return _candidatos_de_tar(argv)
     out = []
     sin_ruta = OPCIONES_SIN_RUTA.get(exe, ())
     saltar = False
@@ -1105,9 +1198,12 @@ def familia_de_argv(argv: list[str], compuertas: dict) -> tuple[str | None, str,
         rutas, motivo = _rutas_resueltas(exe, argv, cwd)
         if motivo:
             return "DENEGAR", motivo, None
+        recorre = exe not in LEEN_SIN_RECORRER or _recursivo(argv)
         for p in rutas:
             if _protegida_para_leer(p):
                 return _nunca("datos_de_pedro", f"{exe} sobre {p}: datos de Pedro", {"ruta": str(p)})
+            if recorre and _abarca_el_home(p):
+                return _nunca("datos_de_pedro", f"{exe} sobre {p}: abarca el home de Pedro", {"ruta": str(p)})
             if exe in EXES_QUE_ESCRIBEN and _auto_escalada(p, compuertas):
                 return _nunca(None, f"{exe} sobre {p}: auto-escalada (.claude, .git/hooks, .git/config)",
                               {"ruta": str(p)})
@@ -1220,6 +1316,10 @@ def decidir_archivo(tool: str, tool_input: dict, compuertas: dict) -> Decision:
         p = _resolver(ruta, cwd)
         if _protegida_para_leer(p):
             return Decision(False, f"NUNCA: {tool} sobre {p}: datos de Pedro", "datos_de_pedro", {"ruta": str(p)})
+        if _abarca_el_home(p):
+            # Grep y Glob recorren (entran al home); Read de un directorio no es nada
+            return Decision(False, f"NUNCA: {tool} sobre {p}: abarca el home de Pedro", "datos_de_pedro",
+                            {"ruta": str(p)})
         if _bajo_home(p) and _en_alcance(p, compuertas) is None:
             return _aplicar_tabla("raiz_nueva", f"{tool} lee fuera del alcance: {p}", {"raiz": _raiz_de(p)},
                                   compuertas)
