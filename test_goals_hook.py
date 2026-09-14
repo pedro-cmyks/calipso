@@ -649,8 +649,11 @@ def test_scripts_runners_y_git_de_consulta_siguen_pasando(goal_dir, cmd):
     "wget -O {F}/x https://pypi.org/x", "wget -qO {F}/x https://pypi.org/x", "wget -P {F} https://pypi.org/x",
     "wget --directory-prefix={F} https://pypi.org/x", "wget -o {F}/log https://pypi.org/x",
     "dd if=/dev/zero of={F}/x bs=1 count=1",
-    "find . -fprintf {F}/x %p", "find src -fprint {F}/y", "find . -fprint0 {F}/z",
+    "find . -fprintf {F}/x %p", "find src -fprint {F}/y", "find . -fprint0 {F}/z", "find . -fls {F}/w",
     "cp src/a.py {F}/{a,b}.py", "cp src/a.py ~/otro/a.py", "mkdir ~/proyecto",
+    # el valor pegado a la letra (`-d{F}`, `-S.txt`) no es un modo: `d` y `S`
+    # cortan el cluster antes de mirar las letras de lista/test/stdout
+    "unzip -d{F}/x a.zip", "unzip -o a.zip -d{F}/x", "unzip -qod{F} a.zip", "gzip -S.txt {F}/x", "gzip -1S.gz {F}/x",
 ])
 def test_un_escritor_con_destino_fuera_del_clon_pregunta_raiz_nueva(goal_dir, tmp_path, cmd):
     """C2 (Codex) y la sonda de destinos del smoke: para cada comando que
@@ -675,6 +678,7 @@ def test_un_escritor_con_destino_fuera_del_clon_pregunta_raiz_nueva(goal_dir, tm
     "mkdir -p build/x", "chmod +x run.sh", "chown pedro src/a.py", "truncate -s 0 src/a.py",
     "tar -xf a.tar", "tar -xf a.tar -C {R}", "tar -cf o.tar src", "tar -tf a.tar", "tar -xOf a.tar",
     "unzip a.zip", "unzip a.zip -d {R}", "unzip -l a.zip", "zip -r o.zip src", "gzip x.txt", "gzip -c x.txt",
+    "unzip -ld {R} a.zip", "unzip -t a.zip", "gzip -t x.txt.gz", "gzip -l x.txt.gz", "gzip -S.txt x", "unzip -d{R} a.zip",
     "curl -O https://pypi.org/x", "curl -o ./salida.txt https://pypi.org/simple/x/", "curl -o - https://pypi.org/x",
     "curl -o /dev/null https://pypi.org/x", "curl -sSLo salida.txt https://pypi.org/x",
     "wget https://pypi.org/x", "wget -O ./x.html https://pypi.org/x", "wget -O- https://pypi.org/x",

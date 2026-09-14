@@ -166,12 +166,12 @@ SUBEN_ARCHIVOS = ("curl", "wget")
 #   sed -i            los archivos (el script no); sin -i no escribe
 #   tee/touch/mkdir/chmod/chown/truncate  cada argumento
 #   tar -x            el -C (sin -C: el cwd); tar -c/-r/-u: el -f
-#   unzip             el -d (sin -d: el cwd); zip: el archivo (y -O)
+#   unzip             el -d (sin -d: el cwd; -l/-t/-p/-c/-z no escriben); zip: el archivo (y -O)
 #   gzip/gunzip       cada archivo (escriben al lado; -c/-t/-l no)
 #   curl              -o/--output, --output-dir, -D, -c, --trace...; -O es el cwd
 #   wget              -O, -P, -o/-a (el log); sin ellos el cwd
 #   dd                of=
-#   find              el archivo de -fprint/-fprintf/-fprint0
+#   find              el archivo de -fprint/-fprintf/-fprint0/-fls
 # `-` (stdout) y /dev/null no son destinos.
 ESCRITORES = {"cp", "mv", "ln", "install", "sed", "tee", "touch", "mkdir", "chmod", "chown", "truncate",
               "tar", "unzip", "zip", "gzip", "gunzip", "curl", "wget", "dd", "find"}
@@ -210,7 +210,7 @@ OPCIONES_DESTINO = {
     "cp": ("t", ("--target-directory",)), "mv": ("t", ("--target-directory",)),
     "ln": ("t", ("--target-directory",)), "install": ("t", ("--target-directory",)),
 }
-FIND_ESCRIBE = ("-fprint", "-fprintf", "-fprint0")
+FIND_ESCRIBE = ("-fprint", "-fprintf", "-fprint0", "-fls")
 # Un glob, unas llaves o una variable en un token con pinta de ruta: bash los
 # expande DESPUES del hook (el hook ve `~/.ss*` o `~/.{ssh,aws}`, bash corre
 # `cat ~/.ssh`). El glob y las llaves se expanden aca como lo haria bash; la
@@ -1004,6 +1004,24 @@ def _destinos_de_tar(argv: list[str]) -> tuple[list[str], str | None]:
     return [], None
 
 
+def _modo(argv: list[str], con_valor: str) -> str:
+    """Las letras de MODO de los clusters cortos de argv: cada cluster se
+    corta en la primera letra que toma valor (`d` de unzip, `S` de gzip),
+    porque lo pegado a ella es el valor, no mas letras (`-d/tmp/x` es el
+    destino /tmp/x, no el modo lista `l` mas `t` y `p`; `-S.txt` no es
+    `-t`). Re-review del carril 1 (H2 parcial)."""
+    letras = ""
+    for tok in argv[1:]:
+        if tok == "--":
+            break
+        if tok.startswith("-") and not tok.startswith("--") and len(tok) > 1:
+            for ch in tok[1:]:
+                if ch in con_valor:
+                    break
+                letras += ch
+    return letras
+
+
 def _tokens_destino(exe: str, argv: list[str]) -> tuple[list[str], str | None]:
     """(tokens destino, motivo para DENEGAR) de un escritor (ESCRITORES)."""
     if exe == "tar":
@@ -1017,15 +1035,14 @@ def _tokens_destino(exe: str, argv: list[str]) -> tuple[list[str], str | None]:
     if exe in ("curl", "wget"):
         return _valores_de(argv, *OPCIONES_DESTINO[exe]), None
     if exe == "unzip":
-        if any(t.startswith("-") and set(t[1:]) & set("ltpcz") for t in argv[1:]):
+        if set(_modo(argv, "dPOI")) & set("ltpcz"):
             return [], None
         return _valores_de(argv, *OPCIONES_DESTINO[exe]) or ["."], None
     cortas, largas = OPCIONES_CON_VALOR.get(exe, ("", ()))
     posicionales = _posicionales(argv, cortas, largas)
     if exe in ("gzip", "gunzip"):
-        if any(t in ("--stdout", "--to-stdout", "--test", "--list") or (t.startswith("-") and not t.startswith("--")
-                                                                         and set(t[1:]) & set("ctl"))
-               for t in argv[1:]):
+        if any(t in ("--stdout", "--to-stdout", "--test", "--list") for t in argv[1:]) \
+                or set(_modo(argv, cortas)) & set("ctl"):
             return [], None
         return posicionales, None
     if exe == "zip":
