@@ -553,6 +553,48 @@ def test_dir_trabajo_y_compuertas_siguen_la_raiz_de_trabajo(home, tmp_path, monk
     assert not str(d).startswith(str(home)) and str(goals.dir_goal(g["id"])).startswith(str(home))
 
 
+# --- raices amplias (cierre 2026-09-14) ----------------------------------------------
+
+def test_validar_raices_rechaza_lo_amplio_y_normaliza(home, tmp_path, monkeypatch):
+    """Ruling del cierre (smoke corrida 4: la propuesta declaro `~` como raiz
+    y el sandbox devolvio EROFS): `/`, el home, un ancestro del home y las
+    protegidas del hook no son raices validas, ni en la propuesta ni en
+    raiz:/raiz_nueva. `~` y `..` se normalizan; una ruta relativa no dice
+    nada (contra el cwd del server) y se rechaza."""
+    casa = tmp_path / "home"
+    (casa / ".ssh").mkdir(parents=True)
+    (casa / "Descargas").mkdir()
+    monkeypatch.setenv("HOME", str(casa))
+    ok = goals.validar_raices(["~/Descargas", str(casa / "proyectos" / ".." / "Descargas"), "/tmp/otro"])
+    assert ok == [str(casa / "Descargas"), str(casa / "Descargas"), "/tmp/otro"]
+    assert goals.validar_raices([]) == [] and goals.validar_raices(None) == []
+    for amplia in ("/", "~", str(casa), str(casa) + "/", str(casa / "Descargas" / ".."), str(casa.parent),
+                   str(tmp_path), "~/.ssh", "~/.ssh/claves", "~/.calipso", "~/.config/gh",
+                   "~/.local/share/keyrings"):
+        with pytest.raises(goals.ErrorGoal, match="raiz demasiado amplia"):
+            goals.validar_raices([amplia])
+    with pytest.raises(goals.ErrorGoal, match="raiz relativa"):
+        goals.validar_raices(["Descargas"])
+    with pytest.raises(goals.ErrorGoal, match="raiz"):
+        goals.validar_raices([""])
+
+
+def test_crear_y_aplicar_respuesta_pasan_por_validar_raices(home, repo, tmp_path, monkeypatch):
+    casa = tmp_path / "home"
+    (casa / "Descargas").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(casa))
+    with pytest.raises(goals.ErrorGoal, match="raiz demasiado amplia"):
+        goals.crear("x", proyecto=str(repo), compuertas={"raices": ["~"]})
+    g = goals.crear("x", proyecto=str(repo), compuertas={"raices": ["~/Descargas/../Descargas"]})
+    assert g["compuertas"]["raices"] == [str(casa / "Descargas")]
+    goals.transicionar(g["id"], goals.ACTIVE)
+    goals.transicionar(g["id"], goals.WAITING, "raiz_nueva", motivo_detalle={
+        "pregunta": "puedo?", "raiz": str(casa), "solicitud": "sol_1"})
+    with pytest.raises(goals.ErrorGoal, match="raiz demasiado amplia"):
+        goals.aplicar_respuesta(g["id"], "aprobada")
+    assert goals.load(None, g["id"])["compuertas"]["raices"] == [str(casa / "Descargas")]
+
+
 def main() -> int:
     """`tools/commands.py` corre `python test_goals.py` (allowlist test_goals)."""
     return pytest.main([__file__, "-q", "-p", "no:cacheprovider"])

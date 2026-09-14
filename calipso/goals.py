@@ -30,6 +30,7 @@ import threading
 import uuid
 from typing import Any
 
+from calipso import goals_hook
 from calipso import telemetry
 
 CALIPSO_HOME = pathlib.Path(os.environ.get(
@@ -560,6 +561,37 @@ def validar_tope(tope: dict | None) -> dict:
     return t
 
 
+def validar_raices(raices: list | None) -> list[str]:
+    """Las raices declaradas (la propuesta, `raiz:`, una `raiz_nueva`
+    aprobada), normalizadas (`~`, `..`, enlaces) y acotadas: `/`, el home,
+    un ancestro del home y las protegidas del hook (goals_hook.PROTEGIDAS,
+    y lo que cuelga de ellas) NO son raices validas (ruling del cierre
+    2026-09-14: en el smoke la propuesta declaro `~` como raiz, el sandbox
+    la hubiera hecho escribible entera y devolvio EROFS por casualidad).
+    Una raiz relativa no dice nada (seria contra el cwd del server) y se
+    rechaza. Se guarda la forma absoluta que declaro Pedro (sin seguir
+    enlaces: en la Ally `/home` es un enlace a `/var/home` y la ruta que
+    escribio es la que quiere ver); los enlaces se siguen solo para
+    compararla. ErrorGoal con la ruta y que hacer."""
+    out: list[str] = []
+    home = pathlib.Path(os.path.expanduser("~")).resolve()
+    protegidas = [pathlib.Path(os.path.expanduser(x)).resolve() for x in goals_hook.PROTEGIDAS]
+    for r in raices or []:
+        texto = str(r or "").strip()
+        if not texto:
+            raise ErrorGoal("raiz vacia; declara una carpeta concreta")
+        expandida = os.path.expanduser(texto)
+        if not os.path.isabs(expandida):
+            raise ErrorGoal(f"raiz relativa: {texto}; declara una ruta absoluta")
+        p = pathlib.Path(os.path.abspath(expandida))
+        real = p.resolve()
+        if real == pathlib.Path("/") or real == home or real in home.parents \
+                or any(real == q or q in real.parents for q in protegidas):
+            raise ErrorGoal(f"raiz demasiado amplia: {texto}; declara una carpeta concreta")
+        out.append(str(p))
+    return out
+
+
 def validar_criterio(criterio: dict | None) -> dict:
     c = dict(criterio or {"tipo": "revisor", "texto": ""})
     if c.get("tipo") not in CRITERIOS:
@@ -595,7 +627,7 @@ def crear(texto: str, *, proyecto: str | None, titulo: str | None = None,
     if not texto:
         raise ErrorGoal("un goal sin texto")
     goal_id = f"goal_{uuid.uuid4().hex[:12]}"
-    raices = [os.path.expanduser(str(r)) for r in (compuertas or {}).get("raices") or []]
+    raices = validar_raices((compuertas or {}).get("raices"))
     proyecto_nombre = (pathlib.Path(proyecto).name if proyecto else "sin-repo") or "sin-repo"
     goal = {
         "id": goal_id,
@@ -729,7 +761,7 @@ def aplicar_respuesta(goal_id: str, respuesta: str) -> dict[str, Any]:
                     "forma": espera["compuerta"].get("forma") or {}})
         c["preautorizadas"] = pre
     if si and motivo == "raiz_nueva" and espera.get("raiz"):
-        c["raices"] = list(c.get("raices") or []) + [os.path.expanduser(str(espera["raiz"]))]
+        c["raices"] = list(c.get("raices") or []) + validar_raices([espera["raiz"]])
     escribir(goal)
     escribir_compuertas(goal)
     nota_de_pedro(goal_id, f"Pedro respondio: {'si' if si else 'no'} a: "
