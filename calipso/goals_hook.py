@@ -19,9 +19,12 @@ Que decide:
             NUNCA (gh, git push, sudo, pkexec, su, rpm-ostree
             rebase|reset|rollback, flatpak remote-delete|remote-modify,
             mail, sendmail, rm o cat sobre las rutas protegidas -- tambien
-            por glob (`~/.ss*`: se expande aca como lo haria bash), como
-            valor de una opcion (`--directory=~/.ssh`, `-C~/.ssh`) o como
-            archivo que curl/wget subirian (`-T`, `-d @`, `-F x=@`); una
+            por glob (`~/.ss*`) o por llaves (`~/.{ssh,aws}`, `{1..9}`):
+            se expanden aca como lo haria bash, con un presupuesto de
+            trabajo; un glob cuyo padre es el home o `/` (`rm -rf ~/*`)
+            vale como el padre; como valor de una opcion
+            (`--directory=~/.ssh`, `-C~/.ssh`) o como archivo que curl/wget
+            subirian (`-T`, `-d @`, `-F x=@`, `--data-urlencode n@`); una
             variable en una ruta (`/var/home/$USER/.ssh`) se deniega porque
             bash la expande despues del hook); y las
             compuertas por familia con la tabla del goal (instalar_en_goal
@@ -55,6 +58,7 @@ import json
 import os
 import pathlib
 import shlex
+import stat
 import sys
 
 VAR_COMPUERTAS = "CALIPSO_GOAL_COMPUERTAS"
@@ -100,11 +104,20 @@ EXES_DE_RUTAS = ("cat", "head", "tail", "less", "more", "cp", "mv", "ln", "tar",
 EXES_QUE_TOCAN = ("touch", "tee", "mkdir", "chmod")
 EXES_QUE_ESCRIBEN = ("cp", "mv", "ln", "sed") + EXES_QUE_TOCAN
 SUBEN_ARCHIVOS = ("curl", "wget")
-# Un glob o una variable en un token con pinta de ruta: bash los expande
-# DESPUES del hook (el hook ve `~/.ss*`, bash corre `cat ~/.ssh`). El glob se
-# expande aca como lo haria bash, acotado; la variable no se ve adonde apunta.
+# Un glob, unas llaves o una variable en un token con pinta de ruta: bash los
+# expande DESPUES del hook (el hook ve `~/.ss*` o `~/.{ssh,aws}`, bash corre
+# `cat ~/.ssh`). El glob y las llaves se expanden aca como lo haria bash; la
+# variable no se ve adonde apunta. La expansion no tiene techo por matches
+# (300 fuentes en `cat src/*.py` es trabajo legitimo) sino un presupuesto
+# sobre el trabajo real de un comando: entradas de directorio visitadas y
+# formas producidas por las llaves; se deniega solo al agotarlo (un hook que
+# tarda es fail-open por timeout: no puede explotar listando).
 GLOB = "*?["
-MAX_MATCHES = 256
+PRESUPUESTO_EXPANSION = 100_000
+# Un separador pegado a una opcion corta (`awk -F/`, `cut -d.`, `tar -C.`)
+# no es una ruta; y el valor de `-F` de awk nunca lo es.
+PEGADOS_SIN_RUTA = ("/", ".")
+OPCIONES_SIN_RUTA = {"awk": ("-F",)}
 DOMINIO_API = "api.anthropic.com"
 INSTRUCCION_PREGUNTA = ("esta compuerta esta en pregunta: pedila en tu veredicto con estado "
                         "\"preguntar\" y la compuerta (familia y forma); Pedro decide")
@@ -136,20 +149,62 @@ def _resolver(ruta: str, cwd: str | None) -> pathlib.Path:
 
 
 def _dentro(hijo: pathlib.Path, padre: pathlib.Path) -> bool:
-    return hijo == padre or padre in hijo.parents
+    """Las dos vienen resueltas: alcanza con el prefijo de la cadena (con
+    3000 rutas de un glob, `parents` de pathlib por ruta es el desperdicio)."""
+    h, p = str(hijo), str(padre)
+    return h == p or h.startswith(p.rstrip("/") + "/")
+
+
+def _hijo_resuelto(c: pathlib.Path, nombre: str) -> pathlib.Path:
+    """`c/nombre` con `c` ya resuelto: se resuelve de verdad solo si nombre
+    es `.`/`..` o un symlink (un lstat, no un resolve por candidato)."""
+    if nombre in (".", ".."):
+        return _resolver(str(c / nombre), None)
+    hijo = c / nombre
+    try:
+        if stat.S_ISLNK(os.lstat(hijo).st_mode):
+            return _resolver(str(hijo), None)
+    except OSError:
+        pass
+    return hijo
+
+
+_PROTEGIDAS_CACHE: tuple[str, pathlib.Path, tuple[pathlib.Path, ...], tuple[str, ...]] | None = None
+
+
+def _protegidas_resueltas() -> tuple[pathlib.Path, ...]:
+    """PROTEGIDAS resueltas una sola vez por valor de HOME (los tests lo
+    cambian por fixture): cada chequeo es una comparacion de rutas, no
+    nueve expanduser+resolve por candidato y por nivel."""
+    global _PROTEGIDAS_CACHE
+    home = os.path.expanduser("~")
+    if _PROTEGIDAS_CACHE is None or _PROTEGIDAS_CACHE[0] != home:
+        rutas = tuple(pathlib.Path(os.path.expanduser(x)).resolve() for x in PROTEGIDAS)
+        _PROTEGIDAS_CACHE = (home, pathlib.Path(home).resolve(), rutas,
+                             tuple(str(r).rstrip("/") + "/" for r in rutas))
+    return _PROTEGIDAS_CACHE[2]
+
+
+def _home_resuelto() -> pathlib.Path:
+    _protegidas_resueltas()
+    return _PROTEGIDAS_CACHE[1]
 
 
 def _bajo_protegida(p: pathlib.Path) -> bool:
     """Dentro de una de PROTEGIDAS (el home y `/` a secas solo estan
-    protegidos como ruta exacta: lo que cuelga de ellos no)."""
-    return any(_dentro(p, pathlib.Path(os.path.expanduser(x)).resolve()) for x in PROTEGIDAS)
+    protegidos como ruta exacta: lo que cuelga de ellos no). `p` viene
+    resuelta: alcanza con el prefijo de la cadena."""
+    _protegidas_resueltas()
+    texto = str(p).rstrip("/") + "/"
+    return any(texto.startswith(q) for q in _PROTEGIDAS_CACHE[3])
+
+
+def _home_o_raiz(p: pathlib.Path) -> bool:
+    return p == _home_resuelto() or p == pathlib.Path("/")
 
 
 def _protegida(p: pathlib.Path) -> bool:
-    home = pathlib.Path(os.path.expanduser("~")).resolve()
-    if p == home or p == pathlib.Path("/"):
-        return True
-    return _bajo_protegida(p)
+    return _home_o_raiz(p) or _bajo_protegida(p)
 
 
 def _pinta_de_ruta(tok: str) -> bool:
@@ -168,47 +223,182 @@ def _tiene_variable(tok: str) -> bool:
     return False
 
 
-def _expandir(patron: str, cwd: str | None) -> list[pathlib.Path] | None:
+class PresupuestoAgotado(Exception):
+    """La expansion de un comando (globs y llaves) gasto mas trabajo que
+    PRESUPUESTO_EXPANSION: no se sabe que abarca."""
+
+
+class Presupuesto:
+    """El trabajo que un comando puede gastar expandiendo: entradas de
+    directorio visitadas por los globs y formas producidas por las llaves."""
+    __slots__ = ("total", "gastado")
+
+    def __init__(self, total: int) -> None:
+        self.total = total
+        self.gastado = 0
+
+    def gastar(self, n: int) -> None:
+        self.gastado += n
+        if self.gastado > self.total:
+            raise PresupuestoAgotado(f"mas de {self.total} entradas")
+
+
+def _llave_que_cierra(tok: str, i: int) -> int:
+    """Indice de la `}` que cierra la `{` de tok[i], o -1."""
+    nivel = 0
+    for j in range(i, len(tok)):
+        if tok[j] == "{":
+            nivel += 1
+        elif tok[j] == "}":
+            nivel -= 1
+            if nivel == 0:
+                return j
+    return -1
+
+
+def _rango_de_llave(cuerpo: str, presupuesto: Presupuesto) -> list[str] | None:
+    """`{n..m}`, `{n..m..paso}` (enteros, con el relleno de ceros de bash) o
+    `{a..z}` (letras). None si no es una secuencia. Se cuenta ANTES de
+    materializar: `{1..999999999}` gasta el presupuesto sin armarse."""
+    partes = cuerpo.split("..")
+    if len(partes) not in (2, 3):
+        return None
+    a, b = partes[0], partes[1]
+    try:
+        paso = abs(int(partes[2])) if len(partes) == 3 else 1
+    except ValueError:
+        return None
+    paso = paso or 1
+    if len(a) == 1 and len(b) == 1 and a.isalpha() and b.isalpha():
+        lo, hi = ord(a), ord(b)
+        conv = chr
+        ancho = 0
+    else:
+        try:
+            lo, hi = int(a), int(b)
+        except ValueError:
+            return None
+        rellena = any(len(x.lstrip("-")) > 1 and x.lstrip("-").startswith("0") for x in (a, b))
+        ancho = max(len(a), len(b)) if rellena else 0
+
+        def conv(n: int) -> str:
+            return ("-" if n < 0 else "") + str(abs(n)).zfill(ancho - (1 if n < 0 else 0)) if ancho else str(n)
+    cantidad = abs(hi - lo) // paso + 1
+    presupuesto.gastar(cantidad)
+    sentido = 1 if lo <= hi else -1
+    return [conv(lo + sentido * paso * k) for k in range(cantidad)]
+
+
+def _alternativas_de_llave(cuerpo: str, presupuesto: Presupuesto) -> list[str] | None:
+    """Las alternativas de `{a,b,c}` (comas de primer nivel) o de una
+    secuencia; None si las llaves no son una expansion (`{}`, `{a}`,
+    `{print $1}`): bash las deja tal cual."""
+    partes, nivel, desde = [], 0, 0
+    for j, ch in enumerate(cuerpo):
+        if ch == "{":
+            nivel += 1
+        elif ch == "}":
+            nivel -= 1
+        elif ch == "," and nivel == 0:
+            partes.append(cuerpo[desde:j])
+            desde = j + 1
+    if partes:
+        partes.append(cuerpo[desde:])
+        presupuesto.gastar(len(partes))
+        return partes
+    return _rango_de_llave(cuerpo, presupuesto)
+
+
+def _expandir_llaves(tok: str, presupuesto: Presupuesto) -> list[str]:
+    """La brace expansion de bash: la primera llave que abre una expansion
+    valida se abre, y cada alternativa mas el resto del token se vuelve a
+    expandir (anidadas, varias por token). Lo que no expande queda literal.
+    Levanta PresupuestoAgotado si las formas exceden el presupuesto."""
+    i = tok.find("{")
+    while i != -1:
+        j = _llave_que_cierra(tok, i)
+        if j != -1:
+            alternativas = _alternativas_de_llave(tok[i + 1:j], presupuesto)
+            if alternativas is not None:
+                pre, post = tok[:i], tok[j + 1:]
+                out: list[str] = []
+                for alt in alternativas:
+                    out.extend(pre + r for r in _expandir_llaves(alt + post, presupuesto))
+                return out
+        i = tok.find("{", i + 1)
+    return [tok]
+
+
+def _expandir(patron: str, cwd: str | None, presupuesto: Presupuesto) -> list[pathlib.Path]:
     """Los matches de un glob como los haria bash sin nullglob ni dotglob
     (`*` y `?` no ven los dotfiles salvo que el segmento empiece con `.`;
     `.` y `..` nunca, como bash 5.2 con globskipdots): rutas resueltas, o el
     literal si no hay match. No entra en una ruta protegida (la devuelve tal
-    cual: lo de adentro ya es NUNCA y no hace falta listarlo). None si el
-    glob abre mas de MAX_MATCHES rutas: no se sabe que abarca."""
+    cual: lo de adentro ya es NUNCA y no hace falta listarlo). Cada entrada
+    de directorio visitada gasta presupuesto; al agotarlo levanta
+    PresupuestoAgotado: no se sabe que abarca. Los candidatos se llevan ya
+    resueltos: una entrada de scandir solo se resuelve si es un symlink
+    (d_type, sin syscall extra), no dos resolve por match."""
     texto = os.path.expanduser(patron)
-    base = pathlib.Path("/") if texto.startswith("/") else pathlib.Path(cwd or ".")
+    base = pathlib.Path("/") if texto.startswith("/") else _resolver(cwd or ".", None)
     candidatos = [base]
     for seg in [s for s in texto.split("/") if s]:
         nuevos: list[pathlib.Path] = []
         for c in candidatos:
-            if _bajo_protegida(_resolver(str(c), cwd)):
+            if _bajo_protegida(c):
                 nuevos.append(c)
             elif not any(ch in seg for ch in GLOB):
-                nuevos.append(c / seg)
+                nuevos.append(_hijo_resuelto(c, seg))
             else:
                 try:
-                    hijos = sorted(os.listdir(c))
+                    with os.scandir(c) as it:
+                        entradas = list(it)
                 except OSError:
                     continue
-                nuevos.extend(c / h for h in hijos
-                              if (seg.startswith(".") or not h.startswith("."))
-                              and fnmatch.fnmatchcase(h, seg))
-        if len(nuevos) > MAX_MATCHES:
-            return None
+                presupuesto.gastar(len(entradas) + 1)
+                for e in entradas:
+                    if (seg.startswith(".") or not e.name.startswith(".")) and fnmatch.fnmatchcase(e.name, seg):
+                        hijo = c / e.name
+                        nuevos.append(_resolver(str(hijo), None) if e.is_symlink() else hijo)
         candidatos = nuevos
         if not candidatos:
             break
-    return [_resolver(str(c), cwd) for c in candidatos] or [_resolver(patron, cwd)]
+    return candidatos or [_resolver(patron, cwd)]
+
+
+def _padre_del_glob(forma: str, cwd: str | None) -> pathlib.Path | None:
+    """Si el glob esta solo en el ultimo segmento (`~/*`, `/*`, `~/.ss*`),
+    el padre literal resuelto; None si el glob esta mas arriba."""
+    pre, barra, _ = forma.rpartition("/")
+    if any(ch in pre for ch in GLOB):
+        return None
+    if not barra:
+        return _resolver(cwd or ".", cwd)
+    return _resolver(pre or "/", cwd)
+
+
+_BASES_CACHE: tuple[tuple, tuple[list[pathlib.Path], list[pathlib.Path], list[tuple]]] | None = None
+
+
+def _bases(compuertas: dict) -> tuple[list[pathlib.Path], list[pathlib.Path], list[tuple]]:
+    """(clon y cwd, raices, las rutas de auto-escalada de cada base)
+    resueltos una vez por tabla: con 3000 rutas de un glob no se resuelven
+    3000 veces."""
+    global _BASES_CACHE
+    clave = (compuertas.get("clon"), compuertas.get("cwd"), tuple(compuertas.get("raices") or []))
+    if _BASES_CACHE is None or _BASES_CACHE[0] != clave:
+        repo = [pathlib.Path(b).resolve() for b in clave[:2] if b]
+        raices = [pathlib.Path(os.path.expanduser(r)).resolve() for r in clave[2]]
+        escaladas = [(b / ".claude", b / ".git" / "hooks", b / ".git" / "config") for b in repo]
+        _BASES_CACHE = (clave, (repo, raices, escaladas))
+    return _BASES_CACHE[1]
 
 
 def _auto_escalada(p: pathlib.Path, compuertas: dict) -> bool:
     """`.claude/`, `.git/hooks/`, `.git/config` del clon (o del cwd): escribir
     ahi es darse permisos o colgar un hook propio."""
-    for base in (compuertas.get("clon"), compuertas.get("cwd")):
-        if not base:
-            continue
-        b = pathlib.Path(base).resolve()
-        if _dentro(p, b / ".claude") or _dentro(p, b / ".git" / "hooks") or p == b / ".git" / "config":
+    for claude, hooks, config in _bases(compuertas)[2]:
+        if _dentro(p, claude) or _dentro(p, hooks) or p == config:
             return True
     return False
 
@@ -216,12 +406,11 @@ def _auto_escalada(p: pathlib.Path, compuertas: dict) -> bool:
 def _en_alcance(p: pathlib.Path, compuertas: dict) -> str | None:
     """`repo` si esta en el clon/cwd, `raices` si esta en una raiz declarada,
     None si no."""
-    for base in (compuertas.get("clon"), compuertas.get("cwd")):
-        if base and _dentro(p, pathlib.Path(base).resolve()):
-            return "repo"
-    for r in compuertas.get("raices") or []:
-        if _dentro(p, pathlib.Path(os.path.expanduser(r)).resolve()):
-            return "raices"
+    repo, raices, _ = _bases(compuertas)
+    if any(_dentro(p, b) for b in repo):
+        return "repo"
+    if any(_dentro(p, r) for r in raices):
+        return "raices"
     return None
 
 
@@ -279,45 +468,67 @@ def _flags_cortas(argv: list[str]) -> str:
 def _candidatos_de_ruta(exe: str, argv: list[str]) -> list[str]:
     """Los tokens de argv[1:] que pueden ser una ruta: los que no son
     opcion, el valor de `--opcion=valor` y lo pegado a una opcion corta
-    (`-C/x`); para curl/wget, ademas, lo que sigue a `@` (`-d @archivo`,
-    `-F campo=@archivo`) y nunca las URLs (esas van por dominio)."""
+    (`-C/x`; no un separador solo, `awk -F/`, ni el valor de `-F` de awk);
+    para curl/wget, ademas, lo que sigue a `@` (`-d @archivo`,
+    `-F campo=@archivo`, `--data-urlencode nombre@archivo`) y nunca las
+    URLs (esas van por dominio)."""
     out = []
+    sin_ruta = OPCIONES_SIN_RUTA.get(exe, ())
+    saltar = False
     for tok in argv[1:]:
+        if saltar:
+            saltar = False
+            continue
+        if tok in sin_ruta:
+            saltar = True
+            continue
         if exe in SUBEN_ARCHIVOS and "://" in tok:
             continue
         if tok.startswith("--"):
             val = tok.split("=", 1)[1] if "=" in tok else ""
         elif tok.startswith("-"):
             val = tok[2:]
+            if val in PEGADOS_SIN_RUTA or tok[:2] in sin_ruta:
+                val = ""
         else:
             val = tok
-        if exe in SUBEN_ARCHIVOS:
-            if "=@" in val:
-                val = val.split("=@", 1)[1]
-            if val.startswith("@"):
-                val = val[1:]
+        if exe in SUBEN_ARCHIVOS and "@" in val:
+            val = val.split("@", 1)[1]
         if val:
             out.append(val)
     return out
 
 
 def _rutas_resueltas(exe: str, argv: list[str], cwd: str | None) -> tuple[list[pathlib.Path], str | None]:
-    """(rutas resueltas, motivo para DENEGAR). Un token con pinta de ruta
-    (lleva `/` o empieza con `~` o `.`) con una variable adentro se deniega:
-    bash la expande despues del hook y no se ve adonde apunta; con un glob
-    se expande aca y entra cada match (o el literal si no hay ninguno)."""
+    """(rutas resueltas, motivo para DENEGAR). Primero las llaves (bash las
+    abre antes que nada: `{~,x}` da `~`). Una forma con pinta de ruta (lleva
+    `/` o empieza con `~` o `.`) con una variable adentro se deniega: bash la
+    expande despues del hook y no se ve adonde apunta; con un glob se
+    expande aca y entra cada match (o el literal si no hay ninguno), salvo
+    que el padre del glob sea el home o `/` (`rm -rf ~/*`): entonces vale el
+    padre. Globs y llaves comparten el presupuesto del comando; agotarlo
+    deniega."""
     rutas: list[pathlib.Path] = []
+    presupuesto = Presupuesto(PRESUPUESTO_EXPANSION)
     for tok in _candidatos_de_ruta(exe, argv):
-        if _pinta_de_ruta(tok):
-            if _tiene_variable(tok):
-                return [], f"{exe}: variable en la ruta {tok}, no se ve adonde apunta"
-            if any(ch in tok for ch in GLOB):
-                matches = _expandir(tok, cwd)
-                if matches is None:
-                    return [], f"{exe}: el glob {tok} abre mas de {MAX_MATCHES} rutas"
-                rutas.extend(matches)
-                continue
-        rutas.append(_resolver(tok, cwd))
+        try:
+            formas = _expandir_llaves(tok, presupuesto) if "{" in tok else [tok]
+            for forma in formas:
+                if not _pinta_de_ruta(forma):
+                    rutas.append(_resolver(forma, cwd))
+                    continue
+                if _tiene_variable(forma):
+                    return [], f"{exe}: variable en la ruta {forma}, no se ve adonde apunta"
+                if not any(ch in forma for ch in GLOB):
+                    rutas.append(_resolver(forma, cwd))
+                    continue
+                padre = _padre_del_glob(forma, cwd)
+                if padre is not None and _home_o_raiz(padre):
+                    rutas.append(padre)
+                    continue
+                rutas.extend(_expandir(forma, cwd, presupuesto))
+        except PresupuestoAgotado as exc:
+            return [], f"{exe}: la expansion de {tok} agota el presupuesto ({exc}): no se sabe que abarca"
     return rutas, None
 
 
