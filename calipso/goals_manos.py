@@ -34,6 +34,7 @@ from typing import Callable
 
 from calipso import github as calipso_github
 from calipso import goals
+from calipso import goals_hook
 from calipso.privacidad import detector
 
 TIMEOUT_CABEZA_S = 180
@@ -973,31 +974,50 @@ def resolver_exe(exe: str, cwd: str, path: str) -> list[str] | None:
     return None
 
 
+def _tapadas_del_confinado() -> list[str]:
+    """Lo que el confinado no ve: DENY_READ del sandbox mas las PROTEGIDAS
+    del hook (~/.claude entero, los keyrings, ~/.password-store: el
+    criterio no es el CLI de claude y no las necesita; re-review del
+    carril 2), expandidas, las que existen, ordenadas para que un padre
+    montado tape a sus hijos sin montarlos aparte."""
+    rutas = sorted({os.path.expanduser(d) for d in [*DENY_READ, *goals_hook.PROTEGIDAS]})
+    out: list[str] = []
+    for ruta in rutas:
+        if not os.path.exists(ruta):
+            continue
+        if any(ruta == t or ruta.startswith(t.rstrip("/") + "/") for t in out):
+            continue
+        out.append(ruta)
+    return out
+
+
 def argv_bwrap(argv: list[str], *, cwd: str, compuertas: dict, bwrap: str = "bwrap") -> list[str]:
     """El espejo del sandbox del golpe (settings_del_goal) en bubblewrap
     (ruling del cierre, criterio confinado): todo el sistema de solo
     lectura, /dev y /proc nuevos, /tmp privado, el clon (o la carpeta de
     trabajo) y las raices declaradas escribibles, un tmpfs vacio sobre cada
-    DENY_READ que exista (~/.ssh, ~/.calipso...; un DENY_READ que es un
-    ARCHIVO, `~/.claude/.credentials.json`, no admite tmpfs y se tapa con
-    /dev/null de solo lectura), sin red, y el comando muere con bwrap
-    (`--die-with-parent`: killpg sobre bwrap lo alcanza aunque
-    `--new-session` lo ponga en otra sesion). El clon se monta DESPUES del
-    tmpfs de /tmp: en los tests vive ahi abajo. Una raiz que no existe no
-    se monta (bwrap fallaria entero)."""
+    DENY_READ y cada PROTEGIDA del hook que exista (~/.ssh, ~/.claude,
+    ~/.calipso, los keyrings...; una que es un ARCHIVO no admite tmpfs y se
+    tapa con /dev/null de solo lectura), sin red, en un namespace de pids
+    propio (`--unshare-pid`, con el /proc nuevo: el comando y lo que deje
+    de fondo -- `sleep 120 &`, un nieto que `--die-with-parent` solo no
+    alcanza -- mueren con bwrap, que es el PID 1 del namespace), y el
+    comando muere con bwrap (`--die-with-parent`: killpg sobre bwrap lo
+    alcanza aunque `--new-session` lo ponga en otra sesion). El clon se
+    monta DESPUES del tmpfs de /tmp: en los tests vive ahi abajo. Una raiz
+    que no existe no se monta (bwrap fallaria entero)."""
     out = [bwrap, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
            "--bind", cwd, cwd]
     for r in compuertas.get("raices") or []:
         ruta = os.path.expanduser(str(r))
         if os.path.isdir(ruta):
             out += ["--bind", ruta, ruta]
-    for d in DENY_READ:
-        ruta = os.path.expanduser(d)
+    for ruta in _tapadas_del_confinado():
         if os.path.isdir(ruta):
             out += ["--tmpfs", ruta]
-        elif os.path.exists(ruta):
+        else:
             out += ["--ro-bind", "/dev/null", ruta]
-    out += ["--unshare-net", "--die-with-parent", "--new-session", "--chdir", cwd, "--", *argv]
+    out += ["--unshare-net", "--unshare-pid", "--die-with-parent", "--new-session", "--chdir", cwd, "--", *argv]
     return out
 
 

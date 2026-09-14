@@ -614,6 +614,10 @@ def home_falso(monkeypatch):
     (casa / ".ssh" / "x").write_text("llave de mentira\n", encoding="utf-8")
     (casa / ".claude").mkdir()
     (casa / ".claude" / ".credentials.json").write_text("{\"token\": \"de mentira\"}", encoding="utf-8")
+    (casa / ".claude" / "projects").mkdir()
+    (casa / ".claude" / "projects" / "sesion.jsonl").write_text("transcripcion de mentira\n", encoding="utf-8")
+    (casa / ".local" / "share" / "keyrings").mkdir(parents=True)
+    (casa / ".local" / "share" / "keyrings" / "login.keyring").write_text("llavero de mentira\n", encoding="utf-8")
     (casa / "Documentos").mkdir()
     monkeypatch.setenv("HOME", str(casa))
     try:
@@ -649,14 +653,34 @@ def test_argv_bwrap_es_el_espejo_del_sandbox_del_golpe(home_falso, tmp_path):
     tmpfs = [a[i + 1] for i, t in enumerate(a) if t == "--tmpfs"]
     assert str(home_falso / ".ssh") in tmpfs and str(home_falso / "Documentos") not in tmpfs
     assert str(home_falso / ".calipso") not in tmpfs                          # no existe en el home falso: no se monta
-    # un DENY_READ que es un ARCHIVO no admite tmpfs: se tapa con /dev/null de solo lectura
+    # las PROTEGIDAS del hook que no son DENY_READ del sandbox (~/.claude
+    # entero, los keyrings) tambien van tapadas (re-review del carril 2);
+    # lo que cuelga de un tmpfs ya montado no se monta aparte
+    assert str(home_falso / ".claude") in tmpfs and str(home_falso / ".local" / "share" / "keyrings") in tmpfs
     ro = [(a[i + 1], a[i + 2]) for i, t in enumerate(a) if t == "--ro-bind"]
-    assert ("/dev/null", str(home_falso / ".claude" / ".credentials.json")) in ro
-    for flag in ("--unshare-net", "--die-with-parent", "--new-session"):
+    assert not any(d.startswith(str(home_falso / ".claude")) for _, d in ro)
+    assert len(tmpfs) == len(set(tmpfs))
+    for flag in ("--unshare-net", "--unshare-pid", "--die-with-parent", "--new-session"):
         assert flag in a
+    assert a.index("--unshare-pid") > a.index("--proc")                    # el /proc nuevo es el del namespace
     assert a[a.index("--chdir") + 1] == str(clon)
     assert a[a.index("--") + 1:] == ["/x/pytest", "-q"]
     assert a.index("--tmpfs") < a.index("--bind")                          # el clon se monta DESPUES del tmpfs de /tmp
+
+
+def test_argv_bwrap_tapa_un_archivo_protegido_con_dev_null(home_falso, tmp_path, monkeypatch):
+    """Un DENY_READ o PROTEGIDA que es un ARCHIVO no admite tmpfs: se tapa
+    con /dev/null de solo lectura (hoy `.credentials.json` cae bajo el
+    tmpfs de ~/.claude; la rama queda para cuando la lista traiga otro)."""
+    monkeypatch.setattr(gm, "DENY_READ", ["~/.ssh", "~/.netrc-falso"])
+    monkeypatch.setattr(goals_hook, "PROTEGIDAS", ("~/.ssh",))
+    (home_falso / ".netrc-falso").write_text("machine x login y\n", encoding="utf-8")
+    clon = tmp_path / "clon"
+    clon.mkdir()
+    a = gm.argv_bwrap(["/x/pytest"], cwd=str(clon), compuertas=_compuertas(clon), bwrap="/usr/bin/bwrap")
+    ro = [(a[i + 1], a[i + 2]) for i, t in enumerate(a) if t == "--ro-bind"]
+    assert ("/dev/null", str(home_falso / ".netrc-falso")) in ro
+    assert [a[i + 1] for i, t in enumerate(a) if t == "--tmpfs"] == ["/tmp", str(home_falso / ".ssh")]
 
 
 def test_correr_confinado_escribe_en_el_clon_y_no_fuera_ni_lee_lo_protegido(home_falso, tmp_path):
@@ -670,7 +694,9 @@ def test_correr_confinado_escribe_en_el_clon_y_no_fuera_ni_lee_lo_protegido(home
     casa = home_falso
     _script(clon, "escribe.sh", f'echo ok > "{clon}/ok.txt"')
     _script(clon, "fuera.sh", f'echo x > "{casa}/fuera.txt"')
-    _script(clon, "lee.sh", f'cat "{casa}/.ssh/x"; cat "{casa}/.claude/.credentials.json"')
+    _script(clon, "lee.sh", f'ls "{casa}/.claude" "{casa}/.local/share/keyrings"; cat "{casa}/.ssh/x"; '
+                            f'cat "{casa}/.claude/.credentials.json"; cat "{casa}/.local/share/keyrings/login.keyring"; '
+                            f'cat "{casa}/.claude/projects/sesion.jsonl"')
     _script(clon, "lee_doc.sh", f'ls "{casa}/Documentos" && echo LEGIBLE')
     vistos = []
     r = gm.correr_confinado(["./escribe.sh"], cwd=str(clon), compuertas=_compuertas(clon), timeout_s=30,
@@ -684,6 +710,7 @@ def test_correr_confinado_escribe_en_el_clon_y_no_fuera_ni_lee_lo_protegido(home
     r = gm.correr_confinado(["./lee.sh"], cwd=str(clon), compuertas=_compuertas(clon), timeout_s=30,
                             usar_systemd=False)
     assert r.exit != 0 and "llave" not in r.stdout_tail and "de mentira" not in r.stdout_tail
+    assert "sesion.jsonl" not in r.stdout_tail and "login.keyring" not in r.stdout_tail   # ni listar
     # lo del home que no es DENY_READ se lee (solo lectura): el criterio no es el martillo
     r = gm.correr_confinado(["./lee_doc.sh"], cwd=str(clon), compuertas=_compuertas(clon), timeout_s=30,
                             usar_systemd=False)
@@ -750,17 +777,26 @@ def test_correr_confinado_resuelve_el_ejecutable(home_falso, tmp_path, monkeypat
 
 
 def test_correr_confinado_timeout_mata_lo_de_adentro(home_falso, tmp_path):
+    """El comando y lo que deja de fondo (`sleep 120 &`, un nieto que
+    `--die-with-parent` solo no alcanza: re-review del carril 2) mueren
+    con bwrap: `--unshare-pid` los pone en un namespace cuyo PID 1 es
+    bwrap. Un `$$` de adentro no sirve afuera (es el pid del namespace),
+    asi que los dos sleep corren por un symlink con nombre propio y se
+    buscan por la linea de comandos desde el host."""
     clon = tmp_path / "clon"
     clon.mkdir()
-    _script(clon, "duerme.sh", f'echo $$ > "{clon}/pid"; exec sleep 60')
+    marca = f"calipso-test-fondo-{os.getpid()}"
+    (clon / marca).symlink_to("/usr/bin/sleep")
+    _script(clon, "duerme.sh", f'./{marca} 120 & exec ./{marca} 60')
     t0 = time.monotonic()
     r = gm.correr_confinado(["./duerme.sh"], cwd=str(clon), compuertas=_compuertas(clon), timeout_s=1,
                             usar_systemd=False, sondeo_s=0.1)
     assert time.monotonic() - t0 < 15 and r.timeout is True and r.motivo == "timeout" and r.matado is True
-    pid = int((clon / "pid").read_text(encoding="utf-8"))
     time.sleep(0.5)
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)                                            # el sleep de adentro murio con bwrap
+    vivos = subprocess.run(["pgrep", "-f", marca], capture_output=True, text=True).stdout.split()
+    for v in vivos:
+        os.kill(int(v), signal.SIGKILL)                            # que no quede colgado si el test falla
+    assert vivos == [], f"un sleep sobrevivio a bwrap: {vivos}"
     # y cancelar lo corta igual
     cancelar = threading.Event()
     threading.Timer(0.5, cancelar.set).start()

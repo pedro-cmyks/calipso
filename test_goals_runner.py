@@ -1044,8 +1044,13 @@ def test_parar_durante_el_criterio_lo_mata_y_no_transiciona(home, tmp_path):
     r.usar_systemd = False
     manos_base = f.manos
 
+    # el sleep corre por un symlink con nombre propio: con --unshare-pid el
+    # `$$` de adentro es del namespace y no sirve para buscarlo desde afuera
+    marca = f"calipso-test-criterio-{os.getpid()}"
+
     def manos(goal, n, prompt, contrato, cancelar):
-        _script_del_clon(goal["repo"], "duerme.sh", f'echo $$ > "{goal["repo"]}/pid"; exec sleep 60')
+        (pathlib.Path(goal["repo"]) / marca).symlink_to("/usr/bin/sleep")
+        _script_del_clon(goal["repo"], "duerme.sh", f'exec ./{marca} 60')
         return manos_base(goal, n, prompt, contrato, cancelar)
     r.manos = manos
     salida = {}
@@ -1062,10 +1067,11 @@ def test_parar_durante_el_criterio_lo_mata_y_no_transiciona(home, tmp_path):
     assert goals.load(None, g["id"])["status"] == goals.ACTIVE and f.llamadas["juez"] == []
     crit = filas(g["id"])[0]["juez"]["criterio"]
     assert crit["ok"] is False and "cancelado" in crit["salida"]
-    pid = int((pathlib.Path(goals.load(None, g["id"])["repo"]) / "pid").read_text(encoding="utf-8"))
     time.sleep(0.5)
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    vivos = subprocess.run(["pgrep", "-f", marca], capture_output=True, text=True).stdout.split()
+    for v in vivos:
+        os.kill(int(v), 9)
+    assert vivos == [], f"el sleep del criterio sobrevivio: {vivos}"
 
 
 def test_sin_otra_familia_pedro_sin_veredicto_de_modelo(home, tmp_path):
