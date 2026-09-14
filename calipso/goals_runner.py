@@ -357,20 +357,55 @@ def juzgar_criterio(goal: dict, correr: Callable | None) -> tuple[bool | None, s
 # las manos reales: el golpe sobre el CLI (claude o codex)
 # --------------------------------------------------------------------------
 
+# Lo que la fila del golpe dice cuando la eleccion --session-id/--resume se
+# corrigio con lo que contesto el CLI (clave: el `resume` corregido).
+REINTENTOS_DE_SESION = {True: "--session-id en uso -> --resume",
+                        False: "sesion no encontrada -> --session-id"}
+
+
+def correccion_de_sesion(r: gm.Resultado, resume: bool,
+                         cancelar: threading.Event | None = None) -> bool | None:
+    """Pura. Si claude aborto por la eleccion --session-id / --resume,
+    devuelve el `resume` corregido; None si no hay que reintentar. El
+    ledger puede adivinar mal: el server murio durante el golpe 1 y la
+    reconciliacion cerro la fila sin session_id, pero el CLI SI persistio
+    la sesion en ~/.claude/projects/<slug del clon>/ (HOME es el real, el
+    cwd es siempre el clon) y `--session-id` aborta con `Session ID x is
+    already in use.`; o la fila tiene sesion y el CLI no la persistio, y
+    `--resume` aborta con `No conversation found with session ID: x`
+    (los dos textos, verificados en el binario 2.1.270). En ambos casos el
+    CLI corta antes de tocar la API (exit 1, sin linea init: no gasta
+    cuota, no deja veredicto), asi que su texto es la verdad y el mismo
+    golpe se relanza con la otra eleccion. Nada con exit 0, matado
+    (timeout, parar) o `cancelar` puesto; un solo sentido por vez (el
+    llamador reintenta UNA vez: dos correcciones contradictorias no forman
+    un bucle). El texto se busca en stderr y en stdout."""
+    if r.exit in (0, None) or r.matado or (cancelar is not None and cancelar.is_set()):
+        return None
+    texto = f"{r.stderr_tail or ''}\n{r.stdout_tail or ''}"
+    if not resume and "is already in use" in texto:
+        return True
+    if resume and "No conversation found with session ID" in texto:
+        return False
+    return None
+
+
 def manos_con_cli(exes: dict, *, timeout_s: int | None = None,
                   usar_systemd: bool | None = None,
                   al_lanzar: Callable | None = None) -> Callable:
     """Devuelve `manos(goal, n, prompt, contrato, cancelar) -> Resultado`
     sobre `goals_manos.golpear`: arma settings (sandbox + hook), argv
-    (claude: --resume solo si el ledger tiene una fila de claude con la
-    sesion del goal, si no --session-id: tras golpes con codex o un golpe
-    cortado antes de que el CLI persistiera la sesion, un --resume de una
-    sesion inexistente es exit 1 sin veredicto que cuenta y no converge;
-    codex: -o y --output-schema en archivos del goal), env
+    (claude: --resume si el ledger tiene una fila de claude con la sesion
+    del goal, si no --session-id -- tras golpes con codex o un golpe
+    cortado antes de que el CLI persistiera la sesion; y como el ledger
+    puede adivinar mal, la eleccion se autocorrige con lo que contesta el
+    CLI: `correccion_de_sesion` relanza el MISMO golpe con la otra
+    eleccion, una sola vez, sin fila extra ni cuota, y la fila lo dice en
+    `reintento`; codex: -o y --output-schema en archivos del goal), env
     (CALIPSO_GOAL_COMPUERTAS, CALIPSO_HOME vacio), escribe el contrato
-    FUERA del clon y lanza con la unidad `calipso-goal-<id>-<n>`.
-    `al_lanzar` (= `runner.registrar_golpe`) publica el Popen en el runner
-    apenas existe (decision 17)."""
+    FUERA del clon y lanza con la unidad `calipso-goal-<id>-<n>` (el
+    reintento, `-<n>-r`). `al_lanzar` (= `runner.registrar_golpe`)
+    publica el Popen en el runner apenas existe (decision 17)."""
     def manos(goal: dict, n: int, prompt: str, contrato: str,
               cancelar: threading.Event | None) -> gm.Resultado:
         carpeta = goals.dir_goal(goal["id"])
@@ -393,12 +428,23 @@ def manos_con_cli(exes: dict, *, timeout_s: int | None = None,
             settings = gm.settings_del_goal(compuertas, compuertas_path=compuertas_path)
             resume = any(f.get("manos") == "claude" and f.get("session_id") == goal["session_id"]
                          for f in goals.golpes(goal["id"]))
-            argv = gm.argv_claude(exe, contrato=str(ruta_contrato), settings=settings,
-                                  schema=gm.ESQUEMA_VEREDICTO, session_id=goal["session_id"],
-                                  resume=resume, model=_modelo_claude(goal), web=bool(goal.get("dominios")))
-            return gm.golpear(argv=argv, stdin=prompt, cwd=cwd, env=env, timeout_s=tout,
-                              cancelar=cancelar, usar_systemd=usar_systemd, unidad=unidad,
-                              al_lanzar=al_lanzar)
+
+            def _golpe(resume: bool, unidad: str) -> gm.Resultado:
+                argv = gm.argv_claude(exe, contrato=str(ruta_contrato), settings=settings,
+                                      schema=gm.ESQUEMA_VEREDICTO, session_id=goal["session_id"],
+                                      resume=resume, model=_modelo_claude(goal),
+                                      web=bool(goal.get("dominios")))
+                return gm.golpear(argv=argv, stdin=prompt, cwd=cwd, env=env, timeout_s=tout,
+                                  cancelar=cancelar, usar_systemd=usar_systemd, unidad=unidad,
+                                  al_lanzar=al_lanzar)
+            r = _golpe(resume, unidad)
+            corregido = correccion_de_sesion(r, resume, cancelar)
+            if corregido is not None:
+                # el ledger adivino mal y el CLI aborto antes de la API: el
+                # MISMO golpe con la otra eleccion, una sola vez, misma fila
+                r = _golpe(corregido, f"{unidad}-r")
+                r.reintento = REINTENTOS_DE_SESION[corregido]
+            return r
         salida = carpeta / f"codex-{n}.json"
         schema_file = carpeta / "esquema-veredicto.json"
         schema_file.write_text(json.dumps(gm.ESQUEMA_VEREDICTO), encoding="utf-8")
@@ -713,7 +759,8 @@ class Runner:
                     "denials": resultado.denials, "costo_usd": resultado.costo_usd,
                     "cuenta_para_tope": not cuota_fallo and not cancelado,
                     "stderr_tail": resultado.stderr_tail[-500:],
-                    "model": resultado.model, "compuertas_usadas": usadas}
+                    "model": resultado.model, "reintento": resultado.reintento,
+                    "compuertas_usadas": usadas}
             fila, tapados = gm.tapar_fila(fila)
             fila["secretos_tapados"] = tapados + tapados_p + tapados_c
             goals.golpe_fin(goal["id"], n, **fila)

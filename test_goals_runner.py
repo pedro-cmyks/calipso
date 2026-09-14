@@ -1001,6 +1001,123 @@ def test_cambiar_de_manos_a_claude_arranca_la_sesion_y_no_resume_una_que_no_exis
     assert a4[a4.index("--resume") + 1] == sid and "--session-id" not in a4
 
 
+def test_correccion_de_sesion_es_pura():
+    """La eleccion --session-id / --resume se autocorrige por lo que dice
+    el CLI, no por adivinar del ledger: `Session ID x is already in use`
+    (la sesion SI existe) -> --resume; `No conversation found with session
+    ID` -> --session-id; un solo sentido por vez; nada con exit 0, matado
+    (timeout, parar) o `cancelar` puesto; el texto puede venir por stdout."""
+    en_uso = gm.Resultado(exit=1, stderr_tail="Error: Session ID abc is already in use.\n")
+    no_hay = gm.Resultado(exit=1, stderr_tail="No conversation found with session ID: abc\n")
+    assert gr.correccion_de_sesion(en_uso, resume=False) is True
+    assert gr.correccion_de_sesion(no_hay, resume=True) is False
+    assert gr.correccion_de_sesion(en_uso, resume=True) is None          # ya era --resume: nada que corregir
+    assert gr.correccion_de_sesion(no_hay, resume=False) is None
+    assert gr.correccion_de_sesion(gm.Resultado(exit=0, stderr_tail=en_uso.stderr_tail), resume=False) is None
+    assert gr.correccion_de_sesion(gm.Resultado(exit=1, matado=True, stderr_tail=en_uso.stderr_tail),
+                                   resume=False) is None
+    assert gr.correccion_de_sesion(gm.Resultado(exit=1, stderr_tail="boom"), resume=False) is None
+    puesto = threading.Event()
+    puesto.set()
+    assert gr.correccion_de_sesion(en_uso, resume=False, cancelar=puesto) is None
+    assert gr.correccion_de_sesion(gm.Resultado(exit=1, stdout_tail="Session ID x is already in use."),
+                                   resume=False) is True
+    assert gr.REINTENTOS_DE_SESION == {True: "--session-id en uso -> --resume",
+                                       False: "sesion no encontrada -> --session-id"}
+
+
+def test_session_id_en_uso_relanza_con_resume_sin_fila_extra(home, tmp_path, cli_falso_stream):
+    """El server murio durante el golpe 1 de claude y la reconciliacion
+    cerro la fila SIN session_id (un ledger anterior a este fix): el ledger
+    dice --session-id, pero el CLI SI persistio la sesion y aborta con
+    `Session ID x is already in use` (exit 1 antes de la API: no gasta
+    cuota). Las manos se corrigen solas: relanzan el MISMO golpe con
+    --resume, sin fila extra, y la fila dice el reintento."""
+    cli = cli_falso_stream
+    g = goal_activo(home, tmp_path)
+    sid = g["session_id"]
+    goals.golpe_inicio(g["id"], 1, manos="claude", paso="x")
+    goals.golpe_fin(g["id"], 1, motivo="cortado por el reinicio", unidades=0, duracion_ms=0)
+    cli.guion([{"lineas": [], "exit": 1, "stderr": f"Error: Session ID {sid} is already in use.\n"},
+               {"lineas": lineas_golpe(session_id=sid, veredicto={"estado": "sigo", "resumen": "segui"})}])
+    f = Falsas(juicios=[])
+    f.manos = gr.manos_con_cli({"claude": cli.ruta, "codex": cli.ruta_codex}, timeout_s=30, usar_systemd=False)
+    r = f.runner(g["id"])
+    f.diff_valor = "a"
+    assert r.iteracion()["accion"] == "golpe"
+    ll = cli.llamadas()
+    assert len(ll) == 2
+    a1, a2 = ll[0]["argv"], ll[1]["argv"]
+    assert a1[a1.index("--session-id") + 1] == sid and "--resume" not in a1
+    assert a2[a2.index("--resume") + 1] == sid and "--session-id" not in a2
+    assert ll[1]["stdin"] == ll[0]["stdin"] and ll[1]["contrato"] == ll[0]["contrato"]   # el mismo golpe
+    fl = filas(g["id"])
+    assert [x["n"] for x in fl] == [1, 2]                                            # sin fila extra
+    assert fl[1]["session_id"] == sid and fl[1]["exit"] == 0 and fl[1]["unidades"] == 2
+    assert fl[1]["veredicto_del_golpe"] == {"estado": "sigo", "resumen": "segui"}
+    assert fl[1]["reintento"] == "--session-id en uso -> --resume" and fl[1]["cuenta_para_tope"] is True
+    # el golpe siguiente ya resume derecho, sin reintento
+    f.diff_valor = "b"
+    assert r.iteracion()["accion"] == "golpe"
+    ll = cli.llamadas()
+    a3 = ll[2]["argv"]
+    assert len(ll) == 3 and a3[a3.index("--resume") + 1] == sid and "--session-id" not in a3
+    assert filas(g["id"])[2]["reintento"] is None
+
+
+def test_resume_de_una_sesion_inexistente_relanza_con_session_id(home, tmp_path, cli_falso_stream):
+    """El simetrico: el ledger tiene una fila de claude con la sesion
+    (--resume), pero el CLI no la encuentra (`No conversation found with
+    session ID`: no la persistio, o se borro): se relanza el mismo golpe
+    con --session-id (sesion nueva; el prompt lleva el resumen del ledger,
+    el martillo no arranca de cero)."""
+    cli = cli_falso_stream
+    g = goal_activo(home, tmp_path)
+    sid = g["session_id"]
+    cli.guion([{"lineas": lineas_golpe(session_id=sid, veredicto={"estado": "sigo", "resumen": "uno"})},
+               {"lineas": [], "exit": 1, "stderr": f"No conversation found with session ID: {sid}\n"},
+               {"lineas": lineas_golpe(session_id=sid, veredicto={"estado": "sigo", "resumen": "dos"})}])
+    f = Falsas(juicios=[])
+    f.manos = gr.manos_con_cli({"claude": cli.ruta, "codex": cli.ruta_codex}, timeout_s=30, usar_systemd=False)
+    r = f.runner(g["id"])
+    f.diff_valor = "a"
+    assert r.iteracion()["accion"] == "golpe"
+    f.diff_valor = "b"
+    assert r.iteracion()["accion"] == "golpe"
+    ll = cli.llamadas()
+    assert len(ll) == 3
+    a2, a3 = ll[1]["argv"], ll[2]["argv"]
+    assert a2[a2.index("--resume") + 1] == sid and "--session-id" not in a2
+    assert a3[a3.index("--session-id") + 1] == sid and "--resume" not in a3
+    fl = filas(g["id"])
+    assert [x["n"] for x in fl] == [1, 2] and fl[1]["session_id"] == sid and fl[1]["exit"] == 0
+    assert fl[1]["veredicto_del_golpe"] == {"estado": "sigo", "resumen": "dos"}
+    assert fl[1]["reintento"] == "sesion no encontrada -> --session-id"
+
+
+def test_el_reintento_de_sesion_es_uno_solo(home, tmp_path, cli_falso_stream):
+    """Dos correcciones contradictorias (en uso -> --resume -> no
+    encontrada) no forman un bucle: UN reintento por golpe; la fila queda
+    con el fallo del reintento y sin sesion (el golpe siguiente vuelve a
+    elegir por el ledger y a corregirse si hace falta)."""
+    cli = cli_falso_stream
+    g = goal_activo(home, tmp_path)
+    sid = g["session_id"]
+    cli.guion([{"lineas": [], "exit": 1, "stderr": f"Error: Session ID {sid} is already in use.\n"},
+               {"lineas": [], "exit": 1, "stderr": f"No conversation found with session ID: {sid}\n"},
+               {"lineas": [], "exit": 1, "stderr": f"Error: Session ID {sid} is already in use.\n"}])
+    f = Falsas(juicios=[])
+    f.manos = gr.manos_con_cli({"claude": cli.ruta, "codex": cli.ruta_codex}, timeout_s=30, usar_systemd=False)
+    r = f.runner(g["id"])
+    assert r.iteracion()["accion"] == "golpe"
+    ll = cli.llamadas()
+    assert len(ll) == 2 and "--session-id" in ll[0]["argv"] and "--resume" in ll[1]["argv"]
+    fl = filas(g["id"])
+    assert len(fl) == 1 and fl[0]["exit"] == 1 and fl[0]["session_id"] is None
+    assert "No conversation found" in fl[0]["stderr_tail"]
+    assert fl[0]["reintento"] == "--session-id en uso -> --resume" and fl[0]["cuenta_para_tope"] is True
+
+
 def test_manos_con_cli_codex(home, tmp_path, cli_falso_stream):
     cli = cli_falso_stream
     cli.guion([{"salida_codex": {"estado": "sigo", "resumen": "hice"}, "lineas": []}])
@@ -1158,6 +1275,7 @@ def test_reconciliar_goals_al_arrancar(home, tmp_path, monkeypatch):
     assert "sucio.py" in g2["espera"]["git_status"]
     fl = filas(g["id"])
     assert fl[0]["fase"] == "fin" and fl[0]["motivo"] == "cortado por el reinicio"
+    assert fl[0]["session_id"] == g["session_id"]        # el golpe de claude corrio: la sesion existe
     evs = [e for e in goals.events(None, g["id"]) if e["action"] == "reconciliado"]
     assert evs and lanzados == [g["id"]]
     # una segunda vez no hace nada: un waiting SIN solicitud no se relanza
@@ -1174,6 +1292,40 @@ def test_reconciliar_goals_al_arrancar(home, tmp_path, monkeypatch):
     goal_p["espera"] = {"motivo": "dale", "solicitud": "sol_dale"}
     goals.escribir(goal_p)
     assert set(srv._reconciliar_goals()) == {g["id"], p["id"]}
+
+
+def test_reconciliar_guarda_la_sesion_de_claude_y_el_segui_resume_derecho(home, tmp_path, cli_falso_stream,
+                                                                          monkeypatch):
+    """La reconciliacion cierra el golpe cortado CON la sesion del goal si
+    las manos eran claude (el golpe corrio: el CLI la persistio) y sin
+    sesion si eran codex: tras `/goal segui` el golpe siguiente resume
+    derecho, sin gastar un lanzamiento en el `already in use`."""
+    cli = cli_falso_stream
+    monkeypatch.setattr(srv, "_lanzar_bucle", lambda gid: None)
+    g = goal_activo(home, tmp_path, manos="codex")
+    sid = g["session_id"]
+    goals.golpe_inicio(g["id"], 1, manos="codex", paso="x")
+    assert srv._reconciliar_goals() == [g["id"]]
+    fl = filas(g["id"])
+    assert fl[0]["motivo"] == "cortado por el reinicio" and fl[0].get("session_id") is None
+    goal = goals.load(None, g["id"])
+    goal["manos"] = "claude"                                   # /goal segui con: claude
+    goals.escribir(goal)
+    goals.transicionar(g["id"], goals.ACTIVE, "segui")
+    goals.golpe_inicio(g["id"], 2, manos="claude", paso="x")   # y el server volvio a morir en el golpe
+    assert srv._reconciliar_goals() == [g["id"]]
+    fl = filas(g["id"])
+    assert fl[1]["motivo"] == "cortado por el reinicio" and fl[1]["session_id"] == sid
+    goals.transicionar(g["id"], goals.ACTIVE, "segui")
+    cli.guion([{"lineas": lineas_golpe(session_id=sid, veredicto={"estado": "sigo", "resumen": "tres"})}])
+    f = Falsas(juicios=[])
+    f.manos = gr.manos_con_cli({"claude": cli.ruta, "codex": cli.ruta_codex}, timeout_s=30, usar_systemd=False)
+    r = f.runner(g["id"])
+    assert r.iteracion()["accion"] == "golpe"
+    ll = cli.llamadas()
+    a = ll[0]["argv"]
+    assert len(ll) == 1 and a[a.index("--resume") + 1] == sid and "--session-id" not in a
+    assert filas(g["id"])[2]["session_id"] == sid and filas(g["id"])[2]["reintento"] is None
 
 
 def test_el_bucle_viejo_no_borra_la_entrada_nueva(home, tmp_path, monkeypatch):

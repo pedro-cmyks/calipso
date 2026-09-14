@@ -597,6 +597,7 @@ class Resultado:
     secretos_tapados: int = 0
     subtype: str | None = None
     model: str | None = None
+    reintento: str | None = None       # la autocorreccion --session-id/--resume (goals_runner.correccion_de_sesion)
 
     def a_dict(self) -> dict:
         return dataclasses.asdict(self)

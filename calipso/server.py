@@ -2693,7 +2693,8 @@ def _lanzar_bucle(goal_id: str) -> None:
 def _reconciliar_goals() -> list[str]:
     """En HILO, en el arranque (ruling 15.9): un goal `active` al arrancar
     es un goal que el apagado (o un crash) corto: su golpe sin `fin` se
-    cierra con motivo `cortado por el reinicio`, el `git status` del clon
+    cierra con motivo `cortado por el reinicio` (con la sesion del goal si
+    las manos eran claude: el CLI la persistio), el `git status` del clon
     va al evento y el goal queda `waiting` motivo `server reiniciado`; un
     goal `waiting` o `proposed` CON solicitud (una respuesta pendiente del
     inbox, o el `dale` estacionado) se relanza para que el bucle la sondee;
@@ -2706,8 +2707,14 @@ def _reconciliar_goals() -> list[str]:
         if g.get("status") == goals.ACTIVE:
             filas = goals.golpes(g["id"])
             if filas and filas[-1].get("fase") == "inicio":
+                # el golpe de claude corrio: el CLI persistio la sesion del
+                # goal, y sin session_id en la fila el golpe siguiente saldria
+                # con --session-id sobre una sesion que existe (`already in
+                # use`, exit 1); las manos se corrigen solas, pero esto ahorra
+                # el lanzamiento. codex y el revisor no usan esa sesion
+                sesion = {"session_id": g.get("session_id")} if filas[-1].get("manos") == "claude" else {}
                 goals.golpe_fin(g["id"], filas[-1]["n"], motivo="cortado por el reinicio", unidades=0,
-                                duracion_ms=0)
+                                duracion_ms=0, **sesion)
             estado = ""
             if g.get("repo"):
                 rc, out, _ = calipso_github.git_local(["status", "--porcelain"], cwd=g["repo"])
