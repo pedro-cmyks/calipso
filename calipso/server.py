@@ -4367,6 +4367,15 @@ def _parar_goal(goal_id: str, motivo: str = "parado por Pedro") -> dict:
     return goal
 
 
+def _sugerir_tope(goal: dict, tocado: str) -> str:
+    """`/goal segui tope: 9 golpes`: la clave tocada un 50 % mas arriba (el
+    mismo factor que el si del inbox), en la gramatica que parse_tope lee."""
+    t = {**goals.TOPE_DEFECTO, **(goal.get("tope") or {})}
+    n = int(-(-int(t.get(tocado) or 1) * goals.FACTOR_TOPE_RETOMAR // 1))
+    unidad = {"golpes": f"{n} golpes", "minutos": f"{n}m", "unidades": f"{n} unidades"}.get(tocado, f"{n} {tocado}")
+    return f"/goal segui tope: {unidad}"
+
+
 def _retomar_goal(goal_id: str, nota: str | None = None, con: str | None = None,
                   tope: dict | None = None) -> dict:
     """waiting -> active con la nota de Pedro en el ledger, otras manos si
@@ -4385,6 +4394,14 @@ def _retomar_goal(goal_id: str, nota: str | None = None, con: str | None = None,
         goal["tope"] = goals.validar_tope({**viejo, **tope})
         goals.escribir(goal)
         goals.event(None, goal_id, "tope_cambiado", de=viejo, a=goal["tope"], por="segui")
+    espera = goal.get("espera") or {}
+    if espera.get("motivo") == "tope":
+        # un segui que deja el tope como esta volveria a waiting:tope en el
+        # primer tick sin golpear y sin decirlo (rev:server); salvo que el
+        # tope ya no este tocado (el si del inbox lo amplio un 50 %)
+        tocado = goals.tope_alcanzado(goal)
+        if tocado:
+            raise goals.ErrorGoal(f"el goal toco el tope de {tocado}: {_sugerir_tope(goal, tocado)}")
     if (goal.get("espera") or {}).get("motivo") in goals.RESPUESTAS_QUE_APLICAN:
         # un segui es un si (decision 16): se aplica lo MISMO que el runner
         # aplica con el si del inbox (preautorizar la forma, sumar la raiz);
@@ -4466,7 +4483,7 @@ async def _atender_goal(texto: str, features: dict, chat_id: str | None,
         if verbo == "segui":
             if not activo or activo.get("status") != goals.WAITING:
                 return "el goal no esta esperando nada", True
-            g = await asyncio.to_thread(_retomar_goal, activo["id"], d["nota"], d["con"])
+            g = await asyncio.to_thread(_retomar_goal, activo["id"], d["nota"], d["con"], d["tope"] or None)
             return f"goal {g['id']} active de nuevo (manos: {g['manos']})", False
         if not d["texto"]:
             return "deci que queres: `/goal <texto> [hasta: ...] [tope: ...] [en: <repo>]`", True
@@ -6234,6 +6251,7 @@ class GoalDaleBody(BaseModel):
 class GoalSeguiBody(BaseModel):
     nota: str | None = None
     con: str | None = None      # claude | codex
+    tope: str | None = None     # "1h", "10 golpes", "20 unidades": levanta el tope de un waiting:tope
 
 
 def _goal_o_404(goal_id: str) -> dict:
@@ -6299,8 +6317,9 @@ def api_goal_parar(goal_id: str) -> dict:
 @app.post("/api/goals/{goal_id}/segui")
 def api_goal_segui(goal_id: str, body: GoalSeguiBody | None = None) -> dict:
     _goal_o_404(goal_id)
+    tope = goals.parse_tope(body.tope) if body and body.tope else None
     return _transicion_http(_retomar_goal, goal_id, body.nota if body else None,
-                            body.con if body else None)
+                            body.con if body else None, tope or None)
 
 
 @app.put("/api/goals/{goal_id}")

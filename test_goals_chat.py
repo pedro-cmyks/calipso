@@ -620,3 +620,62 @@ def test_dale_por_chat_con_el_activo_waiting_y_sin_proposed_vale_como_segui(goal
         assert g2["compuertas"]["preautorizadas"] == [detalle["compuerta"]]
     if motivo == "raiz_nueva":
         assert detalle["raiz"] in g2["compuertas"]["raices"]
+
+
+def _gastar_golpes(goal_id, n, unidades=1):
+    for i in range(1, n + 1):
+        goals.golpe_inicio(goal_id, i, manos="claude", paso="x")
+        goals.golpe_fin(goal_id, i, unidades=unidades, duracion_ms=1000)
+
+
+def test_segui_acepta_tope_y_sobre_waiting_tope_sin_tope_nuevo_dice_como(goal_home, chat, repo):
+    """rev:server importante: un goal que toco el tope quedaba waiting y no
+    habia camino para levantarlo: `/goal segui` descartaba `tope:` y en el
+    primer tick el runner volvia a waiting:tope sin decirlo. Ahora `segui`
+    (chat y POST) acepta `tope:`, y un segui sin tope nuevo sobre
+    waiting:tope con el tope todavia tocado es un aviso con el comando."""
+    _proponer(chat, repo)
+    chat.turno("/goal dale")
+    g = goals.activo()
+    _gastar_golpes(g["id"], 6)                                     # el tope: 6 golpes
+    goals.transicionar(g["id"], goals.WAITING, "tope", motivo_detalle={"tope": "golpes", "solicitud": "sol_t"})
+    eventos = chat.turno("/goal segui dale que va")
+    assert "toco el tope de golpes" in _dicho(eventos) and "/goal segui tope:" in _dicho(eventos)
+    assert goals.load(None, g["id"])["status"] == goals.WAITING
+    # y el dale (= segui) sobre ese waiting dice lo mismo
+    assert "toco el tope de golpes" in _dicho(chat.turno("/goal dale"))
+    eventos = chat.turno("/goal segui tope: 10 golpes")
+    assert "active" in texto_visible(eventos) and not de_tipo(eventos, "error")
+    g2 = goals.load(None, g["id"])
+    assert g2["status"] == goals.ACTIVE and g2["tope"]["golpes"] == 10 and g2["tope"]["minutos"] == 10
+    ev = [e for e in goals.events(None, g["id"]) if e["action"] == "tope_cambiado"]
+    assert ev and ev[-1]["a"]["golpes"] == 10 and ev[-1]["de"]["golpes"] == 6
+    # la nota y el tope juntos: la nota es la nota, el tope es el tope
+    goals.transicionar(g["id"], goals.WAITING, "parado por Pedro")
+    chat.turno("/goal segui proba con la otra libreria tope: 1h")
+    g3 = goals.load(None, g["id"])
+    assert g3["ultima_nota"] == "proba con la otra libreria" and g3["tope"]["minutos"] == 60
+    # por HTTP: GoalSeguiBody.tope
+    goals.transicionar(g["id"], goals.WAITING, "parado por Pedro")
+    r = chat.cliente.post(f"/api/goals/{g['id']}/segui", json={"tope": "20 unidades"})
+    assert r.status_code == 200 and r.json()["goal"]["tope"]["unidades"] == 20
+    # un tope invalido por HTTP es 409, no un 500
+    goals.transicionar(g["id"], goals.WAITING, "parado por Pedro")
+    r = chat.cliente.post(f"/api/goals/{g['id']}/segui", json={"tope": "0 golpes"})
+    assert r.status_code == 409 and "tope" in r.json()["detail"]
+
+
+def test_segui_sin_tope_sobre_waiting_tope_pasa_si_el_runner_ya_lo_amplio(goal_home, chat, repo):
+    """El si del inbox a la solicitud `retomar` amplia el tope un 50 %
+    (goals.ampliar_tope); si el goal quedo waiting:tope igual (p. ej. otro
+    goal en curso en ese momento), un `/goal segui` sin tope nuevo no
+    tiene por que fallar: el tope ya no esta tocado."""
+    _proponer(chat, repo)
+    chat.turno("/goal dale")
+    g = goals.activo()
+    _gastar_golpes(g["id"], 6)
+    goals.transicionar(g["id"], goals.WAITING, "tope", motivo_detalle={"tope": "golpes"})
+    goals.ampliar_tope(goals.load(None, g["id"]))                  # 6 -> 9 golpes
+    eventos = chat.turno("/goal segui")
+    assert "active" in texto_visible(eventos) and not de_tipo(eventos, "error")
+    assert goals.load(None, g["id"])["tope"]["golpes"] == 9
