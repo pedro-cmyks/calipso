@@ -181,7 +181,7 @@ def cabeza_sin_herramientas(client: str, exe: str, system: str, prompt: str,
         if client == "codex":
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".schema.json",
                                              delete=False) as f:
-                json.dump(schema, f)
+                json.dump(esquema_para_codex(schema), f)      # el modo estricto de OpenAI
                 temporales.append(f.name)
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".salida.txt",
                                              delete=False) as f:
@@ -194,7 +194,7 @@ def cabeza_sin_herramientas(client: str, exe: str, system: str, prompt: str,
             try:
                 texto = pathlib.Path(temporales[1]).read_text(encoding="utf-8").strip()
                 v = json.loads(texto) if texto else None
-                return v if isinstance(v, dict) else None
+                return sin_nulos(v) if isinstance(v, dict) else None
             except (OSError, json.JSONDecodeError):
                 return None
         return None
@@ -241,11 +241,67 @@ ESQUEMA_VEREDICTO: dict = {
         "pregunta": {"type": "string"},
         "compuerta": {
             "type": "object",
-            "properties": {"familia": {"type": "string"}, "forma": {"type": "object"}},
+            "properties": {
+                "familia": {"type": "string"},
+                # la forma exacta, con las claves que el hook y el motor
+                # entienden (goals_hook: argv de un comando, ruta de un
+                # archivo, raiz de una raiz nueva; host de WebFetch)
+                "forma": {
+                    "type": "object",
+                    "properties": {"raiz": {"type": "string"}, "ruta": {"type": "string"},
+                                   "argv": {"type": "array", "items": {"type": "string"}},
+                                   "host": {"type": "string"}},
+                },
+            },
         },
     },
     "required": ["estado", "resumen"],
 }
+
+
+def esquema_para_codex(esquema: dict) -> dict:
+    """El mismo esquema en el modo ESTRICTO que exige la API de OpenAI para
+    `--output-schema` (smoke corrida 3, No confirmado 7: codex salia 1 en
+    2,5 s con `invalid_json_schema: 'additionalProperties' is required to be
+    supplied and to be false`): en cada objeto `additionalProperties: false`
+    y TODAS las claves en `required`; lo que era opcional pasa a nullable
+    (`type: [..., "null"]`, `null` en el enum). El original no se toca:
+    claude lo recibe permisivo por --json-schema. Lo que codex conteste con
+    null se limpia con `sin_nulos` al leerlo."""
+    def _nodo(n, requerido=True):
+        if isinstance(n, list):
+            return [_nodo(x) for x in n]
+        if not isinstance(n, dict):
+            return n
+        out = {k: (_nodo(v) if k not in ("properties",) else v) for k, v in n.items()}
+        t = out.get("type")
+        es_objeto = t == "object" or (isinstance(t, list) and "object" in t)
+        if es_objeto:
+            props = out.get("properties") or {}
+            req = set(out.get("required") or [])
+            out["properties"] = {k: _nodo(v, requerido=k in req) for k, v in props.items()}
+            out["required"] = list(props)
+            out["additionalProperties"] = False
+        if not requerido:
+            if isinstance(t, str):
+                out["type"] = [t, "null"]
+            elif isinstance(t, list) and "null" not in t:
+                out["type"] = [*t, "null"]
+            if "enum" in out and None not in out["enum"]:
+                out["enum"] = [*out["enum"], None]
+        return out
+    return _nodo(esquema)
+
+
+def sin_nulos(v):
+    """Recursivo: saca las claves con valor null de los dicts (codex, en
+    modo estricto, manda todas las claves del esquema; las opcionales que
+    no uso vienen en null y el runner las espera ausentes, como en claude)."""
+    if isinstance(v, dict):
+        return {k: sin_nulos(x) for k, x in v.items() if x is not None}
+    if isinstance(v, list):
+        return [sin_nulos(x) for x in v]
+    return v
 
 # La respuesta del revisor de otra familia (spec seccion 6.2).
 ESQUEMA_REVISOR: dict = {

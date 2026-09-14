@@ -505,6 +505,51 @@ def test_sondear_hook_con_el_hook_real(goal_en_disco):
     assert ok is False and "exit 0" in motivo
 
 
+# --- el esquema estricto de codex (smoke corrida 3, No confirmado 7) ----------------------
+
+def _objetos(nodo):
+    """Todos los nodos de esquema con type object (recursivo)."""
+    if isinstance(nodo, dict):
+        t = nodo.get("type")
+        if t == "object" or (isinstance(t, list) and "object" in t):
+            yield nodo
+        for v in nodo.values():
+            yield from _objetos(v)
+    elif isinstance(nodo, list):
+        for v in nodo:
+            yield from _objetos(v)
+
+
+def test_esquema_para_codex_es_estricto_y_no_toca_el_original():
+    """El smoke vio a codex salir 1 en 2,5 s con `invalid_json_schema:
+    'additionalProperties' is required to be supplied and to be false`: el
+    modo estricto de OpenAI exige additionalProperties false y todas las
+    claves en required (lo opcional se vuelve nullable) en CADA objeto."""
+    e = gm.esquema_para_codex(gm.ESQUEMA_VEREDICTO)
+    assert e["additionalProperties"] is False and e["required"] == list(e["properties"])
+    assert e["properties"]["estado"] == {"type": "string", "enum": ["sigo", "terminar", "preguntar"]}
+    assert e["properties"]["pregunta"]["type"] == ["string", "null"]
+    c = e["properties"]["compuerta"]
+    assert c["type"] == ["object", "null"] and c["additionalProperties"] is False
+    assert c["required"] == ["familia", "forma"] and c["properties"]["forma"]["additionalProperties"] is False
+    assert c["properties"]["forma"]["properties"]["argv"]["type"] == ["array", "null"]
+    # el original sigue permisivo (claude lo recibe por --json-schema)
+    assert "additionalProperties" not in gm.ESQUEMA_VEREDICTO
+    assert gm.ESQUEMA_VEREDICTO["required"] == ["estado", "resumen"]
+    for esquema in (gm.ESQUEMA_PROPUESTA, gm.ESQUEMA_REVISOR, gm.ESQUEMA_VEREDICTO):
+        for o in _objetos(gm.esquema_para_codex(esquema)):
+            assert o["additionalProperties"] is False and o["required"] == list(o.get("properties") or {})
+
+
+def test_sin_nulos_deja_el_veredicto_de_codex_como_el_de_claude():
+    v = {"estado": "sigo", "resumen": "hice", "pregunta": None,
+         "compuerta": {"familia": None, "forma": {"raiz": None, "argv": ["a"]}}, "l": [{"a": None, "b": 1}, None]}
+    assert gm.sin_nulos(v) == {"estado": "sigo", "resumen": "hice",
+                               "compuerta": {"forma": {"argv": ["a"]}}, "l": [{"b": 1}, None]}
+    assert gm.sin_nulos({"estado": "sigo", "resumen": "x", "pregunta": None, "compuerta": None}) == \
+        {"estado": "sigo", "resumen": "x"}
+
+
 # --- el detector de secretos sobre el ledger ---------------------------------------------
 
 def test_tapar_y_tapar_fila():

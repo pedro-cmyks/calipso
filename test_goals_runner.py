@@ -1159,7 +1159,9 @@ def test_el_reintento_de_sesion_es_uno_solo(home, tmp_path, cli_falso_stream):
 
 def test_manos_con_cli_codex(home, tmp_path, cli_falso_stream):
     cli = cli_falso_stream
-    cli.guion([{"salida_codex": {"estado": "sigo", "resumen": "hice"}, "lineas": []}])
+    # codex en modo estricto devuelve TODAS las claves (las opcionales en null)
+    cli.guion([{"salida_codex": {"estado": "sigo", "resumen": "hice", "pregunta": None, "compuerta": None},
+                "lineas": []}])
     f = Falsas(juicios=[])
     f.manos = gr.manos_con_cli({"claude": cli.ruta, "codex": cli.ruta_codex}, timeout_s=30, usar_systemd=False)
     g = goal_activo(home, tmp_path, manos="codex")
@@ -1168,6 +1170,9 @@ def test_manos_con_cli_codex(home, tmp_path, cli_falso_stream):
     a = cli.llamadas()[0]["argv"]
     assert a[0] == "exec" and a[a.index("-s") + 1] == "workspace-write"   # el falso anota sys.argv[1:]
     assert filas(g["id"])[0]["veredicto_del_golpe"] == {"estado": "sigo", "resumen": "hice"}
+    # el esquema que recibe codex es el estricto (smoke corrida 3: invalid_json_schema sin esto)
+    esquema = json.loads((goals.dir_goal(g["id"]) / "esquema-veredicto.json").read_text(encoding="utf-8"))
+    assert esquema["additionalProperties"] is False and esquema["required"] == list(esquema["properties"])
 
 
 def test_manos_con_cli_publica_el_handle_en_el_runner(home, tmp_path, cli_falso_stream):

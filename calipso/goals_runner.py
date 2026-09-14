@@ -447,7 +447,8 @@ def manos_con_cli(exes: dict, *, timeout_s: int | None = None,
             return r
         salida = carpeta / f"codex-{n}.json"
         schema_file = carpeta / "esquema-veredicto.json"
-        schema_file.write_text(json.dumps(gm.ESQUEMA_VEREDICTO), encoding="utf-8")
+        # el modo estricto de OpenAI (smoke corrida 3): sin esto codex sale 1 antes de la primera llamada
+        schema_file.write_text(json.dumps(gm.esquema_para_codex(gm.ESQUEMA_VEREDICTO)), encoding="utf-8")
         argv = gm.argv_codex(exe, cwd=cwd, raices=list(compuertas.get("raices") or []),
                              salida=str(salida), schema_file=str(schema_file))
         r = gm.golpear(argv=argv, stdin=f"{contrato}\n\n{prompt}", cwd=cwd, env=env, timeout_s=tout,
@@ -455,7 +456,7 @@ def manos_con_cli(exes: dict, *, timeout_s: int | None = None,
         if r.veredicto is None and salida.exists():
             try:
                 v = json.loads(salida.read_text(encoding="utf-8"))
-                r.veredicto = v if isinstance(v, dict) else None
+                r.veredicto = gm.sin_nulos(v) if isinstance(v, dict) else None
             except (OSError, json.JSONDecodeError):
                 pass
         if r.unidades == 0 and r.exit == 0:
