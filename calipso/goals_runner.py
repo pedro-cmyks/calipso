@@ -35,7 +35,9 @@ Cada vuelta, con el goal `active`:
   7. el veredicto: `preguntar` -> una solicitud estacionada (pregunta,
      compuerta o raiz_nueva; lo NUNCA no se pregunta) y `waiting`;
      `terminar` -> el juez: criterio medible primero (comando/archivo/
-     numero), despues el revisor de OTRA familia (cuenta como golpe: su fila
+     numero; el comando corre CONFINADO bajo bwrap espejo del sandbox, con
+     su Popen en `golpe_en_curso`: lo que ejecuta lo escribio el martillo),
+     despues el revisor de OTRA familia (cuenta como golpe: su fila
      `inicio` va ANTES de invocarlo, invariante 3; se cobra; `sin_golpe`
      apagado y su Popen en `golpe_en_curso` mientras corre; `independencia`);
      cumplido -> `waiting` motivo `cumplido` con la solicitud `cerrar` para
@@ -316,36 +318,52 @@ def no_converge(filas: list[dict]) -> str | None:
     return None
 
 
-def _correr_criterio(comando: str, cwd: str) -> tuple[bool, str]:
+def _correr_criterio(comando: str, cwd: str, *, goal: dict, al_lanzar: Callable | None = None,
+                     cancelar: threading.Event | None = None, n: int | None = None,
+                     usar_systemd: bool | None = None) -> tuple[bool, str]:
     """El comando del criterio en el clon, salida 0 = cumplido. SIN shell:
-    el comando lo propuso la cabeza (un modelo) o Pedro, y corre FUERA del
-    sandbox; `goals_hook.partir` lo tokeniza y rechaza compuestos (`;`,
-    `&&`, `|`, `$(`...) -- un criterio compuesto no se corre, falla.
-    Canario: local (no sale de la maquina). 10 minutos de tope."""
+    `goals_hook.partir` lo tokeniza y rechaza compuestos (`;`, `&&`, `|`,
+    `$(`...) -- un criterio compuesto no se corre, falla. Y CONFINADO
+    (critico del cierre 2026-09-14): lo que ejecuta (conftest.py, check.py,
+    un Makefile) lo escribio el martillo en el clon, asi que corre bajo la
+    misma barrera del golpe (goals_manos.correr_confinado: bwrap espejo del
+    sandbox, sin red, home de solo lectura, DENY_READ tapado, env del golpe
+    con CALIPSO_HOME vacio), en su scope `calipso-goal-<id>-criterio-<n>`,
+    con el Popen publicado en el runner (parar/apagar lo matan) y 10
+    minutos de tope. Sin bwrap no se corre: el juez dice por que."""
     argv = goals_hook.partir(comando)
     if argv is None:
         return False, "criterio compuesto o vacio: no se corre (usa un comando simple)"
-    try:
-        r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=600,
-                           env=gm.env_saneado())
-        salida = ((r.stdout or "") + (r.stderr or "")).strip()
-        return r.returncode == 0, salida[-1500:] or f"exit {r.returncode}"
-    except subprocess.TimeoutExpired:
-        return False, "el comando del criterio vencio a los 600 s"
-    except Exception as exc:
-        return False, str(exc)
+    carpeta = goals.dir_goal(goal["id"])
+    home_vacio = carpeta / "home_vacio"
+    home_vacio.mkdir(exist_ok=True)
+    env = gm.env_del_golpe(str(carpeta / "compuertas.json"), str(home_vacio))
+    unidad = f"calipso-goal-{goal['id']}-criterio-{n}" if n else None
+    r = gm.correr_confinado(argv, cwd=cwd, compuertas=goals.compuertas_de(goal),
+                            timeout_s=gm.CRITERIO_TIMEOUT_S, unidad=unidad, al_lanzar=al_lanzar,
+                            cancelar=cancelar, env=env, usar_systemd=usar_systemd)
+    salida = ((r.stdout_tail or "") + (r.stderr_tail or "")).strip()[-1500:]
+    if r.timeout:
+        return False, f"el comando del criterio vencio a los {gm.CRITERIO_TIMEOUT_S} s"
+    if r.motivo:
+        return False, r.motivo + (f": {salida}" if salida else "")
+    return r.exit == 0, salida or f"exit {r.exit}"
 
 
-def juzgar_criterio(goal: dict, correr: Callable | None) -> tuple[bool | None, str]:
-    """(None, motivo) si no hay criterio medible; si no (ok, salida)."""
+def juzgar_criterio(goal: dict, correr: Callable | None, *, al_lanzar: Callable | None = None,
+                    cancelar: threading.Event | None = None, n: int | None = None,
+                    usar_systemd: bool | None = None) -> tuple[bool | None, str]:
+    """(None, motivo) si no hay criterio medible; si no (ok, salida). Los
+    kwargs son para el criterio comando real: el runner publica su proceso
+    (`al_lanzar`), lo corta (`cancelar`) y lo nombra (`n`)."""
     c = goal.get("criterio") or {}
     tipo = c.get("tipo")
     cwd = _cwd_de(goal)
     if tipo == "comando":
         if correr is not None:
             return correr(goal)
-        return _correr_criterio(str(c.get("comando") or ""), cwd)
+        return _correr_criterio(str(c.get("comando") or ""), cwd, goal=goal, al_lanzar=al_lanzar,
+                                cancelar=cancelar, n=n, usar_systemd=usar_systemd)
     if tipo == "archivo":
         p = pathlib.Path(cwd) / str(c.get("ruta") or "")
         if not p.exists():
@@ -500,9 +518,12 @@ class Runner:
                  sondear: Callable | None = None, clonar: Callable | None = None,
                  diff_fn: Callable | None = None, diff_completo_fn: Callable | None = None,
                  correr_criterio: Callable | None = None,
-                 aduana_fn: Callable | None = None, telemetria: Callable | None = None) -> None:
+                 aduana_fn: Callable | None = None, telemetria: Callable | None = None,
+                 usar_systemd: bool | None = None) -> None:
         """`manos` None = se asigna despues: las manos reales necesitan
-        `runner.registrar_golpe` (server._runner_de las arma en dos pasos)."""
+        `runner.registrar_golpe` (server._runner_de las arma en dos pasos).
+        `usar_systemd` es para el criterio confinado (None = si hay
+        systemd-run; los tests ponen False)."""
         self.goal_id = goal_id
         self.manos = manos
         self.juez = juez
@@ -516,6 +537,7 @@ class Runner:
         self.diff_fn = diff_fn or self._diff_real
         self.diff_completo_fn = diff_completo_fn or self._diff_completo_real
         self.correr_criterio = correr_criterio
+        self.usar_systemd = usar_systemd
         self.aduana_fn = aduana_fn or (lambda *a, **k: None)
         self.telemetria = telemetria or telemetry.log_event
         self.cancelar = threading.Event()
@@ -947,16 +969,20 @@ class Runner:
             self.sin_golpe.set()
 
     def _juzgar(self, goal: dict, n: int, resultado: gm.Resultado) -> dict | None:
-        ok, salida = juzgar_criterio(goal, self.correr_criterio)
+        # el criterio comando real corre confinado con su Popen en
+        # golpe_en_curso (parar/apagar lo matan) y su scope propio
+        ok, salida = juzgar_criterio(goal, self.correr_criterio, al_lanzar=self.registrar_golpe,
+                                     cancelar=self.cancelar, n=n, usar_systemd=self.usar_systemd)
+        self.golpe_en_curso, self.unidad_en_curso = None, None
         juez: dict = {}
         if ok is not None:
             juez["criterio"] = {"ok": ok, "salida": salida}
-            if not ok:
-                self._anotar_juez(goal["id"], n, juez)
-                return None
         if self.cancelar.is_set():                    # parar/apagar durante el criterio: el revisor ni sale
             self._anotar_juez(goal["id"], n, juez)
             return self._cancelado(n, accion="juez")
+        if ok is False:
+            self._anotar_juez(goal["id"], n, juez)
+            return None
         filas = goals.golpes(goal["id"])
         salidas = "\n".join((c.get("resultado_tail") or "") for c in resultado.comandos)
         # el revisor de OTRA familia cuenta como golpe (spec 6.2): su fila

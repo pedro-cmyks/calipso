@@ -597,6 +597,190 @@ def test_golpear_exit_distinto_de_cero_y_cuota(cli_falso_stream, goal_en_disco, 
     assert gm.es_fallo_de_cuota("Error: file not found") is False
 
 
+# --- el criterio confinado (cierre 2026-09-14, critico) -----------------------------------
+
+@pytest.fixture
+def home_falso(monkeypatch):
+    """Un HOME de mentira FUERA de /tmp: el confinado monta un tmpfs sobre
+    /tmp, asi que un home bajo tmp_path quedaria tapado por eso y no por la
+    barrera que se quiere medir (home de solo lectura + tmpfs sobre cada
+    DENY_READ). Bajo /var/tmp (o TMPDIR si no se puede) el home es visible
+    de solo lectura y el test mide lo que importa. Se borra al salir."""
+    import shutil as _sh
+    import tempfile
+    base = "/var/tmp" if os.access("/var/tmp", os.W_OK) else None
+    casa = pathlib.Path(tempfile.mkdtemp(prefix="calipso-home-falso-", dir=base))
+    (casa / ".ssh").mkdir()
+    (casa / ".ssh" / "x").write_text("llave de mentira\n", encoding="utf-8")
+    (casa / ".claude").mkdir()
+    (casa / ".claude" / ".credentials.json").write_text("{\"token\": \"de mentira\"}", encoding="utf-8")
+    (casa / "Documentos").mkdir()
+    monkeypatch.setenv("HOME", str(casa))
+    try:
+        yield casa
+    finally:
+        _sh.rmtree(casa, ignore_errors=True)
+
+
+def _script(clon, nombre, cuerpo):
+    p = clon / nombre
+    p.write_text("#!/bin/sh\n" + cuerpo + "\n", encoding="utf-8")
+    p.chmod(0o755)
+    return p
+
+
+def _compuertas(clon, raices=()):
+    return {"goal": "goal_t", "clon": str(clon), "cwd": str(clon), "raices": list(raices), "dominios": [],
+            "niveles": dict(goals.NIVEL_DE), "preautorizadas": [], "venv": str(clon / ".venv"),
+            "registro": str(clon.parent / "hook.jsonl")}
+
+
+def test_argv_bwrap_es_el_espejo_del_sandbox_del_golpe(home_falso, tmp_path):
+    clon = tmp_path / "clon"
+    clon.mkdir()
+    raiz = tmp_path / "Descargas"
+    raiz.mkdir()
+    a = gm.argv_bwrap(["/x/pytest", "-q"], cwd=str(clon), compuertas=_compuertas(clon, [str(raiz), "/no/existe"]),
+                      bwrap="/usr/bin/bwrap")
+    assert a[0] == "/usr/bin/bwrap" and a[1:4] == ["--ro-bind", "/", "/"]
+    assert "--dev" in a and "--proc" in a and a[a.index("--tmpfs") + 1] == "/tmp"
+    binds = [(a[i + 1], a[i + 2]) for i, t in enumerate(a) if t == "--bind"]
+    assert binds == [(str(clon), str(clon)), (str(raiz), str(raiz))]        # la raiz que no existe no se monta
+    tmpfs = [a[i + 1] for i, t in enumerate(a) if t == "--tmpfs"]
+    assert str(home_falso / ".ssh") in tmpfs and str(home_falso / "Documentos") not in tmpfs
+    assert str(home_falso / ".calipso") not in tmpfs                          # no existe en el home falso: no se monta
+    # un DENY_READ que es un ARCHIVO no admite tmpfs: se tapa con /dev/null de solo lectura
+    ro = [(a[i + 1], a[i + 2]) for i, t in enumerate(a) if t == "--ro-bind"]
+    assert ("/dev/null", str(home_falso / ".claude" / ".credentials.json")) in ro
+    for flag in ("--unshare-net", "--die-with-parent", "--new-session"):
+        assert flag in a
+    assert a[a.index("--chdir") + 1] == str(clon)
+    assert a[a.index("--") + 1:] == ["/x/pytest", "-q"]
+    assert a.index("--tmpfs") < a.index("--bind")                          # el clon se monta DESPUES del tmpfs de /tmp
+
+
+def test_correr_confinado_escribe_en_el_clon_y_no_fuera_ni_lee_lo_protegido(home_falso, tmp_path):
+    """Critico del cierre: el comando del criterio corria fuera del sandbox
+    con el HOME real, red abierta y ~/.ssh legible, ejecutando codigo que
+    el martillo dejo en el clon (conftest.py, check.py). Bajo bwrap: el clon
+    es escribible, el home no (EROFS), ~/.ssh no se lee, y el proceso se
+    publica por al_lanzar."""
+    clon = tmp_path / "clon"
+    clon.mkdir()
+    casa = home_falso
+    _script(clon, "escribe.sh", f'echo ok > "{clon}/ok.txt"')
+    _script(clon, "fuera.sh", f'echo x > "{casa}/fuera.txt"')
+    _script(clon, "lee.sh", f'cat "{casa}/.ssh/x"; cat "{casa}/.claude/.credentials.json"')
+    _script(clon, "lee_doc.sh", f'ls "{casa}/Documentos" && echo LEGIBLE')
+    vistos = []
+    r = gm.correr_confinado(["./escribe.sh"], cwd=str(clon), compuertas=_compuertas(clon), timeout_s=30,
+                            usar_systemd=False, al_lanzar=lambda proc, unidad: vistos.append((proc, unidad)))
+    assert r.exit == 0 and r.motivo is None, (r.exit, r.motivo, r.stderr_tail)
+    assert (clon / "ok.txt").read_text(encoding="utf-8").strip() == "ok"
+    assert len(vistos) == 1 and vistos[0][0].pid and vistos[0][1] is None and r.duracion_ms >= 0
+    r = gm.correr_confinado(["./fuera.sh"], cwd=str(clon), compuertas=_compuertas(clon), timeout_s=30,
+                            usar_systemd=False)
+    assert r.exit != 0 and "ead-only" in r.stderr_tail and not (casa / "fuera.txt").exists()
+    r = gm.correr_confinado(["./lee.sh"], cwd=str(clon), compuertas=_compuertas(clon), timeout_s=30,
+                            usar_systemd=False)
+    assert r.exit != 0 and "llave" not in r.stdout_tail and "de mentira" not in r.stdout_tail
+    # lo del home que no es DENY_READ se lee (solo lectura): el criterio no es el martillo
+    r = gm.correr_confinado(["./lee_doc.sh"], cwd=str(clon), compuertas=_compuertas(clon), timeout_s=30,
+                            usar_systemd=False)
+    assert r.exit == 0 and "LEGIBLE" in r.stdout_tail
+    # una raiz declarada si es escribible
+    raiz = tmp_path / "Descargas"
+    raiz.mkdir()
+    _script(clon, "raiz.sh", f'echo x > "{raiz}/notas.txt"')
+    r = gm.correr_confinado(["./raiz.sh"], cwd=str(clon), compuertas=_compuertas(clon, [str(raiz)]),
+                            timeout_s=30, usar_systemd=False)
+    assert r.exit == 0 and (raiz / "notas.txt").exists()
+
+
+def test_correr_confinado_sin_red(home_falso, tmp_path):
+    clon = tmp_path / "clon"
+    clon.mkdir()
+    _script(clon, "red.sh", "cat /proc/net/route | tail -n +2 | wc -l; ls /sys/class/net")
+    r = gm.correr_confinado(["./red.sh"], cwd=str(clon), compuertas=_compuertas(clon), timeout_s=30,
+                            usar_systemd=False)
+    assert r.exit == 0 and r.stdout_tail.split()[0] == "0" and "lo" in r.stdout_tail   # solo loopback, sin rutas
+
+
+def test_correr_confinado_sin_bwrap_no_corre(home_falso, tmp_path, monkeypatch):
+    clon = tmp_path / "clon"
+    clon.mkdir()
+    _script(clon, "escribe.sh", f'echo ok > "{clon}/ok.txt"')
+    monkeypatch.setenv("PATH", str(tmp_path / "vacio"))
+    r = gm.correr_confinado(["./escribe.sh"], cwd=str(clon), compuertas=_compuertas(clon), timeout_s=30,
+                            usar_systemd=False)
+    assert r.exit is None and r.motivo == "criterio: sin bwrap no se corre (barrera)"
+    assert not (clon / "ok.txt").exists()                                    # fail-closed: no corrio
+
+
+def test_correr_confinado_resuelve_el_ejecutable(home_falso, tmp_path, monkeypatch):
+    """rev:lente-riesgo: el PATH del server real no tiene .venv/bin y todo
+    criterio `pytest -q` fallaba con Errno 2. `<clon>/.venv/bin/<exe>`
+    primero, despues el PATH, y para pytest/python `sys.executable`; sin
+    resolver, el juez dice por que."""
+    clon = tmp_path / "clon"
+    (clon / ".venv" / "bin").mkdir(parents=True)
+    _script(clon / ".venv" / "bin", "pytest", 'echo "venv-pytest $@"; echo "PATH=$PATH"')
+    r = gm.correr_confinado(["pytest", "-q", "tests/"], cwd=str(clon), compuertas=_compuertas(clon),
+                            timeout_s=30, usar_systemd=False)
+    assert r.exit == 0 and "venv-pytest -q tests/" in r.stdout_tail
+    assert f"PATH={clon / '.venv' / 'bin'}{os.pathsep}" in r.stdout_tail   # el venv del clon primero en el PATH
+    # sin venv y sin pytest en el PATH: el interprete del server con -m pytest
+    which_real = gm.shutil.which
+    monkeypatch.setattr(gm.shutil, "which", lambda exe, **k: which_real(exe, **k) if exe == "bwrap" else None)
+    clon2 = tmp_path / "clon2"
+    clon2.mkdir()
+    r = gm.correr_confinado(["python", "-c", "import sys; print(sys.executable)"], cwd=str(clon2),
+                            compuertas=_compuertas(clon2), timeout_s=30, usar_systemd=False)
+    assert r.exit == 0 and r.stdout_tail.strip() == sys.executable
+    assert gm.resolver_exe("pytest", str(clon2), "") == [sys.executable, "-m", "pytest"]
+    assert gm.resolver_exe("python3", str(clon2), "") == [sys.executable]
+    r = gm.correr_confinado(["noexiste-xyz", "-q"], cwd=str(clon2), compuertas=_compuertas(clon2),
+                            timeout_s=30, usar_systemd=False)
+    assert r.exit is None and r.motivo == "criterio: noexiste-xyz no esta en el PATH del server ni en el venv del clon"
+    # una ruta relativa al clon (./check.sh, .venv/bin/pytest) y una absoluta
+    _script(clon2, "check.sh", "echo check")
+    assert gm.resolver_exe("./check.sh", str(clon2), "") == [str(clon2 / "check.sh")]
+    assert gm.resolver_exe("/bin/sh", str(clon2), "") == ["/bin/sh"]
+    assert gm.resolver_exe("./no.sh", str(clon2), "") is None
+
+
+def test_correr_confinado_timeout_mata_lo_de_adentro(home_falso, tmp_path):
+    clon = tmp_path / "clon"
+    clon.mkdir()
+    _script(clon, "duerme.sh", f'echo $$ > "{clon}/pid"; exec sleep 60')
+    t0 = time.monotonic()
+    r = gm.correr_confinado(["./duerme.sh"], cwd=str(clon), compuertas=_compuertas(clon), timeout_s=1,
+                            usar_systemd=False, sondeo_s=0.1)
+    assert time.monotonic() - t0 < 15 and r.timeout is True and r.motivo == "timeout" and r.matado is True
+    pid = int((clon / "pid").read_text(encoding="utf-8"))
+    time.sleep(0.5)
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)                                            # el sleep de adentro murio con bwrap
+    # y cancelar lo corta igual
+    cancelar = threading.Event()
+    threading.Timer(0.5, cancelar.set).start()
+    r = gm.correr_confinado(["./duerme.sh"], cwd=str(clon), compuertas=_compuertas(clon), timeout_s=30,
+                            usar_systemd=False, sondeo_s=0.1, cancelar=cancelar)
+    assert r.motivo == "cancelado" and r.matado is True
+
+
+def test_correr_confinado_con_scope_publica_la_unidad(home_falso, tmp_path, monkeypatch):
+    clon = tmp_path / "clon"
+    clon.mkdir()
+    _script(clon, "ok.sh", "echo ok")
+    monkeypatch.setattr(gm, "argv_systemd", lambda argv, unidad, t: argv)       # sin systemd-run real
+    vistos = []
+    r = gm.correr_confinado(["./ok.sh"], cwd=str(clon), compuertas=_compuertas(clon), timeout_s=30,
+                            usar_systemd=True, unidad="calipso-goal-g-criterio-2",
+                            al_lanzar=lambda proc, unidad: vistos.append(unidad))
+    assert r.exit == 0 and vistos == ["calipso-goal-g-criterio-2"]
+
+
 # --- la sonda del hook real ------------------------------------------------------------
 
 def test_sondear_hook_con_el_hook_real(goal_en_disco):

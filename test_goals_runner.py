@@ -689,6 +689,105 @@ def test_criterio_archivo_y_numero(home, tmp_path):
     assert ok is True
 
 
+def _script_del_clon(clon, nombre, cuerpo):
+    p = pathlib.Path(clon) / nombre
+    p.write_text("#!/bin/sh\n" + cuerpo + "\n", encoding="utf-8")
+    p.chmod(0o755)
+    return p
+
+
+def test_el_criterio_corre_confinado_y_su_proceso_se_publica(home, tmp_path, monkeypatch):
+    """Critico del cierre: el criterio corria con subprocess.run fuera del
+    sandbox (HOME real, red, ~/.ssh), ejecutando lo que el martillo dejo en
+    el clon. Ahora `_correr_criterio` va por goals_manos.correr_confinado
+    (bwrap real): el script del clon escribe adentro y no afuera, el Popen
+    se publica en golpe_en_curso con la unidad `calipso-goal-<id>-criterio-<n>`
+    y el env es el del golpe (CALIPSO_HOME vacio)."""
+    monkeypatch.setattr(gm, "argv_systemd", lambda argv, unidad, t: argv)      # sin systemd-run real
+    fuera = tmp_path / "fuera.txt"
+    g = goal_activo(home, tmp_path, criterio={"tipo": "comando", "comando": "./check.sh"})
+    f = Falsas(resultados=[resultado("terminar")], juicios=[])
+    r = f.runner(g["id"])
+    r.correr_criterio = None                                                  # el camino real
+    r.usar_systemd = True
+    publicados = []
+    registrar = r.registrar_golpe
+
+    def registrar_y_anotar(proc, unidad=None):
+        publicados.append((proc.poll(), unidad))
+        registrar(proc, unidad)
+    r.registrar_golpe = registrar_y_anotar
+    manos_base = f.manos
+
+    def manos(goal, n, prompt, contrato, cancelar):
+        _script_del_clon(goal["repo"], "check.sh",
+                         f'echo hola > "{goal["repo"]}/hecho.txt"; echo x > "{fuera}" 2>/dev/null; '
+                         'echo "HOME_CALIPSO=$CALIPSO_HOME"; test -f "$CALIPSO_HOME/token" && echo TOKEN_VISIBLE; '
+                         'exit 0')
+        return manos_base(goal, n, prompt, contrato, cancelar)
+    r.manos = manos
+    (home / "token").write_text("real", encoding="utf-8")
+    it = r.iteracion()
+    assert it["accion"] == "juez" and it["estado"] == goals.WAITING, it
+    goal = goals.load(None, g["id"])
+    assert (pathlib.Path(goal["repo"]) / "hecho.txt").exists() and not fuera.exists()
+    crit = filas(g["id"])[0]["juez"]["criterio"]
+    assert crit["ok"] is True and "TOKEN_VISIBLE" not in crit["salida"]
+    assert f"HOME_CALIPSO={goals.dir_goal(g['id']) / 'home_vacio'}" in crit["salida"]
+    assert publicados == [(None, f"calipso-goal-{g['id']}-criterio-1")]
+    assert r.golpe_en_curso is None and r.unidad_en_curso is None and r.sin_golpe.is_set()
+
+
+def test_el_criterio_que_no_resuelve_o_sin_bwrap_lo_dice_el_juez(home, tmp_path, monkeypatch):
+    g = goal_activo(home, tmp_path, criterio={"tipo": "comando", "comando": "noexiste-xyz -q"})
+    goal = goals.load(None, g["id"])
+    goal["repo"] = str(tmp_path / "clon")
+    (tmp_path / "clon").mkdir()
+    goals.escribir(goal)
+    ok, salida = gr.juzgar_criterio(goals.load(None, g["id"]), None, usar_systemd=False)
+    assert ok is False and salida == "criterio: noexiste-xyz no esta en el PATH del server ni en el venv del clon"
+    monkeypatch.setenv("PATH", str(tmp_path / "vacio"))
+    ok, salida = gr.juzgar_criterio({**goals.load(None, g["id"]), "criterio": {"tipo": "comando", "comando": "true"}},
+                                    None, usar_systemd=False)
+    assert ok is False and salida == "criterio: sin bwrap no se corre (barrera)"
+
+
+def test_parar_durante_el_criterio_lo_mata_y_no_transiciona(home, tmp_path):
+    """El criterio esta en golpe_en_curso: /goal parar y el apagado lo matan
+    (antes esperaban 8 s y transicionaban por encima de un subprocess.run
+    sin handle), la fila del juez lo dice y la vuelta corta sin juez ni
+    transicion."""
+    g = goal_activo(home, tmp_path, criterio={"tipo": "comando", "comando": "./duerme.sh"})
+    f = Falsas(resultados=[resultado("terminar")], juicios=[])
+    r = f.runner(g["id"])
+    r.correr_criterio = None
+    r.usar_systemd = False
+    manos_base = f.manos
+
+    def manos(goal, n, prompt, contrato, cancelar):
+        _script_del_clon(goal["repo"], "duerme.sh", f'echo $$ > "{goal["repo"]}/pid"; exec sleep 60')
+        return manos_base(goal, n, prompt, contrato, cancelar)
+    r.manos = manos
+    salida = {}
+    hilo = threading.Thread(target=lambda: salida.update(r.iteracion()))
+    hilo.start()
+    limite = time.monotonic() + 10
+    while (r.golpe_en_curso is None or r.golpe_en_curso.poll() is not None) and time.monotonic() < limite:
+        time.sleep(0.05)
+    assert r.golpe_en_curso is not None and not r.sin_golpe.is_set()
+    r.cancelar.set()
+    r.matar_golpe()
+    hilo.join(timeout=15)
+    assert not hilo.is_alive() and salida["motivo"] == "cancelado" and salida["accion"] == "juez"
+    assert goals.load(None, g["id"])["status"] == goals.ACTIVE and f.llamadas["juez"] == []
+    crit = filas(g["id"])[0]["juez"]["criterio"]
+    assert crit["ok"] is False and "cancelado" in crit["salida"]
+    pid = int((pathlib.Path(goals.load(None, g["id"])["repo"]) / "pid").read_text(encoding="utf-8"))
+    time.sleep(0.5)
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
 def test_sin_otra_familia_pedro_sin_veredicto_de_modelo(home, tmp_path):
     f = Falsas(resultados=[resultado("terminar")], juicios=[])      # juez -> None
     g = goal_activo(home, tmp_path, criterio={"tipo": "revisor", "texto": "que quede lindo"})

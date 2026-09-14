@@ -742,7 +742,8 @@ def golpear(*, argv: list[str], stdin: str, cwd: str, env: dict, timeout_s: floa
             cancelar: threading.Event | None = None, usar_systemd: bool | None = None,
             unidad: str | None = None, sondeo_s: float = SONDEO_S,
             parser: Parser | None = None,
-            al_lanzar: Callable[[subprocess.Popen], None] | None = None) -> Resultado:
+            al_lanzar: Callable[[subprocess.Popen], None] | None = None,
+            lanzar_fn: Callable | None = None) -> Resultado:
     """UN golpe, bloqueante (se llama en hilo desde el runner): lanza,
     escribe el prompt por stdin, sondea cada `sondeo_s` el stdout (lineas
     nuevas al parser), y mata el grupo ante timeout, `cancelar` (el apagado
@@ -752,7 +753,10 @@ def golpear(*, argv: list[str], stdin: str, cwd: str, env: dict, timeout_s: floa
     y hay `unidad`. `al_lanzar(proc)` se llama apenas existe el Popen: asi
     el runner publica el handle en `golpe_en_curso` (decision 17) y
     `matar_golpe` tiene a quien matar; recibe tambien la unidad del scope
-    (None sin systemd) para pararla ademas del grupo."""
+    (None sin systemd) para pararla ademas del grupo. `lanzar_fn` es el
+    Popen que se usa (`lanzar`, el CLI de suscripcion; `lanzar_confinado`,
+    el criterio bajo bwrap): el sondeo, el timeout, cancelar y el scope
+    son los mismos para los dos."""
     parser = parser or Parser()
     if usar_systemd is None:
         usar_systemd = bool(unidad) and shutil.which("systemd-run") is not None
@@ -768,7 +772,7 @@ def golpear(*, argv: list[str], stdin: str, cwd: str, env: dict, timeout_s: floa
     try:
         with open(out_name, "w", encoding="utf-8") as out_f, open(err_name, "w", encoding="utf-8") as err_f:
             try:
-                proc = lanzar(cmd, cwd, env, out_f, err_f)
+                proc = (lanzar_fn or lanzar)(cmd, cwd, env, out_f, err_f)
             except Exception as exc:
                 r.exit, r.motivo, r.stderr_tail = 127, f"no se pudo lanzar: {exc}", str(exc)
                 return r
@@ -860,6 +864,113 @@ def texto_de_fallo(r: Resultado) -> str:
     sueltas = [l for l in (r.stdout_tail or "").splitlines()
                if l.strip() and not l.lstrip().startswith("{")]
     return "\n".join([r.stderr_tail or "", r.error_texto or "", *sueltas])
+
+
+# --------------------------------------------------------------------------
+# el criterio confinado: bwrap espejo del sandbox del golpe
+# --------------------------------------------------------------------------
+
+CRITERIO_TIMEOUT_S = 600
+
+
+class _SinParser(Parser):
+    """El sondeo de `golpear` sin leer el stream: el criterio (pytest, make)
+    no habla stream-json, y una linea suya que casualmente fuera JSON no
+    puede contar como veredicto ni como violacion."""
+
+    def alimentar(self, linea: str) -> str | None:
+        return None
+
+
+def resolver_exe(exe: str, cwd: str, path: str) -> list[str] | None:
+    """El ejecutable del criterio, resuelto ANTES de entrar al sandbox
+    (rev:lente-riesgo: el PATH del server real no tiene .venv/bin y todo
+    `pytest -q` fallaba con Errno 2): una ruta (`./check.sh`,
+    `.venv/bin/pytest`, `/usr/bin/make`) contra el cwd; si no,
+    `<cwd>/.venv/bin/<exe>` > el PATH que recibe el proceso > para
+    pytest/python/python3 el interprete del server (`-m pytest`). None si
+    no hay como correrlo."""
+    if "/" in exe:
+        ruta = os.path.normpath(os.path.join(cwd, exe)) if not os.path.isabs(exe) else exe
+        return [ruta] if os.path.isfile(ruta) and os.access(ruta, os.X_OK) else None
+    venv = os.path.join(cwd, ".venv", "bin", exe)
+    if os.path.isfile(venv) and os.access(venv, os.X_OK):
+        return [venv]
+    w = shutil.which(exe, path=path or None)
+    if w:
+        return [w]
+    if exe == "pytest":
+        return [sys.executable, "-m", "pytest"]
+    if exe in ("python", "python3"):
+        return [sys.executable]
+    return None
+
+
+def argv_bwrap(argv: list[str], *, cwd: str, compuertas: dict, bwrap: str = "bwrap") -> list[str]:
+    """El espejo del sandbox del golpe (settings_del_goal) en bubblewrap
+    (ruling del cierre, criterio confinado): todo el sistema de solo
+    lectura, /dev y /proc nuevos, /tmp privado, el clon (o la carpeta de
+    trabajo) y las raices declaradas escribibles, un tmpfs vacio sobre cada
+    DENY_READ que exista (~/.ssh, ~/.calipso...; un DENY_READ que es un
+    ARCHIVO, `~/.claude/.credentials.json`, no admite tmpfs y se tapa con
+    /dev/null de solo lectura), sin red, y el comando muere con bwrap
+    (`--die-with-parent`: killpg sobre bwrap lo alcanza aunque
+    `--new-session` lo ponga en otra sesion). El clon se monta DESPUES del
+    tmpfs de /tmp: en los tests vive ahi abajo. Una raiz que no existe no
+    se monta (bwrap fallaria entero)."""
+    out = [bwrap, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
+           "--bind", cwd, cwd]
+    for r in compuertas.get("raices") or []:
+        ruta = os.path.expanduser(str(r))
+        if os.path.isdir(ruta):
+            out += ["--bind", ruta, ruta]
+    for d in DENY_READ:
+        ruta = os.path.expanduser(d)
+        if os.path.isdir(ruta):
+            out += ["--tmpfs", ruta]
+        elif os.path.exists(ruta):
+            out += ["--ro-bind", "/dev/null", ruta]
+    out += ["--unshare-net", "--die-with-parent", "--new-session", "--chdir", cwd, "--", *argv]
+    return out
+
+
+def lanzar_confinado(argv: list[str], cwd: str, env: dict, stdout_f, stderr_f) -> subprocess.Popen:
+    """El Popen del criterio bajo bwrap (canario: local, no sale de la
+    maquina: `--unshare-net`). Sesion propia como el golpe: killpg mata a
+    bwrap y bwrap mata lo de adentro."""
+    return subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=stdout_f,
+                            stderr=stderr_f, text=True, encoding="utf-8", errors="replace",
+                            start_new_session=True)
+
+
+def correr_confinado(argv: list[str], *, cwd: str, compuertas: dict, timeout_s: float,
+                     unidad: str | None = None, al_lanzar: Callable | None = None,
+                     cancelar: threading.Event | None = None, env: dict | None = None,
+                     usar_systemd: bool | None = None, sondeo_s: float = SONDEO_S) -> Resultado:
+    """UN comando local bajo la barrera del golpe (el criterio medible:
+    critico del cierre 2026-09-14, el comando corria como Pedro con el HOME
+    real, red y ~/.ssh legibles, ejecutando lo que el martillo dejo en el
+    clon). Fail-closed: sin bwrap en el PATH no se corre (motivo en el
+    Resultado, el juez lo dice). `env` es el del golpe (env_del_golpe:
+    CALIPSO_HOME vacio), con `<cwd>/.venv/bin` primero en el PATH; el
+    ejecutable se resuelve afuera (`resolver_exe`). Sondeo, timeout que
+    mata el grupo y el scope, `cancelar` y `al_lanzar(proc, unidad)`: los
+    de `golpear`."""
+    bwrap = shutil.which("bwrap")
+    if not bwrap:
+        return Resultado(exit=None, motivo="criterio: sin bwrap no se corre (barrera)")
+    env = dict(env if env is not None else env_saneado())
+    env["PATH"] = str(pathlib.Path(cwd) / ".venv" / "bin") + os.pathsep + (env.get("PATH") or os.defpath)
+    if not argv:
+        return Resultado(exit=None, motivo="criterio vacio: no se corre")
+    resuelto = resolver_exe(str(argv[0]), cwd, env["PATH"])
+    if not resuelto:
+        return Resultado(exit=None,
+                         motivo=f"criterio: {argv[0]} no esta en el PATH del server ni en el venv del clon")
+    cmd = argv_bwrap([*resuelto, *[str(a) for a in argv[1:]]], cwd=cwd, compuertas=compuertas, bwrap=bwrap)
+    return golpear(argv=cmd, stdin="", cwd=cwd, env=env, timeout_s=timeout_s, cancelar=cancelar,
+                   usar_systemd=usar_systemd, unidad=unidad, sondeo_s=sondeo_s, parser=_SinParser(),
+                   al_lanzar=al_lanzar, lanzar_fn=lanzar_confinado)
 
 
 def sondear_hook(compuertas_path: str, *, hook_python: str | None = None,
