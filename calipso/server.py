@@ -74,6 +74,7 @@ from calipso import discovery  # noqa: E402
 from calipso import github as calipso_github  # noqa: E402
 from calipso import learning  # noqa: E402
 from calipso import goals  # noqa: E402
+from calipso import goals_manos  # noqa: E402
 from calipso import inbox as _inbox  # noqa: E402
 from calipso import jobs  # noqa: E402
 from calipso import librarian  # noqa: E402
@@ -330,6 +331,8 @@ def _gesto_de(directives: dict) -> str | None:
     `/model X`. Sin slash, None: el proposito dice que fue por heuristica.
     `effort` no se reconstruye: lo ponen tanto /fast como la palabra
     'rapido', y por AST no se distinguen."""
+    if directives.get("goal") is not None:
+        return "/goal"
     if directives.get("force_web"):
         return "/web"
     if directives.get("nube"):
@@ -2198,6 +2201,8 @@ HELP_TEXT = (
     "  /ultrathink  máximo esfuerzo (tier frontier: Opus/Fable)\n"
     "  /model <x>   forzar un modelo o persona (opus, codex, Aristoteles…)\n"
     "  /local /claude /codex /api  forzar la ruta\n"
+    "  /goal <texto> [hasta: ...] [tope: 2h|20 golpes|60 unidades] [en: <repo>] [raiz: <dir>]\n"
+    "               un goal que corre solo (proposed); /goal dale, no, parar, segui <nota>, estado\n"
     "  /help        esta ayuda\n"
     "Si no pones nada, Calipso decide solo (modelo + intensidad) por la tarea."
 )
@@ -3761,6 +3766,328 @@ def _next_or_stop(gen, sentinel):
 # `conversacion._por_chat`.
 _ultimo_pedido: dict[str, str] = {}
 
+
+# --- el goal que corre: la propuesta, los verbos, el inbox (spec 2026-09-13) ---
+#
+# `/goal <texto>` crea un goal `proposed` con la cabeza frontera SIN
+# herramientas (un golpe por `goals_manos.cabeza_sin_herramientas`) y lo deja
+# esperando el dale de Pedro como una solicitud ESTACIONADA del motor de
+# permisos (familia `goal`, operacion `dale`): asi aparece en el inbox sin
+# tocar la firma cerrada de `inbox.juntar` (Trampa 18). Los verbos
+# dale/no/parar/segui/estado transicionan por `goals.transicionar` (la unica
+# puerta) y cierran la solicitud abierta con `motor.responder`. El runner
+# (Task 4) extiende `_arrancar_goal`/`_retomar_goal`/`_parar_goal`.
+
+GOAL_CONTRATO_PROPUESTA = (
+    "Eres la cabeza de un goal de Calipso: una tarea que unas manos headless "
+    "(Claude Code o Codex) van a perseguir golpe a golpe dentro de un clon del "
+    "repo, con un tope de golpes, minutos y unidades de cuota, y compuertas. "
+    "No ejecutas nada: PROPONES. Devuelve SOLO el JSON del esquema: un titulo "
+    "corto; un criterio MEDIBLE si es posible (tipo comando: un comando en el "
+    "repo que debe salir 0; archivo: una ruta que debe existir; numero: una "
+    "metrica y un umbral; revisor: solo si no hay nada medible); un tope "
+    "proporcional al tamano (golpes 3-20, minutos 15-180, unidades 10-80); las "
+    "familias de compuertas que vas a necesitar entre repo, web, "
+    "instalar_en_goal, raices, merge, push, borrar_fuera, raiz_nueva, "
+    "instalar_home, instalar_sistema; las raices (directorios fuera del repo) y "
+    "los dominios de red que hacen falta; un plan de 3 a 6 pasos; y las manos: "
+    "codex solo si el goal no instala nada ni usa la web (corre sin red), si no "
+    "claude. Estima unidades_estimadas y minutos_estimados."
+)
+
+
+def _estacionar_para_pedro(goal: dict, operacion: str, forma_extra: dict | None = None,
+                           titulo: str | None = None, n: int = 0) -> dict | None:
+    """La pregunta al inbox: una Accion de familia `goal` evaluada con un
+    Contexto desatendido (origen `goal`, corrida `<id>:<operacion>:<n>`) ->
+    estacionada (decision 16). Devuelve la solicitud (o None sin motor).
+    Idempotente por forma (almacen.crear): repetirla devuelve la misma."""
+    if _permisos is None:
+        return None
+    forma = {"goal": goal["id"], **(forma_extra or {})}
+    accion = _permisos.Accion(
+        "goal", operacion, forma,
+        {"titulo": goal.get("title"), "niveles": (goal.get("compuertas") or {}).get("niveles")},
+        titulo or f"goal {operacion}: {goal.get('title')}")
+    ctx = _permisos.Contexto(origen="goal", corrida=f"{goal['id']}:{operacion}:{n}")
+    try:
+        res = _permisos.evaluar(accion, ctx)
+    except Exception as exc:
+        print(f"[calipso] goal {goal['id']}: no se pudo estacionar {operacion}: {exc}",
+              file=sys.stderr)
+        return None
+    return res.solicitud
+
+
+def _solicitud_abierta_del_goal(goal_id: str, operacion: str | None = None) -> dict | None:
+    if _permisos_almacen is None:
+        return None
+    try:
+        for s in _permisos_almacen.abiertas():
+            a = s.get("accion") or {}
+            if a.get("familia") == "goal" and (a.get("forma") or {}).get("goal") == goal_id \
+                    and (operacion is None or a.get("operacion") == operacion):
+                return s
+    except Exception:
+        return None
+    return None
+
+
+def _cerrar_solicitud_del_goal(goal_id: str, operacion: str | None, respuesta: str) -> bool:
+    """Pedro contesto por el chat: la solicitud abierta se cierra con la
+    misma respuesta (si/no) para que el inbox no la siga mostrando."""
+    s = _solicitud_abierta_del_goal(goal_id, operacion)
+    if not s or _permisos_motor is None:
+        return False
+    try:
+        _permisos_motor.responder(s["id"], respuesta, quien="pedro")
+        return True
+    except Exception:
+        return False
+
+
+def _cabeza_del_goal(client: str, model: str | None, system: str, prompt: str) -> dict | None:
+    """La cabeza frontera sin herramientas (decision 12). Monkeypatcheable:
+    el harness la reemplaza por una funcion que devuelve el JSON."""
+    exe = _subscription_command(client)
+    if not exe:
+        return None
+    with tempfile.TemporaryDirectory(prefix="calipso-goal-cabeza-") as vacio:
+        return goals_manos.cabeza_sin_herramientas(
+            client, exe, system, prompt, goals_manos.ESQUEMA_PROPUESTA,
+            cwd=vacio, model=model if client == "claude" and model in ("haiku", "sonnet", "opus")
+            else (model if client == "codex" and (model or "").startswith("gpt") else None))
+
+
+def _proyecto_del_goal(en: str | None) -> str | None:
+    """La ruta del repo de origen: `en:` si vino (y tiene que ser un repo
+    git: si no, ErrorGoal ahora y no un `failed` al clonar); si no, el ROOT
+    de este momento SI es un repo git (una foto: el goal no depende del
+    ROOT conmutable, invariante 5); si no, None = goal sin repo."""
+    if en:
+        p = pathlib.Path(en).expanduser()
+        if not (p / ".git").exists():
+            raise goals.ErrorGoal(f"en: {p} no es un repo git")
+        return str(p)
+    return str(ROOT) if (ROOT / ".git").exists() else None
+
+
+def _proponer_goal(d: dict, texto_crudo: str, departamento: str | None) -> tuple[dict, str]:
+    """En HILO. Elige la cabeza (ruling 15.2: el tipo real del texto con piso
+    frontera; el 7b solo por goal privado y entonces sin manos), pide la
+    propuesta, la funde con lo que Pedro dijo (hasta:/tope:/raiz: mandan),
+    crea el goal `proposed` y lo estaciona para el dale. Devuelve (goal, el
+    texto para el chat)."""
+    texto = d["texto"]
+    proyecto = _proyecto_del_goal(d["en"])
+    privado = bool(dispatch.PRIVATE.search(texto_crudo))
+    avisos: list[str] = []
+    propuesta = None
+    if privado:
+        propuesta = goals.propuesta_sin_modelo(texto, proyecto)
+        propuesta["aviso"] = ("goal privado: un goal privado no puede usar manos de "
+                              "suscripcion (ruling 15.7); propuesta heuristica, vos decidis")
+    else:
+        features = dispatch.extract_features(texto)
+        ranked = [r for r in capabilities.choose(
+            features, capabilities.EFFORT["ultra"], _backend_availability(),
+            _backend_quota_low(), project_root=str(ROOT)) if r["route"] == "subscription"]
+        if d.get("force_model") in ("claude", "codex"):
+            ranked = [r for r in ranked if r["client"] == d["force_model"]] or ranked
+        if ranked:
+            top = ranked[0]
+            prompt = (f"Goal de Pedro: {texto}\n"
+                      f"Repo de origen: {proyecto or 'ninguno (goal sin repo)'}\n"
+                      f"Criterio que pidio Pedro: {d['hasta'] or 'ninguno: proponelo'}\n"
+                      f"Tope que pidio Pedro: {json.dumps(d['tope']) if d['tope'] else 'ninguno: proponelo'}\n"
+                      f"Raiz que pidio Pedro: {d['raiz'] or 'ninguna'}\n")
+            propuesta = _cabeza_del_goal(top["client"], top.get("model"),
+                                         GOAL_CONTRATO_PROPUESTA, prompt)
+            if propuesta is None:
+                avisos.append("la cabeza no contesto: propuesta heuristica")
+            else:
+                # la cabeza que eligio el ruteo (spec seccion 1): el martillo
+                # corre con ella (goals_runner._modelo_claude lee propuesta.modelo)
+                propuesta["modelo"] = top.get("model")
+        else:
+            avisos.append("sin cabeza frontera disponible: propuesta heuristica")
+    if propuesta is None:
+        propuesta = goals.propuesta_sin_modelo(texto, proyecto)
+    if propuesta.get("aviso"):
+        avisos.append(propuesta["aviso"])
+    familias = list(propuesta.get("familias") or [])
+    manos = propuesta.get("manos") or "claude"
+    if manos == "codex" and ({"web", "instalar_en_goal"} & set(familias) or propuesta.get("dominios")):
+        manos = "claude"
+        avisos.append("codex corre sin red: manos = claude (el goal usa web o instala)")
+    if privado:
+        manos = "claude"          # sin manos de suscripcion: el goal privado no arranca solo
+    criterio = goals.parse_criterio(d["hasta"]) if d["hasta"] else propuesta.get("criterio")
+    tope = {**(propuesta.get("tope") or {}), **(d["tope"] or {})}
+    raices = list(propuesta.get("raices") or [])
+    if d["raiz"]:
+        raices.append(d["raiz"])
+    try:
+        goal = goals.crear(
+            texto, proyecto=proyecto, titulo=propuesta.get("titulo"), criterio=criterio,
+            tope=tope, compuertas={"raices": raices}, manos=manos,
+            plan=list(propuesta.get("plan") or []), privado=privado,
+            dominios=list(propuesta.get("dominios") or []),
+            propuesta={**propuesta, "familias": familias, "avisos": avisos},
+            departamento=departamento)
+    except goals.ErrorGoal:
+        goal = goals.crear(
+            texto, proyecto=proyecto, titulo=propuesta.get("titulo"),
+            criterio={"tipo": "revisor", "texto": d["hasta"] or ""}, tope=None,
+            compuertas={"raices": raices}, manos=manos, plan=list(propuesta.get("plan") or []),
+            privado=privado, propuesta={**propuesta, "familias": familias,
+                                        "avisos": avisos + ["propuesta invalida: tope y criterio por defecto"]},
+            departamento=departamento)
+    if not privado:
+        s = _estacionar_para_pedro(goal, "dale", titulo=f"goal: {goal['title']} -- dale?")
+        if s:
+            # el si del inbox lo consume el RUNNER (decision 16): la espera
+            # apunta a la solicitud y el bucle la sondea (la Task 4 lo lanza
+            # aca mismo con _lanzar_bucle); sin esto un si en el inbox
+            # dejaria la solicitud aprobada y el goal proposed para siempre
+            goal = goals.load(None, goal["id"])
+            goal["espera"] = {"motivo": "dale", "solicitud": s["id"]}
+            goals.escribir(goal)
+    t = goal["tope"]
+    lineas = [
+        f"goal {goal['id']} (proposed): {goal['title']}",
+        f"criterio: {json.dumps(goal['criterio'], ensure_ascii=False)}",
+        f"tope: {t['golpes']} golpes, {t['minutos']} minutos, {t['unidades']} unidades de tu cuota"
+        + (f" (estimo {propuesta.get('unidades_estimadas')} unidades y "
+           f"{propuesta.get('minutos_estimados')} minutos)"
+           if propuesta.get("unidades_estimadas") else ""),
+        f"compuertas: {', '.join(familias) or 'repo'}; raices: {', '.join(raices) or 'ninguna'}; "
+        f"dominios: {', '.join(goal['dominios']) or 'solo api.anthropic.com'}",
+        f"plan: " + " -> ".join(goal["plan"]),
+        f"manos: {manos}; repo: {proyecto or 'sin repo'}",
+    ]
+    if privado:
+        lineas.append("privado: este goal no puede usar manos de suscripcion; "
+                      "si queres que corra igual, sacale lo privado y volve a pedirlo")
+    for a in avisos:
+        lineas.append(f"aviso: {a}")
+    lineas.append("deci `/goal dale` (o `/goal dale tope: 1h raiz: ~/Descargas`), o `/goal no`")
+    return goal, "\n".join(lineas)
+
+
+def _ultimo_proposed() -> dict | None:
+    for g in goals.list_goals(str(ROOT), 50):
+        if g.get("status") == goals.PROPOSED and g.get("tope"):
+            return g
+    return None
+
+
+def _arrancar_goal(goal_id: str, tope: dict | None = None, raiz: str | None = None) -> dict:
+    """proposed -> active (el dale). Ajusta tope y raiz si vinieron y cierra
+    la solicitud `dale`. La Task 4 la extiende: clona y lanza el runner."""
+    goal = goals.load(None, goal_id)
+    if goal is None:
+        raise goals.ErrorGoal(f"goal inexistente: {goal_id}")
+    if goal.get("privado") and goal.get("status") == goals.PROPOSED:
+        raise goals.ErrorGoal("un goal privado no puede usar manos de suscripcion")
+    if tope or raiz:
+        if tope:
+            goal["tope"] = goals.validar_tope({**goal["tope"], **tope})
+        if raiz:
+            goal["compuertas"]["raices"] = list(goal["compuertas"].get("raices") or []) + [
+                os.path.expanduser(raiz)]
+        goals.escribir(goal)
+    goal = goals.transicionar(goal_id, goals.ACTIVE, "dale de Pedro")
+    _cerrar_solicitud_del_goal(goal_id, "dale", "si")
+    return goal
+
+
+def _cancelar_goal(goal_id: str, motivo: str) -> dict:
+    goal = goals.transicionar(goal_id, goals.CANCELLED, motivo)
+    _cerrar_solicitud_del_goal(goal_id, None, "no")
+    return goal
+
+
+def _parar_goal(goal_id: str, motivo: str = "parado por Pedro") -> dict:
+    """active -> waiting. La Task 4 la extiende: mata el golpe en curso."""
+    return goals.transicionar(goal_id, goals.WAITING, motivo)
+
+
+def _retomar_goal(goal_id: str, nota: str | None = None, con: str | None = None) -> dict:
+    """waiting -> active con la nota de Pedro en el ledger y, si vino
+    `con:`, otras manos. La Task 4 la extiende: relanza el runner."""
+    goal = goals.load(None, goal_id)
+    if goal is None:
+        raise goals.ErrorGoal(f"goal inexistente: {goal_id}")
+    if con:
+        if con not in goals.MANOS:
+            raise goals.ErrorGoal(f"manos invalidas: {con!r} (son {goals.MANOS})")
+        goal["manos"] = con
+        goals.escribir(goal)
+    if (goal.get("espera") or {}).get("motivo") in goals.RESPUESTAS_QUE_APLICAN:
+        # un segui es un si (decision 16): se aplica lo MISMO que el runner
+        # aplica con el si del inbox (preautorizar la forma, sumar la raiz);
+        # nunca un si sin aplicar (el hook seguiria denegando)
+        goals.aplicar_respuesta(goal_id, "aprobada")
+    if nota:
+        goals.nota_de_pedro(goal_id, nota)
+    goal = goals.transicionar(goal_id, goals.ACTIVE, f"segui de Pedro: {nota or con or ''}".strip())
+    _cerrar_solicitud_del_goal(goal_id, None, "si")
+    return goal
+
+
+def _cerrar_goal(goal_id: str) -> dict:
+    """waiting (cumplido) -> complete: el dale final de Pedro (invariante 2)."""
+    goal = goals.transicionar(goal_id, goals.COMPLETE, "dale final de Pedro")
+    _cerrar_solicitud_del_goal(goal_id, None, "si")
+    return goal
+
+
+async def _atender_goal(texto: str, features: dict, chat_id: str | None,
+                        departamento: str | None, directives: dict) -> tuple[str, bool]:
+    """El turno de /goal: (texto para el chat, es_error)."""
+    d = goals.parse_goal_texto(texto)
+    d["force_model"] = directives.get("force_model")
+    verbo = d["verbo"]
+    activo = goals.activo()
+    try:
+        if verbo == "estado":
+            g = activo or _ultimo_proposed()
+            return (goals.resumen(g) if g else "no hay ningun goal activo ni propuesto"), False
+        if verbo == "dale":
+            if activo and activo.get("status") == goals.WAITING \
+                    and (activo.get("espera") or {}).get("motivo") == "cumplido":
+                g = await asyncio.to_thread(_cerrar_goal, activo["id"])
+                return f"goal {g['id']} complete: {g['title']}", False
+            g = _ultimo_proposed()
+            if not g:
+                return "no hay ningun goal propuesto: deci `/goal <texto>` primero", True
+            g = await asyncio.to_thread(_arrancar_goal, g["id"], d["tope"] or None, d["raiz"])
+            return f"goal {g['id']} active: {g['title']}\n" + goals.resumen(g), False
+        if verbo == "no":
+            g = activo or _ultimo_proposed()
+            if not g:
+                return "no hay ningun goal que cancelar", True
+            g = await asyncio.to_thread(_cancelar_goal, g["id"], "no de Pedro")
+            return f"goal {g['id']} cancelled", False
+        if verbo == "parar":
+            if not activo or activo.get("status") != goals.ACTIVE:
+                return "no hay ningun goal corriendo", True
+            g = await asyncio.to_thread(_parar_goal, activo["id"])
+            return f"goal {g['id']} waiting: parado; `/goal segui <nota>` para retomar", False
+        if verbo == "segui":
+            if not activo or activo.get("status") != goals.WAITING:
+                return "el goal no esta esperando nada", True
+            g = await asyncio.to_thread(_retomar_goal, activo["id"], d["nota"], d["con"])
+            return f"goal {g['id']} active de nuevo (manos: {g['manos']})", False
+        if not d["texto"]:
+            return "deci que queres: `/goal <texto> [hasta: ...] [tope: ...] [en: <repo>]`", True
+        goal, respuesta = await asyncio.to_thread(_proponer_goal, d, texto, departamento)
+        return respuesta, False
+    except goals.ErrorGoal as exc:
+        return f"goal: {exc}", True
+
+
 # cada cuanto despierta un chat ocioso a mirar si su sesion sigue viva. Alto a
 # proposito: es el peor caso de un socket que ya no deberia existir, no una
 # latencia que Pedro sienta.
@@ -3919,6 +4246,26 @@ async def ws_chat(ws: WebSocket) -> None:
                 await ws.send_json({"type": "done"})
                 continue
             chat_msg = directives["clean"]
+
+            # /goal y su alias meta: (spec goals 2026-09-13, seccion 4): el
+            # turno NO se rutea; la propuesta la hace la cabeza frontera en
+            # un golpe sin herramientas, y los verbos transicionan. Molde
+            # /redacta: salida temprana con done y soltar el contador local.
+            if directives.get("goal") is not None:
+                uso_local.soltar()
+                respuesta, es_error = await _atender_goal(
+                    directives["goal"], features, chat_id, departamento, directives)
+                if es_error:
+                    await ws.send_json({"type": "error", "text": respuesta})
+                else:
+                    await ws.send_json({"type": "chunk", "text": respuesta})
+                    chats.append(chat_id, "assistant", respuesta, {"route": "goal"})
+                    current_chat = chats.get(chat_id)
+                    if current_chat:
+                        await ws.send_json({"type": "chat", "action": "updated",
+                                            "chat": _chat_view(current_chat)})
+                await ws.send_json({"type": "done"})
+                continue
 
             # /mia: Pedro trae de vuelta su version FINAL editada de un
             # borrador. Calipso la GUARDA como ejemplo fuerte de su voz y no
@@ -5491,12 +5838,72 @@ def api_goal_create(body: GoalBody) -> dict:
     return {"goal": goal}
 
 
-@app.get("/api/goals/{goal_id}")
-def api_goal(goal_id: str) -> dict:
+class GoalDaleBody(BaseModel):
+    tope: str | None = None     # "1h", "6 golpes 10m"
+    raiz: str | None = None
+
+
+class GoalSeguiBody(BaseModel):
+    nota: str | None = None
+    con: str | None = None      # claude | codex
+
+
+def _goal_o_404(goal_id: str) -> dict:
     goal = goals.load(str(ROOT), goal_id)
     if not goal:
         raise HTTPException(status_code=404, detail="meta no existe")
-    return {"goal": goal, "events": goals.events(str(ROOT), goal_id)}
+    return goal
+
+
+@app.get("/api/goals/{goal_id}")
+def api_goal(goal_id: str) -> dict:
+    goal = _goal_o_404(goal_id)
+    return {"goal": _goal_con_consumo(goal), "events": goals.events(str(ROOT), goal_id),
+            "golpes": goals.golpes(goal_id)}
+
+
+@app.get("/api/goals/{goal_id}/estado")
+def api_goal_estado(goal_id: str) -> dict:
+    goal = _goal_o_404(goal_id)
+    return {"goal": goal, "consumo": goals.consumo(goal), "resumen": goals.resumen(goal),
+            "golpes": goals.golpes(goal_id), "events": goals.events(str(ROOT), goal_id)}
+
+
+def _transicion_http(fn, *args) -> dict:
+    """Una transicion desde un endpoint: ErrorGoal -> 409 (la transicion no
+    existe desde el estado actual, o ya hay otro goal en curso: active o waiting)."""
+    try:
+        return {"goal": fn(*args), "activo": goals.activo()}
+    except goals.ErrorGoal as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/api/goals/{goal_id}/dale")
+def api_goal_dale(goal_id: str, body: GoalDaleBody | None = None) -> dict:
+    goal = _goal_o_404(goal_id)
+    if goal.get("status") == goals.WAITING and (goal.get("espera") or {}).get("motivo") == "cumplido":
+        return _transicion_http(_cerrar_goal, goal_id)
+    tope = goals.parse_tope(body.tope) if body and body.tope else None
+    return _transicion_http(_arrancar_goal, goal_id, tope or None, body.raiz if body else None)
+
+
+@app.post("/api/goals/{goal_id}/no")
+def api_goal_no(goal_id: str) -> dict:
+    _goal_o_404(goal_id)
+    return _transicion_http(_cancelar_goal, goal_id, "no de Pedro")
+
+
+@app.post("/api/goals/{goal_id}/parar")
+def api_goal_parar(goal_id: str) -> dict:
+    _goal_o_404(goal_id)
+    return _transicion_http(_parar_goal, goal_id, "parado por Pedro")
+
+
+@app.post("/api/goals/{goal_id}/segui")
+def api_goal_segui(goal_id: str, body: GoalSeguiBody | None = None) -> dict:
+    _goal_o_404(goal_id)
+    return _transicion_http(_retomar_goal, goal_id, body.nota if body else None,
+                            body.con if body else None)
 
 
 @app.put("/api/goals/{goal_id}")

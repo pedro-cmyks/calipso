@@ -37,6 +37,7 @@ EXCEPCIONES: dict[str, str] = {
     # --- modelos: la aduana no conoce a los modelos (invariante 7) ---
     "calipso/server.py:_run_subscription_text": "modelo: CLI de suscripcion, lo mide la telemetria y la economia",
     "calipso/server.py:_run_subscription_text_live": "modelo: CLI de suscripcion en vivo, idem",
+    "calipso/goals_manos.py:_correr_cabeza": "modelo: la cabeza sin herramientas del goal (la propuesta y el revisor; claude -p --restricted --tools '' / codex exec -s read-only): CLI de suscripcion, lo mide el ledger del goal (golpes.jsonl) y la economia",
     "calipso/plugins.py:install": "modelo: `claude -p` para instalar un plugin; CLI agente",
     "dispatch.py:run_subscription": "modelo: el CLI suelto de dispatch.py no mide",
     "dispatch.py:_http_post_json": "modelo: LiteLLM/Ollama por config; base_url no loopback se DECLARA al cargar la config",
