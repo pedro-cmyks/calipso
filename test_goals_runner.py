@@ -885,6 +885,57 @@ def test_parar_durante_el_revisor_no_transiciona_y_deja_la_fila(home, tmp_path):
     assert r.sin_golpe.is_set()
 
 
+def test_el_revisor_se_cobra_con_sus_unidades_reales(home, tmp_path):
+    """rev:manos-runner: el revisor se cobraba 1 unidad fija; ahora
+    `revisar` devuelve las unidades del stream (o 1 para codex) y la fila y
+    el cobro las llevan. Un revisor viejo sin `unidades` vale 1 (contesto:
+    al menos una llamada)."""
+    f = Falsas(resultados=[resultado("terminar")],
+               juicios=[{"cumplido": True, "falta": [], "nota": "bien", "revisor": "codex", "unidades": 3}])
+    g = goal_activo(home, tmp_path)
+    r = f.runner(g["id"])
+    assert r.iteracion()["estado"] == goals.WAITING
+    fl = filas(g["id"])
+    assert fl[1]["manos"] == "revisor:codex" and fl[1]["unidades"] == 3 and fl[1]["cobro"]["unidades"] == 3
+    assert f.llamadas["pagador"][-1] == {"unidades": 3, "manos": "revisor:codex"}
+    assert goals.consumo(goals.load(None, g["id"]))["unidades"] == 5
+
+
+def test_el_revisor_que_falla_deja_el_motivo_y_la_cola_en_su_fila(home, tmp_path):
+    """Un revisor que esta pero falla (exit != 0, timeout, hook inactivo,
+    sin JSON) vuelve como dict con cumplido None: la fila del revisor lleva
+    el motivo y salida_tail (antes era indistinguible de 'sin otra
+    familia' y no se veia por que), las unidades que gasto se cobran, y
+    el goal pasa a Pedro sin veredicto de modelo, diciendo por que."""
+    f = Falsas(resultados=[resultado("terminar")],
+               juicios=[{"cumplido": None, "motivo": "hook inactivo: tool_result de Read sin hook_response",
+                         "salida_tail": "{\"type\": \"user\"} ghp_abcdefghijklmnopqrstuvwxyz0123",
+                         "revisor": "claude", "unidades": 2}])
+    g = goal_activo(home, tmp_path, manos="codex")
+    r = f.runner(g["id"])
+    it = r.iteracion()
+    assert it["estado"] == goals.WAITING
+    fl = filas(g["id"])
+    assert fl[1]["manos"] == "revisor:claude" and fl[1]["motivo"].startswith("hook inactivo")
+    assert "ghp_" not in fl[1]["salida_tail"] and "[SECRETO]" in fl[1]["salida_tail"]
+    assert fl[1]["unidades"] == 2 and fl[1]["cobro"]["unidades"] == 2 and fl[1]["cuenta_para_tope"] is False
+    assert f.llamadas["pagador"][-1] == {"unidades": 2, "manos": "revisor:claude"}
+    e = goals.load(None, g["id"])["espera"]
+    assert e["motivo"] == "cumplido" and e["sin_veredicto_de_modelo"] is True and e["independencia"] == "ninguna"
+    assert "hook inactivo" in e["resumen"]
+    assert fl[0]["juez"]["independencia"] == "ninguna"
+    # sin unidades gastadas (exit 1 antes de la API): sin cobro
+    goals.transicionar(g["id"], goals.CANCELLED, "x")
+    f2 = Falsas(resultados=[resultado("terminar")],
+                juicios=[{"cumplido": None, "motivo": "exit 1", "salida_tail": "boom", "revisor": "claude",
+                          "unidades": 0}])
+    g2 = goal_activo(home, tmp_path, manos="codex")
+    assert f2.runner(g2["id"]).iteracion()["estado"] == goals.WAITING
+    fl = filas(g2["id"])
+    assert fl[1]["motivo"] == "exit 1" and fl[1]["salida_tail"] == "boom" and "cobro" not in fl[1]
+    assert f2.llamadas["pagador"][-1]["manos"] == "codex"
+
+
 def test_criterio_medible_ok_y_sin_otra_familia_es_cumplido_con_criterio(home, tmp_path):
     f = Falsas(resultados=[resultado("terminar")], juicios=[])
     g = goal_activo(home, tmp_path)

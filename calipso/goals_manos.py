@@ -91,7 +91,8 @@ def env_saneado(base: dict | None = None) -> dict:
 
 
 def argv_cabeza_claude(exe: str, contrato: str, schema: dict,
-                       model: str | None = None, tools: str = "") -> list[str]:
+                       model: str | None = None, tools: str = "",
+                       settings: dict | None = None) -> list[str]:
     """`claude -p` sin herramientas (terreno A.2/A.6, confirmadas por
     `--help` salvo `--append-system-prompt-file`, que `--help` de 2.1.270 no
     lista: esta confirmada por el uso del server en el turno real
@@ -100,11 +101,17 @@ def argv_cabeza_claude(exe: str, contrato: str, schema: dict,
     (ni los 90 permissions.allow ni los plugins de Pedro), `--strict-mcp-config`
     (Trampa 1: sin esto entra el MCP de Google Drive), `stream-json` con
     `--verbose` (obligatorio) y `--json-schema` inline. El prompt va por
-    stdin."""
+    stdin. Con `settings` (el revisor con herramientas de lectura: cierre
+    2026-09-14) van ademas `--settings <json>` (el sandbox con denyRead y
+    el hook), `--include-hook-events` (la sonda del Parser) y
+    `--permission-prompts none` (lo que pediria permiso se niega solo)."""
     argv = [exe, "-p", "--restricted", "--tools", tools, "--setting-sources", "",
             "--strict-mcp-config", "--output-format", "stream-json", "--verbose",
             "--json-schema", json.dumps(schema, ensure_ascii=False),
             "--append-system-prompt-file", contrato]
+    if settings is not None:
+        argv += ["--settings", json.dumps(settings, ensure_ascii=False), "--include-hook-events",
+                 "--permission-prompts", "none"]
     if model:
         argv += ["--model", model]
     return argv
@@ -151,17 +158,35 @@ def _correr_cabeza(argv: list[str], stdin: str, cwd: str, env: dict,
     return (proc.returncode, out or "", err or "")
 
 
-def cabeza_sin_herramientas(client: str, exe: str, system: str, prompt: str,
-                            schema: dict, *, cwd: str, env: dict | None = None,
-                            model: str | None = None,
-                            timeout: float = TIMEOUT_CABEZA_S,
-                            tools: str = "", al_lanzar: Callable | None = None) -> dict | None:
-    """Un golpe SIN herramientas: devuelve el JSON del esquema o None (exit
-    distinto de 0, timeout, sin JSON). El contrato (`system`) se escribe en
-    un temporal FUERA de `cwd` y se borra al salir; el prompt va por stdin.
-    `cwd` tiene que ser un directorio vacio o de solo lectura para el
-    modelo: la cabeza no tiene herramientas, pero el CLI lista el cwd al
-    arrancar. `al_lanzar(proc)` publica el Popen (el revisor)."""
+@dataclasses.dataclass
+class Cabeza:
+    """Lo que vuelve de un golpe de la cabeza (la propuesta, el revisor):
+    el JSON del esquema o None, y lo que el ledger necesita para cobrarlo y
+    para decir por que fallo (ruling 15.12: unidades reales; invariante
+    'nunca muere en silencio': salida_tail)."""
+    veredicto: dict | None = None
+    unidades: int = 0
+    salida_tail: str = ""
+    session_id: str | None = None
+    motivo: str | None = None          # None | "exit N" | "timeout" | "cancelado" | "hook inactivo: ..." | "sin veredicto"
+    exit: int | None = None
+
+
+def cabeza(client: str, exe: str, system: str, prompt: str, schema: dict, *, cwd: str,
+           env: dict | None = None, model: str | None = None, timeout: float = TIMEOUT_CABEZA_S,
+           tools: str = "", al_lanzar: Callable | None = None, settings: dict | None = None,
+           cancelar: threading.Event | None = None) -> Cabeza:
+    """Un golpe de la cabeza: sin herramientas (la propuesta) o con las de
+    lectura y la barrera (`settings`: el revisor claude). El contrato
+    (`system`) se escribe en un temporal FUERA de `cwd` y se borra al
+    salir; el prompt va por stdin. `cwd` tiene que ser un directorio vacio
+    o de solo lectura para el modelo. claude corre por `golpear`: el
+    stream pasa por el Parser (unidades = len(usage.iterations), session_id,
+    y la sonda del hook: un tool_result sin hook_response mata el proceso y
+    vuelve sin veredicto con el motivo), con timeout que mata el grupo y
+    `al_lanzar` que publica el Popen. codex sigue por `_correr_cabeza`
+    (communicate: su --json no se parsea, No confirmado 7) y vale 1 unidad
+    cuando contesta."""
     env = env if env is not None else env_saneado()
     temporales: list[str] = []
     try:
@@ -170,11 +195,18 @@ def cabeza_sin_herramientas(client: str, exe: str, system: str, prompt: str,
                                              delete=False) as f:
                 f.write(system)
                 temporales.append(f.name)
-            argv = argv_cabeza_claude(exe, temporales[0], schema, model, tools=tools)
-            rc, out, _ = _correr_cabeza(argv, prompt, cwd, env, timeout, al_lanzar=al_lanzar)
-            if rc != 0:
-                return None
-            return goals.structured_output_de(out)
+            argv = argv_cabeza_claude(exe, temporales[0], schema, model, tools=tools, settings=settings)
+            r = golpear(argv=argv, stdin=prompt, cwd=cwd, env=env, timeout_s=timeout, cancelar=cancelar,
+                        usar_systemd=False, al_lanzar=al_lanzar)
+            c = Cabeza(unidades=r.unidades, salida_tail=(r.stdout_tail or "")[-1500:],
+                       session_id=r.session_id, exit=r.exit, motivo=r.motivo)
+            if r.motivo is None and r.exit != 0:
+                c.motivo = f"exit {r.exit}"
+            if c.motivo is None:
+                c.veredicto = r.veredicto if isinstance(r.veredicto, dict) else None
+                if c.veredicto is None:
+                    c.motivo = "sin veredicto (la cabeza no devolvio el JSON del esquema)"
+            return c
         if client == "codex":
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".schema.json",
                                              delete=False) as f:
@@ -184,23 +216,44 @@ def cabeza_sin_herramientas(client: str, exe: str, system: str, prompt: str,
                                              delete=False) as f:
                 temporales.append(f.name)
             argv = argv_cabeza_codex(exe, cwd, temporales[1], temporales[0], model)
-            rc, out, _ = _correr_cabeza(argv, f"{system}\n\n{prompt}", cwd, env, timeout,
-                                        al_lanzar=al_lanzar)
+            rc, out, err = _correr_cabeza(argv, f"{system}\n\n{prompt}", cwd, env, timeout,
+                                          al_lanzar=al_lanzar)
+            c = Cabeza(salida_tail=((out or "") + (err or ""))[-1500:], exit=rc)
+            if rc == 124:
+                c.motivo = "timeout"
+                return c
             if rc != 0:
-                return None
+                c.motivo = f"exit {rc}"
+                return c
+            c.unidades = 1
             try:
                 texto = pathlib.Path(temporales[1]).read_text(encoding="utf-8").strip()
                 v = json.loads(texto) if texto else None
-                return sin_nulos(v) if isinstance(v, dict) else None
+                c.veredicto = sin_nulos(v) if isinstance(v, dict) else None
             except (OSError, json.JSONDecodeError):
-                return None
-        return None
+                c.veredicto = None
+            if c.veredicto is None:
+                c.motivo = "sin veredicto (codex no escribio el JSON del esquema)"
+            return c
+        return Cabeza(motivo=f"cliente desconocido: {client}")
     finally:
         for t in temporales:
             try:
                 os.unlink(t)
             except OSError:
                 pass
+
+
+def cabeza_sin_herramientas(client: str, exe: str, system: str, prompt: str,
+                            schema: dict, *, cwd: str, env: dict | None = None,
+                            model: str | None = None,
+                            timeout: float = TIMEOUT_CABEZA_S,
+                            tools: str = "", al_lanzar: Callable | None = None) -> dict | None:
+    """La envoltura vieja de `cabeza`: solo el JSON del esquema o None (exit
+    distinto de 0, timeout, sin JSON). La usa el server para la propuesta
+    hasta que pase a `cabeza` (unidades reales para el cobro del golpe 0)."""
+    return cabeza(client, exe, system, prompt, schema, cwd=cwd, env=env, model=model, timeout=timeout,
+                  tools=tools, al_lanzar=al_lanzar).veredicto
 
 
 # ==========================================================================
@@ -1090,15 +1143,29 @@ def tapar_fila(fila: dict) -> tuple[dict, int]:
 
 def revisar(*, manos_del_golpe: str, exes: dict, goal_texto: str, criterio: dict,
             resumen_ledger: str, diff: str, salidas: str, cwd: str, env: dict | None = None,
-            timeout: float = TIMEOUT_REVISOR_S, al_lanzar: Callable | None = None) -> dict | None:
+            timeout: float = TIMEOUT_REVISOR_S, al_lanzar: Callable | None = None,
+            compuertas: dict | None = None, compuertas_path: str | None = None,
+            cancelar: threading.Event | None = None) -> dict | None:
     """El revisor de OTRA familia en solo lectura sobre el clon (spec
     seccion 6.2): manos claude -> `codex exec -s read-only`; manos codex ->
-    `claude -p --restricted --tools Read,Glob,Grep`. `diff` es el diff
-    COMPLETO (`github.diff_completo`: ruling 15.1, el juez ve el diff real),
-    no el diff_stat del ledger. None si la otra familia no esta (`exes` sin
-    su ejecutable): entonces no hay veredicto de modelo (decision 15).
-    Cuenta como golpe y se cobra: lo hace el runner, que ademas recibe el
-    Popen por `al_lanzar` (parar/apagar lo matan como al martillo)."""
+    `claude -p --restricted --tools Read,Glob,Grep` CON la barrera del golpe
+    (cierre 2026-09-14: sin --settings era una sesion con lectura sobre
+    todo el disco, y lo que lee viaja a la API): `settings_del_goal`
+    (sandbox con denyRead + el hook, cuyo matcher incluye Read|Glob|Grep),
+    el env del golpe (CALIPSO_GOAL_COMPUERTAS, CALIPSO_HOME vacio) y la
+    sonda del Parser (un tool_result sin hook_response = matar). Sin
+    `compuertas` el revisor claude va SIN herramientas (fail-closed: solo el
+    diff y las salidas que le mandamos). El de codex corre con `-s
+    read-only`: su sandbox no restringe lecturas del home (residuo
+    declarado en la adenda). `diff` es el diff COMPLETO (ruling 15.1).
+
+    None si la otra familia no esta (`exes` sin su ejecutable): no hay
+    veredicto de modelo (decision 15). Si esta y falla (exit != 0, timeout,
+    hook inactivo, sin JSON) vuelve un dict con `cumplido: None`, el
+    `motivo` y `salida_tail` (el runner lo anota en la fila del revisor).
+    Siempre trae `unidades` (claude: las del stream; codex: 1 si contesto)
+    y `revisor`. Cuenta como golpe y se cobra: lo hace el runner, que
+    ademas recibe el Popen por `al_lanzar`."""
     otra = otra_familia(manos_del_golpe)
     exe = (exes or {}).get(otra)
     if not exe:
@@ -1106,11 +1173,20 @@ def revisar(*, manos_del_golpe: str, exes: dict, goal_texto: str, criterio: dict
     prompt = (f"GOAL: {goal_texto}\nCRITERIO: {json.dumps(criterio or {}, ensure_ascii=False)}\n\n"
               f"LEDGER (resumen):\n{resumen_ledger}\n\nDIFF:\n{diff[:20000]}\n\nSALIDAS:\n{salidas[:8000]}\n")
     prompt, _ = tapar(prompt)
-    v = cabeza_sin_herramientas(otra, exe, CONTRATO_REVISOR, prompt, ESQUEMA_REVISOR, cwd=cwd,
-                                env=env, timeout=timeout,
-                                tools=HERRAMIENTAS_LECTURA if otra == "claude" else "",
-                                al_lanzar=al_lanzar)
+    settings, tools = None, ""
+    if otra == "claude" and compuertas is not None:
+        settings = settings_del_goal(compuertas, compuertas_path=compuertas_path)
+        tools = HERRAMIENTAS_LECTURA
+        if env is None and compuertas_path:
+            home_vacio = pathlib.Path(compuertas_path).parent / "home_vacio"
+            home_vacio.mkdir(exist_ok=True)
+            env = env_del_golpe(compuertas_path, str(home_vacio))
+    c = cabeza(otra, exe, CONTRATO_REVISOR, prompt, ESQUEMA_REVISOR, cwd=cwd, env=env, timeout=timeout,
+               tools=tools, al_lanzar=al_lanzar, settings=settings, cancelar=cancelar)
+    base = {"revisor": otra, "unidades": int(c.unidades or 0)}
+    v = c.veredicto
     if not isinstance(v, dict) or "cumplido" not in v:
-        return None
-    return {"cumplido": bool(v.get("cumplido")), "falta": [str(x) for x in (v.get("falta") or [])],
-            "nota": str(v.get("nota") or ""), "revisor": otra}
+        return {**base, "cumplido": None, "motivo": c.motivo or "sin veredicto del revisor",
+                "salida_tail": c.salida_tail}
+    return {**base, "cumplido": bool(v.get("cumplido")), "falta": [str(x) for x in (v.get("falta") or [])],
+            "nota": str(v.get("nota") or "")}

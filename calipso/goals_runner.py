@@ -998,10 +998,15 @@ class Runner:
         revision = self.juez(goal, resumen_ledger(filas), self.diff_completo_fn(goal), salidas)
         duracion_ms = int((time.monotonic() - t0) * 1000)
         self.golpe_en_curso, self.unidad_en_curso = None, None
-        if revision:
-            cobro = self.pagador_fn(goal, 1, revisor)
+        # las unidades REALES del revisor (ruling 15.12): las del stream de
+        # claude, 1 para codex; un revisor viejo sin la clave contesto, asi
+        # que gasto al menos una
+        unidades = int((revision or {}).get("unidades") or (1 if revision and revision.get("cumplido") is not None
+                                                            else 0))
+        if revision and revision.get("cumplido") is not None:
+            cobro = self.pagador_fn(goal, unidades, revisor)
             juez_rev = {**revision, "independencia": "proveedor_distinto"}
-            goals.golpe_fin(goal["id"], m, unidades=1, duracion_ms=duracion_ms, juez=juez_rev, cobro=cobro,
+            goals.golpe_fin(goal["id"], m, unidades=unidades, duracion_ms=duracion_ms, juez=juez_rev, cobro=cobro,
                             veredicto_del_golpe={"estado": "revisar", "resumen": revision.get("nota", "")})
             juez["independencia"] = "proveedor_distinto"
             self._anotar_juez(goal["id"], n, juez)
@@ -1018,14 +1023,28 @@ class Runner:
             self._anotar_juez(goal["id"], n, juez)
             return self._cancelado(n, accion="juez")
         else:
-            goals.golpe_fin(goal["id"], m, unidades=0, duracion_ms=duracion_ms, motivo="sin otra familia",
-                            cuenta_para_tope=False)
+            # sin revisor: no esta la otra familia (None), o esta y fallo
+            # (dict con cumplido None: exit != 0, timeout, hook inactivo,
+            # sin JSON): la fila dice el motivo y la cola del stdout, y lo
+            # que gasto se cobra igual; el goal pasa a Pedro sin veredicto
+            # de modelo diciendo por que
+            motivo = (revision or {}).get("motivo") or "sin otra familia"
+            fila_rev: dict = {"unidades": unidades, "duracion_ms": duracion_ms, "motivo": motivo,
+                              "cuenta_para_tope": False}
+            if revision and revision.get("salida_tail"):
+                fila_rev["salida_tail"] = str(revision["salida_tail"])[-1500:]
+            if unidades:
+                fila_rev["cobro"] = self.pagador_fn(goal, unidades, revisor)
+            fila_rev, _ = gm.tapar_fila(fila_rev)
+            goals.golpe_fin(goal["id"], m, **fila_rev)
             juez["independencia"] = "ninguna"
             self._anotar_juez(goal["id"], n, juez)
+            por_que = ("no hay otra familia disponible" if revision is None
+                       else f"el revisor {revision.get('revisor')} fallo: {motivo}")
             detalle = {"motivo": "cumplido",
                        "resumen": ((resultado.veredicto or {}).get("resumen", "")
                                    + (" (criterio medible ok; " if ok else " (")
-                                   + "sin veredicto de modelo: no hay otra familia disponible)"),
+                                   + f"sin veredicto de modelo: {por_que})"),
                        "criterio": juez.get("criterio"), "independencia": "ninguna",
                        "sin_veredicto_de_modelo": True}
         s = self.preguntar(goal, "cerrar", {"n": n}, f"goal {goal['title']}: cumplido? {detalle['resumen']}"[:200], n) or {}

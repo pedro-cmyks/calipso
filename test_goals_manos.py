@@ -936,23 +936,122 @@ def test_revisar_con_codex_falso_cuando_las_manos_fueron_claude(cli_falso_stream
     r = gm.revisar(manos_del_golpe="claude", exes={"codex": cli.ruta_codex}, goal_texto="crea saludo.py",
                    criterio={"tipo": "revisor", "texto": ""}, resumen_ledger="golpe 1: hice saludo.py",
                    diff="+def hola()", salidas="", cwd=str(goal_en_disco["clon"]), timeout=30)
-    assert r == {"cumplido": False, "falta": ["falta el test"], "nota": "casi", "revisor": "codex"}
+    assert r == {"cumplido": False, "falta": ["falta el test"], "nota": "casi", "revisor": "codex", "unidades": 1}
     ll = cli.llamadas()[0]
     assert ll["argv"][0] == "exec" and "read-only" in ll["argv"]      # el falso anota sys.argv[1:]
     assert "crea saludo.py" in ll["stdin"] and "+def hola()" in ll["stdin"]
     assert ll["schema_codex"] and ll["salida_codex"]                 # --output-schema y -o, archivos
 
 
-def test_revisar_con_claude_falso_cuando_las_manos_fueron_codex(cli_falso_stream, goal_en_disco):
+def _revisar_claude(cli, goal_en_disco, **extra):
+    c = goals.compuertas_de(goal_en_disco["goal"])
+    return gm.revisar(manos_del_golpe="codex", exes={"claude": cli.ruta}, goal_texto="x",
+                      criterio={"tipo": "revisor", "texto": ""}, resumen_ledger="", diff="", salidas="",
+                      cwd=str(goal_en_disco["clon"]), timeout=30, compuertas=c,
+                      compuertas_path=str(goal_en_disco["compuertas"]), **extra)
+
+
+def test_revisar_con_claude_falso_corre_con_la_barrera_del_golpe(cli_falso_stream, goal_en_disco):
+    """rev:manos-runner (importante): el revisor claude corria con
+    Read/Glob/Grep SIN --settings (ni sandbox con denyRead ni hook) ni la
+    sonda del Parser: una sesion con lectura sobre TODO el disco, y lo que
+    lee viaja a la API (invariante 9, ruling 15.7). Ahora lleva el
+    --settings del goal (sandbox + hook con Read|Glob|Grep),
+    --include-hook-events, --permission-prompts none, el env del golpe y
+    devuelve las unidades reales del stream."""
     cli = cli_falso_stream
     cli.guion([{"lineas": lineas_revisor(True, nota="bien")}])
-    r = gm.revisar(manos_del_golpe="codex", exes={"claude": cli.ruta}, goal_texto="x",
-                   criterio={"tipo": "revisor", "texto": ""}, resumen_ledger="", diff="", salidas="",
-                   cwd=str(goal_en_disco["clon"]), timeout=30)
-    assert r == {"cumplido": True, "falta": [], "nota": "bien", "revisor": "claude"}
+    r = _revisar_claude(cli, goal_en_disco)
+    assert r == {"cumplido": True, "falta": [], "nota": "bien", "revisor": "claude", "unidades": 1}
     ll = cli.llamadas()[0]
-    assert ll["argv"][ll["argv"].index("--tools") + 1] == "Read,Glob,Grep"     # solo lectura
-    assert "--restricted" in ll["argv"] and "Write" not in ll["argv"][ll["argv"].index("--tools") + 1]
+    a = ll["argv"]
+    assert a[a.index("--tools") + 1] == "Read,Glob,Grep" and "--restricted" in a
+    assert "--include-hook-events" in a and a[a.index("--permission-prompts") + 1] == "none"
+    assert a[a.index("--setting-sources") + 1] == "" and "--strict-mcp-config" in a
+    s = ll["settings"]
+    assert s["sandbox"]["enabled"] is True and s["sandbox"]["failIfUnavailable"] is True
+    assert os.path.expanduser("~/.ssh") in s["sandbox"]["filesystem"]["denyRead"]
+    h = s["hooks"]["PreToolUse"][0]
+    assert "Read" in h["matcher"] and "Glob" in h["matcher"] and "Grep" in h["matcher"]
+    assert h["hooks"][0]["args"] == [str(gm.HOOK_PATH), "--compuertas", str(goal_en_disco["compuertas"])]
+    assert ll["env"]["CALIPSO_GOAL_COMPUERTAS"] == str(goal_en_disco["compuertas"])
+    assert ll["env"]["CALIPSO_HOME"] == str(goals.dir_goal(goal_en_disco["goal"]["id"]) / "home_vacio")
+    for prohibido in ("--bare", "--dangerously-skip-permissions", "bypassPermissions", "acceptEdits"):
+        assert prohibido not in a
+    # las unidades reales: tres iteraciones
+    cli.guion([{"lineas": [lineas_revisor(False, falta=["x"])[0],
+                           {**lineas_revisor(False, falta=["x"])[1],
+                            "usage": {"iterations": [{"type": "message"}] * 3}}]}])
+    r = _revisar_claude(cli, goal_en_disco)
+    assert r["cumplido"] is False and r["falta"] == ["x"] and r["unidades"] == 3
+
+
+def test_revisar_con_claude_sin_compuertas_va_sin_herramientas(cli_falso_stream, goal_en_disco):
+    """Sin la barrera (compuertas) el revisor claude no recibe Read/Glob/
+    Grep: solo el diff y las salidas que le mandamos (fail-closed)."""
+    cli = cli_falso_stream
+    cli.guion([{"lineas": lineas_revisor(True)}])
+    r = gm.revisar(manos_del_golpe="codex", exes={"claude": cli.ruta}, goal_texto="x", criterio={},
+                   resumen_ledger="", diff="", salidas="", cwd=str(goal_en_disco["clon"]), timeout=30)
+    assert r["cumplido"] is True
+    a = cli.llamadas()[0]["argv"]
+    assert a[a.index("--tools") + 1] == "" and "--settings" not in a
+
+
+def test_revisar_claude_con_hook_inactivo_se_mata_y_lo_dice(cli_falso_stream, goal_en_disco):
+    """El stream del revisor pasa por el Parser: un tool_result de Read sin
+    hook_response PreToolUse antes = hook inactivo -> se mata y vuelve sin
+    veredicto, con el motivo y la cola del stdout."""
+    cli = cli_falso_stream
+    lineas = [lineas_revisor(True)[0],
+              {"type": "assistant", "session_id": "rev",
+               "message": {"id": "m1", "role": "assistant",
+                           "content": [{"type": "tool_use", "id": "t1", "name": "Read",
+                                        "input": {"file_path": "/etc/passwd"}}]}},
+              {"type": "user", "session_id": "rev",
+               "message": {"role": "user", "content": [{"tool_use_id": "t1", "type": "tool_result",
+                                                        "content": "root:x:0:0"}]}}]
+    cli.guion([{"lineas": lineas, "pausa": 0.05, "dormir": 30}])
+    r = _revisar_claude(cli, goal_en_disco)
+    assert r["cumplido"] is None and r["motivo"].startswith("hook inactivo") and r["revisor"] == "claude"
+    assert "root:x:0:0" in r["salida_tail"] and r["unidades"] >= 1
+    # el mismo stream con su hook_response: sin violacion
+    lineas.insert(2, {"type": "system", "subtype": "hook_response", "hook_event": "PreToolUse", "exit_code": 0})
+    cli.guion([{"lineas": lineas + [lineas_revisor(True)[1]]}])
+    assert _revisar_claude(cli, goal_en_disco)["cumplido"] is True
+
+
+def test_revisar_que_falla_dice_por_que_con_la_cola(cli_falso_stream, goal_en_disco):
+    cli = cli_falso_stream
+    cli.guion([{"lineas": lineas_revisor(True)[:1], "stderr": "boom", "exit": 1}])
+    r = _revisar_claude(cli, goal_en_disco)
+    assert r["cumplido"] is None and r["motivo"] == "exit 1" and r["unidades"] == 0
+    assert "init" in r["salida_tail"]
+    cli.guion([{"lineas": [lineas_revisor(True)[0],
+                           {"type": "result", "subtype": "success", "session_id": "rev", "result": "no es json"}]}])
+    r = _revisar_claude(cli, goal_en_disco)
+    assert r["cumplido"] is None and "sin veredicto" in r["motivo"]
+    cli.guion([{"salida_codex": {"cumplido": True, "falta": [], "nota": ""}, "exit": 2, "stderr": "codex roto"}])
+    r = gm.revisar(manos_del_golpe="claude", exes={"codex": cli.ruta_codex}, goal_texto="x", criterio={},
+                   resumen_ledger="", diff="", salidas="", cwd=str(goal_en_disco["clon"]), timeout=30)
+    assert r["cumplido"] is None and r["motivo"] == "exit 2" and "codex roto" in r["salida_tail"] and r["unidades"] == 0
+
+
+def test_cabeza_devuelve_unidades_salida_y_sesion(cli_falso_stream, goal_en_disco, tmp_path):
+    cli = cli_falso_stream
+    cli.guion([{"lineas": lineas_golpe(unidades=4, veredicto={"titulo": "t", "manos": "claude"})}])
+    vacio = tmp_path / "vacio"
+    vacio.mkdir()
+    c = gm.cabeza("claude", cli.ruta, "SISTEMA", "PROMPT", gm.ESQUEMA_PROPUESTA, cwd=str(vacio), timeout=30)
+    assert isinstance(c, gm.Cabeza) and c.veredicto == {"titulo": "t", "manos": "claude"}
+    assert c.unidades == 4 and c.session_id == "s-1" and c.exit == 0 and c.motivo is None
+    assert '"type": "result"' in c.salida_tail
+    a = cli.llamadas()[0]["argv"]
+    assert "--settings" not in a and "--include-hook-events" not in a          # la propuesta: sin hooks
+    # la envoltura vieja devuelve solo el dict
+    cli.guion([{"lineas": lineas_golpe(veredicto={"titulo": "u", "manos": "claude"})}])
+    assert gm.cabeza_sin_herramientas("claude", cli.ruta, "S", "P", gm.ESQUEMA_PROPUESTA, cwd=str(vacio),
+                                      timeout=30) == {"titulo": "u", "manos": "claude"}
 
 
 def test_revisar_publica_el_handle_y_matarlo_lo_corta(cli_falso_stream, goal_en_disco):
@@ -975,7 +1074,8 @@ def test_revisar_publica_el_handle_y_matarlo_lo_corta(cli_falso_stream, goal_en_
     assert vistos and vistos[0].pid and vistos[0].poll() is None
     gm.matar(vistos[0])
     hilo.join(timeout=15)
-    assert not hilo.is_alive() and salida["r"] is None and vistos[0].poll() is not None
+    assert not hilo.is_alive() and vistos[0].poll() is not None
+    assert salida["r"]["cumplido"] is None and salida["r"]["motivo"].startswith("exit ")
 
 
 def test_revisar_sin_la_otra_familia_es_none(goal_en_disco):
