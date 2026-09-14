@@ -4726,7 +4726,9 @@ async def ws_chat(ws: WebSocket) -> None:
     await ws.accept()
     active_goal = goals.activo()
     if active_goal:
-        await ws.send_json({"type": "goal", "action": "active", "goal": active_goal})
+        # la misma vista que GET /api/goals (con `consumo`): sin eso la
+        # #goalBar mostraba 0/tope hasta el primer sondeo (Task 6, menor)
+        await ws.send_json({"type": "goal", "action": "active", "goal": _goal_con_consumo(active_goal)})
     sentinel = object()
     inbox: asyncio.Queue = asyncio.Queue()
 

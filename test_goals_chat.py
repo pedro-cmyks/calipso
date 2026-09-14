@@ -1013,3 +1013,18 @@ def test_post_api_goals_pasa_por_la_propuesta(goal_home, chat, repo, tmp_path, m
         assert r.status_code == 400 and "dale" in r.json()["detail"], cuerpo
     assert c.post("/api/goals", json={"objective": "   "}).status_code == 400
     assert c.post("/api/goals", json={"objective": "dale"}).status_code == 400
+
+
+def test_el_goal_que_manda_el_chat_al_conectar_trae_consumo(goal_home, chat, repo):
+    """Task 6 (menor estacionado): el `goal` que ws_chat manda al conectar
+    salia sin `consumo` y la #goalBar mostraba 0/tope hasta el primer
+    sondeo. Ahora es la misma vista que GET /api/goals."""
+    _proponer(chat, repo)
+    chat.turno("/goal dale")
+    g = goals.activo()
+    _gastar_golpes(g["id"], 2, unidades=4)
+    eventos = chat.turno("/goal estado")
+    inicial = de_tipo(eventos, "goal")
+    assert len(inicial) == 1 and inicial[0]["action"] == "active" and inicial[0]["goal"]["id"] == g["id"]
+    assert inicial[0]["goal"]["consumo"] == {"golpes": 2, "minutos": 0.03, "unidades": 8, "mm": 0}
+    assert inicial[0]["goal"]["consumo"] == chat.cliente.get("/api/goals").json()["activo"]["consumo"]
