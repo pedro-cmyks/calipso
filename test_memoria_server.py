@@ -222,8 +222,13 @@ def test_el_remember_de_fondo_tiene_tope_de_dos_en_vuelo_y_ninguno_se_pierde(cha
         assert lenta.recordado == []                     # los done salieron con los remember vivos
         lenta.puerta.set()
         chat.esperar_fondo()
-    assert [g[0] for g in lenta.guardados] == [f"Pedro pregunto: {t}\nCalipso respondio: hola Pedro"
-                                               for t in ("uno", "dos", "tres")]
+    # ninguno se pierde: los tres textos, en cualquier orden. Dos remember
+    # concurrentes (el tope es 2 en vuelo) terminan en el orden en que el
+    # scheduler los despierta, no en el de los turnos: afirmar [uno, dos,
+    # tres] fallaba 1 de 3 bajo carga (cierre 2026-09-14, flaky ajeno)
+    esperados = [f"Pedro pregunto: {t}\nCalipso respondio: hola Pedro" for t in ("uno", "dos", "tres")]
+    assert sorted(g[0] for g in lenta.guardados) == sorted(esperados)
+    assert len(lenta.guardados) == 3
     assert lenta.max_en_vuelo == 2 and lenta.entradas == 3
     assert not [t for t in list(srv._TAREAS_DE_FONDO) if not t.done()]
 
