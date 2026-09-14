@@ -18,14 +18,22 @@ FunctionDef, y cada una tiene su entrada `modelo:`/`local:` en EXCEPCIONES.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import pathlib
+import signal
+import shutil
 import subprocess
+import sys
 import tempfile
+import threading
+import time
+from typing import Callable
 
 from calipso import github as calipso_github
 from calipso import goals
+from calipso.privacidad import detector
 
 TIMEOUT_CABEZA_S = 180
 
@@ -82,7 +90,7 @@ def env_saneado(base: dict | None = None) -> dict:
 
 
 def argv_cabeza_claude(exe: str, contrato: str, schema: dict,
-                       model: str | None = None) -> list[str]:
+                       model: str | None = None, tools: str = "") -> list[str]:
     """`claude -p` sin herramientas (terreno A.2/A.6, confirmadas por
     `--help` salvo `--append-system-prompt-file`, que `--help` de 2.1.270 no
     lista: esta confirmada por el uso del server en el turno real
@@ -92,7 +100,7 @@ def argv_cabeza_claude(exe: str, contrato: str, schema: dict,
     (Trampa 1: sin esto entra el MCP de Google Drive), `stream-json` con
     `--verbose` (obligatorio) y `--json-schema` inline. El prompt va por
     stdin."""
-    argv = [exe, "-p", "--restricted", "--tools", "", "--setting-sources", "",
+    argv = [exe, "-p", "--restricted", "--tools", tools, "--setting-sources", "",
             "--strict-mcp-config", "--output-format", "stream-json", "--verbose",
             "--json-schema", json.dumps(schema, ensure_ascii=False),
             "--append-system-prompt-file", contrato]
@@ -134,7 +142,8 @@ def _correr_cabeza(argv: list[str], stdin: str, cwd: str, env: dict,
 def cabeza_sin_herramientas(client: str, exe: str, system: str, prompt: str,
                             schema: dict, *, cwd: str, env: dict | None = None,
                             model: str | None = None,
-                            timeout: float = TIMEOUT_CABEZA_S) -> dict | None:
+                            timeout: float = TIMEOUT_CABEZA_S,
+                            tools: str = "") -> dict | None:
     """Un golpe SIN herramientas: devuelve el JSON del esquema o None (exit
     distinto de 0, timeout, sin JSON). El contrato (`system`) se escribe en
     un temporal FUERA de `cwd` y se borra al salir; el prompt va por stdin.
@@ -149,7 +158,7 @@ def cabeza_sin_herramientas(client: str, exe: str, system: str, prompt: str,
                                              delete=False) as f:
                 f.write(system)
                 temporales.append(f.name)
-            argv = argv_cabeza_claude(exe, temporales[0], schema, model)
+            argv = argv_cabeza_claude(exe, temporales[0], schema, model, tools=tools)
             rc, out, _ = _correr_cabeza(argv, prompt, cwd, env, timeout)
             if rc != 0:
                 return None
@@ -179,3 +188,623 @@ def cabeza_sin_herramientas(client: str, exe: str, system: str, prompt: str,
                 os.unlink(t)
             except OSError:
                 pass
+
+
+# ==========================================================================
+# v2 (Task 3): el golpe con herramientas
+# ==========================================================================
+
+HOOK_PATH = pathlib.Path(__file__).with_name("goals_hook.py")
+HOOK_PYTHON = sys.executable
+TIMEOUT_REVISOR_S = 300
+TIMEOUT_SONDA_S = 20
+SONDEO_S = 0.5
+GRACIA_KILL_S = 5.0
+HERRAMIENTAS = ["Bash", "Edit", "Write", "MultiEdit", "Read", "Glob", "Grep"]
+HERRAMIENTAS_WEB = ["WebSearch", "WebFetch"]
+HERRAMIENTAS_LECTURA = "Read,Glob,Grep"
+CON_HOOK = set(HERRAMIENTAS + HERRAMIENTAS_WEB + ["NotebookEdit"])
+MATCHER_HOOK = "Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Glob|Grep|WebFetch|WebSearch"
+# spec seccion 7: la lista ya existe en permisos/acciones.py:176-183 mas
+# ~/.codex y ~/.calipso; ~/.claude entero NO (el CLI lo necesita; Trampa 5)
+DENY_READ = ["~/.ssh", "~/.gnupg", "~/.aws", "~/.config/gh", "~/.claude/.credentials.json",
+             "~/.codex", "~/.calipso"]
+DOMINIO_API = "api.anthropic.com"
+DOMINIOS_NEGADOS = ["github.com", "api.github.com"]
+SIN_TAPAR = {"session_id", "request_id", "diff_stat", "id", "goal", "n", "ts", "ts_fin",
+             "message_id", "tool_use_id"}
+PATRONES_CUOTA = ("usage limit", "rate limit", "hit your usage", "rate_limit", "quota",
+                  "resets at", "limit reached", "overloaded")
+
+# El veredicto estructurado con el que termina cada golpe (spec seccion 5.2).
+ESQUEMA_VEREDICTO: dict = {
+    "type": "object",
+    "properties": {
+        "estado": {"type": "string", "enum": ["sigo", "terminar", "preguntar"]},
+        "resumen": {"type": "string"},
+        "pregunta": {"type": "string"},
+        "compuerta": {
+            "type": "object",
+            "properties": {"familia": {"type": "string"}, "forma": {"type": "object"}},
+        },
+    },
+    "required": ["estado", "resumen"],
+}
+
+# La respuesta del revisor de otra familia (spec seccion 6.2).
+ESQUEMA_REVISOR: dict = {
+    "type": "object",
+    "properties": {
+        "cumplido": {"type": "boolean"},
+        "falta": {"type": "array", "items": {"type": "string"}},
+        "nota": {"type": "string"},
+    },
+    "required": ["cumplido", "falta", "nota"],
+}
+
+CONTRATO_REVISOR = (
+    "Eres el REVISOR de un goal de Calipso: otro modelo hizo el trabajo y vos "
+    "no lo hiciste. Solo lectura sobre el clon (podes leer archivos). Recibis "
+    "el goal, el criterio, el resumen del ledger, el diff y las salidas. "
+    "Contesta SOLO el JSON del esquema: cumplido (true solo si el goal esta "
+    "hecho de verdad, no si 'casi'), falta (la lista concreta de lo que "
+    "falta, vacia si cumplido) y nota (una linea)."
+)
+
+
+def GOLPE_TIMEOUT_S() -> int:
+    """Por llamada: CALIPSO_GOAL_TIMEOUT_S (el smoke pone 180), default 900."""
+    try:
+        return max(30, int(os.environ.get("CALIPSO_GOAL_TIMEOUT_S", "900")))
+    except ValueError:
+        return 900
+
+
+def es_fallo_de_cuota(texto: str) -> bool:
+    low = (texto or "").lower()
+    return any(p in low for p in PATRONES_CUOTA)
+
+
+def otra_familia(manos: str) -> str:
+    return "codex" if manos == "claude" else "claude"
+
+
+# --------------------------------------------------------------------------
+# settings, argv, env
+# --------------------------------------------------------------------------
+
+def settings_del_goal(compuertas: dict, *, hook_python: str | None = None,
+                      hook_path: str | None = None,
+                      compuertas_path: str | None = None) -> dict:
+    """El `--settings` del golpe (terreno A.3, todas las claves CONFIRMADAS
+    en el schema del binario 2.1.270): el sandbox nativo sobre bubblewrap
+    con `failIfUnavailable: true` (sin eso falla ABIERTO: Trampa 7),
+    `allowUnsandboxedCommands: false`, `excludedCommands: []`,
+    `autoAllowBashIfSandboxed: true` (con acceptEdits + permission-prompts
+    none un Bash sandboxeado corre sin prompt), escritura = el clon (o la
+    carpeta de trabajo) + las raices, `denyRead` de las credenciales y de
+    ~/.calipso (rutas ABSOLUTAS: con --settings inline no se sabe la raiz
+    de resolucion), red = api.anthropic.com + los dominios del goal con
+    `strictAllowlist: true` y github negado (el push es un hecho de red
+    imposible). Y el hook PreToolUse en forma exec (A.4) con `--compuertas`
+    de respaldo y `timeout: 20`.
+
+    A VERIFICAR EN EL SMOKE (No confirmado 1, 3, 4, 5): que los `hooks` de
+    --settings se ejecuten bajo -p --restricted (la sonda por golpe lo va a
+    decir), que el sandbox arranque en esta maquina, que denyRead tape un
+    `cat ~/.ssh/id_ed25519`, que HOME tapado no rompa pip/npm."""
+    cwd = compuertas.get("cwd") or compuertas.get("clon")
+    escritura = [cwd] + [os.path.expanduser(r) for r in compuertas.get("raices") or []]
+    hook = [{"type": "command", "command": hook_python or HOOK_PYTHON,
+             "args": [hook_path or str(HOOK_PATH)]
+             + (["--compuertas", compuertas_path] if compuertas_path else []),
+             "timeout": TIMEOUT_SONDA_S}]
+    return {
+        "sandbox": {
+            "enabled": True,
+            "failIfUnavailable": True,
+            "allowUnsandboxedCommands": False,
+            "excludedCommands": [],
+            "autoAllowBashIfSandboxed": True,
+            "filesystem": {
+                "allowWrite": escritura,
+                "denyRead": [os.path.expanduser(d) for d in DENY_READ],
+            },
+            "network": {
+                "allowedDomains": [DOMINIO_API] + [str(d) for d in compuertas.get("dominios") or []],
+                "deniedDomains": list(DOMINIOS_NEGADOS),
+                "strictAllowlist": True,
+            },
+        },
+        "hooks": {"PreToolUse": [{"matcher": MATCHER_HOOK, "hooks": hook}]},
+    }
+
+
+def argv_claude(exe: str, *, contrato: str, settings: dict, schema: dict,
+                session_id: str, resume: bool, model: str | None = None,
+                web: bool = False) -> list[str]:
+    """`claude -p` con herramientas (terreno A.2: confirmadas por `--help`
+    salvo `--append-system-prompt-file`, que `--help` de 2.1.270 no lista y
+    esta confirmada por el uso del server en el turno real, server.py:3538,
+    y por el texto de `--bare`; el smoke la ejercita): el prompt por stdin; `--permission-mode acceptEdits --permission-prompts
+    none` (lo que pediria permiso se niega solo); `--restricted --tools
+    <lista>` (WebSearch/WebFetch SOLO con dominios: decision 22);
+    `--setting-sources ""` (ni plugins ni permissions.allow de Pedro),
+    `--strict-mcp-config` (Trampa 1), `--settings <json inline>`,
+    `stream-json --verbose --include-hook-events` (la sonda), `--json-schema`
+    (el veredicto), `--session-id` en el golpe 1 y `--resume` despues
+    (misma sesion, mismo cwd: Trampa 5), `--model` explicito (Trampa 6:
+    con setting-sources vacio el model de ~/.claude/settings.json no
+    aplica). Nunca --max-turns (no existe), --bare, bypassPermissions ni
+    --no-session-persistence (rompe --resume)."""
+    tools = ",".join(HERRAMIENTAS + (HERRAMIENTAS_WEB if web else []))
+    argv = [exe, "-p", "--permission-mode", "acceptEdits", "--permission-prompts", "none",
+            "--restricted", "--tools", tools, "--setting-sources", "", "--strict-mcp-config",
+            "--settings", json.dumps(settings, ensure_ascii=False),
+            "--output-format", "stream-json", "--verbose", "--include-hook-events",
+            "--json-schema", json.dumps(schema, ensure_ascii=False),
+            "--append-system-prompt-file", contrato]
+    argv += ["--resume", session_id] if resume else ["--session-id", session_id]
+    if model:
+        argv += ["--model", model]
+    return argv
+
+
+def argv_codex(exe: str, *, cwd: str, raices: list[str], salida: str, schema_file: str,
+               model: str | None = None) -> list[str]:
+    """`codex exec -s workspace-write` (terreno A.7): sandbox de kernel
+    (landlock + seccomp) con la red APAGADA por defecto (ruling 15.10),
+    `-C <clon>`, `--add-dir` por raiz, `--json`, `-o <ultimo mensaje>`,
+    `--output-schema <archivo>` y el prompt por stdin (`-`). Sin
+    `--ephemeral` (el jsonl de sesion es lo que consumo.py lee para
+    resets_at). LA FORMA DE LAS LINEAS --json ES 'No confirmado 7': el
+    veredicto se lee del archivo -o, no del stream."""
+    argv = [exe, "exec"]
+    if model:
+        argv += ["-m", model]
+    argv += ["-s", "workspace-write", "-C", cwd]
+    for r in raices:
+        argv += ["--add-dir", r]
+    argv += ["--json", "-o", salida, "--output-schema", schema_file, "-"]
+    return argv
+
+
+def argv_systemd(argv: list[str], unidad: str, timeout_s: int) -> list[str]:
+    """Cada golpe en su cgroup (terreno B: systemd-run --user --scope
+    funciona en esta maquina; RuntimeMaxSec mata el scope entero, incluido
+    lo que el martillo deje con nohup/setsid). El tope del scope va 30 s
+    por encima del timeout propio: el que mata primero es golpear()."""
+    return ["systemd-run", "--user", "--scope", f"--unit={unidad}", "-p",
+            f"RuntimeMaxSec={int(timeout_s) + 30}", "--", *argv]
+
+
+def env_del_golpe(compuertas_path: str, home_vacio: str, base: dict | None = None) -> dict:
+    """`env_saneado` mas CALIPSO_GOAL_COMPUERTAS (el hook la hereda,
+    decision 8) y CALIPSO_HOME apuntando a una carpeta VACIA del goal
+    (spec seccion 7: fuera del alcance; si el martillo importa calipso, no
+    ve el home real)."""
+    env = env_saneado(base)
+    env["CALIPSO_GOAL_COMPUERTAS"] = compuertas_path
+    env["CALIPSO_HOME"] = home_vacio
+    return env
+
+
+# --------------------------------------------------------------------------
+# el parser del stream-json
+# --------------------------------------------------------------------------
+
+class Parser:
+    """Lee el stream-json linea a linea (terreno A.5): `system/init`
+    (session_id, model, tools), `rate_limit_event` (la cuota de Claude por
+    ventana: Trampa 4), `assistant` (un bloque por linea: los `tool_use`
+    de Bash son los comandos; los `message.id` distintos cuentan llamadas si
+    no llega el result), `system/hook_response` (la sonda), `user` con
+    `tool_result` (el resultado de cada comando; y la VIOLACION si llega
+    sin hook_response entre medio: Trampa 2), `result` (unidades =
+    len(usage.iterations), veredicto = structured_output, costo). Un MCP en
+    `init.tools` es violacion (Trampa 1). `alimentar` devuelve el motivo
+    de la violacion la primera vez que la ve; None si no."""
+
+    def __init__(self) -> None:
+        self.session_id: str | None = None
+        self.model: str | None = None
+        self.tools: list[str] = []
+        self.unidades = 0
+        self.message_ids: set[str] = set()
+        self.comandos: list[dict] = []
+        self._tool_uses: dict[str, dict] = {}
+        self._pendientes_hook: list[str] = []
+        self._con_hook: set[str] = set()
+        self.hooks = 0
+        self.veredicto: dict | None = None
+        self.rate_limit: dict | None = None
+        self.denials: list[dict] = []
+        self.resultado: dict | None = None
+        self.costo_usd: float | None = None
+        self.violacion: str | None = None
+        self.texto_final: str = ""
+
+    def alimentar(self, linea: str) -> str | None:
+        linea = (linea or "").strip()
+        if not linea.startswith("{"):
+            return None
+        try:
+            fila = json.loads(linea)
+        except json.JSONDecodeError:
+            return None
+        tipo = fila.get("type")
+        if tipo == "system":
+            return self._system(fila)
+        if tipo == "rate_limit_event":
+            self._rate_limit(fila)
+        elif tipo == "assistant":
+            self._assistant(fila)
+        elif tipo == "user":
+            return self._user(fila)
+        elif tipo == "result":
+            self._result(fila)
+        return None
+
+    def _violar(self, motivo: str) -> str:
+        if self.violacion is None:
+            self.violacion = motivo
+        return motivo
+
+    def _system(self, fila: dict) -> str | None:
+        sub = fila.get("subtype")
+        if sub == "init":
+            self.session_id = fila.get("session_id") or self.session_id
+            self.model = fila.get("model")
+            self.tools = list(fila.get("tools") or [])
+            raras = [t for t in self.tools if str(t).startswith("mcp__")]
+            if raras:
+                return self._violar(f"mcp inesperado en la sesion: {raras[:3]}")
+        elif sub == "hook_response" and fila.get("hook_event", "PreToolUse") == "PreToolUse":
+            self.hooks += 1
+            if self._pendientes_hook:
+                self._con_hook.add(self._pendientes_hook.pop(0))
+        return None
+
+    def _rate_limit(self, fila: dict) -> None:
+        info = fila.get("rate_limit_info") or {}
+        ventanas = info.get("unifiedWindows") or {}
+        self.rate_limit = {
+            "five_hour": (ventanas.get("five_hour") or {}).get("utilization"),
+            "seven_day": (ventanas.get("seven_day") or {}).get("utilization"),
+            "resets_at": info.get("resetsAt"),
+        }
+
+    def _assistant(self, fila: dict) -> None:
+        msg = fila.get("message") or {}
+        if msg.get("id"):
+            self.message_ids.add(msg["id"])
+        self.session_id = fila.get("session_id") or self.session_id
+        for bloque in msg.get("content") or []:
+            if bloque.get("type") == "text":
+                self.texto_final = bloque.get("text") or self.texto_final
+            if bloque.get("type") != "tool_use":
+                continue
+            nombre = bloque.get("name")
+            tid = bloque.get("id")
+            self._tool_uses[tid] = {"name": nombre, "input": bloque.get("input") or {}}
+            if nombre in CON_HOOK:
+                self._pendientes_hook.append(tid)
+            if nombre == "Bash":
+                self.comandos.append({"id": tid, "cmd": str((bloque.get("input") or {}).get("command") or ""),
+                                      "resultado_tail": None})
+
+    def _user(self, fila: dict) -> str | None:
+        msg = fila.get("message") or {}
+        contenido = msg.get("content")
+        if not isinstance(contenido, list):
+            return None
+        for bloque in contenido:
+            if not isinstance(bloque, dict) or bloque.get("type") != "tool_result":
+                continue
+            tid = bloque.get("tool_use_id")
+            uso = self._tool_uses.get(tid) or {}
+            nombre = uso.get("name")
+            if nombre in CON_HOOK and tid not in self._con_hook:
+                if tid in self._pendientes_hook:
+                    self._pendientes_hook.remove(tid)
+                return self._violar(f"hook inactivo: tool_result de {nombre} sin hook_response "
+                                    f"PreToolUse en el medio (tool_use {tid})")
+            if nombre == "Bash":
+                salida = bloque.get("content")
+                if isinstance(salida, list):
+                    salida = " ".join(str(b.get("text", "")) for b in salida if isinstance(b, dict))
+                for c in self.comandos:
+                    if c["id"] == tid:
+                        c["resultado_tail"] = str(salida or "")[-300:]
+        return None
+
+    def _result(self, fila: dict) -> None:
+        self.resultado = fila
+        self.session_id = fila.get("session_id") or self.session_id
+        iteraciones = (fila.get("usage") or {}).get("iterations")
+        if isinstance(iteraciones, list) and iteraciones:
+            self.unidades = len(iteraciones)
+        self.costo_usd = fila.get("total_cost_usd")
+        self.denials = list(fila.get("permission_denials") or [])
+        so = fila.get("structured_output")
+        if isinstance(so, dict):
+            self.veredicto = so
+        else:
+            try:
+                v = json.loads(fila.get("result") or "")
+                self.veredicto = v if isinstance(v, dict) else None
+            except (TypeError, json.JSONDecodeError):
+                self.veredicto = None
+
+    def cerrar(self) -> None:
+        """Al terminar el proceso: sin result, las unidades son los
+        message.id distintos (decision 6)."""
+        if self.resultado is None and self.message_ids:
+            self.unidades = max(self.unidades, len(self.message_ids))
+
+
+# --------------------------------------------------------------------------
+# el golpe: Popen con sesion propia, sondeado, timeout que mata el grupo
+# --------------------------------------------------------------------------
+
+@dataclasses.dataclass
+class Resultado:
+    exit: int | None = None
+    motivo: str | None = None          # None | "timeout" | "cancelado" | "hook inactivo: ..." | "mcp inesperado..."
+    timeout: bool = False
+    matado: bool = False
+    session_id: str | None = None
+    unidades: int = 0
+    comandos: list = dataclasses.field(default_factory=list)
+    veredicto: dict | None = None
+    rate_limit: dict | None = None
+    denials: list = dataclasses.field(default_factory=list)
+    duracion_ms: int = 0
+    costo_usd: float | None = None
+    stderr_tail: str = ""
+    stdout_tail: str = ""
+    secretos_tapados: int = 0
+    subtype: str | None = None
+    model: str | None = None
+
+    def a_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+
+def lanzar(argv: list[str], cwd: str, env: dict, stdout_f, stderr_f) -> subprocess.Popen:
+    """El Popen del golpe: sesion propia (`start_new_session=True`: el
+    grupo entero muere con killpg, incluido lo que el martillo deje con
+    nohup), stdin en PIPE (el prompt), stdout/stderr a archivos (sondeados
+    desde `golpear`). Canario de la aduana: `modelo:` (CLI de suscripcion;
+    el cruce lo hace el runner alrededor, decision 23)."""
+    return subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=stdout_f,
+                            stderr=stderr_f, text=True, encoding="utf-8", errors="replace",
+                            start_new_session=True)
+
+
+def _parar_unidad(unidad: str) -> None:
+    """`systemctl --user stop <unidad>`: el scope entero (canario: local)."""
+    try:
+        subprocess.run(["systemctl", "--user", "stop", unidad], capture_output=True, text=True,
+                       timeout=10)
+    except Exception:
+        pass
+
+
+def matar(proc: subprocess.Popen, unidad: str | None = None) -> None:
+    """SIGTERM al grupo, GRACIA_KILL_S, SIGKILL al grupo; y el scope si lo
+    hubo. Nunca levanta."""
+    for senal in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, senal)
+        except ProcessLookupError:
+            break
+        except Exception:
+            pass
+        limite = time.monotonic() + GRACIA_KILL_S
+        while time.monotonic() < limite and proc.poll() is None:
+            time.sleep(0.05)
+        if proc.poll() is not None:
+            break
+    if unidad:
+        _parar_unidad(unidad)
+    try:
+        proc.wait(timeout=GRACIA_KILL_S)
+    except Exception:
+        pass
+
+
+def golpear(*, argv: list[str], stdin: str, cwd: str, env: dict, timeout_s: float,
+            cancelar: threading.Event | None = None, usar_systemd: bool | None = None,
+            unidad: str | None = None, sondeo_s: float = SONDEO_S,
+            parser: Parser | None = None,
+            al_lanzar: Callable[[subprocess.Popen], None] | None = None) -> Resultado:
+    """UN golpe, bloqueante (se llama en hilo desde el runner): lanza,
+    escribe el prompt por stdin, sondea cada `sondeo_s` el stdout (lineas
+    nuevas al parser), y mata el grupo ante timeout, `cancelar` (el apagado
+    del server, /goal parar) o una violacion del parser (hook inactivo,
+    mcp inesperado: ruling 15.5). Devuelve el Resultado con lo que se
+    alcanzo a parsear. `usar_systemd` None = si `systemd-run` esta en PATH
+    y hay `unidad`. `al_lanzar(proc)` se llama apenas existe el Popen: asi
+    el runner publica el handle en `golpe_en_curso` (decision 17) y
+    `matar_golpe` tiene a quien matar."""
+    parser = parser or Parser()
+    if usar_systemd is None:
+        usar_systemd = bool(unidad) and shutil.which("systemd-run") is not None
+    cmd = argv_systemd(argv, unidad, int(timeout_s)) if (usar_systemd and unidad) else argv
+    r = Resultado()
+    t0 = time.monotonic()
+    with tempfile.NamedTemporaryFile("w+", encoding="utf-8", errors="replace", suffix=".golpe.stdout",
+                                     delete=False) as out_f, \
+            tempfile.NamedTemporaryFile("w+", encoding="utf-8", errors="replace", suffix=".golpe.stderr",
+                                        delete=False) as err_f:
+        out_name, err_name = out_f.name, err_f.name
+    try:
+        with open(out_name, "w", encoding="utf-8") as out_f, open(err_name, "w", encoding="utf-8") as err_f:
+            try:
+                proc = lanzar(cmd, cwd, env, out_f, err_f)
+            except Exception as exc:
+                r.exit, r.motivo, r.stderr_tail = 127, f"no se pudo lanzar: {exc}", str(exc)
+                return r
+            if al_lanzar is not None:
+                try:
+                    al_lanzar(proc)
+                except Exception:
+                    pass
+            def _escribir_stdin() -> None:
+                # en hilo: un prompt mas largo que el buffer del pipe (64 KB:
+                # el ledger con las `falta` sin recortar) bloquearia el write
+                # hasta que el CLI lea, y el sondeo de abajo no correria
+                try:
+                    proc.stdin.write(stdin)
+                    proc.stdin.close()
+                except Exception:
+                    pass
+            threading.Thread(target=_escribir_stdin, daemon=True).start()
+            offset = 0
+            resto = ""
+            with open(out_name, "r", encoding="utf-8", errors="replace") as lector:
+                while True:
+                    lector.seek(offset)
+                    trozo = lector.read()
+                    offset = lector.tell()
+                    if trozo:
+                        resto += trozo
+                        lineas = resto.split("\n")
+                        resto = lineas.pop()
+                        for l in lineas:
+                            v = parser.alimentar(l)
+                            if v:
+                                r.motivo, r.matado = v, True
+                                matar(proc, unidad if usar_systemd else None)
+                                break
+                    if proc.poll() is not None:
+                        break
+                    if cancelar is not None and cancelar.is_set():
+                        r.motivo, r.matado = "cancelado", True
+                        matar(proc, unidad if usar_systemd else None)
+                        break
+                    if time.monotonic() - t0 > timeout_s:
+                        r.motivo, r.timeout, r.matado = "timeout", True, True
+                        matar(proc, unidad if usar_systemd else None)
+                        break
+                    time.sleep(sondeo_s)
+                lector.seek(offset)
+                for l in (resto + lector.read()).split("\n"):
+                    if l.strip() and not r.matado:
+                        parser.alimentar(l)
+            try:
+                proc.wait(timeout=GRACIA_KILL_S)
+            except Exception:
+                pass
+            r.exit = proc.returncode
+        parser.cerrar()
+        with open(err_name, "r", encoding="utf-8", errors="replace") as f:
+            r.stderr_tail = f.read()[-2000:]
+        with open(out_name, "r", encoding="utf-8", errors="replace") as f:
+            r.stdout_tail = f.read()[-2000:]
+    finally:
+        for n in (out_name, err_name):
+            try:
+                os.unlink(n)
+            except OSError:
+                pass
+    r.duracion_ms = int((time.monotonic() - t0) * 1000)
+    r.session_id = parser.session_id
+    r.unidades = parser.unidades
+    r.comandos = parser.comandos
+    r.veredicto = parser.veredicto
+    r.rate_limit = parser.rate_limit
+    r.denials = parser.denials
+    r.costo_usd = parser.costo_usd
+    r.subtype = (parser.resultado or {}).get("subtype")
+    r.model = parser.model
+    return r
+
+
+def sondear_hook(compuertas_path: str, *, hook_python: str | None = None,
+                 hook_path: str | None = None, cwd: str | None = None) -> tuple[bool, str]:
+    """Antes del primer golpe de cada goal (ruling 15.5): el hook real con
+    stdin sintetico (`gh pr create`) tiene que salir 2. Cualquier otra
+    cosa (0, 1, timeout, no existe) = el goal no corre. Canario: local."""
+    evento = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                         "tool_input": {"command": "gh pr create --fill"},
+                         "tool_use_id": "sonda", "cwd": cwd or ""})
+    argv = [hook_python or HOOK_PYTHON, hook_path or str(HOOK_PATH), "--compuertas", compuertas_path]
+    try:
+        r = subprocess.run(argv, input=evento, capture_output=True, text=True,
+                           timeout=TIMEOUT_SONDA_S,
+                           env={**env_saneado(), "CALIPSO_GOAL_COMPUERTAS": compuertas_path})
+    except subprocess.TimeoutExpired:
+        return False, f"la sonda del hook vencio a los {TIMEOUT_SONDA_S} s"
+    except Exception as exc:
+        return False, f"no se pudo correr el hook: {exc}"
+    if r.returncode != 2:
+        return False, f"el hook dejo pasar `gh pr create` (exit {r.returncode}): {r.stderr.strip()[:200]}"
+    if "DENEGADO" not in r.stderr:
+        return False, f"el hook salio 2 sin motivo: {r.stderr.strip()[:200]}"
+    return True, "hook activo: gh pr create -> exit 2"
+
+
+# --------------------------------------------------------------------------
+# el detector de secretos sobre lo que va al ledger y al prompt
+# --------------------------------------------------------------------------
+
+def tapar(texto: str) -> tuple[str, int]:
+    """Molde aduana._tapar_todo: los tramos del detector, del mas largo al
+    mas corto, reemplazados por [SECRETO]. Devuelve (texto, cuantos)."""
+    tramos = detector.detectar_secretos(texto or "")
+    for t in sorted(tramos, key=lambda x: len(x["texto"]), reverse=True):
+        texto = texto.replace(t["texto"], "[SECRETO]")
+    return texto, len(tramos)
+
+
+def tapar_fila(fila: dict) -> tuple[dict, int]:
+    """Recursivo sobre str/list/dict; salta SIN_TAPAR (session_id, shas del
+    diff_stat: Trampa 19)."""
+    total = 0
+
+    def _t(v, clave=None):
+        nonlocal total
+        if clave in SIN_TAPAR:
+            return v
+        if isinstance(v, str):
+            s, n = tapar(v)
+            total += n
+            return s
+        if isinstance(v, list):
+            return [_t(x) for x in v]
+        if isinstance(v, dict):
+            return {k: _t(x, k) for k, x in v.items()}
+        return v
+    return _t(fila), total
+
+
+# --------------------------------------------------------------------------
+# el revisor de otra familia
+# --------------------------------------------------------------------------
+
+def revisar(*, manos_del_golpe: str, exes: dict, goal_texto: str, criterio: dict,
+            resumen_ledger: str, diff: str, salidas: str, cwd: str, env: dict | None = None,
+            timeout: float = TIMEOUT_REVISOR_S) -> dict | None:
+    """El revisor de OTRA familia en solo lectura sobre el clon (spec
+    seccion 6.2): manos claude -> `codex exec -s read-only`; manos codex ->
+    `claude -p --restricted --tools Read,Glob,Grep`. `diff` es el diff
+    COMPLETO (`github.diff_completo`: ruling 15.1, el juez ve el diff real),
+    no el diff_stat del ledger. None si la otra familia no esta (`exes` sin
+    su ejecutable): entonces no hay veredicto de modelo (decision 15).
+    Cuenta como golpe y se cobra: lo hace el runner."""
+    otra = otra_familia(manos_del_golpe)
+    exe = (exes or {}).get(otra)
+    if not exe:
+        return None
+    prompt = (f"GOAL: {goal_texto}\nCRITERIO: {json.dumps(criterio or {}, ensure_ascii=False)}\n\n"
+              f"LEDGER (resumen):\n{resumen_ledger}\n\nDIFF:\n{diff[:20000]}\n\nSALIDAS:\n{salidas[:8000]}\n")
+    prompt, _ = tapar(prompt)
+    v = cabeza_sin_herramientas(otra, exe, CONTRATO_REVISOR, prompt, ESQUEMA_REVISOR, cwd=cwd,
+                                env=env, timeout=timeout,
+                                tools=HERRAMIENTAS_LECTURA if otra == "claude" else "")
+    if not isinstance(v, dict) or "cumplido" not in v:
+        return None
+    return {"cumplido": bool(v.get("cumplido")), "falta": [str(x) for x in (v.get("falta") or [])],
+            "nota": str(v.get("nota") or ""), "revisor": otra}
