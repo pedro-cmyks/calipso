@@ -395,7 +395,7 @@ def settings_del_goal(compuertas: dict, *, hook_python: str | None = None,
 
 def argv_claude(exe: str, *, contrato: str, settings: dict, schema: dict,
                 session_id: str, resume: bool, model: str | None = None,
-                web: bool = False) -> list[str]:
+                web: bool = False, raices: list[str] | None = None) -> list[str]:
     """`claude -p` con herramientas (terreno A.2: confirmadas por `--help`
     salvo `--append-system-prompt-file`, que `--help` de 2.1.270 no lista y
     esta confirmada por el uso del server en el turno real, server.py:3538,
@@ -408,7 +408,10 @@ def argv_claude(exe: str, *, contrato: str, settings: dict, schema: dict,
     (el veredicto), `--session-id` en el golpe 1 y `--resume` despues
     (misma sesion, mismo cwd: Trampa 5), `--model` explicito (Trampa 6:
     con setting-sources vacio el model de ~/.claude/settings.json no
-    aplica). Nunca --max-turns (no existe), --bare, bypassPermissions ni
+    aplica), `--add-dir` por cada raiz (spec 15.5: es lo que gobierna
+    Write/Edit fuera del cwd; el smoke G3 vio al CLI negar un Write a una
+    raiz aprobada aunque el hook la permitiera, y al martillo caer a mv por
+    Bash). Nunca --max-turns (no existe), --bare, bypassPermissions ni
     --no-session-persistence (rompe --resume)."""
     tools = ",".join(HERRAMIENTAS + (HERRAMIENTAS_WEB if web else []))
     argv = [exe, "-p", "--permission-mode", "acceptEdits", "--permission-prompts", "none",
@@ -418,6 +421,8 @@ def argv_claude(exe: str, *, contrato: str, settings: dict, schema: dict,
             "--json-schema", json.dumps(schema, ensure_ascii=False),
             "--append-system-prompt-file", contrato]
     argv += ["--resume", session_id] if resume else ["--session-id", session_id]
+    for r in raices or []:
+        argv += ["--add-dir", str(r)]
     if model:
         argv += ["--model", model]
     return argv

@@ -108,9 +108,19 @@ def _siguiente_n(filas: list[dict]) -> int:
 # --------------------------------------------------------------------------
 
 def contrato_del_goal(goal: dict) -> str:
-    """El system del golpe (`--append-system-prompt-file`, fuera del clon)."""
+    """El system del golpe (`--append-system-prompt-file`, fuera del clon).
+    Lo que se hace con el trabajo depende de las manos: claude commitea en
+    la rama del clon; codex NO (ruling del controlador, Task 7: bajo
+    `codex exec -s workspace-write` el .git del clon es de solo lectura y
+    cada golpe gastaba intentando commitear; el runner mide el diff del
+    arbol contra base_sha, asi que el trabajo sin commitear cuenta igual)."""
     c = goal.get("compuertas") or {}
     niveles = c.get("niveles") or goals.NIVEL_DE
+    if (goal.get("manos") or "claude") == "codex":
+        cierre = ("No commitees: el .git es de solo lectura en tu sandbox; el runner mide el diff del "
+                  "arbol contra base_sha.")
+    else:
+        cierre = "commitea en la rama del clon lo que termines."
     lineas = [
         "CONTRATO DEL GOAL (Calipso, 2026-09-13)",
         f"goal: {goal.get('id')} -- {goal.get('title')}",
@@ -129,8 +139,8 @@ def contrato_del_goal(goal: dict) -> str:
         "no hagas push, PR, correo, gastos ni toques datos de Pedro (el hook lo deniega y el sandbox lo "
         "impide); instala solo dentro del cwd (venv, npm sin -g); si necesitas una compuerta en "
         "pregunta (instalar en el home o el sistema, borrar fuera, una raiz nueva), termina el golpe con "
-        "estado \"preguntar\", la pregunta y la compuerta (familia y forma exacta); commitea en la rama "
-        "del clon lo que termines. Termina SIEMPRE con el veredicto del esquema: estado sigo (hay mas "
+        "estado \"preguntar\", la pregunta y la compuerta (familia y forma exacta); " + cierre
+        + " Termina SIEMPRE con el veredicto del esquema: estado sigo (hay mas "
         "por hacer), terminar (creo que el criterio se cumple: el juez lo verifica), preguntar; y un "
         "resumen de una o dos lineas de lo que hiciste.",
     ]
@@ -404,6 +414,8 @@ def manos_con_cli(exes: dict, *, timeout_s: int | None = None,
     `reintento`; codex: -o y --output-schema en archivos del goal), env
     (CALIPSO_GOAL_COMPUERTAS, CALIPSO_HOME vacio), escribe el contrato
     FUERA del clon y lanza con la unidad `calipso-goal-<id>-<n>` (el
+    compuertas.json se relee en CADA golpe: la raiz que Pedro aprobo por
+    raiz_nueva entra al golpe siguiente como --add-dir y allowWrite; el
     reintento, `-<n>-r`). `al_lanzar` (= `runner.registrar_golpe`)
     publica el Popen en el runner apenas existe (decision 17)."""
     def manos(goal: dict, n: int, prompt: str, contrato: str,
@@ -433,7 +445,8 @@ def manos_con_cli(exes: dict, *, timeout_s: int | None = None,
                 argv = gm.argv_claude(exe, contrato=str(ruta_contrato), settings=settings,
                                       schema=gm.ESQUEMA_VEREDICTO, session_id=goal["session_id"],
                                       resume=resume, model=_modelo_claude(goal),
-                                      web=bool(goal.get("dominios")))
+                                      web=bool(goal.get("dominios")),
+                                      raices=list(compuertas.get("raices") or []))
                 return gm.golpear(argv=argv, stdin=prompt, cwd=cwd, env=env, timeout_s=tout,
                                   cancelar=cancelar, usar_systemd=usar_systemd, unidad=unidad,
                                   al_lanzar=al_lanzar)

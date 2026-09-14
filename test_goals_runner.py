@@ -911,6 +911,22 @@ def test_las_compuertas_usadas_van_a_la_fila_y_a_la_aduana_con_deshacer(home, tm
     assert fin["compuertas"] == usadas and fin["dominios"] == []
 
 
+def test_el_contrato_de_codex_no_manda_commitear():
+    """Ruling del controlador (Task 7): bajo `codex exec -s workspace-write`
+    el .git del clon es de solo lectura (smoke G6: index.lock Read-only file
+    system), asi que cada golpe de codex gastaba intentando commitear y
+    reportando el fallo. El contrato de codex dice que no commitee y que el
+    runner mide el diff del arbol contra base_sha; el de claude sigue
+    mandando commitear en la rama del clon."""
+    base = {"id": "goal_x", "title": "t", "objective": "o", "criterio": {}, "tope": {}, "compuertas": {}}
+    claude = gr.contrato_del_goal({**base, "manos": "claude"})
+    codex = gr.contrato_del_goal({**base, "manos": "codex"})
+    assert "commitea en la rama del clon" in claude and "No commitees" not in claude
+    assert "No commitees" in codex and "solo lectura" in codex and "base_sha" in codex
+    assert "commitea en la rama" not in codex
+    assert gr.contrato_del_goal(base) == claude                    # sin manos = claude
+
+
 def test_linea_de_deshacer_es_pura():
     d = gr.linea_de_deshacer
     assert d("instalar_en_goal", {"argv": ["pip", "install", "a", "b"]}) == "pip uninstall -y a b"
@@ -1000,6 +1016,35 @@ def test_manos_con_cli_arma_el_golpe_entero(home, tmp_path, cli_falso_stream, mo
     r.iteracion()
     a2 = cli.llamadas()[1]["argv"]
     assert a2[a2.index("--resume") + 1] == g["session_id"] and "--session-id" not in a2
+
+
+def test_el_golpe_siguiente_a_una_raiz_nueva_aprobada_lleva_add_dir(home, tmp_path, cli_falso_stream):
+    """Las compuertas se releen por golpe: la raiz que Pedro aprobo por el
+    inbox (raiz_nueva) entra en compuertas.json y el golpe siguiente sale
+    con `--add-dir <raiz>` (y en allowWrite del sandbox), sin relanzar
+    nada. Sin raices, sin --add-dir."""
+    cli = cli_falso_stream
+    raiz = tmp_path / "Descargas"
+    raiz.mkdir()
+    g = goal_activo(home, tmp_path)
+    sid = g["session_id"]
+    cli.guion([{"lineas": lineas_golpe(session_id=sid, veredicto={"estado": "preguntar", "resumen": "raiz",
+                                                                   "pregunta": "puedo escribir ahi?",
+                                                                   "compuerta": {"familia": "raiz_nueva",
+                                                                                 "forma": {"raiz": str(raiz)}}})},
+               {"lineas": lineas_golpe(session_id=sid, veredicto={"estado": "sigo", "resumen": "segui"})}])
+    f = Falsas(juicios=[])
+    f.manos = gr.manos_con_cli({"claude": cli.ruta, "codex": cli.ruta_codex}, timeout_s=30, usar_systemd=False)
+    r = f.runner(g["id"])
+    it = r.iteracion()
+    assert it["accion"] == "pregunta" and it["operacion"] == "raiz_nueva"
+    assert "--add-dir" not in cli.llamadas()[0]["argv"]
+    f.solicitudes["sol_1"] = "aprobada"
+    assert r.iteracion()["accion"] == "retomado"
+    assert r.iteracion()["accion"] == "golpe"
+    a = cli.llamadas()[1]["argv"]
+    assert a[a.index("--add-dir") + 1] == str(raiz)
+    assert str(raiz) in cli.llamadas()[1]["settings"]["sandbox"]["filesystem"]["allowWrite"]
 
 
 def test_cambiar_de_manos_a_claude_arranca_la_sesion_y_no_resume_una_que_no_existe(home, tmp_path,

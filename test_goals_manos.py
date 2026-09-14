@@ -236,6 +236,21 @@ def test_argv_claude_del_golpe():
     assert "--model" not in b
 
 
+def test_argv_claude_lleva_add_dir_por_cada_raiz():
+    """Spec 15.5 y el smoke (G3, corridas 3 y 6): con `--permission-mode
+    acceptEdits` el CLI niega un Write fuera del cwd aunque el hook lo
+    permita (permission_denials), y el martillo caia a mv/cp por Bash. Lo
+    que gobierna las herramientas de archivo es `--add-dir`: una por raiz
+    (declarada o aprobada por raiz_nueva), ninguna sin raices."""
+    a = gm.argv_claude("/x/claude", contrato="/g/c.md", settings={}, schema=gm.ESQUEMA_VEREDICTO,
+                       session_id="u-1", resume=False, raices=["/tmp/desc", "/home/p/Notas"])
+    dirs = [a[i + 1] for i, t in enumerate(a) if t == "--add-dir"]
+    assert dirs == ["/tmp/desc", "/home/p/Notas"]
+    b = gm.argv_claude("/x/claude", contrato="/g/c.md", settings={}, schema=gm.ESQUEMA_VEREDICTO,
+                       session_id="u-1", resume=False)
+    assert "--add-dir" not in b
+
+
 def test_argv_codex_del_golpe():
     a = gm.argv_codex("/x/codex", cwd="/g/repo", raices=["/tmp/d"], salida="/g/out.txt",
                       schema_file="/g/s.json", model="gpt-5.5")
