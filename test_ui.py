@@ -47,6 +47,9 @@ def test_la_goal_bar_es_de_solo_lectura_y_sondea():
         assert boton not in text, boton
     assert 'id="goalOpen"' in text and "function loadGoal()" in text
     assert "setInterval(loadGoal, 60_000)" in text and "/api/goals?limit=1" in text
+    # cierre 2026-09-14 (rev:ui-smoke): el CSS de los seis botones viejos
+    # (.criterion-actions) quedo sin ningun elemento que lo use
+    assert "criterion-actions" not in text
 
 
 def main() -> int:
