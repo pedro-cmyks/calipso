@@ -4266,6 +4266,8 @@ def _proponer_goal(d: dict, texto_crudo: str, departamento: str | None) -> tuple
         # antes de la cabeza: un con: invalido no gasta una propuesta
         raise goals.ErrorGoal(f"manos invalidas: {con!r} (son {goals.MANOS})")
     proyecto = _proyecto_del_goal(d["en"])
+    if d["raiz"]:
+        goals.validar_raices([d["raiz"]])     # una raiz amplia no gasta una propuesta
     privado = bool(dispatch.PRIVATE.search(texto_crudo))
     avisos: list[str] = []
     propuesta = None
@@ -4645,6 +4647,9 @@ async def _atender_goal(texto: str, features: dict, chat_id: str | None,
                 # propuesta, vale como `segui` (un si que aplica lo mismo) en
                 # vez de negar que exista el goal que espera (rev:server)
                 motivo = (activo.get("espera") or {}).get("motivo") or "?"
+                if d["raiz"]:
+                    raise goals.ErrorGoal("raiz: solo con el dale de un proposed; sobre un waiting usa "
+                                          "segui (una raiz nueva la pide el martillo por raiz_nueva)")
                 g = await asyncio.to_thread(_retomar_goal, activo["id"], None, None, d["tope"] or None)
                 return (f"goal {g['id']} active de nuevo (manos: {g['manos']}): el dale sobre un "
                         f"waiting por {motivo} vale como segui"), False

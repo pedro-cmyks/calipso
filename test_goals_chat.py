@@ -1114,3 +1114,19 @@ def test_el_dale_con_raiz_amplia_es_un_aviso(goal_home, chat, repo):
     r = chat.cliente.post(f"/api/goals/{g['id']}/dale", json={"raiz": "relativa/x"})
     assert r.status_code == 409 and "raiz relativa" in r.json()["detail"]
     assert goals.load(None, g["id"])["compuertas"]["raices"] == []
+
+
+def test_la_raiz_de_pedro_se_valida_antes_de_gastar_la_cabeza_y_el_dale_sobre_waiting_no_la_traga(
+        goal_home, chat, repo, monkeypatch):
+    llamadas = []
+    monkeypatch.setattr(srv, "_cabeza_del_goal", lambda *a, **k: llamadas.append(1) or dict(PROPUESTA))
+    eventos = chat.turno(f"/goal ordena mis cosas raiz: ~ en: {repo}")
+    assert "raiz demasiado amplia" in _dicho(eventos) and llamadas == [] and goals.list_goals() == []
+    # y por chat, un dale con raiz: sobre el goal esperando no se aplica en silencio
+    _proponer(chat, repo)
+    chat.turno("/goal dale")
+    g = goals.activo()
+    _waiting(g["id"], "parado por Pedro")
+    eventos = chat.turno(f"/goal dale raiz: {repo}")
+    assert "segui" in _dicho(eventos) and de_tipo(eventos, "error")
+    assert goals.load(None, g["id"])["status"] == goals.WAITING
