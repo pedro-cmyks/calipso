@@ -39,9 +39,13 @@ Que decide:
   Edit/Write/MultiEdit  dentro del clon o de una raiz declarada; nunca
             `.claude/`, `.git/hooks/`, `.git/config` del clon (el martillo no
             se auto-escala); fuera = pregunta raiz_nueva.
-  Read/Glob/Grep  todo salvo las rutas protegidas (NUNCA). El resto del
-            confinamiento lo hace `--restricted` (los file tools no salen de
-            los working directories).
+  Read/Glob/Grep  el clon, las raices y lo que esta fuera del home (`/etc`,
+            `/usr`, `/` a secas); las rutas protegidas y el home a secas
+            NUNCA; el resto del home de Pedro = pregunta raiz_nueva (lo
+            mismo para cat, ls, grep, find, jq... por Bash: lo que el
+            martillo lee viaja a la suscripcion). El resto del
+            confinamiento lo hace `--restricted` (los file tools no salen
+            de los working directories).
   WebFetch/WebSearch  solo con dominios declarados; el host tiene que estar
             en la lista (son in-process: el sandbox no las filtra, Trampa 8).
 
@@ -119,7 +123,7 @@ ALLOW_EXES = {
     "tee", "tree", "du", "df", "ps", "python", "python3", "pytest", "node", "cargo", "go",
     "make", "cmake", "gcc", "g++", "cc", "rustc", "ruby", "bundle", "black", "ruff", "mypy",
     "flake8", "isort", "pyright", "tsc", "eslint", "prettier", "jq", "tar", "unzip", "zip",
-    "gzip", "gunzip", "sha256sum", "md5sum", "chmod", "ln", "seq", "xxd", "hexdump", "less",
+    "gzip", "gunzip", "sha256sum", "md5sum", "chmod", "ln", "seq", "xxd", "hexdump", "od", "strings", "less",
     "more", "yes", "nproc", "uname", "id", "whoami", "hostname", "uv", "poetry", "pipx", "rm",
     "git", "pip", "pip3", "npm", "yarn", "pnpm", "flatpak", "rpm-ostree", "curl", "wget",
     "install", "chown", "truncate", "dd",
@@ -166,7 +170,15 @@ SUBEN_ARCHIVOS = ("curl", "wget")
 # `-` (stdout) y /dev/null no son destinos.
 ESCRITORES = {"cp", "mv", "ln", "install", "sed", "tee", "touch", "mkdir", "chmod", "chown", "truncate",
               "tar", "unzip", "zip", "gzip", "gunzip", "curl", "wget", "dd", "find"}
-EXES_CON_RUTAS = set(EXES_DE_RUTAS) | set(EXES_QUE_TOCAN) | set(SUBEN_ARCHIVOS) | ESCRITORES
+# Los que leen archivos (ademas de EXES_DE_RUTAS): lo que el martillo lee
+# viaja a la suscripcion (invariante 9). Toda ruta bajo el HOME de Pedro
+# que no esta en el clon, las raices ni las protegidas (`~/Documentos`,
+# `~/.bashrc`) es raiz_nueva (pregunta), tambien como fuente de un
+# escritor o subida de curl; fuera del home (/etc, /usr, /proc, /tmp) es
+# allow (C3 del cierre). `tr` no lee archivos y queda fuera; `jq` lee los
+# archivos de entrada (y los de --slurpfile/--rawfile/-f/-L), no el filtro.
+LECTORES = ("ls", "diff", "sort", "uniq", "cut", "od", "strings", "tree", "du", "sha256sum", "md5sum", "jq")
+EXES_CON_RUTAS = set(EXES_DE_RUTAS) | set(EXES_QUE_TOCAN) | set(SUBEN_ARCHIVOS) | ESCRITORES | set(LECTORES)
 # Las opciones que toman valor (letras cortas, largas sin `=`): al buscar los
 # argumentos posicionales de un escritor se saltan sus valores, si no
 # `cp x /tmp/x -S .bak` tendria como destino `.bak`.
@@ -198,11 +210,12 @@ FIND_ESCRIBE = ("-fprint", "-fprintf", "-fprint0")
 # tarda es fail-open por timeout: no puede explotar listando).
 GLOB = "*?["
 PRESUPUESTO_EXPANSION = 100_000
-# El valor de `-F` de awk (el separador, pegado o separado: `-F/`, `-F .`)
-# nunca es una ruta. Se salta por exe y por opcion, nunca por el valor: un
-# `/` pegado a `-C` de tar o a `-t` de cp SI es una ruta (`tar -C/ x`
-# archiva desde la raiz). Si otro exe necesita lo mismo, se suma aca.
-OPCIONES_SIN_RUTA = {"awk": ("-F",)}
+# El valor de `-F` de awk, `-d` de cut y `-t` de sort (el separador, pegado
+# o separado: `-F/`, `-F .`) nunca es una ruta. Se salta por exe y por
+# opcion, nunca por el valor: un `/` pegado a `-C` de tar o a `-t` de cp SI
+# es una ruta (`tar -C/ x` archiva desde la raiz). Si otro exe necesita lo
+# mismo, se suma aca.
+OPCIONES_SIN_RUTA = {"awk": ("-F",), "cut": ("-d",), "sort": ("-t",)}
 DOMINIO_API = "api.anthropic.com"
 INSTRUCCION_PREGUNTA = ("esta compuerta esta en pregunta: pedila en tu veredicto con estado "
                         "\"preguntar\" y la compuerta (familia y forma); Pedro decide")
@@ -288,8 +301,31 @@ def _home_o_raiz(p: pathlib.Path) -> bool:
     return p == _home_resuelto() or p == pathlib.Path("/")
 
 
+def _bajo_home(p: pathlib.Path) -> bool:
+    return _dentro(p, _home_resuelto())
+
+
+class Abarca(pathlib.PosixPath):
+    """El padre de un glob al home o a `/` (`~/*`, `~/.*`, `/*/x`): bash lo
+    expande a TODO lo que cuelga, asi que vale como el padre ENTERO y es
+    NUNCA tambien para leer. Se distingue de `/` a secas, que si se lee
+    (`ls /` lista el sistema)."""
+
+
 def _protegida(p: pathlib.Path) -> bool:
+    """Lo que no se borra ni se escribe jamas: una protegida, el home o
+    `/` a secas (`rm -rf /`, `cp -t/`, `tar -x -C/`)."""
     return _home_o_raiz(p) or _bajo_protegida(p)
+
+
+def _protegida_para_leer(p: pathlib.Path) -> bool:
+    """Lo que no se lee jamas: una protegida, el home a secas (el padre de
+    todas: listarlo o recorrerlo las toca) y el padre de un glob que abarca
+    el home o `/`. `/` a secas se lee: es el sistema, y lo que esta fuera
+    del home es allow (C3 del cierre); recorrerlo (`grep -r x /`) es lo
+    mismo que recorrer `/var` o `/var/home`: el hook no modela la
+    recursion desde un ancestro del home, esa barrera es el sandbox."""
+    return isinstance(p, Abarca) or p == _home_resuelto() or _bajo_protegida(p)
 
 
 def _pinta_de_ruta(tok: str) -> bool:
@@ -559,6 +595,8 @@ def _candidatos_de_ruta(exe: str, argv: list[str]) -> list[str]:
     para curl/wget, ademas, lo que sigue a `@` (`-d @archivo`,
     `-F campo=@archivo`, `--data-urlencode nombre@archivo`) y nunca las
     URLs (esas van por dominio)."""
+    if exe == "jq":
+        return _archivos_de_jq(argv)
     out = []
     sin_ruta = OPCIONES_SIN_RUTA.get(exe, ())
     saltar = False
@@ -584,6 +622,54 @@ def _candidatos_de_ruta(exe: str, argv: list[str]) -> list[str]:
             val = val.split("@", 1)[1]
         if val:
             out.append(val)
+    return out
+
+
+# Las opciones de jq con valor: (cuantos tokens se lleva, cuales de ellos
+# son un archivo). `--arg n v` y `--argjson n v` son cadenas; `--slurpfile`,
+# `--rawfile` y `--argfile` leen el segundo; `-f`/`--from-file` lee el filtro
+# de un archivo (y entonces TODOS los posicionales son entradas); `-L` es un
+# directorio de modulos.
+JQ_OPCIONES = {"--arg": (2, ()), "--argjson": (2, ()), "--slurpfile": (2, (1,)), "--rawfile": (2, (1,)),
+               "--argfile": (2, (1,)), "--from-file": (1, (0,)), "--indent": (1, ()), "-f": (1, (0,)),
+               "-L": (1, (0,))}
+
+
+def _archivos_de_jq(argv: list[str]) -> list[str]:
+    """Lo que `jq` lee: los archivos de entrada (los posicionales despues
+    del filtro, que no es una ruta aunque empiece con `.`), los de sus
+    opciones con archivo y el filtro de `-f`. Despues de `--args` o
+    `--jsonargs` los posicionales son cadenas, no archivos."""
+    out: list[str] = []
+    filtro_visto = cadenas = False
+    toks = argv[1:]
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        if tok in ("--args", "--jsonargs"):
+            cadenas = True
+        elif tok in JQ_OPCIONES:
+            n, archivos = JQ_OPCIONES[tok]
+            valores = toks[i + 1:i + 1 + n]
+            out.extend(valores[k] for k in archivos if k < len(valores))
+            if tok in ("-f", "--from-file"):
+                filtro_visto = True
+            i += n
+        elif tok.startswith("-") and len(tok) > 1:
+            letra = next((ch for ch in tok[1:] if ch in "fL"), None)
+            if letra and not tok.startswith("--"):
+                resto = tok[tok.index(letra) + 1:]
+                if resto:
+                    out.append(resto)
+                elif i + 1 < len(toks):
+                    out.append(toks[i + 1])
+                    i += 1
+                filtro_visto = filtro_visto or letra == "f"
+        elif not filtro_visto:
+            filtro_visto = True
+        elif not cadenas:
+            out.append(tok)
+        i += 1
     return out
 
 
@@ -618,7 +704,7 @@ def _resolver_formas(exe: str, tokens: list[str], cwd: str | None) -> tuple[list
                     continue
                 padre = _padre_del_glob(forma, cwd)
                 if _home_o_raiz(padre):
-                    rutas.append(padre)
+                    rutas.append(Abarca(padre))
                     continue
                 rutas.extend(_expandir(forma, cwd, presupuesto))
         except PresupuestoAgotado as exc:
@@ -990,7 +1076,7 @@ def familia_de_argv(argv: list[str], compuertas: dict) -> tuple[str | None, str,
         if motivo:
             return "DENEGAR", motivo, None
         for p in rutas:
-            if _protegida(p):
+            if _protegida_para_leer(p):
                 return _nunca("datos_de_pedro", f"{exe} sobre {p}: datos de Pedro", {"ruta": str(p)})
             if exe in EXES_QUE_ESCRIBEN and _auto_escalada(p, compuertas):
                 return _nunca(None, f"{exe} sobre {p}: auto-escalada (.claude, .git/hooks, .git/config)",
@@ -1008,12 +1094,17 @@ def familia_de_argv(argv: list[str], compuertas: dict) -> tuple[str | None, str,
             if motivo:
                 return "DENEGAR", motivo, None
             for p in destinos:
+                if _protegida(p):
+                    return _nunca("datos_de_pedro", f"{exe} sobre {p}: datos de Pedro", {"ruta": str(p)})
                 if _auto_escalada(p, compuertas):
                     return _nunca(None, f"{exe} sobre {p}: auto-escalada (.claude, .git/hooks, .git/config)",
                                   {"ruta": str(p)})
             for p in destinos:
                 if str(p) != "/dev/null" and _en_alcance(p, compuertas) is None:
                     return "raiz_nueva", f"{exe} escribe fuera del alcance: {p}", {"raiz": _raiz_de(p)}
+        for p in rutas:
+            if _bajo_home(p) and _en_alcance(p, compuertas) is None:
+                return "raiz_nueva", f"{exe} lee fuera del alcance: {p}", {"raiz": _raiz_de(p)}
         if exe in SUBEN_ARCHIVOS:
             return "web", "web a un dominio declarado", {"urls": urls}
         return None, "comando simple permitido", None
@@ -1097,8 +1188,11 @@ def decidir_archivo(tool: str, tool_input: dict, compuertas: dict) -> Decision:
         if not ruta:
             return Decision(True, f"{tool} sin ruta (el cwd)", None)
         p = _resolver(ruta, cwd)
-        if _protegida(p):
+        if _protegida_para_leer(p):
             return Decision(False, f"NUNCA: {tool} sobre {p}: datos de Pedro", "datos_de_pedro", {"ruta": str(p)})
+        if _bajo_home(p) and _en_alcance(p, compuertas) is None:
+            return _aplicar_tabla("raiz_nueva", f"{tool} lee fuera del alcance: {p}", {"raiz": _raiz_de(p)},
+                                  compuertas)
         return Decision(True, f"{tool} permitido", None)
     if not ruta:
         return Decision(False, f"{tool} sin file_path", None)

@@ -169,6 +169,11 @@ COMANDOS_DE_CONSISTENCIA = (
     "sudo ls", "su -c ls", "mail -s x pedro@x", "touch .git/hooks/pre-commit", "sed -i s/a/b/ .git/config",
     "rm -rf /tmp/otro", "rm -rf build", "bash -c ls", "ls; rm -rf /", "comandoinventado",
     "cat /var/home/$USER/.ssh/id_ed25519", "find . -delete",
+    # cierre 2026-09-14: codigo inline, escritores con destino y lecturas bajo el home
+    "python -c x", "node -p x", "npx x", "git rebase -x id main", "git config --get user.name",
+    "cp src/a.py /tmp/otro/a.py", "curl -o /tmp/otro/x https://pypi.org/x", "tar -xf a.tar -C /tmp/otro",
+    "cat ~/.bashrc", "ls ~/Documentos", "cat /etc/passwd", "bash script.sh", "ls /", "ls ~", "cat /*",
+    "jq . ~/Documentos/x.json", "tree ~/.ssh", "tar -xf a.tar -C/",
 )
 
 
@@ -195,7 +200,8 @@ def test_el_hook_y_el_motor_deciden_lo_mismo(home, compuertas, tmp_path):
     for tool, ruta in (("Write", f"{clon}/saludo.py"), ("Edit", f"{compuertas['raices'][0]}/n.txt"),
                        ("Write", str(tmp_path / "otro" / "x")), ("Read", "~/.ssh/id_ed25519"),
                        ("Grep", "~/.calipso"), ("Write", f"{clon}/.claude/settings.json"),
-                       ("Edit", f"{clon}/.git/config"), ("Write", "~/.claude/x"), ("Read", f"{clon}/a.py")):
+                       ("Edit", f"{clon}/.git/config"), ("Write", "~/.claude/x"), ("Read", f"{clon}/a.py"),
+                       ("Read", "~/Documentos/x.txt"), ("Grep", "~/proyectos"), ("Read", "/etc/passwd")):
         d = goals_hook.decidir_archivo(tool, {"file_path": ruta}, compuertas)
         v = acciones.clasificar(accion("archivo", {"goal": "goal_x", "tool": tool, "ruta": ruta},
                                        {"compuertas": compuertas}))

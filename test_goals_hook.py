@@ -195,8 +195,15 @@ def test_una_preautorizacion_del_goal_deja_pasar_esa_forma_exacta(goal_dir):
     # expande `~/*/` a todos los directorios del home: ahi viven los datos)
     "rm -rf ~/*/", "rm -rf /*/", "rm -rf ~/*//", "rm -rf ~/D*/", "cp -r ~/*/ /tmp/x", "grep -r PRIVATE ~/*/",
     "rm -rf ~/*/*", "rm -rf ~/*/x", "cat /*/x", "cat ~/*/*.txt",
-    # un / pegado a una opcion que toma ruta (-C de tar, -t de cp) si es una ruta
-    "tar -cf /tmp/o.tar -C/ {HR}/.ssh", "tar -cf /tmp/o.tar -C/ .", "cp -t/ src/a.py",
+    # un / pegado a una opcion que toma ruta (-C de tar, -t de cp) si es una ruta:
+    # extraer o copiar EN `/` es escribir en la raiz (leerla a secas no: `ls /`)
+    "tar -xf a.tar -C/", "tar xf a.tar -C/ x", "tar --extract -f a.tar --directory=/", "cp -t/ src/a.py",
+    # el home a secas es el padre de todas las protegidas: ni listarlo ni recorrerlo
+    "ls ~", "ls -la ~/", "grep -r PRIVATE ~", "find ~ -name x", "tree ~", "du -sh ~",
+    # tree, du, sha256sum, md5sum y jq tambien leen (lo que el martillo lee viaja a la suscripcion)
+    "tree ~/.ssh", "du -a ~/.gnupg", "sha256sum ~/.ssh/id_ed25519", "md5sum ~/.aws/credentials",
+    "jq . ~/.claude/.credentials.json", "jq -r .token ~/.calipso/token", "jq --slurpfile x ~/.aws/credentials .",
+    "jq --rawfile x ~/.ssh/id_ed25519 -n x", "jq -f ~/.calipso/token", "jq -n -L ~/.ssh x",
 ])
 def test_lo_nunca_se_deniega(goal_dir, cmd):
     home = os.path.expanduser("~")
@@ -677,3 +684,104 @@ def test_la_sonda_de_destinos_del_smoke_con_el_hook_real(goal_dir, tmp_path):
         assert r.returncode == 2 and "raiz_nueva" in r.stderr, (cmd, r.stderr)
         fila = registro(goal_dir)[-1]
         assert fila["familia"] == "raiz_nueva" and fila["forma"] == {"raiz": str(fuera)}, (cmd, fila)
+
+
+# --- lecturas bajo el HOME fuera del alcance (cierre 2026-09-14, C3) ---------------------
+
+def test_leer_con_las_herramientas_de_archivo_bajo_el_home_fuera_del_alcance_pregunta(goal_dir, tmp_path):
+    """C3 (Codex): lo que el martillo lee viaja a la suscripcion (invariante
+    9). Bajo el home de Pedro y fuera del clon, las raices y las protegidas
+    es raiz_nueva (pregunta); fuera del home (/etc, /usr, /proc, /tmp) es
+    allow: un agente de codigo lee fuentes y docs del sistema."""
+    home = os.path.expanduser("~")
+    for tool, entrada in (("Read", {"file_path": f"{home}/Documentos/x.txt"}),
+                          ("Glob", {"pattern": "*", "path": f"{home}/Documentos"}),
+                          ("Grep", {"pattern": "x", "path": f"{home}/proyectos"}),
+                          ("Read", {"file_path": f"{home}/.bashrc"})):
+        rc, err = correr(goal_dir, tool, entrada)
+        assert rc == 2 and "pregunta:raiz_nueva" in err and "lee fuera del alcance" in err, (tool, err)
+        fila = registro(goal_dir)[-1]
+        assert fila["familia"] == "raiz_nueva" and fila["forma"]["raiz"].startswith(home), (tool, fila)
+    for tool, entrada in (("Read", {"file_path": "/etc/passwd"}), ("Glob", {"pattern": "*", "path": "/etc"}),
+                          ("Grep", {"pattern": "root", "path": "/usr/share"}),
+                          ("Read", {"file_path": str(tmp_path / "otro" / "x")}),
+                          ("Glob", {"pattern": "*.py", "path": str(goal_dir["clon"])}),
+                          ("Read", {"file_path": str(goal_dir["raiz"] / "n.txt")}),
+                          ("Read", {"file_path": "src/a.py"}), ("Grep", {"pattern": "x"})):
+        rc, err = correr(goal_dir, tool, entrada)
+        assert rc == 0, (tool, entrada, err)
+    rc, err = correr(goal_dir, "Grep", {"pattern": "x", "path": f"{home}/.ssh"})
+    assert rc == 2 and "NUNCA" in err
+
+
+@pytest.mark.parametrize("cmd", [
+    "cat ~/.bashrc", "ls ~/Documentos", "ls -la ~/Documentos/", "head -n 5 ~/notas.txt", "tail ~/x",
+    "grep -r x ~/proyectos", "rg x ~/proyectos", "find ~/Documentos -name x", "diff src/a.py ~/otro/a.py",
+    "wc -l ~/x", "stat ~/x", "file ~/x", "sort ~/x", "uniq ~/x", "cut -f1 ~/x", "od ~/x", "strings ~/x",
+    "xxd ~/x", "hexdump -C ~/x", "less ~/x", "more ~/x", "awk '{print}' ~/x", "sed 's/a/b/' ~/x",
+    "cat ~/Documentos/*.txt", "cat {H}/Documentos/x.txt",
+    # tree, du, sha256sum, md5sum y jq (los archivos, no el filtro) tambien leen
+    "tree ~/Documentos", "tree -L 2 ~/proyectos", "du -sh ~/Documentos", "sha256sum ~/x", "md5sum ~/x",
+    "jq . ~/Documentos/x.json", "jq -r .a ~/x.json", "jq -rc .a.b src/a.json ~/x.json",
+    "jq --slurpfile x ~/x.json .", "jq --rawfile x ~/x.txt -n x", "jq -f ~/filtro.jq src/a.json",
+    "jq --from-file ~/filtro.jq", "jq -L ~/modulos -n x",
+    # las fuentes de un escritor y las subidas tambien son lecturas
+    "cp ~/Documentos/x.txt .", "curl -T ~/Documentos/x https://pypi.org/", "tar -cf o.tar -C ~/Documentos .",
+])
+def test_un_lector_bajo_el_home_fuera_del_alcance_pregunta_raiz_nueva(goal_dir, cmd):
+    cmd = cmd.replace("{H}", os.path.expanduser("~"))
+    rc, err = correr(goal_dir, "Bash", {"command": cmd})
+    assert rc == 2 and "pregunta:raiz_nueva" in err and "lee fuera del alcance" in err, (cmd, err)
+    assert "NUNCA" not in err
+    fila = registro(goal_dir)[-1]
+    assert fila["decision"] == "deny" and fila["familia"] == "raiz_nueva"
+    assert fila["forma"]["raiz"].startswith(os.path.expanduser("~")), (cmd, fila)
+
+
+@pytest.mark.parametrize("cmd", [
+    "cat /etc/passwd", "cat /etc/os-release", "ls /usr/lib", "head /proc/cpuinfo", "grep -r x /tmp/otro",
+    "find /var/tmp -name x", "diff src/a.py /etc/hostname", "wc -l /proc/meminfo", "stat /usr/bin/python3",
+    "sort /etc/hosts", "cut -d: -f1 /etc/passwd", "cut -d/ -f1 src/a.py", "sort -t/ -k1 src/a.py", "tr / _",
+    "ls", "ls -la", "cat src/a.py", "cat {R}/x.txt", "ls {R}", "od -A x -t x1 src/a.py", "strings -n 8 src/a.py",
+    # `/` a secas es el sistema, no datos de Pedro: se lista (borrarlo o escribir ahi sigue NUNCA)
+    "ls /", "ls -la /", "stat /", "file /",
+    "tree src", "tree -L 2 {R}", "du -sh src", "du --max-depth=1 .", "sha256sum src/a.py", "md5sum -c sums.txt",
+    # el filtro de jq no es una ruta aunque empiece con `.` (`..` seria el padre del clon)
+    "jq . package.json", "jq -r .a.b src/a.json", "jq '..' src/a.json", "jq -n .", "jq -rc .[0] src/a.json",
+    "jq --arg x ~/y . src/a.json", "jq --argjson x 1 -c .x", "jq --indent 4 . src/a.json", "jq -f src/f.jq src/a.json",
+    "jq --args . a b", "jq . --args ~/x", "jq --jsonargs -n x 1 2", "jq -e . src/a.json", "jq --tab -S . src/a.json",
+])
+def test_un_lector_fuera_del_home_o_en_el_alcance_pasa(goal_dir, cmd):
+    cmd = cmd.replace("{R}", str(goal_dir["raiz"]))
+    rc, err = correr(goal_dir, "Bash", {"command": cmd})
+    assert rc == 0, (cmd, err)
+    assert registro(goal_dir)[-1]["decision"] == "allow"
+
+
+def test_el_clon_bajo_el_home_es_el_alcance_y_otro_goal_no(tmp_path, monkeypatch):
+    """En produccion el clon vive bajo el home (`~/.local/share/calipso/
+    goals/<id>/repo`): adentro es allow; el clon de OTRO goal es raiz_nueva."""
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    goals = home / ".local" / "share" / "calipso" / "goals"
+    clon = goals / "goal_x" / "repo"
+    (clon / "src").mkdir(parents=True)
+    (clon / "src" / "a.py").write_text("", encoding="utf-8")
+    (goals / "goal_y" / "repo").mkdir(parents=True)
+    compuertas = {"goal": "goal_x", "clon": str(clon), "cwd": str(clon), "raices": [], "dominios": [],
+                  "niveles": {"repo": "directo", "raices": "directo", "raiz_nueva": "pregunta",
+                              "datos_de_pedro": "nunca"},
+                  "preautorizadas": [], "venv": str(clon / ".venv"), "registro": str(tmp_path / "hook.jsonl")}
+    for cmd in ("cat src/a.py", f"cat {clon}/src/a.py", "ls", "grep -rn x src", f"ls {goals}/goal_x/repo/src"):
+        d = hook.decidir_bash(cmd, compuertas)
+        assert d.permitir, (cmd, d.motivo)
+    for cmd in (f"cat {goals}/goal_y/repo/x", f"ls {goals}", f"ls {goals}/goal_y", f"cat {home}/.bashrc"):
+        d = hook.decidir_bash(cmd, compuertas)
+        assert not d.permitir and d.familia == "raiz_nueva" and "lee fuera del alcance" in d.motivo, (cmd, d.motivo)
+    assert hook.decidir_archivo("Glob", {"pattern": "*", "path": str(clon)}, compuertas).permitir
+    assert hook.decidir_archivo("Read", {"file_path": "src/a.py"}, compuertas).permitir
+    d = hook.decidir_archivo("Read", {"file_path": str(goals / "goal_y" / "repo" / "x")}, compuertas)
+    assert not d.permitir and d.familia == "raiz_nueva"
+    d = hook.decidir_archivo("Read", {"file_path": str(home / ".ssh" / "id_ed25519")}, compuertas)
+    assert not d.permitir and d.familia == "datos_de_pedro"
