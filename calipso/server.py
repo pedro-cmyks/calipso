@@ -3883,6 +3883,7 @@ def _proponer_goal(d: dict, texto_crudo: str, departamento: str | None) -> tuple
     privado = bool(dispatch.PRIVATE.search(texto_crudo))
     avisos: list[str] = []
     propuesta = None
+    cabeza: dict | None = None      # lo que salio a la suscripcion (None: nada salio)
     if privado:
         propuesta = goals.propuesta_sin_modelo(texto, proyecto)
         propuesta["aviso"] = ("goal privado: un goal privado no puede usar manos de "
@@ -3901,8 +3902,16 @@ def _proponer_goal(d: dict, texto_crudo: str, departamento: str | None) -> tuple
                       f"Criterio que pidio Pedro: {d['hasta'] or 'ninguno: proponelo'}\n"
                       f"Tope que pidio Pedro: {json.dumps(d['tope']) if d['tope'] else 'ninguno: proponelo'}\n"
                       f"Raiz que pidio Pedro: {d['raiz'] or 'ninguna'}\n")
+            # la propuesta SALE a la suscripcion (el texto del goal, el repo,
+            # el criterio): se mide aca y queda en el ledger y la telemetria
+            # mas abajo, cuando el goal ya tiene id
+            cabeza = {"client": top["client"], "modelo": top.get("model"),
+                      "ts": datetime.datetime.now().isoformat(timespec="seconds")}
+            t0 = time.monotonic()
             propuesta = _cabeza_del_goal(top["client"], top.get("model"),
                                          GOAL_CONTRATO_PROPUESTA, prompt)
+            cabeza["duracion_s"] = round(time.monotonic() - t0, 2)
+            cabeza["ok"] = propuesta is not None
             if propuesta is None:
                 avisos.append("la cabeza no contesto: propuesta heuristica")
             else:
@@ -3943,6 +3952,26 @@ def _proponer_goal(d: dict, texto_crudo: str, departamento: str | None) -> tuple
             privado=privado, propuesta={**propuesta, "familias": familias,
                                         "avisos": avisos + ["propuesta invalida: tope y criterio por defecto"]},
             departamento=departamento)
+    if cabeza:
+        # La propuesta es un golpe SIN herramientas (spec seccion 4) que ya
+        # salio a la suscripcion: queda en el ledger del goal como el golpe 0
+        # (invariantes 3 y 9), con la cabeza, el modelo, si contesto y cuanto
+        # tardo, y sin contar para el tope (consumo() ignora las filas con
+        # cuenta_para_tope False y no suma duracion_s). Las dos filas se
+        # escriben aca y no antes de invocar porque el id del goal nace de la
+        # propuesta. El cruce de la aduana y el cobro los suma la Task 4
+        # (_aduana_del_goal, Pagador) cuando la cabeza devuelva su uso.
+        goals.golpe_inicio(goal["id"], 0, tipo="propuesta", manos=cabeza["client"],
+                           paso="propuesta", ts=cabeza["ts"])
+        goals.golpe_fin(goal["id"], 0, tipo="propuesta", cuenta_para_tope=False,
+                        client=cabeza["client"], modelo=cabeza["modelo"], ok=cabeza["ok"],
+                        duracion_s=cabeza["duracion_s"])
+    telemetry.log_event("goal", accion="propuesta", goal_id=goal["id"], privado=privado,
+                        cabeza=cabeza["client"] if cabeza else None,
+                        modelo=cabeza["modelo"] if cabeza else None,
+                        ok=cabeza["ok"] if cabeza else None,
+                        duracion_s=cabeza["duracion_s"] if cabeza else None,
+                        heuristica=not (cabeza and cabeza["ok"]), manos=manos)
     if not privado:
         s = _estacionar_para_pedro(goal, "dale", titulo=f"goal: {goal['title']} -- dale?")
         if s:
@@ -4065,11 +4094,28 @@ async def _atender_goal(texto: str, features: dict, chat_id: str | None,
             g = await asyncio.to_thread(_arrancar_goal, g["id"], d["tope"] or None, d["raiz"])
             return f"goal {g['id']} active: {g['title']}\n" + goals.resumen(g), False
         if verbo == "no":
-            g = activo or _ultimo_proposed()
+            # Un `no` sin destino cancela la PROPUESTA pendiente antes que el
+            # goal en curso: el chat lo pide como respuesta a la propuesta
+            # ("/goal dale ... o /goal no"), y un no que cancelara el goal
+            # active/waiting (estado final, sin vuelta; en la Task 4 ademas
+            # mata el golpe) seria una accion destructiva sobre el objetivo
+            # equivocado. El goal en curso se cancela nombrandolo:
+            # `/goal no <id>` (fix round 1 de la Task 2).
+            if d["texto"]:
+                destino = d["texto"].split()[0]
+                g = goals.load(None, destino)
+                if not g:
+                    return f"no hay ningun goal {destino}", True
+            else:
+                g = _ultimo_proposed() or activo
             if not g:
                 return "no hay ningun goal que cancelar", True
             g = await asyncio.to_thread(_cancelar_goal, g["id"], "no de Pedro")
-            return f"goal {g['id']} cancelled", False
+            texto_chat = f"goal {g['id']} cancelled"
+            if activo and activo.get("id") != g["id"]:
+                texto_chat += (f"; el goal en curso {activo['id']} ({activo.get('status')}) sigue: "
+                               f"`/goal no {activo['id']}` para cancelarlo")
+            return texto_chat, False
         if verbo == "parar":
             if not activo or activo.get("status") != goals.ACTIVE:
                 return "no hay ningun goal corriendo", True

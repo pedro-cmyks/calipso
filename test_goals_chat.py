@@ -196,6 +196,80 @@ def test_no_cancela_la_propuesta(goal_home, chat, repo):
     assert permisos_almacen.abiertas() == []
 
 
+def test_no_con_otro_goal_en_curso_cancela_la_propuesta_y_no_el_activo(goal_home, chat, repo):
+    """Fix round 1: la propuesta termina con "/goal dale ... o /goal no", y ese
+    `no` es sobre la PROPUESTA, nunca sobre el goal en curso (cancelled es
+    final; en la Task 4 ademas mata el golpe). El goal en curso se cancela
+    nombrandolo: `/goal no <id>`."""
+    _proponer(chat, repo)
+    chat.turno("/goal dale")
+    a = goals.activo()
+    _proponer(chat, repo)
+    propuestos = [g for g in goals.list_goals() if g["status"] == goals.PROPOSED]
+    assert len(propuestos) == 1 and propuestos[0]["id"] != a["id"]
+    b = propuestos[0]
+    texto = texto_visible(chat.turno("/goal no"))
+    assert f"goal {b['id']} cancelled" in texto and f"/goal no {a['id']}" in texto
+    assert goals.load(None, b["id"])["status"] == goals.CANCELLED
+    assert goals.activo()["id"] == a["id"] and goals.activo()["status"] == goals.ACTIVE
+    assert permisos_almacen.abiertas() == []
+    # con el goal en curso waiting pasa lo mismo
+    goals.transicionar(a["id"], goals.WAITING, "pregunta",
+                       motivo_detalle={"pregunta": "x?", "solicitud": "sol_a"})
+    _proponer(chat, repo)
+    chat.turno("/goal no")
+    assert goals.activo()["id"] == a["id"] and goals.activo()["status"] == goals.WAITING
+    assert [g for g in goals.list_goals() if g["status"] == goals.PROPOSED] == []
+    # nombrado, el no cancela el goal en curso
+    assert f"goal {a['id']} cancelled" in texto_visible(chat.turno(f"/goal no {a['id']}"))
+    assert goals.load(None, a["id"])["status"] == goals.CANCELLED and goals.activo() is None
+    # un id que no existe es un aviso, no una cancelacion de otra cosa
+    assert "no hay ningun goal goal_nope" in _dicho(chat.turno("/goal no goal_nope"))
+
+
+def test_la_propuesta_queda_en_el_ledger_del_goal_y_en_la_telemetria(goal_home, chat, repo, monkeypatch):
+    """Fix round 1 (invariantes 3 y 9): la propuesta es un golpe SIN
+    herramientas que SALE a la suscripcion (el texto del goal, el repo, el
+    criterio): queda como el golpe 0 en golpes.jsonl (sin contar para el
+    tope) y como fila de telemetria. Un goal privado no sale a ningun lado:
+    sin golpe, con la fila de telemetria que lo dice."""
+    _proponer(chat, repo)
+    g = goals.list_goals()[0]
+    filas = goals.golpes(g["id"])
+    assert len(filas) == 1
+    f = filas[0]
+    assert f["n"] == 0 and f["fase"] == "fin" and f["tipo"] == "propuesta"
+    assert f["cuenta_para_tope"] is False and f["ok"] is True
+    assert f["client"] in goals.MANOS and f["manos"] == f["client"]
+    assert f["modelo"] == goals.load(None, g["id"])["propuesta"]["modelo"]
+    assert f["duracion_s"] >= 0 and f["ts"] <= f["ts_fin"]
+    assert goals.consumo(g) == {"golpes": 0, "minutos": 0, "unidades": 0, "mm": 0}
+    ev = [e for e in srv.telemetry.recent(500)
+          if e.get("kind") == "goal" and e.get("accion") == "propuesta"]
+    assert len(ev) == 1 and ev[0]["goal_id"] == g["id"]
+    assert ev[0]["cabeza"] == f["client"] and ev[0]["modelo"] == f["modelo"]
+    assert ev[0]["ok"] is True and ev[0]["heuristica"] is False and ev[0]["privado"] is False
+    # la cabeza que no contesta tambien queda: el prompt salio igual
+    monkeypatch.setattr(srv, "_cabeza_del_goal", lambda *a, **k: None)
+    chat.turno("/goal no")
+    _proponer(chat, repo)
+    g2 = goals.list_goals()[0]
+    f2 = goals.golpes(g2["id"])[0]
+    assert f2["tipo"] == "propuesta" and f2["ok"] is False and f2["cuenta_para_tope"] is False
+    ev2 = [e for e in srv.telemetry.recent(500) if e.get("accion") == "propuesta"
+           and e.get("goal_id") == g2["id"]]
+    assert len(ev2) == 1 and ev2[0]["ok"] is False and ev2[0]["heuristica"] is True
+    # el goal privado: la cabeza no corrio, nada salio, sin golpe
+    chat.turno("/goal no")
+    chat.turno(f"/goal ordena el archivo secreto con mis password en: {repo}")
+    g3 = goals.list_goals()[0]
+    assert g3["privado"] is True and goals.golpes(g3["id"]) == []
+    ev3 = [e for e in srv.telemetry.recent(500) if e.get("accion") == "propuesta"
+           and e.get("goal_id") == g3["id"]]
+    assert len(ev3) == 1 and ev3[0]["cabeza"] is None and ev3[0]["privado"] is True
+    assert ev3[0]["heuristica"] is True
+
+
 def test_parar_deja_waiting_y_segui_retoma_con_nota(goal_home, chat, repo):
     _proponer(chat, repo)
     chat.turno("/goal dale")
@@ -314,9 +388,12 @@ def test_endpoints_dale_parar_segui_no_estado(goal_home, chat, repo):
     assert r.json()["goal"]["manos"] == "codex"
     r = c.get(f"/api/goals/{g['id']}/estado")
     assert r.status_code == 200 and "0/6 golpes" in r.json()["resumen"]
-    assert r.json()["consumo"]["golpes"] == 0 and r.json()["golpes"] == []
+    # fix round 1: la propuesta es el golpe 0 del ledger (no cuenta para el tope)
+    assert r.json()["consumo"]["golpes"] == 0
+    assert [f["tipo"] for f in r.json()["golpes"]] == ["propuesta"]
     r = c.get(f"/api/goals/{g['id']}")
-    assert r.status_code == 200 and r.json()["golpes"] == [] and r.json()["goal"]["id"] == g["id"]
+    assert r.status_code == 200 and r.json()["goal"]["id"] == g["id"]
+    assert [(f["n"], f["tipo"]) for f in r.json()["golpes"]] == [(0, "propuesta")]
     r = c.post(f"/api/goals/{g['id']}/no")
     assert r.status_code == 200 and r.json()["goal"]["status"] == goals.CANCELLED
     assert c.post("/api/goals/goal_nope/dale").status_code == 404
