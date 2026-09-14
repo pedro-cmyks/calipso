@@ -2508,10 +2508,13 @@ def _consumo_actual() -> dict:
         return {"codex_used_percent": None, "claude_limite": False, "resets_at": None}
 
 
-def _evaluar_solicitud(id_solicitud: str) -> str | None:
+def _evaluar_solicitud(id_solicitud: str) -> str | tuple[str, str] | None:
     """Que dijo Pedro sobre una solicitud del goal (por el inbox o por el
-    chat): 'aprobada' | 'negada' | None (sigue abierta). Una aprobada se
-    consume (aprobada -> ejecutando -> ejecutada) para que no se reuse."""
+    chat): 'aprobada' | 'negada' | None (sigue abierta); con la nota que
+    escribio al responder (`solicitud["nota"]`, POST responder con `nota`)
+    vuelve `(estado, nota)`: el runner (`Runner._respuesta`) la aplica como
+    nota de Pedro. Una aprobada se consume (aprobada -> ejecutando ->
+    ejecutada) para que no se reuse."""
     if _permisos_almacen is None:
         return None
     try:
@@ -2521,14 +2524,15 @@ def _evaluar_solicitud(id_solicitud: str) -> str | None:
     if not s:
         return None
     estado = s.get("estado")
+    nota = str(s.get("nota") or "").strip() or None
     if estado == _permisos_almacen.ESTADO_APROBADA:
         if _permisos_almacen.tomar_para_ejecutar(id_solicitud) is not None:
             _permisos_almacen.cerrar_ejecucion(id_solicitud, True, {"goal": True})
-        return "aprobada"
+        return ("aprobada", nota) if nota else "aprobada"
     if estado in (_permisos_almacen.ESTADO_EJECUTADA, _permisos_almacen.ESTADO_EJECUTANDO):
-        return "aprobada"
+        return ("aprobada", nota) if nota else "aprobada"
     if estado == _permisos_almacen.ESTADO_NEGADA:
-        return "negada"
+        return ("negada", nota) if nota else "negada"
     return None
 
 
@@ -7795,6 +7799,10 @@ except Exception:  # sin motor de permisos los endpoints lo dicen, no mienten
 class EcoPermisoResponderBody(BaseModel):
     # "si" | "si_siempre" | "no" | "no_siempre" (las cuatro salidas de 5.4)
     respuesta: str
+    # lo que Pedro escribe al responder (la pregunta abierta de un goal se
+    # contesta con texto, no solo con si/no): queda en la solicitud y el
+    # runner del goal la aplica como nota de Pedro
+    nota: str | None = None
     # una forma MAS ANCHA para la regla permanente ("escribir bajo
     # ~/Downloads" en vez de ese archivo suelto). Viaja con las dos
     # respuestas que dejan regla, pero solo la acepta `si_siempre`: tiene
@@ -7959,7 +7967,8 @@ def api_permisos_responder(id_solicitud: str,
     try:
         return _permisos_motor.responder(id_solicitud, body.respuesta,
                                          quien="pedro",
-                                         forma_permanente=body.forma)
+                                         forma_permanente=body.forma,
+                                         nota=body.nota)
     except _permisos.ErrorPermisos as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 

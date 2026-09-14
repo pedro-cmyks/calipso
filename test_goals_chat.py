@@ -679,3 +679,37 @@ def test_segui_sin_tope_sobre_waiting_tope_pasa_si_el_runner_ya_lo_amplio(goal_h
     eventos = chat.turno("/goal segui")
     assert "active" in texto_visible(eventos) and not de_tipo(eventos, "error")
     assert goals.load(None, g["id"])["tope"]["golpes"] == 9
+
+
+def test_responder_acepta_nota_y_el_runner_la_aplica_como_nota_de_pedro(goal_home, chat, repo):
+    """rev:lente-spec (Pedro no se pierde): la pregunta abierta del martillo
+    llegaba al inbox como si/no y no habia donde escribir el texto. Ahora
+    `POST /api/permisos/solicitudes/{id}/responder` acepta `nota`, la
+    guarda en la solicitud, `_evaluar_solicitud` la devuelve con el estado
+    y el runner la aplica como nota de Pedro (goals.aplicar_respuesta)."""
+    _proponer(chat, repo)
+    g = goals.list_goals()[0]
+    s = permisos_almacen.abiertas()[0]
+    r = chat.cliente.post(f"/api/permisos/solicitudes/{s['id']}/responder",
+                          json={"respuesta": "si", "nota": "usa la otra libreria"})
+    assert r.status_code == 200, r.text
+    assert r.json()["solicitud"]["nota"] == "usa la otra libreria"
+    assert permisos_almacen.obtener(s["id"])["nota"] == "usa la otra libreria"
+    assert srv._evaluar_solicitud(s["id"]) == ("aprobada", "usa la otra libreria")
+    it = srv._runner_de(g["id"]).iteracion()
+    assert it["accion"] == "retomado"
+    assert goals.load(None, g["id"])["ultima_nota"] == "usa la otra libreria"
+    # sin nota, lo de siempre: el estado solo, y la solicitud sin la clave
+    chat.turno(f"/goal no {g['id']}")
+    _proponer(chat, repo)
+    s2 = permisos_almacen.abiertas()[0]
+    r = chat.cliente.post(f"/api/permisos/solicitudes/{s2['id']}/responder", json={"respuesta": "no"})
+    assert r.status_code == 200 and "nota" not in r.json()["solicitud"]
+    assert srv._evaluar_solicitud(s2["id"]) == "negada"
+    # una nota vacia o de espacios no es una nota
+    g3 = goals.list_goals()[0]
+    chat.turno(f"/goal no {g3['id']}")
+    _proponer(chat, repo)
+    s3 = permisos_almacen.abiertas()[0]
+    r = chat.cliente.post(f"/api/permisos/solicitudes/{s3['id']}/responder", json={"respuesta": "si", "nota": "  "})
+    assert r.status_code == 200 and "nota" not in r.json()["solicitud"]

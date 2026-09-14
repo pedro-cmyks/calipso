@@ -456,10 +456,16 @@ def anotar_intento(id_solicitud: str, a: Accion, ctx: Contexto,
     return None
 
 
-def responder(id_solicitud: str, respuesta: str, quien: str) -> dict:
+def responder(id_solicitud: str, respuesta: str, quien: str,
+              nota: str | None = None) -> dict:
     """Las cuatro salidas de 5.4. `si_siempre` y `no_siempre` no escriben
     la regla aca -- solo marcan la solicitud; la regla la escribe el motor
-    con `anotar_regla`, que es quien se niega sobre lo irreversible."""
+    con `anotar_regla`, que es quien se niega sobre lo irreversible.
+    `nota`: lo que Pedro escribio al responder (el texto a una pregunta
+    abierta de un goal, spec goals 2026-09-13: un si/no solo no alcanza
+    para contestar "que libreria uso?"); queda en la solicitud y el que la
+    consume la lee (el runner del goal la aplica como nota de Pedro). Vacia
+    no se guarda."""
     if respuesta not in RESPUESTAS:
         raise ErrorPermisos(
             f"respuesta invalida: {respuesta!r} (son {RESPUESTAS})")
@@ -496,6 +502,8 @@ def responder(id_solicitud: str, respuesta: str, quien: str) -> dict:
                            else ESTADO_NEGADA)
             s["respondida"] = {"ts": _ahora(), "respuesta": respuesta,
                                "quien": quien}
+            if nota and str(nota).strip():
+                s["nota"] = str(nota).strip()
             _escribir(d)
             return dict(s)
     raise ErrorPermisos(f"solicitud inexistente: {id_solicitud}")

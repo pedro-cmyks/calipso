@@ -268,7 +268,8 @@ def cerrar(id_solicitud: str, ok: bool, resultado: dict) -> dict | None:
 
 
 def responder(id_solicitud: str, respuesta: str, quien: str = "pedro",
-              forma_permanente: dict | None = None) -> dict:
+              forma_permanente: dict | None = None,
+              nota: str | None = None) -> dict:
     """Las cuatro salidas de 5.4: si una vez, si y no preguntes mas para
     esto, no, y no me preguntes mas.
 
@@ -295,7 +296,7 @@ def responder(id_solicitud: str, respuesta: str, quien: str = "pedro",
         raise ErrorPermisos(
             "una regla de negar no admite forma: siempre se escribe con la "
             "forma exacta de la accion que se esta contestando")
-    s = almacen.responder(id_solicitud, respuesta, quien)
+    s = almacen.responder(id_solicitud, respuesta, quien, nota=nota)
     permiso = None
     if respuesta in ("si_siempre", "no_siempre"):
         a = Accion.de_dict(s["accion"])
