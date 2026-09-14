@@ -747,3 +747,30 @@ def test_segui_sobre_cumplido_cierra_la_solicitud_cerrar_con_no_y_la_nota(goal_h
     chat.turno("/goal segui si, con la libreria x")
     s2 = permisos_almacen.obtener(s["id"])
     assert s2["respondida"]["respuesta"] == "si" and s2["nota"] == "si, con la libreria x"
+
+
+def test_una_excepcion_cualquiera_en_goal_no_cierra_el_websocket(goal_home, chat, repo, monkeypatch):
+    """rev:server menor (invariante 6: nunca tumba el chat): `_atender_goal`
+    solo atrapaba ErrorGoal y la rama de ws_chat no envolvia nada: una
+    propuesta con forma inesperada o un fallo del almacen subia hasta el
+    handler y cerraba el websocket. Ahora el catch-all contesta `goal:
+    <exc>` como error, deja la fila goal/error y el turno termina con done."""
+    proponer_real = srv._proponer_goal
+
+    def _revienta(*a, **k):
+        raise RuntimeError("la propuesta vino con una lista donde iba un dict")
+    monkeypatch.setattr(srv, "_proponer_goal", _revienta)
+    eventos = chat.turno(f"/goal ordena el README en: {repo}")
+    errores = de_tipo(eventos, "error")
+    assert len(de_tipo(eventos, "done")) == 1
+    assert errores and errores[0]["text"] == "goal: la propuesta vino con una lista donde iba un dict"
+    ev = [e for e in srv.telemetry.recent(200) if e.get("kind") == "goal" and e.get("accion") == "error"]
+    assert ev and "lista" in ev[-1]["error"] and ev[-1]["verbo"] is None
+    # y el chat sigue vivo: el turno siguiente contesta como siempre
+    assert texto_visible(chat.turno("hola")) == "hola Pedro"
+    # un verbo que revienta tambien
+    monkeypatch.setattr(srv, "_cancelar_goal", _revienta)
+    monkeypatch.setattr(srv, "_proponer_goal", proponer_real)
+    chat.turno(f"/goal ordena el README en: {repo}")
+    eventos = chat.turno("/goal no")
+    assert "goal: la propuesta vino" in _dicho(eventos) and len(de_tipo(eventos, "done")) == 1

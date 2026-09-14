@@ -4509,6 +4509,16 @@ async def _atender_goal(texto: str, features: dict, chat_id: str | None,
         return respuesta, False
     except goals.ErrorGoal as exc:
         return f"goal: {exc}", True
+    except Exception as exc:
+        # invariante 6: un goal nunca tumba el chat. La rama de ws_chat no
+        # envuelve nada y el turno no tiene catch-all: sin esto, una
+        # propuesta con forma inesperada o un fallo del almacen de permisos
+        # subia hasta el handler y cerraba el websocket (rev:server)
+        telemetry.log_event("goal", accion="error", verbo=verbo, error=str(exc),
+                            tipo=type(exc).__name__)
+        print(f"[calipso] /goal {verbo or 'propuesta'} revento: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return f"goal: {exc}", True
 
 
 # cada cuanto despierta un chat ocioso a mirar si su sesion sigue viva. Alto a
