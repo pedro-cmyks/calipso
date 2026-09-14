@@ -458,6 +458,29 @@ def test_texto_de_fallo_no_mira_las_lineas_json_del_stream():
     assert gm.es_fallo_de_cuota(gm.texto_de_fallo(r4)) is True
 
 
+def test_texto_de_fallo_descarta_la_primera_linea_partida_de_un_tail_recortado():
+    """Re-review del carril 2 (menor): el tail del stdout son los ultimos
+    TAIL_MAX bytes, asi que su primera linea puede ser un JSON del stream
+    cortado por la mitad (`...ate limit ..."}`) que no empieza con `{` y se
+    leia como una linea suelta: un tool_result con `rate limit` adentro
+    pasaba por fallo de cuota. Recortado (len >= TAIL_MAX) y con la primera
+    linea sin `{`, esa linea se descarta; una linea suelta entera al final
+    y un tail corto siguen contando."""
+    largo = json.dumps({"type": "user", "message": {"content": [
+        {"type": "tool_result", "content": "grep -rn 'rate limit' src -- hay un rate limit en el cliente " * 40}]}})
+    tail = (largo + "\n" + json.dumps({"type": "result", "is_error": True, "result": "Error: boom"}))[-gm.TAIL_MAX:]
+    assert len(tail) == gm.TAIL_MAX and not tail.startswith("{") and "rate limit" in tail.splitlines()[0]
+    r = gm.Resultado(exit=1, stderr_tail="", error_texto="", stdout_tail=tail)
+    assert gm.es_fallo_de_cuota(gm.texto_de_fallo(r)) is False
+    # la ultima linea suelta (un error impreso a secas) sigue entrando
+    tail2 = (largo + "\nClaude usage limit reached")[-gm.TAIL_MAX:]
+    r2 = gm.Resultado(exit=1, stderr_tail="", error_texto="", stdout_tail=tail2)
+    assert gm.es_fallo_de_cuota(gm.texto_de_fallo(r2)) is True
+    # un tail corto (no recortado) no pierde su primera linea
+    r3 = gm.Resultado(exit=1, stderr_tail="", error_texto="", stdout_tail="rate limit reached\n")
+    assert gm.es_fallo_de_cuota(gm.texto_de_fallo(r3)) is True
+
+
 def test_parser_tolera_basura_y_denials():
     p = gm.Parser()
     assert p.alimentar("no es json") is None

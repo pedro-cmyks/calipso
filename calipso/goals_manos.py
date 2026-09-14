@@ -267,6 +267,9 @@ TIMEOUT_REVISOR_S = 300
 TIMEOUT_SONDA_S = 20
 SONDEO_S = 0.5
 GRACIA_KILL_S = 5.0
+# La cola de stdout/stderr que queda en el Resultado: los ultimos bytes,
+# cortados donde caiga (texto_de_fallo lo sabe).
+TAIL_MAX = 2000
 HERRAMIENTAS = ["Bash", "Edit", "Write", "MultiEdit", "Read", "Glob", "Grep"]
 HERRAMIENTAS_WEB = ["WebSearch", "WebFetch"]
 HERRAMIENTAS_LECTURA = "Read,Glob,Grep"
@@ -898,9 +901,9 @@ def golpear(*, argv: list[str], stdin: str, cwd: str, env: dict, timeout_s: floa
             r.exit = proc.returncode
         parser.cerrar()
         with open(err_name, "r", encoding="utf-8", errors="replace") as f:
-            r.stderr_tail = f.read()[-2000:]
+            r.stderr_tail = f.read()[-TAIL_MAX:]
         with open(out_name, "r", encoding="utf-8", errors="replace") as f:
-            r.stdout_tail = f.read()[-2000:]
+            r.stdout_tail = f.read()[-TAIL_MAX:]
     finally:
         for n in (out_name, err_name):
             try:
@@ -928,9 +931,15 @@ def texto_de_fallo(r: Resultado) -> str:
     goal repetia golpes fallidos) y las lineas SUELTAS del stdout (no JSON:
     un error impreso a secas). Las lineas JSON del stream no entran:
     `rate_limit_event` esta en todo stream de claude y `rate_limit` es un
-    patron de cuota, un exit 1 por otra cosa pareceria cuota."""
-    sueltas = [l for l in (r.stdout_tail or "").splitlines()
-               if l.strip() and not l.lstrip().startswith("{")]
+    patron de cuota, un exit 1 por otra cosa pareceria cuota. Y si el tail
+    esta recortado (TAIL_MAX), su primera linea puede ser un JSON partido
+    por la mitad que ya no empieza con `{`: se descarta (re-review del
+    carril 2: un tool_result con `rate limit` adentro parecia cuota)."""
+    tail = r.stdout_tail or ""
+    lineas = tail.splitlines()
+    if len(tail) >= TAIL_MAX and lineas and not lineas[0].lstrip().startswith("{"):
+        lineas = lineas[1:]
+    sueltas = [l for l in lineas if l.strip() and not l.lstrip().startswith("{")]
     return "\n".join([r.stderr_tail or "", r.error_texto or "", *sueltas])
 
 
