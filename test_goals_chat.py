@@ -131,6 +131,47 @@ def test_goal_privado_nace_sin_manos(goal_home, chat, repo, monkeypatch):
     assert llamadas == []                                          # la cabeza frontera NO corrio
 
 
+def test_sin_con_las_manos_son_claude_aunque_la_cabeza_sugiera_codex(goal_home, chat, repo, monkeypatch):
+    """Ruling 2026-09-14 (cambio de la decision 14 del plan): sin `con:` las
+    manos son SIEMPRE claude (la barrera verificada: sandbox + hook); la
+    sugerencia de la cabeza queda en propuesta.manos_sugeridas con un aviso,
+    hasta que un smoke confirme codex como manos."""
+    monkeypatch.setattr(srv, "_cabeza_del_goal", lambda *a, **k: {**PROPUESTA, "manos": "codex"})
+    eventos = _proponer(chat, repo)
+    g = goals.list_goals()[0]
+    assert g["manos"] == "claude"
+    assert g["propuesta"]["manos_sugeridas"] == "codex"
+    assert any("la cabeza sugiere codex" in a for a in g["propuesta"]["avisos"])
+    assert "la cabeza sugiere codex" in _dicho(eventos) and "manos: claude" in texto_visible(eventos)
+
+
+def test_con_codex_manda_las_manos(goal_home, chat, repo):
+    chat.turno(f"/goal crea un modulo saludo.py con hola() y su test hasta: pytest en verde "
+               f"tope: 6 golpes 10m en: {repo} con: codex")
+    g = goals.list_goals()[0]
+    assert g["manos"] == "codex" and g["propuesta"]["manos_sugeridas"] == "claude"
+    assert not any("la cabeza sugiere" in a for a in g["propuesta"]["avisos"])
+
+
+def test_con_codex_con_web_cae_a_claude_con_aviso(goal_home, chat, repo, monkeypatch):
+    monkeypatch.setattr(srv, "_cabeza_del_goal", lambda *a, **k: {
+        **PROPUESTA, "manos": "codex", "familias": ["repo", "web"], "dominios": ["pypi.org"]})
+    eventos = chat.turno(f"/goal anota la version de requests que hay en pypi en VERSION.txt "
+                         f"hasta: existe VERSION.txt tope: 2 golpes 5m en: {repo} con: codex")
+    g = goals.list_goals()[0]
+    assert g["manos"] == "claude" and g["propuesta"]["manos_sugeridas"] == "codex"
+    assert any("codex corre sin red" in a for a in g["propuesta"]["avisos"])
+    assert "codex corre sin red" in _dicho(eventos)
+
+
+def test_con_invalido_es_un_aviso_y_no_gasta_la_cabeza(goal_home, chat, repo, monkeypatch):
+    llamadas = []
+    monkeypatch.setattr(srv, "_cabeza_del_goal", lambda *a, **k: llamadas.append(1) or dict(PROPUESTA))
+    eventos = chat.turno(f"/goal crea saludo.py hasta: pytest en verde tope: 6 golpes 10m en: {repo} con: gemini")
+    assert "manos invalidas" in _dicho(eventos)
+    assert llamadas == [] and goals.list_goals() == []
+
+
 def test_sin_cabeza_disponible_propuesta_heuristica(goal_home, chat, repo, monkeypatch):
     monkeypatch.setattr(srv, "_cabeza_del_goal", lambda *a, **k: None)
     eventos = chat.turno(f"/goal crea saludo.py hasta que pytest pase en: {repo}")

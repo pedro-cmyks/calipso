@@ -4149,10 +4149,22 @@ def _proyecto_del_goal(en: str | None) -> str | None:
 def _proponer_goal(d: dict, texto_crudo: str, departamento: str | None) -> tuple[dict, str]:
     """En HILO. Elige la cabeza (ruling 15.2: el tipo real del texto con piso
     frontera; el 7b solo por goal privado y entonces sin manos), pide la
-    propuesta, la funde con lo que Pedro dijo (hasta:/tope:/raiz: mandan),
-    crea el goal `proposed` y lo estaciona para el dale. Devuelve (goal, el
-    texto para el chat)."""
+    propuesta, la funde con lo que Pedro dijo (hasta:/tope:/raiz:/con:
+    mandan), crea el goal `proposed` y lo estaciona para el dale. Devuelve
+    (goal, el texto para el chat).
+
+    Las manos (ruling 2026-09-14, que cambia la decision 14 del plan): `con:
+    claude|codex` manda; sin `con:` son SIEMPRE claude (la barrera verificada:
+    sandbox + hook) y lo que la cabeza sugirio queda en
+    `propuesta["manos_sugeridas"]` con un aviso cuando difiere, hasta que un
+    smoke confirme codex como manos (No confirmado 7). Las correcciones de
+    siempre siguen: codex con web/instalar/dominios -> claude con aviso;
+    privado -> claude sin manos de suscripcion."""
     texto = d["texto"]
+    con = (d.get("con") or "").strip().lower() or None
+    if con and con not in goals.MANOS:
+        # antes de la cabeza: un con: invalido no gasta una propuesta
+        raise goals.ErrorGoal(f"manos invalidas: {con!r} (son {goals.MANOS})")
     proyecto = _proyecto_del_goal(d["en"])
     privado = bool(dispatch.PRIVATE.search(texto_crudo))
     avisos: list[str] = []
@@ -4199,7 +4211,14 @@ def _proponer_goal(d: dict, texto_crudo: str, departamento: str | None) -> tuple
     if propuesta.get("aviso"):
         avisos.append(propuesta["aviso"])
     familias = list(propuesta.get("familias") or [])
-    manos = propuesta.get("manos") or "claude"
+    sugeridas = propuesta.get("manos") or "claude"
+    propuesta["manos_sugeridas"] = sugeridas
+    if con:
+        manos = con
+    else:
+        manos = "claude"
+        if sugeridas != "claude":
+            avisos.append(f"la cabeza sugiere {sugeridas}; corre con claude salvo con: {sugeridas}")
     if manos == "codex" and ({"web", "instalar_en_goal"} & set(familias) or propuesta.get("dominios")):
         manos = "claude"
         avisos.append("codex corre sin red: manos = claude (el goal usa web o instala)")
