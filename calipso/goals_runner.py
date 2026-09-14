@@ -38,8 +38,10 @@ Cada vuelta, con el goal `active`:
      numero; el comando corre CONFINADO bajo bwrap espejo del sandbox, con
      su Popen en `golpe_en_curso`: lo que ejecuta lo escribio el martillo),
      despues el revisor de OTRA familia (cuenta como golpe: su fila
-     `inicio` va ANTES de invocarlo, invariante 3; se cobra; `sin_golpe`
-     apagado y su Popen en `golpe_en_curso` mientras corre; `independencia`);
+     `inicio` va ANTES de invocarlo, invariante 3; la cuota de SU familia
+     se mira antes de invocarlo; cruza la aduana y se cobra con sus
+     unidades reales; `sin_golpe` apagado y su Popen en `golpe_en_curso`
+     mientras corre; `independencia`; si falla, su fila dice por que);
      cumplido -> `waiting` motivo `cumplido` con la solicitud `cerrar` para
      Pedro; no cumplido -> la `falta` al ledger y el martillo sigue; sin
      otra familia -> Pedro sin veredicto de modelo;
@@ -882,11 +884,16 @@ class Runner:
         return ts
 
     def _cuota(self, goal: dict) -> dict | None:
+        return self._cuota_de(goal.get("manos"), goal)
+
+    def _cuota_de(self, manos: str | None, goal: dict) -> dict | None:
+        """La cuota de UNA familia (las manos antes del golpe; la del
+        revisor antes de invocarlo: un revisor con la cuota agotada fallaba
+        en silencio como 'sin otra familia'). None = puede salir."""
         try:
             c = self.consumo_fn() or {}
         except Exception:
             c = {}
-        manos = goal.get("manos")
         if self._ventana_vencida(c.get("resets_at")):
             c = {}
         if manos == "codex" and (c.get("codex_used_percent") or 0) > CUOTA_CODEX_MAX:
@@ -989,13 +996,28 @@ class Runner:
         # `inicio` ANTES de invocarlo (invariante 3: un crash en el medio
         # deja rastro) y su Popen en golpe_en_curso (al_lanzar de revisar)
         m = n + 1
-        revisor = f"revisor:{gm.otra_familia(goal.get('manos'))}"
+        otra = gm.otra_familia(goal.get("manos"))
+        revisor = f"revisor:{otra}"
         goals.golpe_inicio(goal["id"], m, manos=revisor, paso="revisar")
         self.telemetria("goal", accion="golpe", goal_id=goal["id"], n=m, manos=revisor)
         t0 = time.monotonic()
-        # el revisor ve el diff REAL (ruling 15.1, spec 6.2), no el diff_stat
-        # que va al ledger y al prompt
-        revision = self.juez(goal, resumen_ledger(filas), self.diff_completo_fn(goal), salidas)
+        # la cuota de la familia del REVISOR antes de invocarlo (la de las
+        # manos ya se miro antes del golpe): agotada = no sale, y la fila
+        # lo dice en vez de 'sin otra familia'
+        cuota = self._cuota_de(otra, goal)
+        if cuota:
+            revision = {"cumplido": None, "motivo": "cuota del revisor", "revisor": otra, "unidades": 0,
+                        "cuota": cuota}
+        else:
+            # el revisor sale a la suscripcion como el martillo (invariante 9,
+            # spec 8): su cruce de la aduana envuelve la invocacion
+            self.aduana_fn(goal, m, "inicio", manos=revisor)
+            # el revisor ve el diff REAL (ruling 15.1, spec 6.2), no el
+            # diff_stat que va al ledger y al prompt
+            revision = self.juez(goal, resumen_ledger(filas), self.diff_completo_fn(goal), salidas)
+            self.aduana_fn(goal, m, "fin", comandos=[],
+                           bytes_entrados=len(str((revision or {}).get("salida_tail") or "")),
+                           dominios=list(goal.get("dominios") or []), compuertas=[])
         duracion_ms = int((time.monotonic() - t0) * 1000)
         self.golpe_en_curso, self.unidad_en_curso = None, None
         # las unidades REALES del revisor (ruling 15.12): las del stream de
@@ -1033,6 +1055,8 @@ class Runner:
                               "cuenta_para_tope": False}
             if revision and revision.get("salida_tail"):
                 fila_rev["salida_tail"] = str(revision["salida_tail"])[-1500:]
+            if revision and revision.get("cuota"):
+                fila_rev["cuota"] = revision["cuota"]
             if unidades:
                 fila_rev["cobro"] = self.pagador_fn(goal, unidades, revisor)
             fila_rev, _ = gm.tapar_fila(fila_rev)

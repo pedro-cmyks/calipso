@@ -936,6 +936,66 @@ def test_el_revisor_que_falla_deja_el_motivo_y_la_cola_en_su_fila(home, tmp_path
     assert f2.llamadas["pagador"][-1]["manos"] == "codex"
 
 
+def test_el_revisor_cruza_la_aduana_como_un_golpe(home, tmp_path):
+    """Invariante 9 y spec 8: el revisor sale a la suscripcion con el ledger,
+    el diff completo y las salidas; su fila inicio/fin cruza la aduana
+    como la del martillo (`aduana_fn(goal, m, "inicio"/"fin", ...)`)."""
+    f = Falsas(resultados=[resultado("terminar", comandos=[("ls", "a")])],
+               juicios=[{"cumplido": True, "falta": [], "nota": "bien", "revisor": "codex", "unidades": 2}])
+    g = goal_activo(home, tmp_path, dominios=["pypi.org"])
+    r = f.runner(g["id"])
+    assert r.iteracion()["estado"] == goals.WAITING
+    cruces = [(a["n"], a["fase"]) for a in f.llamadas["aduana"]]
+    assert cruces == [(1, "inicio"), (1, "fin"), (2, "inicio"), (2, "fin")]
+    ini = [a for a in f.llamadas["aduana"] if a["n"] == 2 and a["fase"] == "inicio"][0]
+    assert ini["manos"] == "revisor:codex"
+    fin = [a for a in f.llamadas["aduana"] if a["n"] == 2 and a["fase"] == "fin"][0]
+    assert fin["comandos"] == [] and fin["dominios"] == ["pypi.org"] and fin["compuertas"] == []
+    assert fin["bytes_entrados"] >= 0
+    # sin otra familia no hay cruce `fin` que declarar como salida... pero la fila inicio ya salio: se cierra igual
+    goals.transicionar(g["id"], goals.CANCELLED, "x")
+    f2 = Falsas(resultados=[resultado("terminar")], juicios=[])
+    g2 = goal_activo(home, tmp_path)
+    assert f2.runner(g2["id"]).iteracion()["estado"] == goals.WAITING
+    assert [(a["n"], a["fase"]) for a in f2.llamadas["aduana"]] == [(1, "inicio"), (1, "fin"), (2, "inicio"), (2, "fin")]
+
+
+def test_la_cuota_agotada_del_revisor_no_lo_invoca_y_lo_dice(home, tmp_path):
+    """rev:lente-spec: el revisor codex de un goal con manos claude salia
+    aunque la cuota de codex estuviera al 100 %, fallaba en silencio como
+    'sin otra familia'. Gate por la familia del REVISOR antes de invocarlo:
+    agotada -> sin revisor, motivo `cuota del revisor` en su fila,
+    independencia ninguna y Pedro sin veredicto de modelo, diciendolo."""
+    f = Falsas(resultados=[resultado("terminar")],
+               juicios=[{"cumplido": True, "falta": [], "nota": "", "revisor": "codex"}],
+               consumo={"codex_used_percent": 95.0, "claude_limite": False, "resets_at": FUTURO})
+    g = goal_activo(home, tmp_path)                                   # manos claude: el revisor es codex
+    r = f.runner(g["id"])
+    it = r.iteracion()
+    assert it["estado"] == goals.WAITING and f.llamadas["juez"] == []
+    fl = filas(g["id"])
+    assert fl[1]["manos"] == "revisor:codex" and fl[1]["motivo"] == "cuota del revisor"
+    assert fl[1]["cuenta_para_tope"] is False and "cobro" not in fl[1]
+    e = goals.load(None, g["id"])["espera"]
+    assert e["motivo"] == "cumplido" and e["sin_veredicto_de_modelo"] is True and "cuota del revisor" in e["resumen"]
+    assert f.llamadas["pagador"][-1]["manos"] == "claude"
+    # manos codex con el limite de claude puesto: el revisor claude tampoco sale
+    goals.transicionar(g["id"], goals.CANCELLED, "x")
+    f2 = Falsas(resultados=[resultado("terminar")],
+                juicios=[{"cumplido": True, "falta": [], "nota": "", "revisor": "claude"}],
+                consumo={"codex_used_percent": 10.0, "claude_limite": True, "resets_at": FUTURO})
+    g2 = goal_activo(home, tmp_path, manos="codex")
+    assert f2.runner(g2["id"]).iteracion()["estado"] == goals.WAITING
+    assert f2.llamadas["juez"] == [] and filas(g2["id"])[1]["motivo"] == "cuota del revisor"
+    # y con la ventana vencida el revisor sale
+    goals.transicionar(g2["id"], goals.CANCELLED, "x")
+    f3 = Falsas(resultados=[resultado("terminar")],
+                juicios=[{"cumplido": True, "falta": [], "nota": "", "revisor": "codex"}],
+                consumo={"codex_used_percent": 95.0, "claude_limite": False, "resets_at": PASADO})
+    g3 = goal_activo(home, tmp_path)
+    assert f3.runner(g3["id"]).iteracion()["estado"] == goals.WAITING and len(f3.llamadas["juez"]) == 1
+
+
 def test_criterio_medible_ok_y_sin_otra_familia_es_cumplido_con_criterio(home, tmp_path):
     f = Falsas(resultados=[resultado("terminar")], juicios=[])
     g = goal_activo(home, tmp_path)
