@@ -1,6 +1,7 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
-import {textoDeGoals, tarjetaDeGoal, contadorDeGoals, consumoDe, esperaDe} from "./goals.js";
+import {textoDeGoals, tarjetaDeGoal, contadorDeGoals, consumoDe, esperaDe,
+        notasEscritas} from "./goals.js";
 
 const BASE = {
   id: "goal_abc123", title: "saludo.py con hola() y su test", objective: "crea saludo.py",
@@ -95,4 +96,25 @@ test("robustez: null, undefined, goals rotos", () => {
   assert.match(textoDeGoals({goals: [{}]}), /sin titulo/);
   assert.equal(contadorDeGoals(null), 0);
   assert.equal(typeof tarjetaDeGoal({}, null), "string");
+});
+
+test("la nota que Pedro tipea en un waiting sobrevive al repintado", () => {
+  // cierre 2026-09-14 (rev:ui-smoke): el sondeo de 60 s y avisarEnGoals
+  // reemplazan el HTML entero de la caja y el input nacia vacio. app.js lee
+  // las notas con notasEscritas ANTES de repintar y textoDeGoals las repone
+  // en el value del input de cada goal; vacias o solo espacios no cuentan.
+  const caja = {querySelectorAll: sel => sel === "input[data-nota-de]" ? [
+    {dataset: {notaDe: "goal_abc123"}, value: 'falta el test <b class="x">'},
+    {dataset: {notaDe: "goal_otro"}, value: "   "}] : []};
+  const notas = notasEscritas(caja);
+  assert.deepEqual(notas, {goal_abc123: 'falta el test <b class="x">'});
+  assert.deepEqual(notasEscritas(null), {});
+  assert.deepEqual(notasEscritas({}), {});
+  const w = {...BASE, status: "waiting", espera: {motivo: "tope", tope: "golpes"}};
+  const html = textoDeGoals({activo: w, goals: [{...w, id: "goal_otro"}]}, [], notas);
+  assert.match(html, /data-nota-de="goal_abc123"[^>]*value="falta el test &lt;b class=&quot;x&quot;&gt;"/);
+  assert.doesNotMatch(html, /<b class/);
+  // el goal sin nota nace sin value, y sin el mapa tampoco
+  assert.doesNotMatch(html.slice(html.indexOf('data-nota-de="goal_otro"')), /value=/);
+  assert.doesNotMatch(tarjetaDeGoal(w), /value=/);
 });

@@ -27,7 +27,7 @@ import {textoDeInbox, contadorDeInbox} from "./inbox.js";
 import {textoDeAparatos, contadorDeAparatos,
         alcanceDe} from "./aparatos.js";
 import {textoDeAduana} from "./aduana.js";
-import {textoDeGoals, contadorDeGoals} from "./goals.js";
+import {textoDeGoals, contadorDeGoals, notasEscritas} from "./goals.js";
 
 const lienzo = document.getElementById("mapa");
 const sinFabrica = document.getElementById("sin-fabrica");
@@ -881,8 +881,16 @@ async function pintarGoals() {
     }
     pintarBadge(badgeGoals, contadorDeGoals(datos));
     if (cajaGoals) {
+      // la nota que Pedro esta tipeando en un waiting no se pierde (cierre
+      // 2026-09-14, rev:ui-smoke): reemplazar el innerHTML mata el input, y
+      // ese campo es la unica via de la UI para `segui` con nota. Mientras
+      // el foco esta en una nota no se repinta la caja (el badge si; la
+      // caja se pone al dia en el sondeo siguiente o al soltar el campo);
+      // fuera de eso lo escrito se lee antes y se repone en el value.
+      const foco = typeof document !== "undefined" ? document.activeElement : null;
+      if (foco?.dataset?.notaDe && cajaGoals.contains?.(foco)) return;
       cajaGoals.innerHTML = (mensajeGoals ? `<div class="aviso">${mensajeGoals}</div>` : "") +
-        textoDeGoals(datos, golpes);
+        textoDeGoals(datos, golpes, notasEscritas(cajaGoals));
     }
   } catch (_) {
     sinLista("No se pudo leer los goals.");

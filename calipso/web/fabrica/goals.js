@@ -54,7 +54,24 @@ function filaDeGolpe(g) {
   return `<div class="golpe"><div class="cabeza">${cabeza}</div>${comandos}${diff}${costo}${juez}</div>`;
 }
 
-function botones(goal) {
+/** Lo que Pedro ya tipeo en cada `input[data-nota-de]` de la caja, por id
+ *  de goal (vacias o solo espacios no cuentan). app.js la llama ANTES de
+ *  reemplazar el innerHTML y se lo pasa a textoDeGoals: el sondeo de 60 s y
+ *  el aviso pasajero repintan la caja entera y el input nacia vacio, y ese
+ *  campo es la unica via de la UI para `segui` con nota. Tolera una caja
+ *  sin querySelectorAll (arranque.test.js). */
+export function notasEscritas(caja) {
+  const notas = {};
+  const inputs = caja?.querySelectorAll ? caja.querySelectorAll("input[data-nota-de]") : [];
+  for (const input of inputs || []) {
+    const id = input?.dataset?.notaDe;
+    const valor = String(input?.value ?? "");
+    if (id && valor.trim()) notas[id] = valor;
+  }
+  return notas;
+}
+
+function botones(goal, nota = "") {
   const id = escapar(goal?.id);
   const s = goal?.status;
   const b = (accion, texto) => `<button data-goal="${accion}" data-id="${id}" type="button">${texto}</button>`;
@@ -62,14 +79,16 @@ function botones(goal) {
   if (s === "active") return b("parar", "parar") + b("no", "cancelar");
   if (s === "waiting") {
     const cerrar = goal?.espera?.motivo === "cumplido" ? b("dale", "dale: cerrar") : "";
+    // el value repone lo que Pedro tenia escrito antes del repintado
+    const valor = nota ? ` value="${escapar(nota)}"` : "";
     return cerrar +
-      `<label>nota<input data-nota-de="${id}" type="text" placeholder="que cambio o que falta"></label>` +
+      `<label>nota<input data-nota-de="${id}" type="text" placeholder="que cambio o que falta"${valor}></label>` +
       b("segui", "segui") + b("no", "cancelar");
   }
   return "";
 }
 
-export function tarjetaDeGoal(goal, golpes = []) {
+export function tarjetaDeGoal(goal, golpes = [], notas = {}) {
   const titulo = goal?.title || goal?.objective || "sin titulo";
   const espera = esperaDe(goal);
   return `<div class="goal ${escapar(goal?.status || "")}">` +
@@ -82,7 +101,7 @@ export function tarjetaDeGoal(goal, golpes = []) {
     (goal?.plan?.length ? `<div class="tenue">plan: ${escapar(goal.plan.join(" -> "))}</div>` : "") +
     ((golpes || []).length ? `<details><summary>ledger (${escapar((golpes || []).length)} golpes)</summary>` +
       (golpes || []).slice().reverse().map(filaDeGolpe).join("") + `</details>` : "") +
-    `<div class="botones">${botones(goal)}</div>` +
+    `<div class="botones">${botones(goal, (notas || {})[goal?.id] || "")}</div>` +
     `</div>`;
 }
 
@@ -93,13 +112,13 @@ export function contadorDeGoals(datos) {
   return todos.filter(g => g?.status === "waiting").length;
 }
 
-export function textoDeGoals(datos, golpesDelActivo = []) {
+export function textoDeGoals(datos, golpesDelActivo = [], notas = {}) {
   const activo = datos?.activo || null;
   const otros = (datos?.goals || []).filter(g => !activo || g?.id !== activo.id);
   if (!activo && otros.length === 0) return `<div class="vacio">Ningun goal. Decile /goal &lt;texto&gt; al chat.</div>`;
   const cabeza = `<div class="fila resumen"><span>goals</span>` +
     `<span>${escapar(otros.length + (activo ? 1 : 0))} (${escapar(contadorDeGoals(datos))} esperando a Pedro)</span></div>`;
-  const lista = (activo ? tarjetaDeGoal(activo, golpesDelActivo) : "") +
-    (otros.length ? `<div class="subtitulo">los demas</div>` + otros.map(g => tarjetaDeGoal(g)).join("") : "");
+  const lista = (activo ? tarjetaDeGoal(activo, golpesDelActivo, notas) : "") +
+    (otros.length ? `<div class="subtitulo">los demas</div>` + otros.map(g => tarjetaDeGoal(g, [], notas)).join("") : "");
   return cabeza + lista;
 }
