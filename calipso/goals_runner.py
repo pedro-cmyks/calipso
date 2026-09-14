@@ -580,6 +580,39 @@ def estacionar_retomar(goal: dict, preguntar: Callable) -> dict:
 
 
 # --------------------------------------------------------------------------
+# complete trae la rama al repo de origen
+# --------------------------------------------------------------------------
+
+def traer_rama_al_cerrar(goal: dict, traer_rama_fn: Callable | None) -> dict | None:
+    """Al `complete`, la rama `goal/<id>` del clon se trae al repo de origen
+    (`traer_rama_fn(goal)` = github.traer_rama: `git fetch <clon>
+    rama:rama`, ruta local, sin red, SIN merge: el merge es de Pedro,
+    compuerta `merge` de otra tanda) y queda el evento `rama_traida`
+    (rama, proyecto, clon) o `rama_no_traida` con el error, sin frenar el
+    complete (rev:lente-spec: Pedro se perdia justo al final, el clon vive
+    en ~/.local/share/calipso/goals/<id>/repo y nadie le decia donde quedo
+    el trabajo). Sin repo o sin funcion no hay nada que traer. Lo llaman
+    el runner (el si del inbox) y el server (`_cerrar_goal`, el dale final
+    por el chat). Devuelve el evento o None."""
+    if traer_rama_fn is None or not goal.get("repo") or not goal.get("proyecto"):
+        return None
+    rama = f"goal/{goal['id']}"
+    try:
+        r = traer_rama_fn(goal)
+    except Exception as exc:
+        return goals.event(None, goal["id"], "rama_no_traida", rama=rama, error=str(exc))
+    if isinstance(r, tuple) and len(r) == 3:
+        rc, out, err = r
+    else:
+        rc, out, err = (0 if r in (None, True, 0) else 1), "", str(r)
+    if rc == 0:
+        return goals.event(None, goal["id"], "rama_traida", rama=rama, proyecto=goal["proyecto"],
+                           clon=goal["repo"])
+    return goals.event(None, goal["id"], "rama_no_traida", rama=rama,
+                       error=(str(err or out) or f"git fetch exit {rc}").strip()[:500])
+
+
+# --------------------------------------------------------------------------
 # el runner
 # --------------------------------------------------------------------------
 
@@ -591,11 +624,13 @@ class Runner:
                  diff_fn: Callable | None = None, diff_completo_fn: Callable | None = None,
                  correr_criterio: Callable | None = None,
                  aduana_fn: Callable | None = None, telemetria: Callable | None = None,
-                 usar_systemd: bool | None = None) -> None:
+                 usar_systemd: bool | None = None, traer_rama_fn: Callable | None = None) -> None:
         """`manos` None = se asigna despues: las manos reales necesitan
         `runner.registrar_golpe` (server._runner_de las arma en dos pasos).
         `usar_systemd` es para el criterio confinado (None = si hay
-        systemd-run; los tests ponen False)."""
+        systemd-run; los tests ponen False). `traer_rama_fn(goal)` trae la
+        rama al repo de origen al complete (el server inyecta
+        github.traer_rama; None = no se trae)."""
         self.goal_id = goal_id
         self.manos = manos
         self.juez = juez
@@ -610,6 +645,7 @@ class Runner:
         self.diff_completo_fn = diff_completo_fn or self._diff_completo_real
         self.correr_criterio = correr_criterio
         self.usar_systemd = usar_systemd
+        self.traer_rama_fn = traer_rama_fn
         self.aduana_fn = aduana_fn or (lambda *a, **k: None)
         self.telemetria = telemetria or telemetry.log_event
         self.cancelar = threading.Event()
@@ -743,7 +779,9 @@ class Runner:
             if r == "aprobada":
                 g = goals.transicionar(self.goal_id, goals.COMPLETE, "dale final de Pedro (inbox)")
                 self._limpiar_preautorizadas(g)
-                return {"accion": "complete", "estado": g["status"]}
+                ev = traer_rama_al_cerrar(g, self.traer_rama_fn)
+                return {"accion": "complete", "estado": g["status"],
+                        "rama": ev.get("rama") if ev and ev.get("action") == "rama_traida" else None}
             goals.nota_de_pedro(self.goal_id, nota or "Pedro dijo que no esta cumplido: falta algo")
             g = goals.load(None, self.goal_id)
             g["espera"] = {**espera, "solicitud": None, "respuesta": "no"}

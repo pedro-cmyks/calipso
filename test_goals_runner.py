@@ -297,6 +297,97 @@ def test_tope_de_mm_no_frena_en_cero(home, tmp_path):
     assert f.runner(g["id"]).iteracion()["estado"] == goals.ACTIVE
 
 
+# --- complete trae la rama (cierre 2026-09-14) ----------------------------------------------
+
+def test_complete_trae_la_rama_del_goal_al_repo_de_origen(home, tmp_path):
+    """rev:lente-spec: al complete nada traia la rama goal/<id> al repo de
+    origen y Pedro se perdia justo al final (el clon vive en
+    ~/.local/share/calipso/goals/<id>/repo). `Runner(traer_rama_fn=)`: al
+    pasar a COMPLETE llama `traer_rama_fn(goal)` (github.traer_rama: fetch
+    local, sin red, sin merge) y anota `rama_traida`; un fallo deja
+    `rama_no_traida` con el error sin frenar el complete; sin repo no trae
+    nada."""
+    from calipso import github as calipso_github
+    f = Falsas(resultados=[resultado("terminar")],
+               juicios=[{"cumplido": True, "falta": [], "nota": "", "revisor": "codex"}])
+    g = goal_activo(home, tmp_path)
+    r = gr.Runner(g["id"], manos=f.manos, juez=f.juez, carga_fn=f.carga, consumo_fn=f.consumo,
+                  pagador_fn=f.pagador, preguntar=f.preguntar, evaluar_solicitud=f.evaluar, sondear=f.sondear,
+                  correr_criterio=f.criterio, aduana_fn=f.aduana,
+                  traer_rama_fn=lambda goal: calipso_github.traer_rama(goal["proyecto"], goal["repo"],
+                                                                        f"goal/{goal['id']}"))
+    manos_base = f.manos
+
+    def manos(goal, n, prompt, contrato, cancelar):
+        clon = goal["repo"]
+        (pathlib.Path(clon) / "hecho.py").write_text("x = 1\n", encoding="utf-8")
+        subprocess.run(["git", "-C", clon, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", clon, "-c", "user.name=t", "-c", "user.email=t@t",
+                        "commit", "-q", "-m", "golpe"], check=True)
+        return manos_base(goal, n, prompt, contrato, cancelar)
+    r.manos = manos
+    assert r.iteracion()["estado"] == goals.WAITING                       # cumplido: espera el dale final
+    goal = goals.load(None, g["id"])
+    f.solicitudes[goal["espera"]["solicitud"]] = "aprobada"
+    it = r.iteracion()
+    assert it["accion"] == "complete" and it["estado"] == goals.COMPLETE and it["rama"] == f"goal/{g['id']}"
+    ramas = subprocess.run(["git", "-C", goal["proyecto"], "branch", "--list", f"goal/{g['id']}"],
+                           capture_output=True, text=True, check=True).stdout
+    assert f"goal/{g['id']}" in ramas
+    sha_clon = subprocess.run(["git", "-C", goal["repo"], "rev-parse", "HEAD"], capture_output=True, text=True,
+                              check=True).stdout.strip()
+    sha_origen = subprocess.run(["git", "-C", goal["proyecto"], "rev-parse", f"goal/{g['id']}"],
+                                capture_output=True, text=True, check=True).stdout.strip()
+    assert sha_clon == sha_origen
+    head = subprocess.run(["git", "-C", goal["proyecto"], "rev-parse", "HEAD"], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    assert head != sha_clon                                                # sin merge: el merge es de Pedro
+    ev = [e for e in goals.events(None, g["id"]) if e["action"] in ("rama_traida", "rama_no_traida")]
+    assert len(ev) == 1 and ev[0]["action"] == "rama_traida" and ev[0]["rama"] == f"goal/{g['id']}"
+    assert ev[0]["proyecto"] == goal["proyecto"] and ev[0]["clon"] == goal["repo"]
+
+
+def test_complete_con_la_rama_que_no_se_puede_traer_lo_anota_y_completa_igual(home, tmp_path):
+    f = Falsas()
+    g = goal_activo(home, tmp_path)
+    goal = goals.load(None, g["id"])
+    goal["repo"] = str(tmp_path / "clon-inexistente")
+    goals.escribir(goal)
+    goals.transicionar(g["id"], goals.WAITING, "cumplido", motivo_detalle={"solicitud": "sol_c"})
+    f.solicitudes["sol_c"] = "aprobada"
+    r = f.runner(g["id"])
+    r.traer_rama_fn = lambda goal: (128, "", "fatal: no es un repo")
+    it = r.iteracion()
+    assert it["accion"] == "complete" and it["estado"] == goals.COMPLETE and it.get("rama") is None
+    ev = [e for e in goals.events(None, g["id"]) if e["action"] == "rama_no_traida"]
+    assert len(ev) == 1 and "no es un repo" in ev[0]["error"]
+    # una fn que revienta tampoco frena
+    g2 = goal_activo(home, tmp_path)
+    goal2 = goals.load(None, g2["id"])
+    goal2["repo"] = str(tmp_path / "clon-inexistente")
+    goals.escribir(goal2)
+    goals.transicionar(g2["id"], goals.WAITING, "cumplido", motivo_detalle={"solicitud": "sol_d"})
+    f.solicitudes["sol_d"] = "aprobada"
+    r2 = f.runner(g2["id"])
+
+    def revienta(goal):
+        raise RuntimeError("git murio")
+    r2.traer_rama_fn = revienta
+    assert r2.iteracion()["estado"] == goals.COMPLETE
+    assert "git murio" in [e for e in goals.events(None, g2["id"]) if e["action"] == "rama_no_traida"][0]["error"]
+    # sin repo (goal sin proyecto) o sin traer_rama_fn (default): nada que traer, ningun evento
+    g3 = goals.crear("busca precios", proyecto=None, tope={"golpes": 2})
+    goals.transicionar(g3["id"], goals.ACTIVE, "dale")
+    goals.transicionar(g3["id"], goals.WAITING, "cumplido", motivo_detalle={"solicitud": "sol_e"})
+    f.solicitudes["sol_e"] = "aprobada"
+    llamadas = []
+    r3 = f.runner(g3["id"])
+    r3.traer_rama_fn = lambda goal: llamadas.append(goal) or (0, "", "")
+    assert r3.iteracion()["estado"] == goals.COMPLETE and llamadas == []
+    assert not [e for e in goals.events(None, g3["id"]) if e["action"].startswith("rama_")]
+    assert gr.traer_rama_al_cerrar(goals.load(None, g["id"]), None) is None
+
+
 # --- Pedro no se pierde: la solicitud `retomar` (cierre 2026-09-14) ---------------------------
 
 def _retomar_estacionada(f, g):
