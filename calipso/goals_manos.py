@@ -869,15 +869,41 @@ def _es_ruta(t: str) -> bool:
             and all(len(seg) <= 64 for seg in t.split("/")) and not _es_secreto_explicito(t))
 
 
+def _tapar_segmentos(ruta: str) -> tuple[str, int]:
+    """Una ruta que el detector marco entera solo por entropia: se tapan
+    los segmentos que el detector marca SOLOS (`/tmp/x/<blob>`,
+    `~/.ssh/<clave>`: donde aparece un secreto en un `ls`/`find`), y el
+    resto de la ruta queda. Un secreto con barras pegado detras de un
+    prefijo de ruta (`/x/y/` + una clave AWS) no tiene segmento que marque
+    solo y no se tapa: juntar segmentos volveria a tapar rutas normales
+    (`goals-smoke-x/Descargas`, dos carpetas CamelCase), que es lo que
+    f15f918 saco del prompt y del ledger."""
+    partes = ruta.split("/")
+    n = 0
+    for i, seg in enumerate(partes):
+        if seg and detector.detectar_secretos(seg):
+            partes[i] = "[SECRETO]"
+            n += 1
+    return "/".join(partes), n
+
+
 def tapar(texto: str) -> tuple[str, int]:
     """Molde aduana._tapar_todo: los tramos del detector, del mas largo al
-    mas corto, reemplazados por [SECRETO]. Devuelve (texto, cuantos). Las
-    rutas de archivo que el detector marca solo por entropia no se tapan
-    (`_es_ruta`): el prompt y el ledger del goal estan hechos de rutas."""
-    tramos = [t for t in detector.detectar_secretos(texto or "") if not _es_ruta(t["texto"])]
-    for t in sorted(tramos, key=lambda x: len(x["texto"]), reverse=True):
-        texto = texto.replace(t["texto"], "[SECRETO]")
-    return texto, len(tramos)
+    mas corto, reemplazados por [SECRETO]. Devuelve (texto, cuantos). Una
+    ruta de archivo que el detector marca solo por entropia (`_es_ruta`)
+    no se tapa entera (el prompt y el ledger del goal estan hechos de
+    rutas): se tapan sus segmentos con pinta de secreto, si los hay."""
+    n = 0
+    for t in sorted(detector.detectar_secretos(texto or ""), key=lambda x: len(x["texto"]), reverse=True):
+        literal = t["texto"]
+        if _es_ruta(literal):
+            nuevo, k = _tapar_segmentos(literal)
+        else:
+            nuevo, k = "[SECRETO]", 1
+        if k:
+            texto = texto.replace(literal, nuevo)
+            n += k
+    return texto, n
 
 
 def tapar_fila(fila: dict) -> tuple[dict, int]:

@@ -597,6 +597,47 @@ def test_tapar_no_tapa_rutas_de_archivo_pero_si_los_secretos_adentro():
     assert n == 0 and fila["veredicto_del_golpe"]["compuerta"]["forma"]["raiz"] == "/tmp/goals-smoke-dqz8nryc/Descargas"
 
 
+def test_tapar_tapa_el_segmento_de_una_ruta_con_pinta_de_secreto():
+    """Cierre 2026-09-14 (rev:manos-runner sobre f15f918): eximir la ruta
+    ENTERA dejaba pasar un secreto de entropia en posicion de segmento,
+    que es donde aparece en un `ls`/`find`/`cat` (`/tmp/x/<blob>`,
+    `~/.ssh/<clave>`). Ruling: tapar por segmento: el detector corre sobre
+    cada segmento y se reemplazan solo los marcados; las rutas normales
+    (ids hex del goal, tmp del smoke, CamelCase) quedan intactas."""
+    from calipso.privacidad import detector as det
+    blob = "Xk9pLm2Qw8Rt5Yu7Iv3Oz6Bn1Ca4De0F"
+    llave = "AAAAC3NzaC1lZDI1NTE5AAAAIGx0Pz9QmR7vTk3LwXyZaBcDeFgHiJkLmNoPqRs"
+    for ruta, esperado in ((f"/tmp/x/{blob}", "/tmp/x/[SECRETO]"),
+                           (f"/tmp/{blob}/a.txt", "/tmp/[SECRETO]/a.txt"),
+                           (f"/a/b/{blob}.pem", "/a/b/[SECRETO]"),
+                           (f"ls ~/.config/gcloud/legacy_credentials/{blob}",
+                            "ls ~/.config/gcloud/legacy_credentials/[SECRETO]"),
+                           (f"cat /run/user/1000/keyring/{blob}", "cat /run/user/1000/keyring/[SECRETO]"),
+                           (f"/home/pedro/.ssh/{llave}/x", "/home/pedro/.ssh/[SECRETO]/x"),
+                           (f"/tmp/{blob}/{llave}", "/tmp/[SECRETO]/[SECRETO]")):
+        texto, n = gm.tapar(ruta)
+        assert texto == esperado and n == esperado.count("[SECRETO]"), (ruta, texto, n)
+    for intacta in ("/home/pedro/.calipso/goals/goal_0123456789ab/contrato.md",
+                    "/tmp/goals-smoke-dqz8nryc/Descargas", "/var/home/pedro/calipso/.claude/worktrees/goals",
+                    "/tmp/goals-smoke-x7k2mq9w/trabajo/goal_9f8e7d6c5b4a/repo/src/MyAwesomeProject/SomeVeryLongFileName.java",
+                    "./node_modules/@types/someLib/dist/someLib.d.ts"):
+        assert gm.tapar(intacta) == (intacta, 0), intacta
+    # las reglas explicitas siguen tapando en cualquier posicion, tambien dentro de una ruta
+    for con_secreto, resto in (("/tmp/x/ghp_abcdefghijklmnopqrstuvwxyz0123", "ghp_"),
+                               ("cat /tmp/0123456789abcdef0123456789abcdef/y", "0123456789abcdef"),
+                               ("curl -H 'Authorization: Bearer sk-ant-abcdefghijklmnop' https://x/y/z", "sk-ant"),
+                               ("-----BEGIN PRIVATE KEY----- x", "BEGIN PRIVATE"),
+                               ("aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "wJalr")):
+        texto, n = gm.tapar(con_secreto)
+        assert n >= 1 and "[SECRETO]" in texto and resto not in texto, (con_secreto, texto)
+    # limitacion declarada: un secreto CON barras pegado detras de un prefijo de ruta
+    # (`/x/y/` + la clave AWS) no tiene ningun segmento que el detector marque solo
+    # (todos miden menos de 20), y juntar segmentos vuelve a tapar rutas normales
+    aws = "/x/y/wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    assert not any(det.detectar_secretos(seg) for seg in aws.split("/"))
+    assert gm.tapar(aws) == (aws, 0)
+
+
 def test_tapar_y_tapar_fila():
     texto, n = gm.tapar("token ghp_abcdefghijklmnopqrstuvwxyz0123 y una clave -----BEGIN PRIVATE KEY----- x")
     assert n == 2 and "ghp_" not in texto and "[SECRETO]" in texto
