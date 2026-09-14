@@ -1820,6 +1820,34 @@ def test_aduana_del_goal_escribe_el_cruce_con_el_proyecto_del_goal(home, tmp_pat
     assert "dominios: pypi.org" in carga and "uninstall" in carga and "instalar_en_goal" in carga
 
 
+def test_la_carga_del_cruce_va_tapada(home, tmp_path, monkeypatch):
+    """rev:server menor (invariante 9): la carga del cruce `golpe n fin`
+    llevaba los comandos CRUDOS del stream y las lineas de hook.jsonl, y la
+    aduana solo aplica las lexicas por token: un `curl -H 'Authorization:
+    Bearer <token>'` o `export X=ghp_...` tecleado por el martillo quedaba
+    en el libro (que lee el tablero por GET /api/aduana). Ahora cada
+    comando y cada linea de compuerta pasan por goals_manos.tapar mas un
+    barrido de `Bearer <token>` antes de cruzar."""
+    monkeypatch.setattr(srv, "ROOT", tmp_path / "otro-root")
+    g = goal_activo(home, tmp_path)
+    goal = goals.load(None, g["id"])
+    srv._aduana_del_goal(goal, 2, "fin", comandos=[
+        "export GH_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+        "curl -H 'Authorization: Bearer abcDEF123456xyz' https://x/y",
+        "ls -la src/",
+    ], bytes_entrados=10, dominios=[], compuertas=[
+        {"familia": "instalar_en_goal", "decision": "allow",
+         "resumen": "pip install x --index-url https://user:ghp_zyxwvutsrqponmlkjihgfedcba9876543210@pypi.x/simple",
+         "deshacer": "pip uninstall -y x"}])
+    libro = home / "aduana.jsonl"
+    texto = libro.read_text(encoding="utf-8")
+    assert "ghp_" not in texto and "abcDEF123456xyz" not in texto
+    fila = json.loads(texto.splitlines()[-1])
+    carga = fila["carga"]["texto"]
+    assert "[SECRETO]" in carga and "ls -la src/" in carga and "Bearer [SECRETO]" in carga
+    assert "instalar_en_goal" in carga and "uninstall" in carga
+
+
 @pytest.fixture
 def economia(home, monkeypatch):
     """Molde `base` de test_economia_pagador.py: un departamento de fabrica

@@ -2542,24 +2542,38 @@ def _quien_del_goal(goal: dict) -> aduana.Quien:
                         rutina={"kind": "goal", "id": goal["id"]})
 
 
+_RE_BEARER = re.compile(r"(\bBearer\s+)[A-Za-z0-9_\-./+=]{6,}")
+
+
+def _tapar_carga(texto: str) -> str:
+    """Lo que entra al libro de la aduana pasa por el detector completo
+    (goals_manos.tapar: el mismo del ledger y del prompt) y ademas por un
+    barrido de `Bearer <token>`: un token detras de Authorization es una
+    credencial aunque no tenga la forma de ninguna regla del detector."""
+    tapado, _ = goals_manos.tapar(str(texto))
+    return _RE_BEARER.sub(r"\1[SECRETO]", tapado)
+
+
 def _aduana_del_goal(goal: dict, n: int, fase: str, **campos) -> None:
     """En HILO. `inicio`: declarado (el golpe sale hacia la suscripcion,
     destino None); `fin`: un cruce corto con la carga = los comandos, los
     `dominios` permitidos al sandbox (spec seccion 8) y una linea por
     compuerta usada segun hook.jsonl con su linea de deshacer (spec 8,
-    ruling 15.14), y los bytes que entraron (decision 23)."""
+    ruling 15.14), y los bytes que entraron (decision 23). La carga va
+    TAPADA (invariante 9): los comandos llegan crudos del stream y la
+    aduana sola aplica las lexicas por token; el libro lo lee el tablero."""
     try:
         quien = _quien_del_goal(goal)
         if fase == "inicio":
             aduana.declarar(quien, f"golpe {n} ({campos.get('manos')})", destino=None,
                             motivo="el golpe del goal sale a la suscripcion: el clon y las raices viajan")
             return
-        carga = [str(c) for c in (campos.get("comandos") or [])][:50]
+        carga = [_tapar_carga(c) for c in (campos.get("comandos") or [])][:50]
         dominios = list(campos.get("dominios") or [])
         carga.append("dominios: " + (", ".join(dominios) if dominios else "solo api.anthropic.com"))
         for u in (campos.get("compuertas") or [])[:20]:
-            carga.append(f"compuerta {u.get('familia')} {u.get('decision')}: {u.get('resumen')}"
-                         + (f" deshacer: {u.get('deshacer')}" if u.get("deshacer") else ""))
+            carga.append(_tapar_carga(f"compuerta {u.get('familia')} {u.get('decision')}: {u.get('resumen')}"
+                                      + (f" deshacer: {u.get('deshacer')}" if u.get("deshacer") else "")))
         with aduana.cruzar(quien, f"golpe {n} fin", destino=None, carga=carga) as cruce:
             cruce.entro(int(campos.get("bytes_entrados") or 0))
     except Exception as exc:
