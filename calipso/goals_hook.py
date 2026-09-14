@@ -18,7 +18,12 @@ Que decide:
             update-ref, branch -D, remote, fetch, pull, clone, config); lo
             NUNCA (gh, git push, sudo, pkexec, su, rpm-ostree
             rebase|reset|rollback, flatpak remote-delete|remote-modify,
-            mail, sendmail, rm o cat sobre las rutas protegidas); y las
+            mail, sendmail, rm o cat sobre las rutas protegidas -- tambien
+            por glob (`~/.ss*`: se expande aca como lo haria bash), como
+            valor de una opcion (`--directory=~/.ssh`, `-C~/.ssh`) o como
+            archivo que curl/wget subirian (`-T`, `-d @`, `-F x=@`); una
+            variable en una ruta (`/var/home/$USER/.ssh`) se deniega porque
+            bash la expande despues del hook); y las
             compuertas por familia con la tabla del goal (instalar_en_goal
             directo dentro del venv del clon / npm sin -g; instalar_home,
             instalar_sistema, borrar_fuera en pregunta salvo preautorizada).
@@ -45,6 +50,7 @@ line"); denegar = una linea `goal_hook: DENEGADO (...)` en stderr y exit 2.
 from __future__ import annotations
 
 import datetime
+import fnmatch
 import json
 import os
 import pathlib
@@ -86,6 +92,19 @@ GIT_PROHIBIDOS = {"push", "fetch", "pull", "clone", "remote", "worktree", "updat
                   "credential", "credential-store", "credential-cache", "archive", "bundle"}
 GIT_OPCIONES_PROHIBIDAS = ("-C", "--git-dir", "--work-tree", "--exec-path", "-c", "--config-env",
                            "--namespace")
+# Los ejecutables que miran rutas: cada token con pinta de ruta pasa por las
+# protegidas (NUNCA) y, los que escriben, por la auto-escalada. curl/wget
+# ademas: el archivo que subirian es un dato de Pedro antes que un hecho web.
+EXES_DE_RUTAS = ("cat", "head", "tail", "less", "more", "cp", "mv", "ln", "tar", "zip", "sed", "awk",
+                 "grep", "rg", "find", "stat", "file", "wc", "xxd", "hexdump")
+EXES_QUE_TOCAN = ("touch", "tee", "mkdir", "chmod")
+EXES_QUE_ESCRIBEN = ("cp", "mv", "ln", "sed") + EXES_QUE_TOCAN
+SUBEN_ARCHIVOS = ("curl", "wget")
+# Un glob o una variable en un token con pinta de ruta: bash los expande
+# DESPUES del hook (el hook ve `~/.ss*`, bash corre `cat ~/.ssh`). El glob se
+# expande aca como lo haria bash, acotado; la variable no se ve adonde apunta.
+GLOB = "*?["
+MAX_MATCHES = 256
 DOMINIO_API = "api.anthropic.com"
 INSTRUCCION_PREGUNTA = ("esta compuerta esta en pregunta: pedila en tu veredicto con estado "
                         "\"preguntar\" y la compuerta (familia y forma); Pedro decide")
@@ -120,11 +139,66 @@ def _dentro(hijo: pathlib.Path, padre: pathlib.Path) -> bool:
     return hijo == padre or padre in hijo.parents
 
 
+def _bajo_protegida(p: pathlib.Path) -> bool:
+    """Dentro de una de PROTEGIDAS (el home y `/` a secas solo estan
+    protegidos como ruta exacta: lo que cuelga de ellos no)."""
+    return any(_dentro(p, pathlib.Path(os.path.expanduser(x)).resolve()) for x in PROTEGIDAS)
+
+
 def _protegida(p: pathlib.Path) -> bool:
     home = pathlib.Path(os.path.expanduser("~")).resolve()
     if p == home or p == pathlib.Path("/"):
         return True
-    return any(_dentro(p, pathlib.Path(os.path.expanduser(x)).resolve()) for x in PROTEGIDAS)
+    return _bajo_protegida(p)
+
+
+def _pinta_de_ruta(tok: str) -> bool:
+    return "/" in tok or tok.startswith(("~", "."))
+
+
+def _tiene_variable(tok: str) -> bool:
+    """Un `$` que bash expandiria: seguido de letra, digito, `_`, `{` o un
+    parametro especial. `foo$` o `a/$` (el ancla de sed y grep) no."""
+    i = tok.find("$")
+    while i != -1:
+        sig = tok[i + 1:i + 2]
+        if sig and (sig.isalnum() or sig in "_{@*#?!$-"):
+            return True
+        i = tok.find("$", i + 1)
+    return False
+
+
+def _expandir(patron: str, cwd: str | None) -> list[pathlib.Path] | None:
+    """Los matches de un glob como los haria bash sin nullglob ni dotglob
+    (`*` y `?` no ven los dotfiles salvo que el segmento empiece con `.`;
+    `.` y `..` nunca, como bash 5.2 con globskipdots): rutas resueltas, o el
+    literal si no hay match. No entra en una ruta protegida (la devuelve tal
+    cual: lo de adentro ya es NUNCA y no hace falta listarlo). None si el
+    glob abre mas de MAX_MATCHES rutas: no se sabe que abarca."""
+    texto = os.path.expanduser(patron)
+    base = pathlib.Path("/") if texto.startswith("/") else pathlib.Path(cwd or ".")
+    candidatos = [base]
+    for seg in [s for s in texto.split("/") if s]:
+        nuevos: list[pathlib.Path] = []
+        for c in candidatos:
+            if _bajo_protegida(_resolver(str(c), cwd)):
+                nuevos.append(c)
+            elif not any(ch in seg for ch in GLOB):
+                nuevos.append(c / seg)
+            else:
+                try:
+                    hijos = sorted(os.listdir(c))
+                except OSError:
+                    continue
+                nuevos.extend(c / h for h in hijos
+                              if (seg.startswith(".") or not h.startswith("."))
+                              and fnmatch.fnmatchcase(h, seg))
+        if len(nuevos) > MAX_MATCHES:
+            return None
+        candidatos = nuevos
+        if not candidatos:
+            break
+    return [_resolver(str(c), cwd) for c in candidatos] or [_resolver(patron, cwd)]
 
 
 def _auto_escalada(p: pathlib.Path, compuertas: dict) -> bool:
@@ -202,6 +276,51 @@ def _flags_cortas(argv: list[str]) -> str:
     return "".join(x[1:] for x in argv if x.startswith("-") and not x.startswith("--"))
 
 
+def _candidatos_de_ruta(exe: str, argv: list[str]) -> list[str]:
+    """Los tokens de argv[1:] que pueden ser una ruta: los que no son
+    opcion, el valor de `--opcion=valor` y lo pegado a una opcion corta
+    (`-C/x`); para curl/wget, ademas, lo que sigue a `@` (`-d @archivo`,
+    `-F campo=@archivo`) y nunca las URLs (esas van por dominio)."""
+    out = []
+    for tok in argv[1:]:
+        if exe in SUBEN_ARCHIVOS and "://" in tok:
+            continue
+        if tok.startswith("--"):
+            val = tok.split("=", 1)[1] if "=" in tok else ""
+        elif tok.startswith("-"):
+            val = tok[2:]
+        else:
+            val = tok
+        if exe in SUBEN_ARCHIVOS:
+            if "=@" in val:
+                val = val.split("=@", 1)[1]
+            if val.startswith("@"):
+                val = val[1:]
+        if val:
+            out.append(val)
+    return out
+
+
+def _rutas_resueltas(exe: str, argv: list[str], cwd: str | None) -> tuple[list[pathlib.Path], str | None]:
+    """(rutas resueltas, motivo para DENEGAR). Un token con pinta de ruta
+    (lleva `/` o empieza con `~` o `.`) con una variable adentro se deniega:
+    bash la expande despues del hook y no se ve adonde apunta; con un glob
+    se expande aca y entra cada match (o el literal si no hay ninguno)."""
+    rutas: list[pathlib.Path] = []
+    for tok in _candidatos_de_ruta(exe, argv):
+        if _pinta_de_ruta(tok):
+            if _tiene_variable(tok):
+                return [], f"{exe}: variable en la ruta {tok}, no se ve adonde apunta"
+            if any(ch in tok for ch in GLOB):
+                matches = _expandir(tok, cwd)
+                if matches is None:
+                    return [], f"{exe}: el glob {tok} abre mas de {MAX_MATCHES} rutas"
+                rutas.extend(matches)
+                continue
+        rutas.append(_resolver(tok, cwd))
+    return rutas, None
+
+
 def _exe_de(argv: list[str], compuertas: dict) -> tuple[str, str]:
     """(nombre del ejecutable, 'venv'|'clon'|'sistema'|'ruta_fuera')."""
     tok = argv[0]
@@ -250,37 +369,38 @@ def familia_de_argv(argv: list[str], compuertas: dict) -> tuple[str | None, str,
         return "DENEGAR", f"{exe} -c/-e: no se ve adentro", None
     if donde == "ruta_fuera":
         return "DENEGAR", f"{argv[0]}: ejecutable fuera del clon y de su venv", None
-    rutas = [t for t in argv[1:] if not t.startswith("-")]
     cwd = compuertas.get("cwd")
     if exe == "git":
         return _familia_git(argv)
     if exe == "rm":
-        for r in rutas:
-            p = _resolver(r, cwd)
+        rutas, motivo = _rutas_resueltas(exe, argv, cwd)
+        if motivo:
+            return "DENEGAR", motivo, None
+        for p in rutas:
             if _protegida(p):
                 return "NUNCA", f"rm sobre {p}: datos de Pedro", {"ruta": str(p)}
             if _auto_escalada(p, compuertas):
                 return "DENEGAR", f"rm sobre {p}: auto-escalada", None
-        for r in rutas:
-            p = _resolver(r, cwd)
+        for p in rutas:
             if _en_alcance(p, compuertas) is None:
                 return "borrar_fuera", f"rm fuera del clon y las raices: {p}", {"ruta": str(p)}
         return None, "rm dentro del clon o de una raiz", None
-    if exe in ("cat", "head", "tail", "less", "more", "cp", "mv", "ln", "tar", "zip", "sed", "awk",
-               "grep", "rg", "find", "stat", "file", "wc", "xxd", "hexdump"):
-        for r in rutas:
-            p = _resolver(r, cwd)
+    if exe in EXES_DE_RUTAS or exe in EXES_QUE_TOCAN or exe in SUBEN_ARCHIVOS:
+        rutas, motivo = _rutas_resueltas(exe, argv, cwd)
+        if motivo:
+            return "DENEGAR", motivo, None
+        for p in rutas:
             if _protegida(p):
                 return "NUNCA", f"{exe} sobre {p}: datos de Pedro", None
-            if exe in ("cp", "mv", "ln", "touch", "tee", "sed") and _auto_escalada(p, compuertas):
+            if exe in EXES_QUE_ESCRIBEN and _auto_escalada(p, compuertas):
                 return "DENEGAR", f"{exe} sobre {p}: auto-escalada", None
         if exe == "find" and any(t in ("-exec", "-execdir", "-ok", "-okdir", "-delete") for t in argv):
             return "DENEGAR", "find con -exec/-delete: no se ve adentro", None
-        return None, "comando simple permitido", None
-    if exe in ("touch", "tee", "mkdir", "chmod"):
-        for r in rutas:
-            if _auto_escalada(_resolver(r, cwd), compuertas):
-                return "DENEGAR", f"{exe} sobre {r}: auto-escalada", None
+        if exe in SUBEN_ARCHIVOS:
+            urls = [t for t in argv[1:] if "://" in t]
+            if not urls or not all(_dominio_permitido(u, compuertas) for u in urls):
+                return "DENEGAR", "dominio no declarado", None
+            return "web", "web a un dominio declarado", {"urls": urls}
         return None, "comando simple permitido", None
     if exe in ("pip", "pip3") or (exe in ("python", "python3") and argv[1:3] == ["-m", "pip"]) \
             or (exe == "uv" and argv[1:2] == ["pip"]):
@@ -316,11 +436,6 @@ def familia_de_argv(argv: list[str], compuertas: dict) -> tuple[str | None, str,
         if argv[1:2] == ["status"]:
             return None, "rpm-ostree status", None
         return "DENEGAR", "rpm-ostree: fuera del allow-list", None
-    if exe in ("curl", "wget"):
-        urls = [t for t in argv[1:] if "://" in t]
-        if not urls or not all(_dominio_permitido(u, compuertas) for u in urls):
-            return "DENEGAR", "dominio no declarado", None
-        return "web", "web a un dominio declarado", {"urls": urls}
     if exe in ALLOW_EXES or donde in ("venv", "clon"):
         return None, "comando simple permitido", None
     return "DENEGAR", f"{exe}: fuera del allow-list", None

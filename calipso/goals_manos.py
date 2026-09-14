@@ -403,7 +403,17 @@ class Parser:
     sin hook_response entre medio: Trampa 2), `result` (unidades =
     len(usage.iterations), veredicto = structured_output, costo). Un MCP en
     `init.tools` es violacion (Trampa 1). `alimentar` devuelve el motivo
-    de la violacion la primera vez que la ve; None si no."""
+    de la violacion la primera vez que la ve; None si no.
+
+    La sonda del hook CUENTA, no aparea por orden: con dos tool_use en el
+    mismo assistant (Claude Code corre en paralelo los Read/Grep/Glob) los
+    hooks arrancan juntos y el stream sale en orden de terminacion, asi que
+    el hook_response de B puede preceder al de A y el tool_result de B al
+    hook_response de A. Como cada hook_response precede al tool_result de
+    SU tool, `hook_response vistos < tool_result con hook vistos` es la
+    unica senal fiable (y detecta igual el hook ausente en el primer
+    resultado: 0 < 1). Si el hook_response trae `tool_use_id` (el terreno
+    no lo vio; el smoke lo dira), ademas se aparea por id."""
 
     def __init__(self) -> None:
         self.session_id: str | None = None
@@ -413,9 +423,10 @@ class Parser:
         self.message_ids: set[str] = set()
         self.comandos: list[dict] = []
         self._tool_uses: dict[str, dict] = {}
-        self._pendientes_hook: list[str] = []
-        self._con_hook: set[str] = set()
-        self.hooks = 0
+        self.hooks = 0                          # hook_response PreToolUse vistos
+        self._resultados_con_hook = 0           # tool_result de herramientas con hook vistos
+        self._hook_ids: set[str] = set()        # tool_use_id de los hook_response, si los traen
+        self._hooks_sin_id = 0
         self.veredicto: dict | None = None
         self.rate_limit: dict | None = None
         self.denials: list[dict] = []
@@ -461,8 +472,10 @@ class Parser:
                 return self._violar(f"mcp inesperado en la sesion: {raras[:3]}")
         elif sub == "hook_response" and fila.get("hook_event", "PreToolUse") == "PreToolUse":
             self.hooks += 1
-            if self._pendientes_hook:
-                self._con_hook.add(self._pendientes_hook.pop(0))
+            if fila.get("tool_use_id"):
+                self._hook_ids.add(str(fila["tool_use_id"]))
+            else:
+                self._hooks_sin_id += 1
         return None
 
     def _rate_limit(self, fila: dict) -> None:
@@ -487,8 +500,6 @@ class Parser:
             nombre = bloque.get("name")
             tid = bloque.get("id")
             self._tool_uses[tid] = {"name": nombre, "input": bloque.get("input") or {}}
-            if nombre in CON_HOOK:
-                self._pendientes_hook.append(tid)
             if nombre == "Bash":
                 self.comandos.append({"id": tid, "cmd": str((bloque.get("input") or {}).get("command") or ""),
                                       "resultado_tail": None})
@@ -504,11 +515,15 @@ class Parser:
             tid = bloque.get("tool_use_id")
             uso = self._tool_uses.get(tid) or {}
             nombre = uso.get("name")
-            if nombre in CON_HOOK and tid not in self._con_hook:
-                if tid in self._pendientes_hook:
-                    self._pendientes_hook.remove(tid)
-                return self._violar(f"hook inactivo: tool_result de {nombre} sin hook_response "
-                                    f"PreToolUse en el medio (tool_use {tid})")
+            if nombre in CON_HOOK:
+                self._resultados_con_hook += 1
+                if self.hooks < self._resultados_con_hook:
+                    return self._violar(f"hook inactivo: tool_result de {nombre} sin hook_response "
+                                        f"PreToolUse antes (tool_use {tid}: {self.hooks} hook_response "
+                                        f"para {self._resultados_con_hook} resultados con hook)")
+                if self._hook_ids and not self._hooks_sin_id and tid not in self._hook_ids:
+                    return self._violar(f"hook inactivo: tool_result de {nombre} sin hook_response "
+                                        f"PreToolUse para su tool_use ({tid})")
             if nombre == "Bash":
                 salida = bloque.get("content")
                 if isinstance(salida, list):

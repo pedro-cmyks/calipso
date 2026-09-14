@@ -309,6 +309,77 @@ def test_parser_sonda_del_hook():
     assert v and "mcp inesperado" in v
 
 
+def _stream_paralelo(hooks_antes_del_primero, hooks_entre, ids_en_hook=False):
+    """Dos tool_use en el MISMO assistant (Claude Code corre en paralelo los
+    Read/Grep/Glob): los hooks arrancan juntos y el stream sale en orden de
+    terminacion. init, assistant(A, B), N hook_response, tool_result(B),
+    M hook_response, tool_result(A), result."""
+    def hook(tid):
+        fila = {"type": "system", "subtype": "hook_response", "hook_event": "PreToolUse",
+                "exit_code": 0, "session_id": "s-1"}
+        if ids_en_hook:
+            fila["tool_use_id"] = tid
+        return fila
+
+    def resultado(tid):
+        return {"type": "user", "session_id": "s-1",
+                "message": {"role": "user", "content": [{"tool_use_id": tid, "type": "tool_result",
+                                                         "content": "ok"}]}}
+    out = [lineas_golpe()[0],
+           {"type": "assistant", "session_id": "s-1",
+            "message": {"id": "msg_1", "role": "assistant",
+                        "content": [{"type": "tool_use", "id": "toolu_a", "name": "Read",
+                                     "input": {"file_path": "a.py"}},
+                                    {"type": "tool_use", "id": "toolu_b", "name": "Grep",
+                                     "input": {"pattern": "x"}}]}}]
+    out += [hook("toolu_b") for _ in range(hooks_antes_del_primero)]
+    out.append(resultado("toolu_b"))
+    out += [hook("toolu_a") for _ in range(hooks_entre)]
+    out.append(resultado("toolu_a"))
+    out.append(lineas_golpe()[-1])
+    return out
+
+
+def test_parser_sonda_del_hook_con_herramientas_en_paralelo():
+    """La sonda cuenta, no aparea por orden: con dos tool_use en paralelo el
+    hook_response de B puede salir antes que el de A y el tool_result de B
+    antes que el hook_response de A. Eso NO es un hook inactivo (cada
+    hook_response precede al tool_result de SU tool). Un solo hook_response
+    para dos resultados si lo es."""
+    p = gm.Parser()
+    assert all(p.alimentar(json.dumps(l)) is None for l in _stream_paralelo(1, 1))
+    assert p.violacion is None and p.hooks == 2
+    # los dos hook_response juntos y los tool_result invertidos: tampoco
+    p2 = gm.Parser()
+    assert all(p2.alimentar(json.dumps(l)) is None for l in _stream_paralelo(2, 0))
+    assert p2.violacion is None
+    # un solo hook_response para dos tool_result: el segundo es la violacion
+    p3 = gm.Parser()
+    vistos = [p3.alimentar(json.dumps(l)) for l in _stream_paralelo(1, 0)]
+    assert p3.violacion and "hook inactivo" in p3.violacion and "toolu_a" in p3.violacion
+    assert vistos.index(p3.violacion) == 4                       # recien en el tool_result de A
+    # el primer tool_result sin ningun hook_response: violacion (0 < 1)
+    p4 = gm.Parser()
+    vistos = [p4.alimentar(json.dumps(l)) for l in _stream_paralelo(0, 2)]
+    assert p4.violacion and "toolu_b" in p4.violacion and vistos.index(p4.violacion) == 2
+
+
+def test_parser_sonda_del_hook_aparea_por_id_si_el_stream_lo_trae():
+    """Si el hook_response real trae tool_use_id, ademas de contar se
+    aparea por id: un tool_result cuyo tool_use no tuvo SU hook_response es
+    violacion aunque la cuenta cierre."""
+    p = gm.Parser()
+    assert all(p.alimentar(json.dumps(l)) is None for l in _stream_paralelo(1, 1, ids_en_hook=True))
+    assert p.violacion is None
+    # hook_response(B) con id, tool_result(A): la cuenta cierra (1 >= 1) pero A no tuvo hook
+    lineas = _stream_paralelo(1, 0, ids_en_hook=True)
+    lineas[3], lineas[4] = lineas[4], lineas[3]                  # tool_result(A) antes que el de B
+    p2 = gm.Parser()
+    vistos = [p2.alimentar(json.dumps(l)) for l in lineas]
+    assert p2.violacion and "hook inactivo" in p2.violacion and "toolu_a" in p2.violacion
+    assert vistos.index(p2.violacion) == 3
+
+
 def test_parser_tolera_basura_y_denials():
     p = gm.Parser()
     assert p.alimentar("no es json") is None
