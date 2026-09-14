@@ -114,9 +114,10 @@ SUBEN_ARCHIVOS = ("curl", "wget")
 # tarda es fail-open por timeout: no puede explotar listando).
 GLOB = "*?["
 PRESUPUESTO_EXPANSION = 100_000
-# Un separador pegado a una opcion corta (`awk -F/`, `cut -d.`, `tar -C.`)
-# no es una ruta; y el valor de `-F` de awk nunca lo es.
-PEGADOS_SIN_RUTA = ("/", ".")
+# El valor de `-F` de awk (el separador, pegado o separado: `-F/`, `-F .`)
+# nunca es una ruta. Se salta por exe y por opcion, nunca por el valor: un
+# `/` pegado a `-C` de tar o a `-t` de cp SI es una ruta (`tar -C/ x`
+# archiva desde la raiz). Si otro exe necesita lo mismo, se suma aca.
 OPCIONES_SIN_RUTA = {"awk": ("-F",)}
 DOMINIO_API = "api.anthropic.com"
 INSTRUCCION_PREGUNTA = ("esta compuerta esta en pregunta: pedila en tu veredicto con estado "
@@ -366,15 +367,17 @@ def _expandir(patron: str, cwd: str | None, presupuesto: Presupuesto) -> list[pa
     return candidatos or [_resolver(patron, cwd)]
 
 
-def _padre_del_glob(forma: str, cwd: str | None) -> pathlib.Path | None:
-    """Si el glob esta solo en el ultimo segmento (`~/*`, `/*`, `~/.ss*`),
-    el padre literal resuelto; None si el glob esta mas arriba."""
-    pre, barra, _ = forma.rpartition("/")
-    if any(ch in pre for ch in GLOB):
-        return None
-    if not barra:
+def _padre_del_glob(forma: str, cwd: str | None) -> pathlib.Path:
+    """Lo literal que hay antes del PRIMER segmento con glob, resuelto:
+    `~/*`, `~/*/`, `~/*/x`, `~/.ss*` -> el home; `/*/` -> `/`; `src/*/x` ->
+    src; `*` -> el cwd. La barra final no cambia lo que abarca (bash expande
+    `~/*/` a todos los directorios del home) y un segmento mas tampoco
+    (`~/*/*` recorre el home entero)."""
+    partes = (forma.rstrip("/") or "/").split("/")
+    i = next(k for k, seg in enumerate(partes) if any(ch in seg for ch in GLOB))
+    if i == 0:
         return _resolver(cwd or ".", cwd)
-    return _resolver(pre or "/", cwd)
+    return _resolver("/".join(partes[:i]) or "/", cwd)
 
 
 _BASES_CACHE: tuple[tuple, tuple[list[pathlib.Path], list[pathlib.Path], list[tuple]]] | None = None
@@ -468,7 +471,7 @@ def _flags_cortas(argv: list[str]) -> str:
 def _candidatos_de_ruta(exe: str, argv: list[str]) -> list[str]:
     """Los tokens de argv[1:] que pueden ser una ruta: los que no son
     opcion, el valor de `--opcion=valor` y lo pegado a una opcion corta
-    (`-C/x`; no un separador solo, `awk -F/`, ni el valor de `-F` de awk);
+    (`-C/x`, `-C/`; no el valor de `-F` de awk, pegado o separado);
     para curl/wget, ademas, lo que sigue a `@` (`-d @archivo`,
     `-F campo=@archivo`, `--data-urlencode nombre@archivo`) y nunca las
     URLs (esas van por dominio)."""
@@ -487,9 +490,7 @@ def _candidatos_de_ruta(exe: str, argv: list[str]) -> list[str]:
         if tok.startswith("--"):
             val = tok.split("=", 1)[1] if "=" in tok else ""
         elif tok.startswith("-"):
-            val = tok[2:]
-            if val in PEGADOS_SIN_RUTA or tok[:2] in sin_ruta:
-                val = ""
+            val = "" if tok[:2] in sin_ruta else tok[2:]
         else:
             val = tok
         if exe in SUBEN_ARCHIVOS and "@" in val:
@@ -505,9 +506,9 @@ def _rutas_resueltas(exe: str, argv: list[str], cwd: str | None) -> tuple[list[p
     `/` o empieza con `~` o `.`) con una variable adentro se deniega: bash la
     expande despues del hook y no se ve adonde apunta; con un glob se
     expande aca y entra cada match (o el literal si no hay ninguno), salvo
-    que el padre del glob sea el home o `/` (`rm -rf ~/*`): entonces vale el
-    padre. Globs y llaves comparten el presupuesto del comando; agotarlo
-    deniega."""
+    que lo literal antes del primer glob sea el home o `/` (`rm -rf ~/*`,
+    `~/*/`, `~/*/x`, `/*`): entonces vale ese padre. Globs y llaves comparten
+    el presupuesto del comando; agotarlo deniega."""
     rutas: list[pathlib.Path] = []
     presupuesto = Presupuesto(PRESUPUESTO_EXPANSION)
     for tok in _candidatos_de_ruta(exe, argv):
@@ -523,7 +524,7 @@ def _rutas_resueltas(exe: str, argv: list[str], cwd: str | None) -> tuple[list[p
                     rutas.append(_resolver(forma, cwd))
                     continue
                 padre = _padre_del_glob(forma, cwd)
-                if padre is not None and _home_o_raiz(padre):
+                if _home_o_raiz(padre):
                     rutas.append(padre)
                     continue
                 rutas.extend(_expandir(forma, cwd, presupuesto))
