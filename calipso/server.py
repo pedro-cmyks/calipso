@@ -4306,12 +4306,19 @@ def _ultimo_proposed() -> dict | None:
 
 
 def _arrancar_goal(goal_id: str, tope: dict | None = None, raiz: str | None = None) -> dict:
-    """proposed -> active (el dale). Ajusta tope y raiz si vinieron y cierra
-    la solicitud `dale`. La Task 4 la extiende: clona y lanza el runner."""
+    """proposed -> active (el dale). Ajusta tope y raiz si vinieron, cierra
+    la solicitud `dale` y lanza el runner (que clona). SOLO desde proposed
+    (cierre 2026-09-14, rev:server): desde waiting la transicion tambien
+    es valida y `POST /dale` con cualquier id ponia active un goal que
+    esperaba una compuerta o una raiz SIN aplicar la respuesta (sin
+    preautorizar la forma, sin sumar la raiz: el hook seguia denegando) y
+    sin cerrar su solicitud; para un waiting esta `_retomar_goal`."""
     goal = goals.load(None, goal_id)
     if goal is None:
         raise goals.ErrorGoal(f"goal inexistente: {goal_id}")
-    if goal.get("privado") and goal.get("status") == goals.PROPOSED:
+    if goal.get("status") != goals.PROPOSED:
+        raise goals.ErrorGoal("dale solo arranca un goal proposed; para uno waiting usa segui")
+    if goal.get("privado"):
         raise goals.ErrorGoal("un goal privado no puede usar manos de suscripcion")
     if tope or raiz:
         if tope:
@@ -4360,9 +4367,11 @@ def _parar_goal(goal_id: str, motivo: str = "parado por Pedro") -> dict:
     return goal
 
 
-def _retomar_goal(goal_id: str, nota: str | None = None, con: str | None = None) -> dict:
-    """waiting -> active con la nota de Pedro en el ledger y, si vino
-    `con:`, otras manos. La Task 4 la extiende: relanza el runner."""
+def _retomar_goal(goal_id: str, nota: str | None = None, con: str | None = None,
+                  tope: dict | None = None) -> dict:
+    """waiting -> active con la nota de Pedro en el ledger, otras manos si
+    vino `con:` y el tope ajustado si vino `tope:` (parcial: solo las
+    claves que Pedro escribio, validado entero); relanza el runner."""
     goal = goals.load(None, goal_id)
     if goal is None:
         raise goals.ErrorGoal(f"goal inexistente: {goal_id}")
@@ -4371,6 +4380,11 @@ def _retomar_goal(goal_id: str, nota: str | None = None, con: str | None = None)
             raise goals.ErrorGoal(f"manos invalidas: {con!r} (son {goals.MANOS})")
         goal["manos"] = con
         goals.escribir(goal)
+    if tope:
+        viejo = dict(goal.get("tope") or {})
+        goal["tope"] = goals.validar_tope({**viejo, **tope})
+        goals.escribir(goal)
+        goals.event(None, goal_id, "tope_cambiado", de=viejo, a=goal["tope"], por="segui")
     if (goal.get("espera") or {}).get("motivo") in goals.RESPUESTAS_QUE_APLICAN:
         # un segui es un si (decision 16): se aplica lo MISMO que el runner
         # aplica con el si del inbox (preautorizar la forma, sumar la raiz);
@@ -4408,6 +4422,15 @@ async def _atender_goal(texto: str, features: dict, chat_id: str | None,
                 g = await asyncio.to_thread(_cerrar_goal, activo["id"])
                 return f"goal {g['id']} complete: {g['title']}", False
             g = _ultimo_proposed()
+            if not g and activo and activo.get("status") == goals.WAITING:
+                # la respuesta natural a "instalo typescript global?" es
+                # `/goal dale`: con el goal en curso esperando y sin ninguna
+                # propuesta, vale como `segui` (un si que aplica lo mismo) en
+                # vez de negar que exista el goal que espera (rev:server)
+                motivo = (activo.get("espera") or {}).get("motivo") or "?"
+                g = await asyncio.to_thread(_retomar_goal, activo["id"], None, None, d["tope"] or None)
+                return (f"goal {g['id']} active de nuevo (manos: {g['manos']}): el dale sobre un "
+                        f"waiting por {motivo} vale como segui"), False
             if not g:
                 return "no hay ningun goal propuesto: deci `/goal <texto>` primero", True
             g = await asyncio.to_thread(_arrancar_goal, g["id"], d["tope"] or None, d["raiz"])
@@ -6245,10 +6268,19 @@ def _transicion_http(fn, *args) -> dict:
 
 @app.post("/api/goals/{goal_id}/dale")
 def api_goal_dale(goal_id: str, body: GoalDaleBody | None = None) -> dict:
+    """El dale: sobre proposed arranca; sobre waiting cumplido cierra; sobre
+    otro waiting vale como segui (`_retomar_goal`, que aplica la respuesta:
+    nunca un active a ciegas, rev:server). Una `raiz` en ese caso no se
+    aplica en silencio: 409 y que hacer."""
     goal = _goal_o_404(goal_id)
-    if goal.get("status") == goals.WAITING and (goal.get("espera") or {}).get("motivo") == "cumplido":
-        return _transicion_http(_cerrar_goal, goal_id)
     tope = goals.parse_tope(body.tope) if body and body.tope else None
+    if goal.get("status") == goals.WAITING:
+        if (goal.get("espera") or {}).get("motivo") == "cumplido":
+            return _transicion_http(_cerrar_goal, goal_id)
+        if body and body.raiz:
+            raise HTTPException(status_code=409, detail="dale solo arranca un goal proposed; para uno "
+                                "waiting usa segui (raiz: solo con el dale de un proposed)")
+        return _transicion_http(_retomar_goal, goal_id, None, None, tope or None)
     return _transicion_http(_arrancar_goal, goal_id, tope or None, body.raiz if body else None)
 
 

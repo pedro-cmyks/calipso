@@ -555,3 +555,68 @@ def test_cabeza_sin_herramientas_con_un_cli_falso(tmp_path):
     exe.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(3)\n", encoding="utf-8")
     assert goals_manos.cabeza_sin_herramientas(
         "claude", str(exe), "S", "P", goals_manos.ESQUEMA_PROPUESTA, cwd=str(cwd), timeout=30) is None
+
+
+# --- cierre 2026-09-14 (carril 3): dale solo proposed, segui con tope, cumplido con no ----------
+
+def _waiting(goal_id, motivo, **detalle):
+    """Deja el goal en curso waiting con un motivo y una solicitud viva."""
+    return goals.transicionar(goal_id, goals.WAITING, motivo,
+                              motivo_detalle={"solicitud": f"sol_{motivo}", **detalle})
+
+
+def test_dale_solo_arranca_un_proposed_y_por_http_un_waiting_retoma(goal_home, chat, repo):
+    """rev:server importante: `POST /api/goals/{id}/dale` sobre un waiting
+    con espera compuerta lo ponia active SIN aplicar la respuesta (sin
+    preautorizar la forma: el hook seguia denegando) y sin cerrar la
+    solicitud abierta. Ahora `_arrancar_goal` exige proposed y el POST dale
+    sobre un waiting deriva a `_retomar_goal` (un si que aplica)."""
+    _proponer(chat, repo)
+    chat.turno("/goal dale")
+    g = goals.activo()
+    compuerta = {"familia": "instalar_home", "forma": {"argv": ["npm", "install", "-g", "typescript"]}}
+    _waiting(g["id"], "compuerta", pregunta="instalo typescript global?", compuerta=compuerta)
+    with pytest.raises(goals.ErrorGoal, match="dale solo arranca un goal proposed"):
+        srv._arrancar_goal(g["id"])
+    assert goals.load(None, g["id"])["status"] == goals.WAITING
+    r = chat.cliente.post(f"/api/goals/{g['id']}/dale", json={"tope": "1h"})
+    assert r.status_code == 200, r.text
+    g2 = goals.load(None, g["id"])
+    assert g2["status"] == goals.ACTIVE and g2["tope"]["minutos"] == 60
+    assert g2["compuertas"]["preautorizadas"] == [compuerta]
+    c = json.loads((goals.dir_goal(g["id"]) / "compuertas.json").read_text(encoding="utf-8"))
+    assert c["preautorizadas"] == [compuerta]
+    # una raiz en el dale de un waiting no se aplica en silencio: 409 y que hacer
+    _waiting(g["id"], "parado por Pedro")
+    r = chat.cliente.post(f"/api/goals/{g['id']}/dale", json={"raiz": str(repo)})
+    assert r.status_code == 409 and "segui" in r.json()["detail"]
+    assert goals.load(None, g["id"])["status"] == goals.WAITING
+
+
+@pytest.mark.parametrize("motivo,detalle", [
+    ("pregunta", {"pregunta": "sigo con la libreria x?"}),
+    ("compuerta", {"pregunta": "instalo?", "compuerta": {"familia": "instalar_home", "forma": {"argv": ["pip", "x"]}}}),
+    ("raiz_nueva", {"raiz": "/var/tmp/raiz-nueva-del-test", "pregunta": "escribo ahi?"}),
+    ("parado por Pedro", {}),
+    ("cuota", {"manos": "claude"}),
+    ("no_convergencia", {"diagnostico": "tres golpes sin diff nuevo"}),
+])
+def test_dale_por_chat_con_el_activo_waiting_y_sin_proposed_vale_como_segui(goal_home, chat, repo,
+                                                                           motivo, detalle):
+    """rev:server menor: con el goal en curso esperando y sin proposed,
+    `/goal dale` (la respuesta natural a 'instalo typescript global?')
+    contestaba 'no hay ningun goal propuesto': negaba el goal que esta
+    esperando. Ahora vale como `segui` y lo dice."""
+    _proponer(chat, repo)
+    chat.turno("/goal dale")
+    g = goals.activo()
+    _waiting(g["id"], motivo, **detalle)
+    eventos = chat.turno("/goal dale")
+    texto = texto_visible(eventos)
+    assert "active" in texto and "segui" in texto and not de_tipo(eventos, "error")
+    g2 = goals.load(None, g["id"])
+    assert g2["status"] == goals.ACTIVE
+    if motivo == "compuerta":
+        assert g2["compuertas"]["preautorizadas"] == [detalle["compuerta"]]
+    if motivo == "raiz_nueva":
+        assert detalle["raiz"] in g2["compuertas"]["raices"]
