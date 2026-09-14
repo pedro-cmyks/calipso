@@ -1903,6 +1903,7 @@ def test_tapar_carga_tapa_bearer_basic_token_y_user_pass_de_curl():
         "curl -H 'Authorization: Token [SECRETO]' https://x/y"
     assert t("curl -u pedro:clave-secreta-123 https://x/y") == "curl -u [SECRETO] https://x/y"
     assert t("curl --user pedro:clave https://x/y") == "curl --user [SECRETO] https://x/y"
+    assert t("curl -upedro:clave https://x/y") == "curl -u[SECRETO] https://x/y"                  # pegado
     assert t("git log -u src/a.py") == "git log -u src/a.py"                 # sin usuario:clave no es credencial
     assert t("curl -u pedro https://x/y") == "curl -u pedro https://x/y"        # sin clave: curl la pide
     assert t("ls -la src/") == "ls -la src/"
