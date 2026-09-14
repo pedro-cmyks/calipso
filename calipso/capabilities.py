@@ -198,7 +198,13 @@ _ULTRA_WORDS = ("ultrathink", "ultra think", "piensa profundo", "maximo esfuerzo
 
 
 _RE_GOAL = re.compile(r"^\s*(?:/goal\b|meta\s*:)\s*(.*)$", re.IGNORECASE | re.DOTALL)
-_RE_SLASH_SUELTO = re.compile(r"^/[a-zA-Z?]+$")
+# Los slash que el bucle de parse_directives reconoce: SOLO estos se sacan del
+# texto del goal (cierre 2026-09-14, rev:server): sacar cualquier `/palabra`
+# borraba en silencio una ruta absoluta de un solo segmento (`en: /srv`,
+# `raiz: /opt`) y el goal nacia sin repo o sin raiz.
+SLASH_CONOCIDOS = ("/help", "/?", "/web", "/plan", "/team", "/equipo", "/fast", "/think",
+                   "/ultrathink", "/ultra", "/local", "/claude", "/codex", "/api", "/nube",
+                   "/redacta", "/otra", "/mia", "/model", "/goal")
 
 
 def parse_directives(message: str) -> dict:
@@ -217,7 +223,7 @@ def parse_directives(message: str) -> dict:
     m = _RE_GOAL.match(message or "")
     if m:
         out["goal"] = " ".join(t for t in m.group(1).split()
-                               if not _RE_SLASH_SUELTO.match(t)).strip()
+                               if t.lower() not in SLASH_CONOCIDOS).strip()
     low = message.lower()
     tokens = message.split()
     keep = []

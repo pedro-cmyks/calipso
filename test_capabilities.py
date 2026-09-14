@@ -91,6 +91,13 @@ def main() -> int:
           and d11["force_model"] == "claude")
     check("un /goal en el medio no es goal",
           cap.parse_directives("hola /goal x")["goal"] is None)
+    # cierre 2026-09-14 (rev:server): del texto del goal se sacan SOLO los
+    # slash que el bucle reconoce; una ruta absoluta de un solo segmento
+    # (`en: /srv`, `raiz: /opt`) se conserva
+    d12 = cap.parse_directives("/goal ordena esto raiz: /srv en: /opt")
+    check("parse /goal conserva /srv y /opt", d12["goal"] == "ordena esto raiz: /srv en: /opt")
+    d13 = cap.parse_directives("/goal /claude /think ordena esto en: /tmp")
+    check("parse /goal saca solo los slash conocidos", d13["goal"] == "ordena esto en: /tmp")
     # discovery
     reg = dict(cap.REGISTRY)
     key = cap.discover("api", "gpt-5.5", tier="frontier", registry=reg)
@@ -102,6 +109,23 @@ def main() -> int:
         return 1
     print("\nOK: ruteo a nivel de modelo + intensidad + descubrimiento")
     return 0
+
+
+# --- pytest (la suite completa corre este archivo; main() es el camino historico) ---
+
+def test_el_texto_del_goal_conserva_las_rutas_de_un_segmento():
+    """rev:server menor: `_RE_SLASH_SUELTO` sacaba TODO token `^/[a-zA-Z?]+$`
+    del texto del goal: `en: /srv` o `raiz: /opt` desaparecian en silencio y
+    el goal nacia sin repo o sin raiz. Solo se sacan los slash que el bucle
+    reconoce."""
+    assert cap.parse_directives("/goal ordena esto raiz: /srv en: /opt")["goal"] == "ordena esto raiz: /srv en: /opt"
+    assert cap.parse_directives("/goal /claude /think ordena esto en: /tmp")["goal"] == "ordena esto en: /tmp"
+    d = cap.parse_directives("/goal /codex crea x en: /var")
+    assert d["goal"] == "crea x en: /var" and d["force_model"] == "codex"
+    for slash in cap.SLASH_CONOCIDOS:
+        assert cap.parse_directives(f"/goal {slash} x")["goal"] == "x", slash
+    assert cap.parse_directives("/goal /HELP x")["goal"] == "x"        # sin distinguir mayusculas
+    assert cap.parse_directives("/goal /Srv x")["goal"] == "/Srv x"
 
 
 if __name__ == "__main__":
