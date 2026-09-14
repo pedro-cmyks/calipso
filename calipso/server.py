@@ -1255,9 +1255,11 @@ class FolderAttachmentBody(BaseModel):
 class GoalBody(BaseModel):
     objective: str
     title: str | None = None
+    # lo del Goal Mode viejo: con contenido se rechaza (400), no se ignora
+    # en silencio; un goal que corre nace proposed y lo activa el dale
     criteria: list | None = None
     subtasks: list | None = None
-    make_active: bool = True
+    make_active: bool | None = None
 
 
 class GoalUpdateBody(BaseModel):
@@ -6395,22 +6397,31 @@ def api_goals(limit: int = 50) -> dict:
 
 
 @app.post("/api/goals")
-def api_goal_create(body: GoalBody) -> dict:
+async def api_goal_create(body: GoalBody) -> dict:
     """Crea un goal `proposed` (nunca activo: lo activa el dale, ruling
-    15.3). `objective` con la gramatica de /goal (hasta:/tope:/en:/raiz:)."""
-    if not body.objective.strip():
-        raise HTTPException(status_code=400, detail="falta objective")
+    15.3) por el MISMO camino que `/goal` en el chat (`_proponer_goal`, en
+    hilo): la cabeza frontera propone, `en:` tiene que ser un repo git (400
+    ahora, no un `failed` al clonar), un texto privado nace privado sin
+    manos de suscripcion, y la solicitud `dale` queda estacionada en el
+    inbox con el bucle que la sondea (rev:server, rev:lente-spec).
+    `objective` con la gramatica de /goal (hasta:/tope:/en:/raiz:/con:).
+    Devuelve el goal y el texto de la propuesta (el que ve el chat)."""
+    if body.make_active or body.criteria or body.subtasks:
+        raise HTTPException(status_code=400, detail="make_active, criteria y subtasks son del Goal Mode "
+                            "viejo: un goal que corre nace proposed y lo activa el dale")
     d = goals.parse_goal_texto(body.objective)
+    if d["verbo"] or not d["texto"]:
+        raise HTTPException(status_code=400, detail="falta objective: el texto del goal (sin verbo)")
+    d["force_model"] = None
     try:
-        goal = goals.crear(
-            d["texto"] or body.objective, proyecto=(d["en"] or str(ROOT)),
-            titulo=body.title,
-            criterio=goals.parse_criterio(d["hasta"]) if d["hasta"] else None,
-            tope=d["tope"] or None,
-            compuertas={"raices": [d["raiz"]] if d["raiz"] else []})
+        goal, texto = await asyncio.to_thread(_proponer_goal, d, body.objective, None)
     except goals.ErrorGoal as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"goal": goal}
+    if body.title and body.title.strip():
+        goal = goals.load(None, goal["id"])
+        goal["title"] = body.title.strip()
+        goals.escribir(goal)
+    return {"goal": goal, "texto": texto}
 
 
 class GoalDaleBody(BaseModel):

@@ -975,3 +975,41 @@ def test_dale_y_segui_fallan_rapido_si_las_manos_no_estan_en_el_path(goal_home, 
     r = chat.cliente.post(f"/api/goals/{g['id']}/segui", json={"con": "codex"})
     assert r.status_code == 409 and "codex no esta" in r.json()["detail"]
     assert "active" in texto_visible(chat.turno("/goal segui"))
+
+
+def test_post_api_goals_pasa_por_la_propuesta(goal_home, chat, repo, tmp_path, monkeypatch):
+    """rev:server menor y rev:lente-spec menor: POST /api/goals creaba un
+    proposed sin la validacion de `en:` (un ROOT sin .git daba un goal que
+    fallaba al clonar), sin dispatch.PRIVATE (un texto privado arrancaba
+    con manos claude tras el dale), sin propuesta de cabeza ni solicitud
+    `dale` en el inbox, e ignoraba make_active/criteria/subtasks en
+    silencio. Ahora pasa por `_proponer_goal` y lo viejo con contenido es 400."""
+    llamadas = []
+    monkeypatch.setattr(srv, "_cabeza_del_goal", lambda *a, **k: llamadas.append(1) or dict(PROPUESTA))
+    c = chat.cliente
+    r = c.post("/api/goals", json={"objective": f"crea saludo.py hasta: pytest en verde tope: 3 golpes en: {repo}",
+                                   "title": "el saludo"})
+    assert r.status_code == 200, r.text
+    g = r.json()["goal"]
+    assert g["status"] == goals.PROPOSED and g["proyecto"] == str(repo) and g["title"] == "el saludo"
+    assert g["tope"]["golpes"] == 3 and g["criterio"] == {"tipo": "comando", "comando": "pytest -q"}
+    assert g["propuesta"]["plan"] == PROPUESTA["plan"] and llamadas == [1]
+    assert "proposed" in r.json()["texto"] and "/goal dale" in r.json()["texto"]
+    s = permisos_almacen.abiertas()
+    assert len(s) == 1 and s[0]["accion"]["operacion"] == "dale" and s[0]["accion"]["forma"]["goal"] == g["id"]
+    assert goals.load(None, g["id"])["espera"] == {"motivo": "dale", "solicitud": s[0]["id"]}
+    assert goals.golpes(g["id"])[0]["tipo"] == "propuesta"
+    # privado: sin cabeza, sin manos de suscripcion
+    r = c.post("/api/goals", json={"objective": f"ordena el archivo con mis password en: {repo}"})
+    assert r.status_code == 200 and r.json()["goal"]["privado"] is True and llamadas == [1]
+    # en: que no es repo -> 400 (antes: un proposed que fallaba al clonar)
+    (tmp_path / "carpeta").mkdir()
+    r = c.post("/api/goals", json={"objective": f"ordena esto en: {tmp_path / 'carpeta'}"})
+    assert r.status_code == 400 and "no es un repo git" in r.json()["detail"]
+    # lo viejo con contenido no se ignora en silencio
+    for cuerpo in ({"objective": "x", "make_active": True}, {"objective": "x", "criteria": ["a"]},
+                   {"objective": "x", "subtasks": ["b"]}):
+        r = c.post("/api/goals", json=cuerpo)
+        assert r.status_code == 400 and "dale" in r.json()["detail"], cuerpo
+    assert c.post("/api/goals", json={"objective": "   "}).status_code == 400
+    assert c.post("/api/goals", json={"objective": "dale"}).status_code == 400
