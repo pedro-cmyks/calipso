@@ -732,10 +732,11 @@ def test_la_funcion_sondear_destinos_del_smoke_contra_el_hook_real(goal_dir, tmp
         "out = s.sondear_destinos_en(pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]))\n"
         "shutil.rmtree(s.HOME_SMOKE, ignore_errors=True)\n"
         "print(json.dumps(out))\n")
+    # os.environ ya lleva el HOME falso de goal_dir (monkeypatch.setenv):
+    # el hook expande sus globs protegidos contra ese home, nunca el real
     r = subprocess.run([sys.executable, "-c", codigo, str(pathlib.Path(__file__).resolve().parent),
                         str(goal_dir["ruta"]), str(tmp_path / "sonda-fuera")],
-                       capture_output=True, text=True, timeout=60,
-                       env={**os.environ, "HOME": os.environ["HOME"]})
+                       capture_output=True, text=True, timeout=60, env=dict(os.environ))
     assert r.returncode == 0, r.stderr[-800:]
     sonda = json.loads(r.stdout.strip().splitlines()[-1])
     assert set(sonda) == {"cp", "sed", "mv", "tee"} and all(c == 2 for c in sonda.values()), sonda
