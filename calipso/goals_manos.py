@@ -139,11 +139,7 @@ def _correr_cabeza(argv: list[str], stdin: str, cwd: str, env: dict,
                                 encoding="utf-8", errors="replace", start_new_session=True)
     except Exception as e:
         return (1, "", str(e))
-    if al_lanzar is not None:
-        try:
-            al_lanzar(proc)
-        except Exception:
-            pass
+    publicar(al_lanzar, proc, None)
     try:
         out, err = proc.communicate(stdin, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -710,6 +706,24 @@ def matar(proc: subprocess.Popen, unidad: str | None = None) -> None:
         pass
 
 
+def publicar(al_lanzar: Callable | None, proc: subprocess.Popen, unidad: str | None) -> None:
+    """`al_lanzar(proc, unidad)` -- el runner guarda las dos cosas
+    (registrar_golpe) para que matar_golpe pare el scope ademas del grupo;
+    un `al_lanzar` de un solo parametro (`vistos.append` de los tests) se
+    llama como antes. Nunca levanta: publicar no puede tumbar el golpe."""
+    if al_lanzar is None:
+        return
+    try:
+        al_lanzar(proc, unidad)
+    except TypeError:
+        try:
+            al_lanzar(proc)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def golpear(*, argv: list[str], stdin: str, cwd: str, env: dict, timeout_s: float,
             cancelar: threading.Event | None = None, usar_systemd: bool | None = None,
             unidad: str | None = None, sondeo_s: float = SONDEO_S,
@@ -723,11 +737,13 @@ def golpear(*, argv: list[str], stdin: str, cwd: str, env: dict, timeout_s: floa
     alcanzo a parsear. `usar_systemd` None = si `systemd-run` esta en PATH
     y hay `unidad`. `al_lanzar(proc)` se llama apenas existe el Popen: asi
     el runner publica el handle en `golpe_en_curso` (decision 17) y
-    `matar_golpe` tiene a quien matar."""
+    `matar_golpe` tiene a quien matar; recibe tambien la unidad del scope
+    (None sin systemd) para pararla ademas del grupo."""
     parser = parser or Parser()
     if usar_systemd is None:
         usar_systemd = bool(unidad) and shutil.which("systemd-run") is not None
     cmd = argv_systemd(argv, unidad, int(timeout_s)) if (usar_systemd and unidad) else argv
+    scope = unidad if (usar_systemd and unidad) else None
     r = Resultado()
     t0 = time.monotonic()
     with tempfile.NamedTemporaryFile("w+", encoding="utf-8", errors="replace", suffix=".golpe.stdout",
@@ -742,11 +758,8 @@ def golpear(*, argv: list[str], stdin: str, cwd: str, env: dict, timeout_s: floa
             except Exception as exc:
                 r.exit, r.motivo, r.stderr_tail = 127, f"no se pudo lanzar: {exc}", str(exc)
                 return r
-            if al_lanzar is not None:
-                try:
-                    al_lanzar(proc)
-                except Exception:
-                    pass
+            publicar(al_lanzar, proc, scope)
+
             def _escribir_stdin() -> None:
                 # en hilo: un prompt mas largo que el buffer del pipe (64 KB:
                 # el ledger con las `falta` sin recortar) bloquearia el write
@@ -772,20 +785,20 @@ def golpear(*, argv: list[str], stdin: str, cwd: str, env: dict, timeout_s: floa
                             v = parser.alimentar(l)
                             if v:
                                 r.motivo, r.matado = v, True
-                                matar(proc, unidad if usar_systemd else None)
+                                matar(proc, scope)
                                 break
                     # `cancelar` ANTES de poll(): parar/apagar matan el CLI
                     # (muere en ms) y el sondeo lo veria muerto antes que
                     # cancelado, dejando la fila con motivo None
                     if cancelar is not None and cancelar.is_set():
                         r.motivo, r.matado = "cancelado", True
-                        matar(proc, unidad if usar_systemd else None)
+                        matar(proc, scope)
                         break
                     if proc.poll() is not None:
                         break
                     if time.monotonic() - t0 > timeout_s:
                         r.motivo, r.timeout, r.matado = "timeout", True, True
-                        matar(proc, unidad if usar_systemd else None)
+                        matar(proc, scope)
                         break
                     time.sleep(sondeo_s)
                 lector.seek(offset)

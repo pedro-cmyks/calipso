@@ -519,6 +519,7 @@ class Runner:
         self.sin_golpe = threading.Event()      # apagado mientras corre un golpe
         self.sin_golpe.set()
         self.golpe_en_curso: subprocess.Popen | None = None
+        self.unidad_en_curso: str | None = None
         self.hook_sondeado = False
 
     # -- inyecciones por defecto (produccion) --
@@ -557,10 +558,15 @@ class Runner:
                                   + p.read_text(encoding="utf-8", errors="replace")[:8000])
         return "\n".join(partes)[:calipso_github.DIFF_COMPLETO_MAX]
 
-    def registrar_golpe(self, proc: subprocess.Popen | None) -> None:
+    def registrar_golpe(self, proc: subprocess.Popen | None, unidad: str | None = None) -> None:
         """`al_lanzar` de goals_manos.golpear (decision 17): el handle del
-        Popen vive aca mientras el golpe corre; `matar_golpe` lo usa."""
+        Popen y la unidad del scope de systemd (None sin systemd) viven aca
+        mientras el golpe corre; `matar_golpe` los usa: sin la unidad, lo
+        que un script del clon deje en otra sesion (setsid/nohup adentro de
+        ./script.sh: el hook no lo ve) sobrevivia al killpg hasta
+        RuntimeMaxSec."""
         self.golpe_en_curso = proc
+        self.unidad_en_curso = unidad if proc is not None else None
 
     def esperar_golpe(self, plazo: float) -> bool:
         """True si no hay golpe en curso (o termino antes de `plazo`): el
@@ -571,7 +577,7 @@ class Runner:
     def matar_golpe(self) -> None:
         proc = self.golpe_en_curso
         if proc is not None and proc.poll() is None:
-            gm.matar(proc)
+            gm.matar(proc, self.unidad_en_curso)
 
     # -- una vuelta --
     def iteracion(self) -> dict:
@@ -789,7 +795,7 @@ class Runner:
                            bytes_entrados=len(resultado.stdout_tail or ""),
                            dominios=list(goal.get("dominios") or []), compuertas=usadas)
         finally:
-            self.golpe_en_curso = None
+            self.golpe_en_curso, self.unidad_en_curso = None, None
             self.sin_golpe.set()
         # 6. lo que corta
         if cancelado:
@@ -932,7 +938,7 @@ class Runner:
         try:
             return self._juzgar(goal, n, resultado)
         finally:
-            self.golpe_en_curso = None
+            self.golpe_en_curso, self.unidad_en_curso = None, None
             self.sin_golpe.set()
 
     def _juzgar(self, goal: dict, n: int, resultado: gm.Resultado) -> dict | None:
@@ -960,7 +966,7 @@ class Runner:
         # que va al ledger y al prompt
         revision = self.juez(goal, resumen_ledger(filas), self.diff_completo_fn(goal), salidas)
         duracion_ms = int((time.monotonic() - t0) * 1000)
-        self.golpe_en_curso = None
+        self.golpe_en_curso, self.unidad_en_curso = None, None
         if revision:
             cobro = self.pagador_fn(goal, 1, revisor)
             juez_rev = {**revision, "independencia": "proveedor_distinto"}

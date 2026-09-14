@@ -1246,6 +1246,30 @@ def test_manos_con_cli_publica_el_handle_en_el_runner(home, tmp_path, cli_falso_
     assert salida["accion"] == "golpe" and filas(g["id"])[0]["fase"] == "fin"
 
 
+def test_matar_golpe_para_el_scope_ademas_del_grupo(home, tmp_path, monkeypatch):
+    """rev:lente-riesgo: el apagado y /goal parar mataban el grupo (killpg)
+    pero no el scope de systemd, y lo que un script del clon dejara en otra
+    sesion (setsid/nohup adentro de ./script.sh) sobrevivia hasta
+    RuntimeMaxSec. `registrar_golpe(proc, unidad)` guarda la unidad y
+    `matar_golpe` la para ademas del grupo; sin unidad, solo el grupo."""
+    paradas = []
+    monkeypatch.setattr(gm, "_parar_unidad", paradas.append)
+    g = goal_activo(home, tmp_path)
+    r = Falsas().runner(g["id"])
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"], start_new_session=True)
+    r.registrar_golpe(proc, "calipso-goal-x-3")
+    assert r.golpe_en_curso is proc and r.unidad_en_curso == "calipso-goal-x-3"
+    r.matar_golpe()
+    assert proc.poll() is not None and paradas == ["calipso-goal-x-3"]
+    proc2 = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"], start_new_session=True)
+    r.registrar_golpe(proc2)                                     # la firma vieja: sin unidad
+    assert r.unidad_en_curso is None
+    r.matar_golpe()
+    assert proc2.poll() is not None and paradas == ["calipso-goal-x-3"]
+    r.registrar_golpe(None)
+    assert r.golpe_en_curso is None and r.unidad_en_curso is None
+
+
 # --- la aduana con origen goal y el Pagador con unidades --------------------------------------------
 
 def test_quien_con_origen_goal():

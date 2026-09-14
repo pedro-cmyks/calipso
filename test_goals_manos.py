@@ -501,6 +501,34 @@ def test_golpear_cancelar_mata_y_publica_el_handle(cli_falso_stream, goal_en_dis
     assert len(vistos) == 1 and vistos[0].pid and vistos[0].poll() is not None   # el Popen, ya muerto
 
 
+def test_golpear_publica_la_unidad_del_scope_junto_con_el_handle(cli_falso_stream, goal_en_disco, tmp_path,
+                                                                monkeypatch):
+    """`al_lanzar(proc, unidad)`: el runner guarda la unidad para que
+    matar_golpe pare el scope ademas del grupo. Con un `al_lanzar` de un
+    solo parametro (los tests viejos, `vistos.append`) se llama como antes;
+    sin systemd la unidad publicada es None."""
+    cli = cli_falso_stream
+    cli.guion([{"lineas": lineas_golpe()[:1], "dormir": 30}])
+    monkeypatch.setattr(gm, "argv_systemd", lambda argv, unidad, t: argv)      # sin systemd-run real
+    paradas = []
+    monkeypatch.setattr(gm, "_parar_unidad", paradas.append)
+    cancelar = threading.Event()
+    threading.Timer(0.5, cancelar.set).start()
+    vistos = []
+    r = gm.golpear(argv=_argv_falso(cli, [_contrato(tmp_path)]), stdin="x",
+                   cwd=str(goal_en_disco["clon"]), env=dict(os.environ), timeout_s=20,
+                   usar_systemd=True, unidad="calipso-goal-t-1", cancelar=cancelar, sondeo_s=0.1,
+                   al_lanzar=lambda proc, unidad: vistos.append((proc, unidad)))
+    assert r.motivo == "cancelado" and len(vistos) == 1
+    assert vistos[0][0].pid and vistos[0][1] == "calipso-goal-t-1" and paradas == ["calipso-goal-t-1"]
+    cli.guion([{"lineas": lineas_golpe()}])
+    vistos2 = []
+    gm.golpear(argv=_argv_falso(cli, [_contrato(tmp_path)]), stdin="x", cwd=str(goal_en_disco["clon"]),
+               env=dict(os.environ), timeout_s=20, usar_systemd=False, unidad="calipso-goal-t-2",
+               al_lanzar=lambda proc, unidad: vistos2.append(unidad))
+    assert vistos2 == [None]
+
+
 def test_golpear_con_cancelar_ya_puesto_dice_cancelado_aunque_el_cli_ya_murio(cli_falso_stream,
                                                                              goal_en_disco, tmp_path):
     """El sondeo mira `cancelar` antes que poll(): un CLI matado por parar
