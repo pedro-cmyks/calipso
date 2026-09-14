@@ -39,6 +39,13 @@ Que decide:
   WebFetch/WebSearch  solo con dominios declarados; el host tiene que estar
             en la lista (son in-process: el sandbox no las filtra, Trampa 8).
 
+Lo NUNCA sale etiquetado con su familia de la tabla cuando la tiene
+(FAMILIAS_NUNCA: datos_de_pedro, publicar, correo, rpm_ostree_rebase,
+flatpak_remote_delete) y con "NUNCA" cuando no (sudo/pkexec/doas/su, la
+auto-escalada del clon); el motivo lleva el prefijo `NUNCA:` y la tabla del
+goal no lo relaja: se deniega por nombre. El motor de permisos
+(permisos/goal.py) importa estas mismas funciones y decide lo mismo.
+
 La tabla del goal llega por un JSON (`compuertas.json`, lo escribe
 goals.escribir_compuertas) cuya ruta viene en la variable de entorno
 CALIPSO_GOAL_COMPUERTAS del proceso claude (el hook la hereda) o, de
@@ -68,6 +75,14 @@ VAR_COMPUERTAS = "CALIPSO_GOAL_COMPUERTAS"
 PROTEGIDAS = ("~/.ssh", "~/.gnupg", "~/.aws", "~/.config/gh", "~/.claude", "~/.codex",
               "~/.calipso", "~/.local/share/keyrings", "~/.password-store")
 NUNCA_EXES = {"sudo", "pkexec", "doas", "su", "gh", "mail", "sendmail", "mutt"}
+# La etiqueta de lo NUNCA: la familia de la tabla (goals.COMPUERTAS["nunca"])
+# cuando la tiene, y "NUNCA" cuando no (escalar privilegios, la auto-escalada
+# del clon). El motor de permisos (permisos/goal.py) mapea estas familias
+# por NOMBRE al nivel nunca, igual que este hook: la tabla del goal no puede
+# relajarlas. Es una copia a proposito (el hook no importa calipso);
+# test_goals_permisos la compara con la tabla.
+FAMILIAS_NUNCA = ("datos_de_pedro", "publicar", "correo", "rpm_ostree_rebase", "flatpak_remote_delete")
+FAMILIA_DEL_EXE_NUNCA = {"gh": "publicar", "mail": "correo", "sendmail": "correo", "mutt": "correo"}
 COMPUESTOS = (";", "&&", "||", "|", "$(", "`", ">", "<", "<<", "&")
 ENVOLTORIOS = {"bash", "sh", "zsh", "dash", "fish", "eval", "source", ".", "xargs", "env",
                "nohup", "setsid", "exec", "command", "builtin", "watch", "script", "ssh",
@@ -548,6 +563,13 @@ def _exe_de(argv: list[str], compuertas: dict) -> tuple[str, str]:
     return nombre, "sistema"
 
 
+def _nunca(familia: str | None, motivo: str, forma: dict | None = None) -> tuple[str, str, dict | None]:
+    """La salida de lo que no se hace jamas: la familia de la tabla cuando
+    existe (FAMILIAS_NUNCA) o la etiqueta "NUNCA" cuando no; el motivo con
+    el prefijo NUNCA: en los dos casos."""
+    return familia or "NUNCA", f"NUNCA: {motivo}", forma
+
+
 def _familia_git(argv: list[str]) -> tuple[str | None, str, dict | None]:
     resto = argv[1:]
     for tok in resto:
@@ -555,7 +577,7 @@ def _familia_git(argv: list[str]) -> tuple[str | None, str, dict | None]:
             return "DENEGAR", f"git con {tok}: sale del clon", None
     sub = next((t for t in resto if not t.startswith("-")), None)
     if sub == "push":
-        return "NUNCA", "git push: el push lo hace Calipso con el dale de Pedro (compuerta push)", None
+        return _nunca("publicar", "git push: el push lo hace Calipso con el dale de Pedro (compuerta push)")
     if sub in GIT_PROHIBIDOS or sub is None:
         return "DENEGAR", f"git {sub}: fuera del allow-list del clon", None
     if sub == "branch" and any(t in ("-D", "-d", "--delete") for t in resto):
@@ -567,14 +589,17 @@ def _familia_git(argv: list[str]) -> tuple[str | None, str, dict | None]:
 
 def familia_de_argv(argv: list[str], compuertas: dict) -> tuple[str | None, str, dict | None]:
     """(familia, motivo, forma). familia None = comando simple permitido;
-    "NUNCA" = lo que no se hace jamas; "DENEGAR" = no se sabe parsear o no
-    esta en el allow-list; una familia de la tabla = una compuerta con su
-    forma concreta (ruling 15.11)."""
+    "DENEGAR" = no se sabe parsear o no esta en el allow-list; una familia
+    de la tabla = una compuerta con su forma concreta (ruling 15.11). Lo que
+    no se hace jamas sale con su familia de FAMILIAS_NUNCA (publicar,
+    datos_de_pedro, ...) o con la etiqueta "NUNCA" si no tiene una (escalar
+    privilegios, auto-escalada), siempre con el motivo `NUNCA: ...`."""
     if not argv:
         return "DENEGAR", "comando vacio", None
     exe, donde = _exe_de(argv, compuertas)
     if exe in NUNCA_EXES:
-        return "NUNCA", f"{exe}: publicar/gastar/correo/escalar no se hace desde un golpe", None
+        familia = FAMILIA_DEL_EXE_NUNCA.get(exe)
+        return _nunca(familia, f"{exe}: {familia or 'escalar privilegios'} no se hace desde un golpe")
     if exe in ENVOLTORIOS:
         return "DENEGAR", f"{exe}: envoltorio, no se ve adentro", None
     if exe in ("python", "python3", "node", "ruby", "perl") and any(t in ("-c", "-e") for t in argv[1:3]):
@@ -590,9 +615,10 @@ def familia_de_argv(argv: list[str], compuertas: dict) -> tuple[str | None, str,
             return "DENEGAR", motivo, None
         for p in rutas:
             if _protegida(p):
-                return "NUNCA", f"rm sobre {p}: datos de Pedro", {"ruta": str(p)}
+                return _nunca("datos_de_pedro", f"rm sobre {p}: datos de Pedro", {"ruta": str(p)})
             if _auto_escalada(p, compuertas):
-                return "DENEGAR", f"rm sobre {p}: auto-escalada", None
+                return _nunca(None, f"rm sobre {p}: auto-escalada (.claude, .git/hooks, .git/config)",
+                              {"ruta": str(p)})
         for p in rutas:
             if _en_alcance(p, compuertas) is None:
                 return "borrar_fuera", f"rm fuera del clon y las raices: {p}", {"ruta": str(p)}
@@ -603,9 +629,10 @@ def familia_de_argv(argv: list[str], compuertas: dict) -> tuple[str | None, str,
             return "DENEGAR", motivo, None
         for p in rutas:
             if _protegida(p):
-                return "NUNCA", f"{exe} sobre {p}: datos de Pedro", None
+                return _nunca("datos_de_pedro", f"{exe} sobre {p}: datos de Pedro", {"ruta": str(p)})
             if exe in EXES_QUE_ESCRIBEN and _auto_escalada(p, compuertas):
-                return "DENEGAR", f"{exe} sobre {p}: auto-escalada", None
+                return _nunca(None, f"{exe} sobre {p}: auto-escalada (.claude, .git/hooks, .git/config)",
+                              {"ruta": str(p)})
         if exe == "find" and any(t in ("-exec", "-execdir", "-ok", "-okdir", "-delete") for t in argv):
             return "DENEGAR", "find con -exec/-delete: no se ve adentro", None
         if exe in SUBEN_ARCHIVOS:
@@ -630,7 +657,7 @@ def familia_de_argv(argv: list[str], compuertas: dict) -> tuple[str | None, str,
         return None, "npm de consulta o script", None
     if exe == "flatpak":
         if any(t in ("remote-delete", "remote-modify") for t in argv):
-            return "NUNCA", "flatpak remote-delete/modify", None
+            return _nunca("flatpak_remote_delete", "flatpak remote-delete/modify")
         if "--system" in argv or "remote-add" in argv:
             return "instalar_sistema", "flatpak de sistema", {"argv": argv}
         if "install" in argv or "uninstall" in argv or "update" in argv:
@@ -642,7 +669,7 @@ def familia_de_argv(argv: list[str], compuertas: dict) -> tuple[str | None, str,
         return "DENEGAR", f"flatpak {argv[1:2]}: fuera del allow-list", None
     if exe == "rpm-ostree":
         if any(t in ("rebase", "reset", "rollback", "deploy", "upgrade", "override") for t in argv):
-            return "NUNCA", "rpm-ostree rebase/reset/rollback: nunca", None
+            return _nunca("rpm_ostree_rebase", "rpm-ostree rebase/reset/rollback: nunca")
         if any(t in ("install", "uninstall") for t in argv):
             return "instalar_sistema", "rpm-ostree install", {"argv": argv}
         if argv[1:2] == ["status"]:
@@ -657,8 +684,9 @@ def _aplicar_tabla(familia: str | None, motivo: str, forma: dict | None,
                    compuertas: dict) -> Decision:
     if familia is None:
         return Decision(True, motivo, None, forma)
-    if familia == "NUNCA":
-        return Decision(False, f"NUNCA: {motivo}", "NUNCA", forma)
+    if familia == "NUNCA" or familia in FAMILIAS_NUNCA:
+        # por nombre y ANTES de la tabla: ningun nivel ni preautorizacion lo relaja
+        return Decision(False, motivo if motivo.startswith("NUNCA:") else f"NUNCA: {motivo}", familia, forma)
     if familia == "DENEGAR":
         return Decision(False, motivo, None, forma)
     nivel = (compuertas.get("niveles") or {}).get(familia)
@@ -694,15 +722,17 @@ def decidir_archivo(tool: str, tool_input: dict, compuertas: dict) -> Decision:
             return Decision(True, f"{tool} sin ruta (el cwd)", None)
         p = _resolver(ruta, cwd)
         if _protegida(p):
-            return Decision(False, f"NUNCA: {tool} sobre {p}: datos de Pedro", "datos_de_pedro")
+            return Decision(False, f"NUNCA: {tool} sobre {p}: datos de Pedro", "datos_de_pedro", {"ruta": str(p)})
         return Decision(True, f"{tool} permitido", None)
     if not ruta:
         return Decision(False, f"{tool} sin file_path", None)
     p = _resolver(ruta, cwd)
     if _protegida(p):
-        return Decision(False, f"NUNCA: {tool} sobre {p}: datos de Pedro", "datos_de_pedro")
+        return Decision(False, f"NUNCA: {tool} sobre {p}: datos de Pedro", "datos_de_pedro", {"ruta": str(p)})
     if _auto_escalada(p, compuertas):
-        return Decision(False, f"{tool} sobre {p}: auto-escalada (.claude, .git/hooks, .git/config)", None)
+        # sin familia en la tabla: la etiqueta NUNCA (el motor la mapea al nivel nunca)
+        return Decision(False, f"NUNCA: {tool} sobre {p}: auto-escalada (.claude, .git/hooks, .git/config)",
+                        "NUNCA", {"ruta": str(p)})
     alcance = _en_alcance(p, compuertas)
     if alcance:
         return _aplicar_tabla(alcance, f"{tool} dentro de {alcance}", {"ruta": str(p)}, compuertas)

@@ -23,3 +23,12 @@ __all__ = [
     "ESTADO_NEGADO",
     "clasificar", "evaluar", "responder", "registrar_ejecutor", "vista",
 ]
+
+# la familia `goal` (spec goals 2026-09-13, seccion 8): se registra al
+# importar el paquete, con red (si goals_hook no importa, el motor sigue
+# sin la familia y una Accion goal cae en "familia desconocida" = pregunta)
+try:
+    from . import goal as _goal
+    _goal.registrar()
+except Exception:  # pragma: no cover
+    pass
