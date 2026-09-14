@@ -496,7 +496,12 @@ def test_dale_desde_el_inbox_por_el_camino_real(goal_home, chat, repo):
 
 
 def test_help_lista_goal(goal_home, chat):
-    assert "/goal" in texto_visible(chat.turno("/help"))
+    texto = texto_visible(chat.turno("/help"))
+    assert "/goal" in texto
+    # cierre 2026-09-14 (rev:lente-spec menor): con:, el alias meta: y el
+    # tope: de segui existen y la ayuda los lista
+    assert "con: claude|codex" in texto and "meta: <texto>" in texto
+    assert "segui" in texto and "tope:" in texto.split("segui", 1)[1]
 
 
 # --- la cabeza sin herramientas (goals_manos v1) --------------------------------

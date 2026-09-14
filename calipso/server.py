@@ -2204,8 +2204,10 @@ HELP_TEXT = (
     "  /ultrathink  máximo esfuerzo (tier frontier: Opus/Fable)\n"
     "  /model <x>   forzar un modelo o persona (opus, codex, Aristoteles…)\n"
     "  /local /claude /codex /api  forzar la ruta\n"
-    "  /goal <texto> [hasta: ...] [tope: 2h|20 golpes|60 unidades] [en: <repo>] [raiz: <dir>]\n"
-    "               un goal que corre solo (proposed); /goal dale, no, parar, segui <nota>, estado\n"
+    "  /goal <texto> [hasta: ...] [tope: 2h|20 golpes|60 unidades] [en: <repo>] [raiz: <dir>] [con: claude|codex]\n"
+    "               un goal que corre solo (proposed); `meta: <texto>` es lo mismo\n"
+    "               /goal dale [tope: ...] [raiz: <dir>] | no [<id>] | parar | estado\n"
+    "               /goal segui [<nota>] [tope: 10 golpes|1h|20 unidades] [con: claude|codex]\n"
     "  /help        esta ayuda\n"
     "Si no pones nada, Calipso decide solo (modelo + intensidad) por la tarea."
 )

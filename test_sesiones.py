@@ -420,6 +420,20 @@ def test_el_tablero_firma_la_mesa_y_los_permisos(path):
     assert sesiones.permite("tablero", path, "POST") is True
 
 
+def test_el_tablero_contesta_las_solicitudes_de_familia_goal_por_el_inbox():
+    """La politica real (ruling del cierre 2026-09-14, rev:server): la
+    propuesta (`dale`), el cierre (`cerrar`), las compuertas, `raiz_nueva` y
+    `retomar` de un goal son solicitudes estacionadas de familia goal, y el
+    tablero las contesta por el MISMO endpoint que firma la mesa: es Pedro
+    autenticado. Lo que NO entra son los POST dale/no/parar/segui y el
+    PUT (tocan la maquina sin pasar por el inbox)."""
+    assert sesiones.permite("tablero", "/api/permisos/solicitudes/sol_goal_1/responder", "POST") is True
+    assert sesiones.permite("tablero", "/api/inbox", "GET") is True
+    for accion in ("dale", "no", "parar", "segui"):
+        assert sesiones.permite("tablero", f"/api/goals/goal_abc/{accion}", "POST") is False
+    assert sesiones.permite("tablero", "/api/goals/goal_abc", "PUT") is False
+
+
 @pytest.mark.parametrize("path,metodo", [
     # tocar la maquina: los canarios explicitos del spec
     ("/api/file", "GET"),
@@ -453,7 +467,8 @@ def test_el_tablero_firma_la_mesa_y_los_permisos(path):
     ("/api/routines/abc", "PUT"),
     ("/api/routines/abc", "DELETE"),
     ("/api/routines/abc/run", "POST"),
-    # un goal se arranca, para y cierra desde la Ally o el navegador, no desde un tablero
+    # los POST de goals no entran; el tablero arranca, cierra y preautoriza
+    # goals contestando sus solicitudes por el inbox (test de abajo)
     ("/api/goals", "POST"),
     ("/api/goals/goal_abc/dale", "POST"),
     ("/api/goals/goal_abc/no", "POST"),
