@@ -761,6 +761,13 @@ class Runner:
                     "stderr_tail": resultado.stderr_tail[-500:],
                     "model": resultado.model, "reintento": resultado.reintento,
                     "compuertas_usadas": usadas}
+            # ruling 2026-09-14: un golpe que falla dice por que en el ledger
+            # (invariante "nunca muere en silencio"): con exit != 0, matado, o
+            # sin veredicto ni linea `result`, la fila lleva la cola del stdout
+            # crudo (1500 caracteres; tapar_fila la pasa por el detector). Con
+            # veredicto y exit 0 no: el stream ya esta resumido en la fila.
+            if resultado.exit != 0 or resultado.matado or (not valido and not resultado.subtype):
+                fila["salida_tail"] = (resultado.stdout_tail or "")[-1500:]
             fila, tapados = gm.tapar_fila(fila)
             fila["secretos_tapados"] = tapados + tapados_p + tapados_c
             goals.golpe_fin(goal["id"], n, **fila)

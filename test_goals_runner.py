@@ -137,7 +137,7 @@ PASADO = 1789330200                   # 2026-09-13T20:10Z: una ventana ya vencid
 
 def resultado(estado="sigo", resumen="hice algo", unidades=2, comandos=(), exit=0, motivo=None,
               timeout=False, matado=False, veredicto=None, stderr="", rate=0.37, pregunta=None,
-              compuerta=None, resets_at=PASADO):
+              compuerta=None, resets_at=PASADO, stdout=""):
     v = veredicto if veredicto is not None else {"estado": estado, "resumen": resumen}
     if pregunta:
         v["pregunta"] = pregunta
@@ -148,7 +148,8 @@ def resultado(estado="sigo", resumen="hice algo", unidades=2, comandos=(), exit=
                                                      for i, (c, r) in enumerate(comandos)],
                         veredicto=v if exit == 0 and not matado else None,
                         rate_limit={"five_hour": rate, "seven_day": 0.1, "resets_at": resets_at},
-                        duracion_ms=1500, costo_usd=0.05, stderr_tail=stderr, subtype="success")
+                        duracion_ms=1500, costo_usd=0.05, stderr_tail=stderr, stdout_tail=stdout,
+                        subtype="success")
 
 
 def goal_activo(home, tmp_path, **campos):
@@ -351,6 +352,44 @@ def test_veredicto_invalido_cuenta_y_se_le_dice(home, tmp_path):
     assert filas(g["id"])[0]["veredicto_invalido"] is True
     r.iteracion()
     assert "veredicto anterior no fue valido" in f.llamadas["manos"][1]["prompt"]
+
+
+def test_la_fila_fin_guarda_la_salida_cruda_solo_cuando_el_golpe_falla(home, tmp_path):
+    """Ruling 2026-09-14: un golpe que falla dice por que en el ledger
+    (invariante "nunca muere en silencio"). Con exit != 0 la fila `fin`
+    lleva `salida_tail` = los ultimos 1500 caracteres del stdout crudo,
+    pasados por el detector; con veredicto y exit 0 no se guarda (el stream
+    ya esta resumido en la fila)."""
+    cola = "\nerror: token ghp_abcdefghijklmnopqrstuvwxyz0123 no sirve\n"
+    f = Falsas(resultados=[resultado(exit=1, stdout="relleno " * 300 + "x" * 1400 + cola),
+                           resultado("sigo", stdout='{"type": "result", "subtype": "success"}')])
+    g = goal_activo(home, tmp_path)
+    r = f.runner(g["id"])
+    r.iteracion()
+    r.iteracion()
+    fl = filas(g["id"])
+    assert fl[0]["exit"] == 1 and "salida_tail" in fl[0]
+    assert fl[0]["salida_tail"].endswith("error: token [SECRETO] no sirve\n")
+    assert "ghp_" not in fl[0]["salida_tail"] and not fl[0]["salida_tail"].startswith("relleno")
+    assert len(fl[0]["salida_tail"]) <= 1500 and fl[0]["secretos_tapados"] >= 1
+    assert fl[1]["exit"] == 0 and fl[1]["veredicto_del_golpe"]["estado"] == "sigo"
+    assert "salida_tail" not in fl[1]
+
+
+def test_la_salida_cruda_tambien_queda_con_golpe_matado_o_sin_veredicto_ni_result(home, tmp_path):
+    """Las otras dos formas de morir en silencio: matado (timeout, parar) y
+    un exit 0 sin veredicto ni linea `result` (el CLI corto sin decir nada)."""
+    mudo = gm.Resultado(exit=0, session_id="s-1", unidades=0, duracion_ms=10, stdout_tail="una linea suelta")
+    f = Falsas(resultados=[resultado(exit=None, motivo="timeout", timeout=True, matado=True, stdout="a medias"),
+                           mudo])
+    g = goal_activo(home, tmp_path)
+    r = f.runner(g["id"])
+    r.iteracion()
+    f.diff_valor = "otro.py | 1 +"
+    r.iteracion()
+    fl = filas(g["id"])
+    assert fl[0]["motivo"] == "timeout" and fl[0]["salida_tail"] == "a medias"
+    assert fl[1]["exit"] == 0 and fl[1]["veredicto_del_golpe"] is None and fl[1]["salida_tail"] == "una linea suelta"
 
 
 def test_timeout_cuenta_como_golpe(home, tmp_path):
