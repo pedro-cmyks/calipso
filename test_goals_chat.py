@@ -423,6 +423,34 @@ def test_api_goals_lista_con_consumo(goal_home, chat, repo):
     assert r.json()["activo"]["status"] == goals.ACTIVE and r.json()["active"]["id"] == r.json()["activo"]["id"]
 
 
+def test_dale_desde_el_inbox_por_el_camino_real(goal_home, chat, repo):
+    """Decision 16: el si del inbox sobre la propuesta lo consume el runner
+    (proposed con espera.solicitud), sin pasar por el chat. Una
+    `iteracion()` a mano del runner del server (en el harness no hay loop
+    principal: _lanzar_bucle no crea la tarea)."""
+    from calipso import goals_runner  # noqa: F401  (la Task 4 la trae al server)
+    _proponer(chat, repo)
+    g = goals.list_goals()[0]
+    s = permisos_almacen.abiertas()[0]
+    assert goals.load(None, g["id"])["espera"] == {"motivo": "dale", "solicitud": s["id"]}
+    runner = srv._runner_de(g["id"])
+    assert runner.iteracion()["accion"] == "esperando"            # sin respuesta, nada
+    r = chat.cliente.post(f"/api/permisos/solicitudes/{s['id']}/responder", json={"respuesta": "si"})
+    assert r.status_code == 200, r.text
+    assert r.json()["ejecucion"] is None                          # estacionada: no se ejecuta ahi
+    it = runner.iteracion()
+    assert it["accion"] == "retomado" and goals.load(None, g["id"])["status"] == goals.ACTIVE
+    assert goals.activo()["id"] == g["id"]
+    assert permisos_almacen.obtener(s["id"])["estado"] == permisos_almacen.ESTADO_EJECUTADA
+    # y el no del inbox cancela
+    chat.turno("/goal no")
+    _proponer(chat, repo)
+    g2 = goals.list_goals()[0]
+    s2 = permisos_almacen.abiertas()[0]
+    chat.cliente.post(f"/api/permisos/solicitudes/{s2['id']}/responder", json={"respuesta": "no"})
+    assert srv._runner_de(g2["id"]).iteracion()["estado"] == goals.CANCELLED
+
+
 def test_help_lista_goal(goal_home, chat):
     assert "/goal" in texto_visible(chat.turno("/help"))
 

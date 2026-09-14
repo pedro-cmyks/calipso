@@ -495,6 +495,40 @@ def test_clonar_para_goal_copia_los_objetos_sin_enlaces_duros(home, repo, tmp_pa
         assert gemelo.exists() and gemelo.stat().st_ino != objeto.stat().st_ino
 
 
+# --- la raiz de trabajo: el clon y trabajo/ fuera de ~/.calipso ---------------
+
+def test_la_raiz_de_trabajo_no_cae_bajo_lo_protegido(monkeypatch):
+    """Ruling del controlador (2026-09-14): ~/.calipso esta en DENY_READ del
+    sandbox y en PROTEGIDAS del hook, asi que el clon y trabajo/ viven en
+    `raiz_trabajo()` (env CALIPSO_GOALS_TRABAJO o ~/.local/share/calipso/goals);
+    si no, el martillo no podria leer su propio clon. Sin la env, la raiz por
+    defecto no cae bajo ninguna ruta protegida (solo expanduser: no se lee ni
+    se crea nada en el home real)."""
+    from calipso import goals_hook, goals_manos
+    monkeypatch.delenv("CALIPSO_GOALS_TRABAJO", raising=False)
+    raiz = goals.raiz_trabajo()
+    assert raiz == pathlib.Path(os.path.expanduser("~/.local/share/calipso/goals"))
+    for protegida in (*goals_manos.DENY_READ, *goals_hook.PROTEGIDAS):
+        p = pathlib.Path(os.path.expanduser(protegida))
+        assert p != raiz and p not in raiz.parents, f"{raiz} cae bajo {protegida}"
+    monkeypatch.setenv("CALIPSO_GOALS_TRABAJO", "/x/y")
+    assert goals.raiz_trabajo() == pathlib.Path("/x/y")
+
+
+def test_dir_trabajo_y_compuertas_siguen_la_raiz_de_trabajo(home, tmp_path, monkeypatch):
+    """`dir_trabajo(id)` crea `<raiz>/<id>`; `compuertas_de` pone el cwd del
+    goal sin repo en `<raiz>/<id>/trabajo`; el registro del hook y el resto
+    (goal.json, golpes, compuertas.json) siguen en dir_goal, bajo el home."""
+    monkeypatch.setenv("CALIPSO_GOALS_TRABAJO", str(tmp_path / "trabajo"))
+    g = goals.crear("x", proyecto=None, tope={"golpes": 1})
+    d = goals.dir_trabajo(g["id"])
+    assert d == tmp_path / "trabajo" / g["id"] and d.is_dir()
+    c = goals.compuertas_de(g)
+    assert c["cwd"] == str(d / "trabajo") and c["clon"] is None
+    assert c["registro"] == str(goals.dir_goal(g["id"]) / "hook.jsonl")
+    assert not str(d).startswith(str(home)) and str(goals.dir_goal(g["id"])).startswith(str(home))
+
+
 def main() -> int:
     """`tools/commands.py` corre `python test_goals.py` (allowlist test_goals)."""
     return pytest.main([__file__, "-q", "-p", "no:cacheprovider"])

@@ -118,6 +118,28 @@ def dir_goal(goal_id: str) -> pathlib.Path:
     return d
 
 
+def raiz_trabajo() -> pathlib.Path:
+    """La raiz de los clones y las carpetas de trabajo de los goals: env
+    CALIPSO_GOALS_TRABAJO o `~/.local/share/calipso/goals`. FUERA de
+    ~/.calipso a proposito (ruling del controlador 2026-09-14): ~/.calipso
+    esta en DENY_READ del sandbox (goals_manos) y en PROTEGIDAS del hook
+    (goals_hook), y el martillo tiene que poder leer y escribir su propio
+    clon. Se resuelve por llamada (los tests la mueven por env) y NO crea
+    nada: sin la env apunta al home real y este modulo no lo toca."""
+    return pathlib.Path(os.environ.get(
+        "CALIPSO_GOALS_TRABAJO", os.path.expanduser("~/.local/share/calipso/goals")))
+
+
+def dir_trabajo(goal_id: str) -> pathlib.Path:
+    """`raiz_trabajo()/<id>`: ahi viven `repo/` (el clon) y `trabajo/` (la
+    carpeta del goal sin repo). goal.json, events, golpes, contrato.md,
+    compuertas.json y hook.jsonl siguen en `dir_goal` (los leen el server
+    y el hook, que corren fuera del sandbox)."""
+    d = raiz_trabajo() / goal_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def ruta_activo() -> pathlib.Path:
     return raiz_goals() / "activo.json"
 
@@ -881,10 +903,11 @@ def propuesta_sin_modelo(texto: str, en: str | None) -> dict:
 
 def compuertas_de(goal: dict[str, Any]) -> dict:
     """El JSON que lee el hook (goals_hook.py) en cada decision: el clon (o
-    la carpeta de trabajo), las raices, los dominios, la tabla de niveles y
-    las preautorizaciones que Pedro dio A ESTE goal (decision 9)."""
+    la carpeta de trabajo, bajo `dir_trabajo`: fuera de ~/.calipso), las
+    raices, los dominios, la tabla de niveles y las preautorizaciones que
+    Pedro dio A ESTE goal (decision 9)."""
     carpeta = dir_goal(goal["id"])
-    cwd = goal.get("repo") or str(carpeta / "trabajo")
+    cwd = goal.get("repo") or str(dir_trabajo(goal["id"]) / "trabajo")
     return {
         "goal": goal["id"],
         "clon": goal.get("repo"),

@@ -90,7 +90,7 @@ Obligatorio y tipado. Un `Quien` con:
 
 | campo | valores | de donde sale |
 |---|---|---|
-| `origen` | `turno`, `gesto`, `rutina`, `jefe`, `arranque`, `ui` | el sitio de llamada lo sabe siempre |
+| `origen` | `turno`, `gesto`, `rutina`, `jefe`, `arranque`, `ui`, `goal` (el golpe de un goal: `rutina={"kind": "goal", "id": <goal_id>}`, spec goals 2026-09-13) | el sitio de llamada lo sabe siempre |
 | `chat` | id del chat | `ws_chat` |
 | `proyecto` | nombre (slug) de ROOT en el momento del cruce | el sitio lo pasa (Pedro lo nombro: "que departamento, proyecto, turno o rutina") |
 | `gesto` | el slash reconstruido desde `directives` (`force_web` -> `/web`, `nube` -> `/nube`, `force_route`+`force_model` -> `/claude`...); si no hubo slash, `null` y el proposito lo dice ("busqueda por heuristica") | `directives` |

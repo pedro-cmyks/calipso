@@ -1,0 +1,837 @@
+"""
+calipso/goals_runner.py - el bucle del goal (spec 2026-09-13, seccion 5).
+
+`Runner.iteracion()` es UNA vuelta del bucle, sincrona y pura sobre
+inyecciones (manos, juez, carga, consumo, pagador, preguntar,
+evaluar_solicitud, sondear, clonar, diff, diff_completo, criterio, aduana): los
+tests la llaman directo; en produccion el server la corre en hilo desde una
+tarea asyncio propia por goal (`_GOALS_EN_CURSO`, cada GOAL_TICK_S).
+
+Cada vuelta, con el goal `active`:
+  0. si no hay clon, clona (o crea `trabajo/` para el goal sin repo); los
+     dos viven en `goals.dir_trabajo(id)`, FUERA de ~/.calipso (ruling del
+     controlador 2026-09-14: ~/.calipso es DENY_READ del sandbox y
+     PROTEGIDA del hook, y el martillo tiene que leer su propio clon);
+     antes del primer golpe sondea el hook (gh pr create -> exit 2) o
+     `failed` motivo `hook inactivo` sin invocar nada (ruling 15.5);
+  1. el tope (golpes, minutos, unidades, mm): `waiting` motivo `tope`;
+  2. la carga: bajo `cargada` pospone sin gastar (fila carga/pospone);
+  3. la cuota (consumo pasivo + el rate_limit del ultimo golpe): `waiting`
+     motivo `cuota`, NUNCA el 7b ni la otra familia (ruling 15.12);
+  4. la fila `inicio` del ledger, las compuertas, el contrato, el prompt (el
+     ledger resumido con el diff_stat y las `falta` SIN recortar), el
+     golpe (la cabeza ES el martillo: una sesion headless con herramientas,
+     --resume entre golpes; ruling 15.1);
+  5. despues: diff_stat, comandos, unidades reales, las compuertas usadas
+     segun hook.jsonl (con la linea de deshacer de cada instalacion: spec
+     7/8, ruling 15.14), el detector de secretos, la fila de la aduana, el
+     cobro, la fila `fin`;
+  6. hook inactivo / mcp inesperado -> `failed`; fallo por cuota -> `waiting`
+     cuota (no cuenta contra el tope de golpes); timeout -> cuenta;
+  7. el veredicto: `preguntar` -> una solicitud estacionada (pregunta,
+     compuerta o raiz_nueva; lo NUNCA no se pregunta) y `waiting`;
+     `terminar` -> el juez: criterio medible primero (comando/archivo/
+     numero), despues el revisor de OTRA familia (cuenta como golpe y se
+     cobra; `independencia`); cumplido -> `waiting` motivo `cumplido` con la
+     solicitud `cerrar` para Pedro; no cumplido -> la `falta` al ledger y el
+     martillo sigue; sin otra familia -> Pedro sin veredicto de modelo;
+  8. no convergencia (tres golpes sin diff nuevo, la misma falta dos veces,
+     el mismo comando fallando igual) -> `waiting` con diagnostico y
+     opciones; y el tope, de nuevo.
+Con el goal `waiting` mira la solicitud (aprobada/negada) y retoma o cierra.
+Nunca levanta: cualquier excepcion deja el goal `failed` con motivo
+(invariante 6); un ErrorGoal (otro goal en curso) deja evento y telemetria,
+nunca pasa en silencio.
+
+`goals.escribir` es last-writer-wins (salvo `status`): el runner recarga el
+goal con `goals.load` inmediatamente antes de cada `escribir` (Pedro puede
+haber sumado preautorizadas, raices o una nota por el inbox mientras el
+golpe corria). La fila 0 del ledger es la propuesta (`_proponer_goal`, sin
+herramientas): no es un golpe del martillo y queda fuera del resumen, del
+numero del golpe siguiente y de la no convergencia.
+"""
+from __future__ import annotations
+
+import contextlib
+import json
+import os
+import pathlib
+import subprocess
+import threading
+from typing import Callable
+
+from calipso import github as calipso_github
+from calipso import goals
+from calipso import goals_hook
+from calipso import goals_manos as gm
+from calipso import telemetry
+
+GOAL_TICK_S = 5.0
+INDEPENDENCIAS = ("proveedor_distinto", "modelo_distinto_mismo_cliente", "ninguna")
+MOTIVOS_WAITING = ("tope", "cuota", "no_convergencia", "cumplido", "pregunta", "compuerta",
+                   "raiz_nueva", "parado por Pedro", "server apagado", "server reiniciado")
+CUOTA_CODEX_MAX = 90.0
+CUOTA_CLAUDE_MAX = 0.95
+OPCIONES_NO_CONVERGENCIA = ("cambiar el plan (/goal segui <nota con el plan nuevo>)",
+                            "pedir a Pedro (contesta lo que falta con /goal segui <nota>)",
+                            "cambiar de manos (/goal segui con: codex|claude)",
+                            "achicar el alcance (/goal no y un /goal mas chico)")
+FALLO_TAIL = ("exit code", "error", "failed", "traceback")
+
+
+def _cwd_de(goal: dict) -> str:
+    """El cwd del golpe: el clon, o `trabajo/` bajo dir_trabajo (goal sin repo)."""
+    return goal.get("repo") or str(goals.dir_trabajo(goal["id"]) / "trabajo")
+
+
+def _golpes_del_martillo(filas: list[dict]) -> list[dict]:
+    """Las filas del ledger que son golpes (o revisiones): la fila 0 de la
+    propuesta (`tipo: propuesta`) queda afuera."""
+    return [f for f in filas if f.get("tipo") != "propuesta"]
+
+
+def _siguiente_n(filas: list[dict]) -> int:
+    """El numero del golpe que viene: max(n) + 1 (con la propuesta en la
+    fila 0, `len + 1` etiquetaria el primer golpe como 2)."""
+    return max((int(f.get("n") or 0) for f in filas), default=0) + 1
+
+
+# --------------------------------------------------------------------------
+# textos: el contrato, el prompt, el resumen del ledger
+# --------------------------------------------------------------------------
+
+def contrato_del_goal(goal: dict) -> str:
+    """El system del golpe (`--append-system-prompt-file`, fuera del clon)."""
+    c = goal.get("compuertas") or {}
+    niveles = c.get("niveles") or goals.NIVEL_DE
+    lineas = [
+        "CONTRATO DEL GOAL (Calipso, 2026-09-13)",
+        f"goal: {goal.get('id')} -- {goal.get('title')}",
+        f"objetivo: {goal.get('objective')}",
+        f"criterio de listo: {json.dumps(goal.get('criterio') or {}, ensure_ascii=False)}",
+        f"tope: {json.dumps(goal.get('tope') or {}, ensure_ascii=False)} (el primero que se alcance para)",
+        f"cwd: {goal.get('repo') or 'carpeta de trabajo vacia (goal sin repo)'}",
+        f"raices fuera del repo (lectura y escritura): {', '.join(c.get('raices') or []) or 'ninguna'}",
+        f"dominios de red: {', '.join(goal.get('dominios') or []) or 'ninguno (solo api.anthropic.com)'}",
+        "compuertas: directo = " + ", ".join(f for f, n in niveles.items() if n == "directo")
+        + "; pregunta = " + ", ".join(f for f, n in niveles.items() if n == "pregunta")
+        + "; NUNCA = " + ", ".join(f for f, n in niveles.items() if n == "nunca"),
+        "plan: " + " -> ".join(goal.get("plan") or []) if goal.get("plan") else "plan: el que armes",
+        "",
+        "Reglas: sos las manos de Calipso dentro de un sandbox; trabaja solo en el cwd y las raices; "
+        "no hagas push, PR, correo, gastos ni toques datos de Pedro (el hook lo deniega y el sandbox lo "
+        "impide); instala solo dentro del cwd (venv, npm sin -g); si necesitas una compuerta en "
+        "pregunta (instalar en el home o el sistema, borrar fuera, una raiz nueva), termina el golpe con "
+        "estado \"preguntar\", la pregunta y la compuerta (familia y forma exacta); commitea en la rama "
+        "del clon lo que termines. Termina SIEMPRE con el veredicto del esquema: estado sigo (hay mas "
+        "por hacer), terminar (creo que el criterio se cumple: el juez lo verifica), preguntar; y un "
+        "resumen de una o dos lineas de lo que hiciste.",
+    ]
+    return "\n".join(lineas)
+
+
+def resumen_ledger(filas: list[dict]) -> str:
+    """El ledger resumido para el prompt y el revisor: por golpe, el
+    veredicto, los comandos (con la cola del resultado), el diff_stat y las
+    `falta` del juez SIN recortar (spec seccion 5.2)."""
+    out = []
+    for f in _golpes_del_martillo(filas):
+        v = f.get("veredicto_del_golpe") or {}
+        out.append(f"golpe {f.get('n')} ({f.get('manos')}): {v.get('estado', f.get('motivo') or '?')} - "
+                   f"{v.get('resumen', '')}")
+        for c in (f.get("comandos") or [])[:12]:
+            cola = (c.get("resultado_tail") or "").strip().replace("\n", " ")[-120:]
+            out.append(f"  $ {c.get('cmd')}" + (f" -> {cola}" if cola else ""))
+        if f.get("diff_stat"):
+            out.append("  diff: " + f["diff_stat"].replace("\n", "; ")[:600])
+        j = f.get("juez") or {}
+        if j.get("criterio"):
+            out.append(f"  criterio: {'ok' if j['criterio'].get('ok') else 'NO'} - {j['criterio'].get('salida', '')[:300]}")
+        if j.get("falta"):
+            out.append("  falta segun el revisor (" + str(j.get("revisor") or "") + "):")
+            out.extend(f"   - {x}" for x in j["falta"])
+        if j.get("nota"):
+            out.append(f"  nota del revisor: {j['nota']}")
+        if f.get("veredicto_invalido"):
+            out.append("  (el veredicto de este golpe no fue valido)")
+    return "\n".join(out)
+
+
+def prompt_del_golpe(goal: dict, filas: list[dict], nota: str | None = None) -> str:
+    golpes = _golpes_del_martillo(filas)
+    n = _siguiente_n(filas)
+    partes = [f"GOLPE {n} del goal: {goal.get('objective')}"]
+    if golpes:
+        partes.append("LO QUE PASO HASTA AHORA:\n" + resumen_ledger(golpes))
+        ultimo = golpes[-1]
+        if ultimo.get("veredicto_invalido"):
+            partes.append("Tu veredicto anterior no fue valido (no era el JSON del esquema): "
+                          "termina este golpe con el veredicto correcto.")
+        criterio = (ultimo.get("juez") or {}).get("criterio") or {}
+        if criterio.get("ok") is False:
+            partes.append("El criterio medible NO se cumplio: " + str(criterio.get("salida", "")))
+    else:
+        partes.append("Es el primer golpe: lee lo que haga falta y arranca por el plan.")
+    if nota:
+        partes.append("NOTA DE PEDRO: " + nota)
+    partes.append("Al terminar este golpe, el veredicto del esquema (sigo | terminar | preguntar).")
+    return "\n\n".join(partes)
+
+
+# --------------------------------------------------------------------------
+# las compuertas usadas y la linea de deshacer (spec 7/8, ruling 15.14)
+# --------------------------------------------------------------------------
+
+def linea_de_deshacer(familia: str | None, forma: dict | None) -> str | None:
+    """La linea que deshace una instalacion, derivada de la forma concreta
+    que anoto el hook: pip -> `uninstall -y`, npm/pnpm -> `uninstall`,
+    yarn -> `remove`, flatpak -> `uninstall` con el mismo --user/--system,
+    rpm-ostree -> `uninstall`. None si no es una instalacion o no hay
+    paquetes sueltos (-r requirements, -e .). El estado antes/despues
+    (`pip list`, `npm ls`, `flatpak list`) NO se toma en esta tanda."""
+    if not familia or not str(familia).startswith("instalar"):
+        return None
+    argv = [str(t) for t in ((forma or {}).get("argv") or [])]
+    if not argv:
+        return None
+    base = os.path.basename(argv[0])
+    es_pip = base in ("pip", "pip3") or argv[1:3] == ["-m", "pip"] or (base == "uv" and argv[1:2] == ["pip"])
+    if es_pip:
+        i = next((k for k, t in enumerate(argv) if t == "install"), None)
+        if i is None:
+            return None
+        resto = argv[i + 1:]
+        if any(t in ("-r", "--requirement", "-e", "--editable") for t in resto):
+            return None
+        paquetes = [t for t in resto if not t.startswith("-")]
+        return " ".join(argv[:i] + ["uninstall", "-y", *paquetes]) if paquetes else None
+    if base in ("npm", "pnpm", "yarn"):
+        if base == "yarn" and argv[1:3] == ["global", "add"]:
+            paquetes = [t for t in argv[3:] if not t.startswith("-")]
+            return " ".join([base, "global", "remove", *paquetes]) if paquetes else None
+        i = next((k for k, t in enumerate(argv) if t in ("install", "i", "ci", "add")), None)
+        if i is None:
+            return None
+        paquetes = [t for t in argv[i + 1:] if not t.startswith("-")]
+        if not paquetes:
+            return None
+        g = ["-g"] if any(t in ("-g", "--global") for t in argv) else []
+        return " ".join([base, "remove" if base == "yarn" else "uninstall", *g, *paquetes])
+    if base == "flatpak" and "install" in argv:
+        ambito = [t for t in argv if t in ("--user", "--system")]
+        pos = [t for t in argv[argv.index("install") + 1:] if not t.startswith("-")]
+        return " ".join(["flatpak", "uninstall", *ambito, pos[-1]]) if pos else None
+    if base == "rpm-ostree" and "install" in argv:
+        paquetes = [t for t in argv[argv.index("install") + 1:] if not t.startswith("-")]
+        return " ".join(["rpm-ostree", "uninstall", *paquetes]) if paquetes else None
+    return None
+
+
+def _lineas_de(ruta: str) -> int:
+    try:
+        with open(ruta, "r", encoding="utf-8", errors="replace") as f:
+            return sum(1 for _ in f)
+    except OSError:
+        return 0
+
+
+def compuertas_usadas(registro: str, desde: int = 0) -> list[dict]:
+    """Las decisiones del hook (hook.jsonl, goals_hook.anotar) desde la
+    linea `desde` que tocaron una compuerta de la tabla (las de un comando
+    simple, sin familia, no): familia, forma, decision, resumen y la linea
+    de deshacer. Van a la fila `fin` (`compuertas_usadas`) y a la carga del
+    cruce de la aduana (spec seccion 8)."""
+    out: list[dict] = []
+    try:
+        with open(registro, "r", encoding="utf-8", errors="replace") as f:
+            lineas = f.readlines()[desde:]
+    except OSError:
+        return out
+    for l in lineas:
+        try:
+            fila = json.loads(l)
+        except json.JSONDecodeError:
+            continue
+        if not fila.get("familia"):
+            continue
+        out.append({"ts": fila.get("ts"), "tool": fila.get("tool"), "decision": fila.get("decision"),
+                    "familia": fila.get("familia"), "forma": fila.get("forma"),
+                    "resumen": fila.get("resumen"),
+                    "deshacer": linea_de_deshacer(fila.get("familia"), fila.get("forma"))})
+        if len(out) >= 50:
+            break
+    return out
+
+
+# --------------------------------------------------------------------------
+# no convergencia (ruling 15.8) y el criterio medible
+# --------------------------------------------------------------------------
+
+def _tail_fallido(c: dict) -> str | None:
+    cola = (c.get("resultado_tail") or "").lower()
+    if any(p in cola for p in FALLO_TAIL) and "exit code 0" not in cola:
+        return cola
+    return None
+
+
+def no_converge(filas: list[dict]) -> str | None:
+    golpes = _golpes_del_martillo(filas)
+    fin = [f for f in golpes if f.get("fase") == "fin" and not (f.get("manos") or "").startswith("revisor:")]
+    if len(fin) >= 3:
+        ultimos = [f.get("diff_stat") or "" for f in fin[-3:]]
+        if ultimos[0] == ultimos[1] == ultimos[2]:
+            return "tres golpes seguidos sin diff nuevo en el clon"
+    con_juez = [f for f in golpes if (f.get("juez") or {}).get("falta")]
+    if len(con_juez) >= 2:
+        a = sorted(str(x) for x in con_juez[-1]["juez"]["falta"])
+        b = sorted(str(x) for x in con_juez[-2]["juez"]["falta"])
+        if a == b:
+            return "la misma falta del revisor dos veces seguidas: " + "; ".join(a)
+    if len(fin) >= 2:
+        prev = {c.get("cmd"): _tail_fallido(c) for c in fin[-2].get("comandos") or []}
+        for c in fin[-1].get("comandos") or []:
+            t = _tail_fallido(c)
+            if t and prev.get(c.get("cmd")) == t:
+                return f"el mismo comando fallando igual dos golpes seguidos: {c.get('cmd')}"
+    return None
+
+
+def _correr_criterio(comando: str, cwd: str) -> tuple[bool, str]:
+    """El comando del criterio en el clon, salida 0 = cumplido. SIN shell:
+    el comando lo propuso la cabeza (un modelo) o Pedro, y corre FUERA del
+    sandbox; `goals_hook.partir` lo tokeniza y rechaza compuestos (`;`,
+    `&&`, `|`, `$(`...) -- un criterio compuesto no se corre, falla.
+    Canario: local (no sale de la maquina). 10 minutos de tope."""
+    argv = goals_hook.partir(comando)
+    if argv is None:
+        return False, "criterio compuesto o vacio: no se corre (usa un comando simple)"
+    try:
+        r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=600,
+                           env=gm.env_saneado())
+        salida = ((r.stdout or "") + (r.stderr or "")).strip()
+        return r.returncode == 0, salida[-1500:] or f"exit {r.returncode}"
+    except subprocess.TimeoutExpired:
+        return False, "el comando del criterio vencio a los 600 s"
+    except Exception as exc:
+        return False, str(exc)
+
+
+def juzgar_criterio(goal: dict, correr: Callable | None) -> tuple[bool | None, str]:
+    """(None, motivo) si no hay criterio medible; si no (ok, salida)."""
+    c = goal.get("criterio") or {}
+    tipo = c.get("tipo")
+    cwd = _cwd_de(goal)
+    if tipo == "comando":
+        if correr is not None:
+            return correr(goal)
+        return _correr_criterio(str(c.get("comando") or ""), cwd)
+    if tipo == "archivo":
+        p = pathlib.Path(cwd) / str(c.get("ruta") or "")
+        if not p.exists():
+            return False, f"{p} no existe"
+        if c.get("contiene") and c["contiene"] not in p.read_text(encoding="utf-8", errors="replace"):
+            return False, f"{p} no contiene {c['contiene']!r}"
+        return True, f"{p} existe"
+    if tipo == "numero":
+        consumo = goals.consumo(goal)
+        valor = consumo.get(str(c.get("metrica")))
+        if valor is None:
+            return False, f"metrica desconocida: {c.get('metrica')}"
+        umbral = float(c.get("umbral"))
+        comp = c.get("comparacion") or "<="
+        ok = {"<=": valor <= umbral, "<": valor < umbral, ">=": valor >= umbral, ">": valor > umbral,
+              "==": valor == umbral}.get(comp, False)
+        return ok, f"{c.get('metrica')} = {valor} {comp} {umbral}"
+    return None, "sin criterio medible"
+
+
+# --------------------------------------------------------------------------
+# las manos reales: el golpe sobre el CLI (claude o codex)
+# --------------------------------------------------------------------------
+
+def manos_con_cli(exes: dict, *, timeout_s: int | None = None,
+                  usar_systemd: bool | None = None,
+                  al_lanzar: Callable | None = None) -> Callable:
+    """Devuelve `manos(goal, n, prompt, contrato, cancelar) -> Resultado`
+    sobre `goals_manos.golpear`: arma settings (sandbox + hook), argv
+    (claude: --session-id en el golpe 1, --resume despues; codex: -o y
+    --output-schema en archivos del goal), env (CALIPSO_GOAL_COMPUERTAS,
+    CALIPSO_HOME vacio), escribe el contrato FUERA del clon y lanza con la
+    unidad `calipso-goal-<id>-<n>`. `al_lanzar` (= `runner.registrar_golpe`)
+    publica el Popen en el runner apenas existe (decision 17)."""
+    def manos(goal: dict, n: int, prompt: str, contrato: str,
+              cancelar: threading.Event | None) -> gm.Resultado:
+        carpeta = goals.dir_goal(goal["id"])
+        cwd = _cwd_de(goal)
+        pathlib.Path(cwd).mkdir(parents=True, exist_ok=True)
+        home_vacio = carpeta / "home_vacio"
+        home_vacio.mkdir(exist_ok=True)
+        ruta_contrato = carpeta / "contrato.md"
+        ruta_contrato.write_text(contrato, encoding="utf-8")
+        compuertas_path = str(carpeta / "compuertas.json")
+        compuertas = json.loads(pathlib.Path(compuertas_path).read_text(encoding="utf-8"))
+        env = gm.env_del_golpe(compuertas_path, str(home_vacio))
+        cliente = goal.get("manos") or "claude"
+        exe = (exes or {}).get(cliente)
+        if not exe:
+            return gm.Resultado(exit=127, motivo=f"{cliente} no esta instalado")
+        tout = timeout_s or gm.GOLPE_TIMEOUT_S()
+        unidad = f"calipso-goal-{goal['id']}-{n}"
+        if cliente == "claude":
+            settings = gm.settings_del_goal(compuertas, compuertas_path=compuertas_path)
+            argv = gm.argv_claude(exe, contrato=str(ruta_contrato), settings=settings,
+                                  schema=gm.ESQUEMA_VEREDICTO, session_id=goal["session_id"],
+                                  resume=n > 1, model=_modelo_claude(goal), web=bool(goal.get("dominios")))
+            return gm.golpear(argv=argv, stdin=prompt, cwd=cwd, env=env, timeout_s=tout,
+                              cancelar=cancelar, usar_systemd=usar_systemd, unidad=unidad,
+                              al_lanzar=al_lanzar)
+        salida = carpeta / f"codex-{n}.json"
+        schema_file = carpeta / "esquema-veredicto.json"
+        schema_file.write_text(json.dumps(gm.ESQUEMA_VEREDICTO), encoding="utf-8")
+        argv = gm.argv_codex(exe, cwd=cwd, raices=list(compuertas.get("raices") or []),
+                             salida=str(salida), schema_file=str(schema_file))
+        r = gm.golpear(argv=argv, stdin=f"{contrato}\n\n{prompt}", cwd=cwd, env=env, timeout_s=tout,
+                       cancelar=cancelar, usar_systemd=usar_systemd, unidad=unidad, al_lanzar=al_lanzar)
+        if r.veredicto is None and salida.exists():
+            try:
+                v = json.loads(salida.read_text(encoding="utf-8"))
+                r.veredicto = v if isinstance(v, dict) else None
+            except (OSError, json.JSONDecodeError):
+                pass
+        if r.unidades == 0 and r.exit == 0:
+            r.unidades = 1        # No confirmado 7: sin las lineas --json parseadas, al menos una llamada
+        return r
+    return manos
+
+
+def _modelo_claude(goal: dict) -> str | None:
+    """La cabeza que eligio el ruteo al proponer (`_proponer_goal` guarda
+    `propuesta["modelo"]` = el model del top del ranking); sin eso, opus
+    (piso frontera: el martillo nunca corre con un tier menor)."""
+    m = ((goal.get("propuesta") or {}).get("modelo") or "").lower()
+    return m if m in ("opus", "sonnet", "haiku") else "opus"
+
+
+# --------------------------------------------------------------------------
+# el runner
+# --------------------------------------------------------------------------
+
+class Runner:
+    def __init__(self, goal_id: str, *, manos: Callable | None = None, juez: Callable,
+                 carga_fn: Callable, consumo_fn: Callable, pagador_fn: Callable,
+                 preguntar: Callable, evaluar_solicitud: Callable,
+                 sondear: Callable | None = None, clonar: Callable | None = None,
+                 diff_fn: Callable | None = None, diff_completo_fn: Callable | None = None,
+                 correr_criterio: Callable | None = None,
+                 aduana_fn: Callable | None = None, telemetria: Callable | None = None) -> None:
+        """`manos` None = se asigna despues: las manos reales necesitan
+        `runner.registrar_golpe` (server._runner_de las arma en dos pasos)."""
+        self.goal_id = goal_id
+        self.manos = manos
+        self.juez = juez
+        self.carga_fn = carga_fn
+        self.consumo_fn = consumo_fn
+        self.pagador_fn = pagador_fn
+        self.preguntar = preguntar
+        self.evaluar_solicitud = evaluar_solicitud
+        self.sondear = sondear or self._sondear_real
+        self.clonar = clonar or self._clonar_real
+        self.diff_fn = diff_fn or self._diff_real
+        self.diff_completo_fn = diff_completo_fn or self._diff_completo_real
+        self.correr_criterio = correr_criterio
+        self.aduana_fn = aduana_fn or (lambda *a, **k: None)
+        self.telemetria = telemetria or telemetry.log_event
+        self.cancelar = threading.Event()
+        self.sin_golpe = threading.Event()      # apagado mientras corre un golpe
+        self.sin_golpe.set()
+        self.golpe_en_curso: subprocess.Popen | None = None
+        self.hook_sondeado = False
+
+    # -- inyecciones por defecto (produccion) --
+    @staticmethod
+    def _sondear_real(compuertas_path: str) -> tuple[bool, str]:
+        return gm.sondear_hook(compuertas_path)
+
+    @staticmethod
+    def _clonar_real(goal: dict) -> dict:
+        destino = str(goals.dir_trabajo(goal["id"]) / "repo")
+        return calipso_github.clonar_para_goal(goal["proyecto"], destino, f"goal/{goal['id']}")
+
+    @staticmethod
+    def _diff_real(goal: dict) -> str:
+        if goal.get("repo"):
+            return calipso_github.diff_stat(goal["repo"])
+        trabajo = goals.dir_trabajo(goal["id"]) / "trabajo"
+        return "\n".join(f"?? {p.relative_to(trabajo)}" for p in sorted(trabajo.rglob("*")) if p.is_file())
+
+    @staticmethod
+    def _diff_completo_real(goal: dict) -> str:
+        """El diff REAL para el revisor (ruling 15.1); sin repo, el contenido
+        de la carpeta de trabajo."""
+        if goal.get("repo"):
+            return calipso_github.diff_completo(goal["repo"])
+        trabajo = goals.dir_trabajo(goal["id"]) / "trabajo"
+        partes = []
+        for p in sorted(trabajo.rglob("*")):
+            if p.is_file():
+                with contextlib.suppress(OSError):
+                    partes.append(f"?? {p.relative_to(trabajo)}\n"
+                                  + p.read_text(encoding="utf-8", errors="replace")[:8000])
+        return "\n".join(partes)[:calipso_github.DIFF_COMPLETO_MAX]
+
+    def registrar_golpe(self, proc: subprocess.Popen | None) -> None:
+        """`al_lanzar` de goals_manos.golpear (decision 17): el handle del
+        Popen vive aca mientras el golpe corre; `matar_golpe` lo usa."""
+        self.golpe_en_curso = proc
+
+    def esperar_golpe(self, plazo: float) -> bool:
+        """True si no hay golpe en curso (o termino antes de `plazo`): el
+        apagado, /goal parar y /goal no lo esperan antes de transicionar,
+        asi la fila `fin` y el cobro quedan escritos."""
+        return self.sin_golpe.wait(plazo)
+
+    def matar_golpe(self) -> None:
+        proc = self.golpe_en_curso
+        if proc is not None and proc.poll() is None:
+            gm.matar(proc)
+
+    # -- una vuelta --
+    def iteracion(self) -> dict:
+        goal = goals.load(None, self.goal_id)
+        if goal is None:
+            return {"accion": "nada", "estado": None}
+        try:
+            if goal.get("status") == goals.WAITING or (goal.get("status") == goals.PROPOSED
+                                                        and (goal.get("espera") or {}).get("solicitud")):
+                return self._esperando(goal)
+            if goal.get("status") in goals.FINAL_STATES:
+                self._limpiar_preautorizadas(goal)      # expira con el goal (decision 9)
+                return {"accion": "nada", "estado": goal.get("status")}
+            if goal.get("status") != goals.ACTIVE:
+                return {"accion": "nada", "estado": goal.get("status")}
+            return self._activo(goal)
+        except goals.ErrorGoal as exc:
+            # nunca en silencio: evento y telemetria (otro goal en curso, un
+            # status viejo en memoria...)
+            estado = (goals.load(None, self.goal_id) or {}).get("status")
+            with contextlib.suppress(Exception):
+                goals.event(None, self.goal_id, "error", error=str(exc), estado=estado)
+                self.telemetria("goal", accion="error", goal_id=self.goal_id, error=str(exc))
+            return {"accion": "nada", "estado": estado, "error": str(exc)}
+        except Exception as exc:  # invariante 6: nunca tumba nada
+            try:
+                g = goals.transicionar(self.goal_id, goals.FAILED, f"el runner revento: {exc}")
+                self._limpiar_preautorizadas(g)
+            except Exception:
+                pass
+            return {"accion": "failed", "estado": goals.FAILED, "error": str(exc)}
+
+    # -- waiting --
+    def _esperando(self, goal: dict) -> dict:
+        espera = goal.get("espera") or {}
+        sid = espera.get("solicitud")
+        if not sid:
+            return {"accion": "esperando", "estado": goal["status"], "motivo": espera.get("motivo")}
+        r = self.evaluar_solicitud(sid)
+        if r is None:
+            return {"accion": "esperando", "estado": goal["status"], "motivo": espera.get("motivo")}
+        motivo = espera.get("motivo")
+        if motivo == "dale":
+            if r == "aprobada":
+                return self._retomar(goal, espera, "dale de Pedro (inbox)")
+            g = goals.transicionar(self.goal_id, goals.CANCELLED, "no de Pedro (inbox)")
+            self._limpiar_preautorizadas(g)
+            return {"accion": "cancelado", "estado": g["status"]}
+        if motivo == "cumplido":
+            if r == "aprobada":
+                g = goals.transicionar(self.goal_id, goals.COMPLETE, "dale final de Pedro (inbox)")
+                self._limpiar_preautorizadas(g)
+                return {"accion": "complete", "estado": g["status"]}
+            goals.nota_de_pedro(self.goal_id, "Pedro dijo que no esta cumplido: falta algo")
+            g = goals.load(None, self.goal_id)
+            g["espera"] = {**espera, "solicitud": None, "respuesta": "no"}
+            goals.escribir(g)
+            return {"accion": "esperando", "estado": g["status"], "motivo": "cumplido", "respuesta": "no"}
+        if motivo in goals.RESPUESTAS_QUE_APLICAN:
+            # la preautorizacion / la raiz / la nota: lo mismo que aplica
+            # /goal segui por el chat (goals.aplicar_respuesta, Task 1)
+            goal = goals.aplicar_respuesta(self.goal_id, r)
+            return self._retomar(goal, goal.get("espera") or espera, f"respuesta de Pedro: {r}")
+        return {"accion": "esperando", "estado": goal["status"], "motivo": motivo}
+
+    def _retomar(self, goal: dict, espera: dict, motivo: str) -> dict:
+        """waiting/proposed -> active tras la respuesta de Pedro. Si otro goal
+        esta en curso (invariante 8: transicionar levanta) no se muere en
+        silencio: la espera queda con motivo `otro goal activo` (la
+        solicitud ya se consumio: no se vuelve a sondear), el evento y la
+        telemetria lo dicen, y Pedro lo retoma (`/goal segui` o `/goal
+        dale`) cuando el otro cierre."""
+        try:
+            g = goals.transicionar(self.goal_id, goals.ACTIVE, motivo)
+        except goals.ErrorGoal as exc:
+            g = goals.load(None, self.goal_id)
+            g["espera"] = {**espera, "motivo": "otro goal activo", "solicitud": None,
+                           "detalle": str(exc), "respuesta_de_pedro": motivo}
+            goals.escribir(g)
+            goals.event(None, self.goal_id, "error", error=str(exc), estado=g.get("status"))
+            self.telemetria("goal", accion="error", goal_id=self.goal_id, error=str(exc))
+            return {"accion": "esperando", "estado": g["status"], "motivo": "otro goal activo",
+                    "error": str(exc)}
+        return {"accion": "retomado", "estado": g["status"]}
+
+    # -- active --
+    def _activo(self, goal: dict) -> dict:
+        carpeta = goals.dir_goal(goal["id"])
+        # 0. el clon (o la carpeta de trabajo) y la sonda del hook
+        if goal.get("proyecto") and not goal.get("repo"):
+            r = self.clonar(goal)
+            if not r.get("ok"):
+                return self._failed(f"no se pudo clonar {goal['proyecto']}: {r.get('error')}")
+            # recargar antes de escribir: el clon tardo y Pedro pudo tocar
+            # el goal (o pararlo) en el medio; `repo` se escribe igual para
+            # que un reintento no encuentre el destino "ya existe"
+            goal = goals.load(None, self.goal_id)
+            goal["repo"] = r["clon"]
+            goals.escribir(goal)
+            if goal.get("status") != goals.ACTIVE:
+                return {"accion": "clonado", "estado": goal.get("status")}
+        if not goal.get("repo"):
+            pathlib.Path(_cwd_de(goal)).mkdir(parents=True, exist_ok=True)
+        compuertas_path = goals.escribir_compuertas(goal)
+        if not self.hook_sondeado:
+            ok, motivo = self.sondear(str(compuertas_path))
+            if not ok:
+                return self._failed(f"hook inactivo: {motivo}")
+            self.hook_sondeado = True
+        # 1. el tope
+        tope = goals.tope_alcanzado(goal)
+        if tope:
+            return self._waiting_tope(goal, tope, "tope")
+        # 2. la carga (molde _tick_con_carga: un fallo del sensor deja su fila
+        # `vigia_error` y el goal golpea sin nivel; nunca queda failed por eso)
+        try:
+            medida = self.carga_fn()
+        except Exception as exc:
+            self.telemetria("carga", accion="vigia_error", rutina="goal", rutina_id=goal["id"],
+                            error=str(exc))
+            medida = None
+        if medida is not None and getattr(medida, "nivel", "holgada") == "cargada":
+            try:
+                from calipso import carga as _carga
+                fila = _carga.fila(medida)
+            except Exception:
+                fila = {}
+            self.telemetria("carga", accion="pospone", rutina="goal", rutina_id=goal["id"], **fila)
+            return {"accion": "pospuesto", "estado": goal["status"]}
+        # 3. la cuota
+        cuota = self._cuota(goal)
+        if cuota:
+            g = goals.transicionar(self.goal_id, goals.WAITING, "cuota", motivo_detalle=cuota)
+            return {"accion": "cuota", "estado": g["status"], **cuota}
+        # 4. el golpe
+        if self.manos is None:
+            return self._failed("runner sin manos")
+        filas = goals.golpes(goal["id"])
+        n = _siguiente_n(filas)
+        contrato = contrato_del_goal(goal)
+        prompt = prompt_del_golpe(goal, filas, goal.get("ultima_nota"))
+        prompt, tapados_p = gm.tapar(prompt)
+        contrato, tapados_c = gm.tapar(contrato)
+        (carpeta / "contrato.md").write_text(contrato, encoding="utf-8")   # fuera del clon (decision 21)
+        plan = goal.get("plan") or []
+        paso = plan[min(n - 1, len(plan) - 1)] if plan else None
+        registro = str(carpeta / "hook.jsonl")                  # = compuertas["registro"]
+        desde = _lineas_de(registro)
+        # `sin_golpe` apagado desde la fila `inicio` hasta la fila `fin` y la
+        # aduana: el apagado y /goal parar esperan esto antes de transicionar
+        self.sin_golpe.clear()
+        try:
+            goals.golpe_inicio(goal["id"], n, manos=goal.get("manos"), paso=paso)
+            self.aduana_fn(goal, n, "inicio", manos=goal.get("manos"))
+            self.telemetria("goal", accion="golpe", goal_id=goal["id"], n=n, manos=goal.get("manos"))
+            resultado = self.manos(goal, n, prompt, contrato, self.cancelar)
+            if goal.get("ultima_nota"):
+                g = goals.load(None, self.goal_id)
+                if g and g.get("status") == goals.ACTIVE:
+                    g["ultima_nota"] = None
+                    goals.escribir(g)
+            # 5. despues del golpe
+            goal = goals.load(None, self.goal_id)
+            diff = self.diff_fn(goal)
+            usadas = compuertas_usadas(registro, desde)          # spec 7/8, ruling 15.14
+            cobro = self.pagador_fn(goal, resultado.unidades, goal.get("manos")) if resultado.unidades else \
+                {"cuenta": None, "cobrado": False, "unidades": 0}
+            veredicto = resultado.veredicto if isinstance(resultado.veredicto, dict) else None
+            valido = bool(veredicto) and veredicto.get("estado") in ("sigo", "terminar", "preguntar")
+            cuota_fallo = resultado.exit not in (0, None) and gm.es_fallo_de_cuota(resultado.stderr_tail)
+            fila = {"manos": goal.get("manos"), "session_id": resultado.session_id,
+                    "unidades": resultado.unidades, "duracion_ms": resultado.duracion_ms,
+                    "veredicto_del_golpe": veredicto if valido else None,
+                    "veredicto_invalido": (not valido) and not resultado.matado and resultado.exit == 0,
+                    "comandos": resultado.comandos, "diff_stat": diff, "exit": resultado.exit,
+                    "motivo": resultado.motivo, "cobro": cobro, "rate_limit": resultado.rate_limit,
+                    "denials": resultado.denials, "costo_usd": resultado.costo_usd,
+                    "cuenta_para_tope": not cuota_fallo, "stderr_tail": resultado.stderr_tail[-500:],
+                    "model": resultado.model, "compuertas_usadas": usadas}
+            fila, tapados = gm.tapar_fila(fila)
+            fila["secretos_tapados"] = tapados + tapados_p + tapados_c
+            goals.golpe_fin(goal["id"], n, **fila)
+            self.aduana_fn(goal, n, "fin", comandos=[c.get("cmd") for c in resultado.comandos],
+                           bytes_entrados=len(resultado.stdout_tail or ""),
+                           dominios=list(goal.get("dominios") or []), compuertas=usadas)
+        finally:
+            self.golpe_en_curso = None
+            self.sin_golpe.set()
+        # 6. lo que corta
+        if goal.get("status") != goals.ACTIVE:
+            return {"accion": "golpe", "estado": goal["status"], "n": n}      # lo paro Pedro o el apagado
+        if resultado.motivo and (resultado.motivo.startswith("hook inactivo")
+                                 or resultado.motivo.startswith("mcp inesperado")):
+            return self._failed(resultado.motivo)
+        if resultado.motivo == "cancelado":
+            return {"accion": "golpe", "estado": goal["status"], "n": n}
+        if cuota_fallo:
+            detalle = {"motivo": "cuota", "detalle": resultado.stderr_tail[-300:], "resets_at": None,
+                       "manos": goal.get("manos")}
+            g = goals.transicionar(self.goal_id, goals.WAITING, "cuota", motivo_detalle=detalle)
+            return {"accion": "cuota", "estado": g["status"], "n": n}
+        # 7. el veredicto
+        accion = "golpe"
+        if valido and veredicto["estado"] == "preguntar":
+            return self._preguntar(goal, n, veredicto)
+        if valido and veredicto["estado"] == "terminar":
+            salida = self._juez(goal, n, resultado, diff)
+            if salida is not None:
+                return salida
+            accion = "juez"            # el juez dijo que falta: el martillo sigue
+        # 8. no convergencia y el tope, otra vez
+        filas = goals.golpes(goal["id"])
+        diag = no_converge(filas)
+        if diag:
+            g = goals.transicionar(self.goal_id, goals.WAITING, "no_convergencia",
+                                   motivo_detalle={"diagnostico": diag,
+                                                   "opciones": list(OPCIONES_NO_CONVERGENCIA)})
+            return {"accion": accion, "estado": g["status"], "n": n, "diagnostico": diag}
+        goal = goals.load(None, self.goal_id)
+        tope = goals.tope_alcanzado(goal)
+        if tope:
+            r = self._waiting_tope(goal, tope, "tope")
+            return {**r, "accion": accion, "n": n}
+        return {"accion": accion, "estado": goals.ACTIVE, "n": n}
+
+    def _cuota(self, goal: dict) -> dict | None:
+        try:
+            c = self.consumo_fn() or {}
+        except Exception:
+            c = {}
+        manos = goal.get("manos")
+        if manos == "codex" and (c.get("codex_used_percent") or 0) > CUOTA_CODEX_MAX:
+            return {"motivo": "cuota", "manos": "codex", "used_percent": c.get("codex_used_percent"),
+                    "resets_at": c.get("resets_at")}
+        if manos == "claude":
+            if c.get("claude_limite"):
+                return {"motivo": "cuota", "manos": "claude", "resets_at": c.get("resets_at")}
+            filas = goals.golpes(goal["id"])
+            ultimo = next((f for f in reversed(filas) if f.get("rate_limit")), None)
+            if ultimo:
+                u = (ultimo["rate_limit"] or {}).get("five_hour")
+                if u is not None and float(u) >= CUOTA_CLAUDE_MAX:
+                    return {"motivo": "cuota", "manos": "claude", "five_hour": u,
+                            "resets_at": (ultimo["rate_limit"] or {}).get("resets_at")}
+        return None
+
+    def _waiting_tope(self, goal: dict, tope: str, motivo: str) -> dict:
+        g = goals.transicionar(self.goal_id, goals.WAITING, motivo,
+                               motivo_detalle={"tope": tope, "consumo": goals.consumo(goal)})
+        return {"accion": "tope", "estado": g["status"], "tope": tope}
+
+    def _failed(self, motivo: str) -> dict:
+        g = goals.transicionar(self.goal_id, goals.FAILED, motivo)
+        self._limpiar_preautorizadas(g)
+        return {"accion": "failed", "estado": g["status"], "motivo": motivo}
+
+    def _limpiar_preautorizadas(self, goal: dict) -> None:
+        """La preautorizacion vive en el goal y expira al cerrarlo (decision 9).
+        Recarga antes de escribir (last-writer-wins)."""
+        try:
+            goal = goals.load(None, goal["id"]) or goal
+            c = goal.setdefault("compuertas", {})
+            if c.get("preautorizadas"):
+                c["preautorizadas"] = []
+                goals.escribir(goal)
+            goals.escribir_compuertas(goal)
+        except Exception:
+            pass
+
+    def _preguntar(self, goal: dict, n: int, veredicto: dict) -> dict:
+        pregunta = str(veredicto.get("pregunta") or veredicto.get("resumen") or "")
+        compuerta = veredicto.get("compuerta") if isinstance(veredicto.get("compuerta"), dict) else None
+        familia = (compuerta or {}).get("familia")
+        niveles = (goal.get("compuertas") or {}).get("niveles") or goals.NIVEL_DE
+        if familia and niveles.get(familia) == "nunca":
+            goals.nota_de_pedro(goal["id"], f"la compuerta {familia} es NUNCA: no se pregunta, no se hace")
+            return {"accion": "golpe", "estado": goals.ACTIVE, "n": n, "nunca": familia}
+        if familia == "raiz_nueva":
+            operacion, forma, detalle = "raiz_nueva", {"raiz": (compuerta.get("forma") or {}).get("raiz")}, \
+                {"motivo": "raiz_nueva", "pregunta": pregunta, "raiz": (compuerta.get("forma") or {}).get("raiz")}
+        elif familia and niveles.get(familia) == "pregunta":
+            operacion, forma = "compuerta", {"familia": familia, "forma": compuerta.get("forma") or {}}
+            detalle = {"motivo": "compuerta", "pregunta": pregunta, "compuerta": compuerta}
+        else:
+            operacion, forma, detalle = "pregunta", {"n": n, "pregunta": pregunta}, \
+                {"motivo": "pregunta", "pregunta": pregunta}
+        s = self.preguntar(goal, operacion, forma, f"goal {goal['title']}: {pregunta}"[:200], n) or {}
+        detalle["solicitud"] = s.get("id")
+        g = goals.transicionar(self.goal_id, goals.WAITING, detalle["motivo"], motivo_detalle=detalle)
+        return {"accion": "pregunta", "estado": g["status"], "n": n, "operacion": operacion}
+
+    def _juez(self, goal: dict, n: int, resultado: gm.Resultado, diff: str) -> dict | None:
+        """None = no cumplido, el martillo sigue (la falta ya esta en el
+        ledger). `diff` es el diff_stat de la fila; el revisor recibe el diff
+        REAL (`diff_completo_fn`, ruling 15.1)."""
+        ok, salida = juzgar_criterio(goal, self.correr_criterio)
+        juez: dict = {}
+        if ok is not None:
+            juez["criterio"] = {"ok": ok, "salida": salida}
+            if not ok:
+                self._anotar_juez(goal["id"], n, juez)
+                return None
+        filas = goals.golpes(goal["id"])
+        salidas = "\n".join((c.get("resultado_tail") or "") for c in resultado.comandos)
+        # el revisor ve el diff REAL (ruling 15.1, spec 6.2), no el diff_stat
+        # que va al ledger y al prompt
+        revision = self.juez(goal, resumen_ledger(filas), self.diff_completo_fn(goal), salidas)
+        if revision:
+            m = n + 1
+            revisor = f"revisor:{revision.get('revisor', gm.otra_familia(goal.get('manos')))}"
+            goals.golpe_inicio(goal["id"], m, manos=revisor, paso="revisar")
+            cobro = self.pagador_fn(goal, 1, revisor)
+            juez_rev = {**revision, "independencia": "proveedor_distinto"}
+            goals.golpe_fin(goal["id"], m, unidades=1, duracion_ms=0, juez=juez_rev, cobro=cobro,
+                            veredicto_del_golpe={"estado": "revisar", "resumen": revision.get("nota", "")})
+            self.telemetria("goal", accion="golpe", goal_id=goal["id"], n=m, manos=revisor)
+            juez["independencia"] = "proveedor_distinto"
+            self._anotar_juez(goal["id"], n, juez)
+            if not revision.get("cumplido"):
+                return None
+            detalle = {"motivo": "cumplido", "resumen": (resultado.veredicto or {}).get("resumen", ""),
+                       "criterio": juez.get("criterio"), "independencia": "proveedor_distinto",
+                       "revisor": revision, "sin_veredicto_de_modelo": False}
+        else:
+            juez["independencia"] = "ninguna"
+            self._anotar_juez(goal["id"], n, juez)
+            detalle = {"motivo": "cumplido",
+                       "resumen": ((resultado.veredicto or {}).get("resumen", "")
+                                   + (" (criterio medible ok; " if ok else " (")
+                                   + "sin veredicto de modelo: no hay otra familia disponible)"),
+                       "criterio": juez.get("criterio"), "independencia": "ninguna",
+                       "sin_veredicto_de_modelo": True}
+        s = self.preguntar(goal, "cerrar", {"n": n}, f"goal {goal['title']}: cumplido? {detalle['resumen']}"[:200], n) or {}
+        detalle["solicitud"] = s.get("id")
+        g = goals.transicionar(self.goal_id, goals.WAITING, "cumplido", motivo_detalle=detalle)
+        return {"accion": "juez", "estado": g["status"], "n": n}
+
+    @staticmethod
+    def _anotar_juez(goal_id: str, n: int, juez: dict) -> None:
+        goals.golpe_fin(goal_id, n, juez=juez)

@@ -41,6 +41,7 @@ EXCEPCIONES: dict[str, str] = {
     "calipso/goals_manos.py:lanzar": "modelo: el golpe del goal (claude -p / codex exec con herramientas dentro del sandbox); CLI de suscripcion; el runner declara el cruce alrededor (goals_runner: aduana.declarar al lanzar y cruzar al terminar, origen goal)",
     "calipso/goals_manos.py:_parar_unidad": "local: systemctl --user stop del scope del golpe (el apagado y el timeout)",
     "calipso/goals_manos.py:sondear_hook": "local: el hook del goal con stdin sintetico (gh pr create -> exit 2) antes del primer golpe; no sale de la maquina",
+    "calipso/goals_runner.py:_correr_criterio": "local: el comando del criterio medible del goal en el clon (pytest -q, make check); no sale de la maquina",
     "calipso/plugins.py:install": "modelo: `claude -p` para instalar un plugin; CLI agente",
     "dispatch.py:run_subscription": "modelo: el CLI suelto de dispatch.py no mide",
     "dispatch.py:_http_post_json": "modelo: LiteLLM/Ollama por config; base_url no loopback se DECLARA al cargar la config",
