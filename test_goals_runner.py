@@ -1885,6 +1885,30 @@ def test_la_carga_del_cruce_va_tapada(home, tmp_path, monkeypatch):
     assert "instalar_en_goal" in carga and "uninstall" in carga
 
 
+def test_tapar_carga_tapa_bearer_basic_token_y_user_pass_de_curl():
+    """Re-review del carril 3 (menor): el barrido de la carga solo veia
+    `Bearer` con mayuscula y nada de `Basic`, `Token` ni `curl -u
+    user:pass`; un `-H 'authorization: bearer ...'` o un `--user
+    pedro:clave` del martillo quedaban en el libro. Ahora las tres
+    palabras sin distinguir mayusculas y `-u`/`--user` con `usuario:clave`
+    salen tapados; lo que no es credencial queda intacto."""
+    t = srv._tapar_carga
+    assert t("curl -H 'Authorization: bearer abcDEF123456xyz' https://x/y") == \
+        "curl -H 'Authorization: bearer [SECRETO]' https://x/y"
+    assert t("curl -H 'Authorization: BEARER abcDEF123456xyz' https://x/y") == \
+        "curl -H 'Authorization: BEARER [SECRETO]' https://x/y"
+    assert t("curl -H 'Authorization: Basic dXNlcjpwYXNzd29yZA==' https://x/y") == \
+        "curl -H 'Authorization: Basic [SECRETO]' https://x/y"
+    assert t("curl -H 'Authorization: Token ghp_zyxwvutsrqponmlk' https://x/y") == \
+        "curl -H 'Authorization: Token [SECRETO]' https://x/y"
+    assert t("curl -u pedro:clave-secreta-123 https://x/y") == "curl -u [SECRETO] https://x/y"
+    assert t("curl --user pedro:clave https://x/y") == "curl --user [SECRETO] https://x/y"
+    assert t("git log -u src/a.py") == "git log -u src/a.py"                 # sin usuario:clave no es credencial
+    assert t("curl -u pedro https://x/y") == "curl -u pedro https://x/y"        # sin clave: curl la pide
+    assert t("ls -la src/") == "ls -la src/"
+    assert t("echo el token de la api vence hoy") == "echo el token de la api vence hoy"   # sin valor: texto
+
+
 @pytest.fixture
 def economia(home, monkeypatch):
     """Molde `base` de test_economia_pagador.py: un departamento de fabrica

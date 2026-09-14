@@ -2546,16 +2546,22 @@ def _quien_del_goal(goal: dict) -> aduana.Quien:
                         rutina={"kind": "goal", "id": goal["id"]})
 
 
-_RE_BEARER = re.compile(r"(\bBearer\s+)[A-Za-z0-9_\-./+=]{6,}")
+# `Bearer`, `Basic` y `Token` sin distinguir mayusculas (un header se
+# escribe como sea y HTTP no distingue), y el `-u`/`--user usuario:clave`
+# de curl (re-review del carril 3: solo se veia `Bearer` con mayuscula).
+_RE_BEARER = re.compile(r"(?i)(\b(?:Bearer|Basic|Token)\s+)[A-Za-z0-9_\-./+=]{6,}")
+_RE_USER_PASS = re.compile(r"((?:^|\s)(?:-u|--user)\s+)\S+:\S+")
 
 
 def _tapar_carga(texto: str) -> str:
     """Lo que entra al libro de la aduana pasa por el detector completo
     (goals_manos.tapar: el mismo del ledger y del prompt) y ademas por un
-    barrido de `Bearer <token>`: un token detras de Authorization es una
-    credencial aunque no tenga la forma de ninguna regla del detector."""
+    barrido de `Bearer|Basic|Token <valor>` y de `-u usuario:clave`: una
+    credencial detras de Authorization o de --user lo es aunque no tenga
+    la forma de ninguna regla del detector."""
     tapado, _ = goals_manos.tapar(str(texto))
-    return _RE_BEARER.sub(r"\1[SECRETO]", tapado)
+    tapado = _RE_BEARER.sub(r"\1[SECRETO]", tapado)
+    return _RE_USER_PASS.sub(r"\1[SECRETO]", tapado)
 
 
 def _aduana_del_goal(goal: dict, n: int, fase: str, **campos) -> None:
