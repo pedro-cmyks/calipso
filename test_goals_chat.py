@@ -774,3 +774,105 @@ def test_una_excepcion_cualquiera_en_goal_no_cierra_el_websocket(goal_home, chat
     chat.turno(f"/goal ordena el README en: {repo}")
     eventos = chat.turno("/goal no")
     assert "goal: la propuesta vino" in _dicho(eventos) and len(de_tipo(eventos, "done")) == 1
+
+
+# --- S5: la propuesta es el golpe 0 (aduana + cobro), el revisor con compuertas, traer_rama --------
+
+def _libro_aduana(goal_home):
+    libro = goal_home / "aduana.jsonl"
+    if not libro.exists():
+        return []
+    return [json.loads(l) for l in libro.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+
+def test_la_propuesta_cruza_la_aduana_y_se_cobra_con_las_unidades_reales(goal_home, chat, repo, monkeypatch):
+    """rev:lente-spec importante (invariante 9, spec 8, ruling 15.12): la
+    propuesta salia a la suscripcion (el texto del goal, el repo, el
+    criterio) sin cruzar la aduana y sin cobrarse. Ahora es el golpe 0:
+    `_aduana_del_goal(goal, 0, "inicio")` ANTES de la cabeza (declarado con
+    el id del goal, que se reserva antes), `"fin"` despues, la fila 0 con
+    las unidades reales de `goals_manos.cabeza` y el cobro del Pagador."""
+    cobros = []
+    monkeypatch.setattr(srv, "_cobrar_golpe", lambda goal, unidades, manos: cobros.append(
+        {"goal": goal["id"], "unidades": unidades, "manos": manos}) or {"cuenta": "personal", "unidades": unidades,
+                                                                         "cobrado": False})
+    monkeypatch.setattr(srv, "_cabeza_del_goal", lambda *a, **k: goals_manos.Cabeza(
+        veredicto=dict(PROPUESTA), unidades=3, salida_tail='{"type":"result"}', session_id="s-0", exit=0))
+    _proponer(chat, repo)
+    g = goals.list_goals()[0]
+    f = goals.golpes(g["id"])[0]
+    assert f["n"] == 0 and f["tipo"] == "propuesta" and f["ok"] is True
+    assert f["unidades"] == 3 and f["cuenta_para_tope"] is False and "salida_tail" not in f
+    assert f["cobro"]["unidades"] == 3
+    assert cobros == [{"goal": g["id"], "unidades": 3, "manos": f["client"]}]
+    libro = _libro_aduana(goal_home)
+    assert [x["quien"]["rutina"]["id"] for x in libro] == [g["id"], g["id"]]
+    assert libro[0]["declarado"] is True and libro[0]["quien"]["origen"] == "goal"
+    assert libro[0]["quien"]["proyecto"] == "proyecto"
+    assert libro[1]["resultado"]["estado"] == "ok" and libro[1]["destino"] == {"host": None, "url": None}
+    # el declarado salio ANTES de que existiera el goal (el id se reservo)
+    assert libro[0]["ts"] <= goals.load(None, g["id"])["created_at"]
+    assert goals.consumo(g)["unidades"] == 3 and goals.consumo(g)["golpes"] == 0
+
+
+def test_la_cabeza_que_falla_deja_motivo_y_salida_tail_en_la_fila_0_y_no_cobra(goal_home, chat, repo, monkeypatch):
+    cobros = []
+    monkeypatch.setattr(srv, "_cobrar_golpe", lambda goal, unidades, manos: cobros.append(unidades) or {})
+    monkeypatch.setattr(srv, "_cabeza_del_goal", lambda *a, **k: goals_manos.Cabeza(
+        veredicto=None, unidades=0, salida_tail="Error: ghp_abcdefghijklmnop0123 no vale", motivo="exit 1", exit=1))
+    eventos = _proponer(chat, repo)
+    assert "la cabeza no contesto: propuesta heuristica" in texto_visible(eventos)
+    g = goals.list_goals()[0]
+    f = goals.golpes(g["id"])[0]
+    assert f["ok"] is False and f["motivo"] == "exit 1" and f["exit"] == 1 and f["unidades"] == 0
+    assert "no vale" in f["salida_tail"] and "ghp_" not in f["salida_tail"]     # tapada
+    assert "cobro" not in f and cobros == []
+    libro = _libro_aduana(goal_home)
+    assert len(libro) == 2 and libro[1]["resultado"]["estado"] == "ok"
+    # la cabeza que contesta con un dict pelado (el harness viejo) sigue valiendo
+    monkeypatch.setattr(srv, "_cabeza_del_goal", lambda *a, **k: dict(PROPUESTA))
+    chat.turno("/goal no")
+    _proponer(chat, repo)
+    g2 = goals.list_goals()[0]
+    assert goals.golpes(g2["id"])[0]["ok"] is True and goals.golpes(g2["id"])[0]["unidades"] == 0
+
+
+def test_el_goal_privado_no_cruza_la_aduana(goal_home, chat, repo):
+    chat.turno(f"/goal ordena el archivo secreto con mis password en: {repo}")
+    assert goals.list_goals()[0]["privado"] is True and _libro_aduana(goal_home) == []
+
+
+def test_el_juez_real_le_pasa_las_compuertas_del_goal_al_revisor(goal_home, chat, repo, monkeypatch):
+    """rev:lente-spec (ruling 15.7, revisor con barrera): `revisar` acepta
+    `compuertas`/`compuertas_path` (carril 2) y sin ellas el revisor claude
+    va sin herramientas; el server las lee de compuertas.json del goal."""
+    _proponer(chat, repo)
+    chat.turno("/goal dale")
+    g = goals.load(None, goals.activo()["id"])
+    g["compuertas"]["raices"] = ["/var/tmp/raiz-del-test"]
+    goals.escribir(g)
+    ruta = goals.escribir_compuertas(g)
+    llamadas = []
+    monkeypatch.setattr(srv.goals_manos, "revisar", lambda **k: llamadas.append(k) or {"cumplido": True,
+                                                                                       "unidades": 1, "revisor": "codex"})
+    monkeypatch.setattr(srv, "_subscription_command", lambda c: f"/x/{c}")
+    r = srv._juez_real(g, "resumen", "diff", "salidas")
+    assert r["cumplido"] is True and len(llamadas) == 1
+    k = llamadas[0]
+    assert k["compuertas_path"] == str(ruta)
+    assert k["compuertas"] == json.loads(ruta.read_text(encoding="utf-8"))
+    assert k["compuertas"]["raices"] == ["/var/tmp/raiz-del-test"]
+    assert k["exes"] == {"claude": "/x/claude", "codex": "/x/codex"} and k["manos_del_golpe"] == "claude"
+
+
+def test_el_runner_del_server_trae_la_rama_al_cerrar(goal_home, chat, repo, monkeypatch):
+    _proponer(chat, repo)
+    g = goals.list_goals()[0]
+    llamadas = []
+    monkeypatch.setattr(srv.calipso_github, "traer_rama",
+                        lambda proyecto, clon, rama: llamadas.append((proyecto, clon, rama)) or (0, "", ""))
+    runner = srv._runner_de(g["id"])
+    assert runner.traer_rama_fn is not None
+    goal = {**g, "repo": "/x/clon"}
+    assert runner.traer_rama_fn(goal) == (0, "", "")
+    assert llamadas == [(str(repo), "/x/clon", f"goal/{g['id']}")]

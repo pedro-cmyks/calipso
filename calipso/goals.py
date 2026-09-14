@@ -610,23 +610,34 @@ def validar_criterio(criterio: dict | None) -> dict:
     return c
 
 
+def nuevo_id() -> str:
+    """Un id de goal. Lo reserva `_proponer_goal` ANTES de invocar la cabeza
+    para que la propuesta cruce la aduana y quede en el ledger como el
+    golpe 0 con su id (invariantes 3 y 9): el goal nace despues, con
+    `crear(..., goal_id=)`."""
+    return f"goal_{uuid.uuid4().hex[:12]}"
+
+
 def crear(texto: str, *, proyecto: str | None, titulo: str | None = None,
           criterio: dict | None = None, tope: dict | None = None,
           compuertas: dict | None = None, manos: str = "claude",
           plan: list[str] | None = None, privado: bool = False,
           dominios: list[str] | None = None, propuesta: dict | None = None,
-          departamento: str | None = None) -> dict[str, Any]:
+          departamento: str | None = None, goal_id: str | None = None) -> dict[str, Any]:
     """Un goal que corre. Nace `proposed` y NO se activa: lo activa el dale
     de Pedro por `transicionar`. `proyecto` es la ruta del repo de origen
     (None = goal sin repo); el clon (`repo`) lo escribe el runner al
     arrancar. `session_id` es el de la sesion headless (--session-id en el
-    golpe 1, --resume despues)."""
+    golpe 1, --resume despues). `goal_id`: uno reservado con `nuevo_id`
+    (la propuesta ya escribio su golpe 0 ahi); sin el, uno nuevo."""
     if manos not in MANOS:
         raise ErrorGoal(f"manos invalidas: {manos!r} (son {MANOS})")
     texto = " ".join((texto or "").split())
     if not texto:
         raise ErrorGoal("un goal sin texto")
-    goal_id = f"goal_{uuid.uuid4().hex[:12]}"
+    goal_id = goal_id or nuevo_id()
+    if (dir_goal(goal_id) / "goal.json").exists():
+        raise ErrorGoal(f"el goal {goal_id} ya existe")
     raices = validar_raices((compuertas or {}).get("raices"))
     proyecto_nombre = (pathlib.Path(proyecto).name if proyecto else "sin-repo") or "sin-repo"
     goal = {

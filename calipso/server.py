@@ -2602,10 +2602,30 @@ def _juez_real(goal: dict, resumen: str, diff: str, salidas: str, al_lanzar=None
     huerfano."""
     exes = {"claude": _subscription_command("claude"), "codex": _subscription_command("codex")}
     cwd = goal.get("repo") or str(goals.dir_trabajo(goal["id"]) / "trabajo")
+    # las compuertas del goal (compuertas.json, el que lee el hook): el
+    # revisor claude corre con la barrera del golpe (sandbox + hook sobre
+    # Read|Glob|Grep, ruling 15.7); sin ellas `revisar` lo manda sin
+    # herramientas (fail-closed). Se lee el archivo (el runner lo escribio
+    # al arrancar y aplicar_respuesta lo reescribe) y si no esta, se escribe
+    compuertas_path = goals.dir_goal(goal["id"]) / "compuertas.json"
+    if not compuertas_path.exists():
+        compuertas_path = goals.escribir_compuertas(goal)
+    try:
+        compuertas = json.loads(compuertas_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        compuertas = None
     return goals_manos.revisar(manos_del_golpe=goal.get("manos") or "claude", exes=exes,
                                goal_texto=goal.get("objective") or "", criterio=goal.get("criterio") or {},
                                resumen_ledger=resumen, diff=diff, salidas=salidas, cwd=cwd,
-                               al_lanzar=al_lanzar)
+                               al_lanzar=al_lanzar, compuertas=compuertas,
+                               compuertas_path=str(compuertas_path))
+
+
+def _traer_rama_del_goal(goal: dict) -> tuple[int, str, str]:
+    """Al complete: la rama goal/<id> del clon al repo de origen (`git fetch
+    <clon> rama:rama`, local, sin red, SIN merge: el merge es de Pedro).
+    La llama el runner (el si del inbox) y `_cerrar_goal` (el dale final)."""
+    return calipso_github.traer_rama(goal["proyecto"], goal["repo"], f"goal/{goal['id']}")
 
 
 def _runner_de(goal_id: str) -> "goals_runner.Runner":
@@ -2613,7 +2633,7 @@ def _runner_de(goal_id: str) -> "goals_runner.Runner":
         goal_id, juez=_juez_real, carga_fn=_medir_carga,
         consumo_fn=_consumo_actual, pagador_fn=_cobrar_golpe,
         preguntar=_estacionar_para_pedro, evaluar_solicitud=_evaluar_solicitud,
-        aduana_fn=_aduana_del_goal)
+        aduana_fn=_aduana_del_goal, traer_rama_fn=_traer_rama_del_goal)
     # en dos pasos: las manos reales y el revisor publican su Popen en el
     # runner (decision 17; el revisor cuenta como golpe y se mata igual)
     runner.manos = _manos_reales(al_lanzar=runner.registrar_golpe)
@@ -4126,17 +4146,30 @@ def _cerrar_solicitud_del_goal(goal_id: str, operacion: str | None, respuesta: s
         return False
 
 
-def _cabeza_del_goal(client: str, model: str | None, system: str, prompt: str) -> dict | None:
-    """La cabeza frontera sin herramientas (decision 12). Monkeypatcheable:
-    el harness la reemplaza por una funcion que devuelve el JSON."""
+def _cabeza_del_goal(client: str, model: str | None, system: str, prompt: str) -> "goals_manos.Cabeza | dict | None":
+    """La cabeza frontera sin herramientas (decision 12): la `Cabeza` con
+    el JSON (o None), las unidades reales y la cola de la salida cuando
+    falla (ruling 15.12). Monkeypatcheable: el harness la reemplaza por
+    una funcion que devuelve el JSON pelado; `_como_cabeza` lo normaliza."""
     exe = _subscription_command(client)
     if not exe:
-        return None
+        return goals_manos.Cabeza(motivo=f"{client} no esta en el PATH del server")
     with tempfile.TemporaryDirectory(prefix="calipso-goal-cabeza-") as vacio:
-        return goals_manos.cabeza_sin_herramientas(
+        return goals_manos.cabeza(
             client, exe, system, prompt, goals_manos.ESQUEMA_PROPUESTA,
             cwd=vacio, model=model if client == "claude" and model in ("haiku", "sonnet", "opus")
             else (model if client == "codex" and (model or "").startswith("gpt") else None))
+
+
+def _como_cabeza(r) -> "goals_manos.Cabeza":
+    """Lo que devuelve `_cabeza_del_goal` como `Cabeza`: la real tal cual;
+    un dict (el harness viejo) como veredicto sin unidades; None como una
+    cabeza que no contesto."""
+    if isinstance(r, goals_manos.Cabeza):
+        return r
+    if isinstance(r, dict):
+        return goals_manos.Cabeza(veredicto=r)
+    return goals_manos.Cabeza(motivo="la cabeza no contesto")
 
 
 def _proyecto_del_goal(en: str | None) -> str | None:
@@ -4176,6 +4209,13 @@ def _proponer_goal(d: dict, texto_crudo: str, departamento: str | None) -> tuple
     avisos: list[str] = []
     propuesta = None
     cabeza: dict | None = None      # lo que salio a la suscripcion (None: nada salio)
+    salida: goals_manos.Cabeza | None = None
+    # el id se reserva ANTES de la cabeza: la propuesta es el golpe 0 del
+    # goal (spec seccion 4; invariantes 3 y 9) y sale a la suscripcion con
+    # el texto, el repo y el criterio: su fila `inicio` y su cruce de la
+    # aduana llevan el id del goal que va a nacer
+    goal_id = goals.nuevo_id()
+    pre = {"id": goal_id, "proyecto_nombre": (pathlib.Path(proyecto).name if proyecto else "sin-repo") or "sin-repo"}
     if privado:
         propuesta = goals.propuesta_sin_modelo(texto, proyecto)
         propuesta["aviso"] = ("goal privado: un goal privado no puede usar manos de "
@@ -4195,15 +4235,25 @@ def _proponer_goal(d: dict, texto_crudo: str, departamento: str | None) -> tuple
                       f"Tope que pidio Pedro: {json.dumps(d['tope']) if d['tope'] else 'ninguno: proponelo'}\n"
                       f"Raiz que pidio Pedro: {d['raiz'] or 'ninguna'}\n")
             # la propuesta SALE a la suscripcion (el texto del goal, el repo,
-            # el criterio): se mide aca y queda en el ledger y la telemetria
-            # mas abajo, cuando el goal ya tiene id
+            # el criterio): la fila `inicio` del golpe 0 y el declarado de
+            # la aduana van ANTES de invocar (invariante 3; spec 8: cada
+            # golpe es un cruce con origen goal), la fila `fin`, el cruce y
+            # el cobro despues, con las unidades reales (ruling 15.12)
             cabeza = {"client": top["client"], "modelo": top.get("model"),
                       "ts": datetime.datetime.now().isoformat(timespec="seconds")}
+            goals.golpe_inicio(goal_id, 0, tipo="propuesta", manos=cabeza["client"],
+                               paso="propuesta", ts=cabeza["ts"])
+            _aduana_del_goal(pre, 0, "inicio", manos=cabeza["client"])
             t0 = time.monotonic()
-            propuesta = _cabeza_del_goal(top["client"], top.get("model"),
-                                         GOAL_CONTRATO_PROPUESTA, prompt)
+            salida = _como_cabeza(_cabeza_del_goal(top["client"], top.get("model"),
+                                                   GOAL_CONTRATO_PROPUESTA, prompt))
             cabeza["duracion_s"] = round(time.monotonic() - t0, 2)
+            propuesta = salida.veredicto
             cabeza["ok"] = propuesta is not None
+            _aduana_del_goal(pre, 0, "fin", comandos=[],
+                             bytes_entrados=len(json.dumps(propuesta, ensure_ascii=False)) if propuesta
+                             else len(salida.salida_tail or ""),
+                             dominios=[], compuertas=[])
             if propuesta is None:
                 avisos.append("la cabeza no contesto: propuesta heuristica")
             else:
@@ -4242,7 +4292,7 @@ def _proponer_goal(d: dict, texto_crudo: str, departamento: str | None) -> tuple
             plan=list(propuesta.get("plan") or []), privado=privado,
             dominios=list(propuesta.get("dominios") or []),
             propuesta={**propuesta, "familias": familias, "avisos": avisos},
-            departamento=departamento)
+            departamento=departamento, goal_id=goal_id)
     except goals.ErrorGoal:
         goal = goals.crear(
             texto, proyecto=proyecto, titulo=propuesta.get("titulo"),
@@ -4250,21 +4300,26 @@ def _proponer_goal(d: dict, texto_crudo: str, departamento: str | None) -> tuple
             compuertas={"raices": raices}, manos=manos, plan=list(propuesta.get("plan") or []),
             privado=privado, propuesta={**propuesta, "familias": familias,
                                         "avisos": avisos + ["propuesta invalida: tope y criterio por defecto"]},
-            departamento=departamento)
-    if cabeza:
+            departamento=departamento, goal_id=goal_id)
+    if cabeza and salida is not None:
         # La propuesta es un golpe SIN herramientas (spec seccion 4) que ya
-        # salio a la suscripcion: queda en el ledger del goal como el golpe 0
-        # (invariantes 3 y 9), con la cabeza, el modelo, si contesto y cuanto
-        # tardo, y sin contar para el tope (consumo() ignora las filas con
-        # cuenta_para_tope False y no suma duracion_s). Las dos filas se
-        # escriben aca y no antes de invocar porque el id del goal nace de la
-        # propuesta. El cruce de la aduana y el cobro los suma la Task 4
-        # (_aduana_del_goal, Pagador) cuando la cabeza devuelva su uso.
-        goals.golpe_inicio(goal["id"], 0, tipo="propuesta", manos=cabeza["client"],
-                           paso="propuesta", ts=cabeza["ts"])
-        goals.golpe_fin(goal["id"], 0, tipo="propuesta", cuenta_para_tope=False,
-                        client=cabeza["client"], modelo=cabeza["modelo"], ok=cabeza["ok"],
-                        duracion_s=cabeza["duracion_s"])
+        # salio a la suscripcion: la fila `fin` del golpe 0 con la cabeza, el
+        # modelo, si contesto, cuanto tardo, las unidades reales y el cobro
+        # (ruling 15.12), sin contar como golpe para el tope (consumo()
+        # ignora las filas con cuenta_para_tope False y no suma duracion_s;
+        # las unidades si suman: la cuota se gasto). Cuando falla, el motivo
+        # y la cola de la salida (tapada): nunca muere en silencio
+        fila: dict = {"tipo": "propuesta", "cuenta_para_tope": False, "client": cabeza["client"],
+                      "modelo": cabeza["modelo"], "ok": cabeza["ok"], "duracion_s": cabeza["duracion_s"],
+                      "unidades": int(salida.unidades or 0), "exit": salida.exit}
+        if salida.motivo:
+            fila["motivo"] = salida.motivo
+        if not cabeza["ok"] and salida.salida_tail:
+            fila["salida_tail"] = salida.salida_tail[-1500:]
+        if fila["unidades"]:
+            fila["cobro"] = _cobrar_golpe(goal, fila["unidades"], cabeza["client"])
+        fila, _ = goals_manos.tapar_fila(fila)
+        goals.golpe_fin(goal["id"], 0, **fila)
     telemetry.log_event("goal", accion="propuesta", goal_id=goal["id"], privado=privado,
                         cabeza=cabeza["client"] if cabeza else None,
                         modelo=cabeza["modelo"] if cabeza else None,
