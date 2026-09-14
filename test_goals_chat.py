@@ -876,3 +876,32 @@ def test_el_runner_del_server_trae_la_rama_al_cerrar(goal_home, chat, repo, monk
     goal = {**g, "repo": "/x/clon"}
     assert runner.traer_rama_fn(goal) == (0, "", "")
     assert llamadas == [(str(repo), "/x/clon", f"goal/{g['id']}")]
+
+
+def test_parar_estaciona_retomar_en_el_inbox_y_segui_la_cierra(goal_home, chat, repo):
+    """Pedro no se pierde (ruling del cierre): un waiting `parado por Pedro`
+    no tenia solicitud y no aparecia en el inbox. Ahora `/goal parar`
+    estaciona `retomar` (goals_runner.estacionar_retomar con
+    _estacionar_para_pedro) y `/goal segui` la cierra con si."""
+    _proponer(chat, repo)
+    chat.turno("/goal dale")
+    g = goals.activo()
+    chat.turno("/goal parar")
+    g2 = goals.load(None, g["id"])
+    assert g2["status"] == goals.WAITING and g2["espera"]["motivo"] == "parado por Pedro"
+    abiertas = permisos_almacen.abiertas()
+    assert len(abiertas) == 1 and abiertas[0]["accion"]["operacion"] == "retomar"
+    assert abiertas[0]["id"] == g2["espera"]["solicitud"]
+    assert abiertas[0]["accion"]["forma"] == {"goal": g["id"], "motivo": "parado por Pedro", "vez": 1}
+    assert "seguir?" in abiertas[0]["texto"] and g2["espera"]["opciones"]
+    items = [i for i in chat.cliente.get("/api/inbox").json()["items"] if i["origen"] == "permisos"]
+    assert len(items) == 1 and "seguir?" in items[0]["titulo"]
+    chat.turno("/goal segui dale")
+    assert goals.load(None, g["id"])["status"] == goals.ACTIVE and permisos_almacen.abiertas() == []
+    assert permisos_almacen.obtener(abiertas[0]["id"])["respondida"]["respuesta"] == "si"
+    # y por HTTP lo mismo: POST parar deja la solicitud, POST segui la cierra
+    chat.cliente.post(f"/api/goals/{g['id']}/parar")
+    s = permisos_almacen.abiertas()
+    assert len(s) == 1 and s[0]["accion"]["forma"]["vez"] == 2
+    chat.cliente.post(f"/api/goals/{g['id']}/segui", json={"nota": "sigue"})
+    assert permisos_almacen.abiertas() == [] and goals.load(None, g["id"])["status"] == goals.ACTIVE

@@ -1890,6 +1890,16 @@ def test_apagar_goals_mata_el_proceso_y_deja_waiting(home, tmp_path, monkeypatch
     g2 = goals.load(None, g["id"])
     assert g2["status"] == goals.WAITING and g2["espera"]["motivo"] == "server apagado"
     assert srv._GOALS_EN_CURSO == {}
+    # Pedro no se pierde: el apagado estaciona `retomar` (al arrancar de
+    # nuevo, la reconciliacion relanza el bucle que la sondea)
+    sol = permisos_almacen.obtener(g2["espera"]["solicitud"])
+    assert sol["accion"]["operacion"] == "retomar" and sol["accion"]["forma"]["motivo"] == "server apagado"
+
+
+def test_unidad_activa_con_systemctl_real_sobre_una_unidad_inexistente():
+    """`systemctl --user is-active` de una unidad que no existe: False, sin
+    reventar y sin dejar nada (local: no sale de la maquina)."""
+    assert gm.unidad_activa("calipso-goal-inexistente-del-test-1") is False
 
 
 def test_reconciliar_goals_al_arrancar(home, tmp_path, monkeypatch):
@@ -1901,26 +1911,42 @@ def test_reconciliar_goals_al_arrancar(home, tmp_path, monkeypatch):
     goals.escribir(goal)
     (clon / "sucio.py").write_text("x", encoding="utf-8")
     goals.golpe_inicio(g["id"], 1, manos="claude", paso="x")   # un golpe cortado (sin fin)
-    lanzados = []
+    lanzados, parados = [], []
     monkeypatch.setattr(srv, "_lanzar_bucle", lambda gid: lanzados.append(gid))
+    # el scope del golpe cortado sigue vivo si el server murio sin shutdown
+    # (kill -9, OOM): la reconciliacion lo para ANTES de cerrar la fila
+    # (rev:lente-riesgo) y anota cual existia
+    monkeypatch.setattr(gm, "unidad_activa", lambda u: u == f"calipso-goal-{g['id']}-1")
+    monkeypatch.setattr(gm, "_parar_unidad", lambda u: parados.append(u))
     ids = srv._reconciliar_goals()
     assert ids == [g["id"]]
+    assert parados == [f"calipso-goal-{g['id']}-1", f"calipso-goal-{g['id']}-1-r",
+                       f"calipso-goal-{g['id']}-criterio-1"]
     g2 = goals.load(None, g["id"])
     assert g2["status"] == goals.WAITING and g2["espera"]["motivo"] == "server reiniciado"
     assert "sucio.py" in g2["espera"]["git_status"]
     fl = filas(g["id"])
     assert fl[0]["fase"] == "fin" and fl[0]["motivo"] == "cortado por el reinicio"
     assert fl[0]["session_id"] == g["session_id"]        # el golpe de claude corrio: la sesion existe
+    assert fl[0]["unidades_paradas"] == [f"calipso-goal-{g['id']}-1"]
     evs = [e for e in goals.events(None, g["id"]) if e["action"] == "reconciliado"]
-    assert evs and lanzados == [g["id"]]
-    # una segunda vez no hace nada: un waiting SIN solicitud no se relanza
-    # (el bucle no tendria nada que sondear; lo relanza /goal segui)
-    assert srv._reconciliar_goals() == []
-    # un waiting CON solicitud (espera una respuesta del inbox) se relanza
+    assert evs and evs[-1]["unidades_paradas"] == [f"calipso-goal-{g['id']}-1"]
+    # Pedro no se pierde: el waiting `server reiniciado` lleva la solicitud
+    # `retomar` (aparece en el inbox) y por eso SI se relanza el bucle
+    assert g2["espera"]["solicitud"] and lanzados == [g["id"]]
+    sol = permisos_almacen.obtener(g2["espera"]["solicitud"])
+    assert sol["accion"]["operacion"] == "retomar" and sol["accion"]["forma"]["motivo"] == "server reiniciado"
+    assert "seguir?" in sol["texto"]
+    # una segunda vez: sigue waiting con su solicitud, se relanza para sondearla
+    assert srv._reconciliar_goals() == [g["id"]] and lanzados == [g["id"], g["id"]]
+    # un waiting SIN solicitud no se relanza (nada que sondear; lo relanza /goal segui)
     g2 = goals.load(None, g["id"])
+    g2["espera"] = {**g2["espera"], "solicitud": None}
+    goals.escribir(g2)
+    assert srv._reconciliar_goals() == []
     g2["espera"] = {**g2["espera"], "solicitud": "sol_x"}
     goals.escribir(g2)
-    assert srv._reconciliar_goals() == [g["id"]] and lanzados == [g["id"], g["id"]]
+    assert srv._reconciliar_goals() == [g["id"]] and lanzados == [g["id"]] * 3
     # y un proposed con su solicitud `dale` estacionada tambien (el dale del inbox)
     p = goals.crear("y", proyecto=None, tope={"golpes": 2})
     goal_p = goals.load(None, p["id"])

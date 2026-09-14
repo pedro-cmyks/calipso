@@ -741,6 +741,20 @@ def lanzar(argv: list[str], cwd: str, env: dict, stdout_f, stderr_f) -> subproce
                             start_new_session=True)
 
 
+def unidad_activa(unidad: str) -> bool:
+    """`systemctl --user is-active <unidad>` == 0: el scope existe y corre
+    (canario: local). La reconciliacion del arranque lo pregunta antes de
+    parar el scope de un golpe cortado para anotar si habia un huerfano
+    (el server murio sin shutdown y el golpe siguio solo). Sin systemctl o
+    ante cualquier error, False."""
+    try:
+        r = subprocess.run(["systemctl", "--user", "is-active", unidad], capture_output=True, text=True,
+                           timeout=10)
+    except Exception:
+        return False
+    return r.returncode == 0
+
+
 def _parar_unidad(unidad: str) -> None:
     """`systemctl --user stop <unidad>`: el scope entero (canario: local)."""
     try:

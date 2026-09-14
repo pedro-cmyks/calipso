@@ -2714,12 +2714,32 @@ def _lanzar_bucle(goal_id: str) -> None:
         _LOOP_PRINCIPAL.call_soon_threadsafe(_crear)
 
 
+def _parar_scopes_del_golpe(goal_id: str, n: int) -> list[str]:
+    """Los scopes que un golpe `n` pudo dejar (el golpe, su reintento de
+    sesion `-r` y el criterio confinado), parados con `systemctl --user
+    stop` (inofensivo si no existen: el nombre es determinista) y la lista
+    de los que EXISTIAN: si el server murio sin shutdown (kill -9, OOM) el
+    CLI siguio solo en su scope hasta RuntimeMaxSec editando el clon, y un
+    segui lanzaria el golpe siguiente sobre el mismo clon con el huerfano
+    adentro (rev:lente-riesgo)."""
+    vivas: list[str] = []
+    for u in (f"calipso-goal-{goal_id}-{n}", f"calipso-goal-{goal_id}-{n}-r",
+              f"calipso-goal-{goal_id}-criterio-{n}"):
+        if goals_manos.unidad_activa(u):
+            vivas.append(u)
+        goals_manos._parar_unidad(u)
+    return vivas
+
+
 def _reconciliar_goals() -> list[str]:
     """En HILO, en el arranque (ruling 15.9): un goal `active` al arrancar
-    es un goal que el apagado (o un crash) corto: su golpe sin `fin` se
-    cierra con motivo `cortado por el reinicio` (con la sesion del goal si
-    las manos eran claude: el CLI la persistio), el `git status` del clon
-    va al evento y el goal queda `waiting` motivo `server reiniciado`; un
+    es un goal que el apagado (o un crash) corto: el scope de su golpe sin
+    `fin` se para (un huerfano de un crash seguiria editando el clon), la
+    fila se cierra con motivo `cortado por el reinicio` (con la sesion del
+    goal si las manos eran claude: el CLI la persistio), el `git status`
+    del clon va al evento, el goal queda `waiting` motivo `server
+    reiniciado` CON la solicitud `retomar` estacionada (Pedro la ve en el
+    inbox: no se pierde) y ahi si se relanza el bucle que la sondea; un
     goal `waiting` o `proposed` CON solicitud (una respuesta pendiente del
     inbox, o el `dale` estacionado) se relanza para que el bucle la sondee;
     un `waiting` sin solicitud no (nada que sondear: lo relanza `/goal
@@ -2730,7 +2750,9 @@ def _reconciliar_goals() -> list[str]:
             continue
         if g.get("status") == goals.ACTIVE:
             filas = goals.golpes(g["id"])
+            vivas: list[str] = []
             if filas and filas[-1].get("fase") == "inicio":
+                vivas = _parar_scopes_del_golpe(g["id"], int(filas[-1]["n"]))
                 # el golpe de claude corrio: el CLI persistio la sesion del
                 # goal, y sin session_id en la fila el golpe siguiente saldria
                 # con --session-id sobre una sesion que existe (`already in
@@ -2738,16 +2760,18 @@ def _reconciliar_goals() -> list[str]:
                 # el lanzamiento. codex y el revisor no usan esa sesion
                 sesion = {"session_id": g.get("session_id")} if filas[-1].get("manos") == "claude" else {}
                 goals.golpe_fin(g["id"], filas[-1]["n"], motivo="cortado por el reinicio", unidades=0,
-                                duracion_ms=0, **sesion)
+                                duracion_ms=0, unidades_paradas=vivas, **sesion)
             estado = ""
             if g.get("repo"):
                 rc, out, _ = calipso_github.git_local(["status", "--porcelain"], cwd=g["repo"])
                 estado = out.strip() if rc == 0 else ""
-            goals.transicionar(g["id"], goals.WAITING, "server reiniciado",
-                               motivo_detalle={"git_status": estado})
-            goals.event(None, g["id"], "reconciliado", git_status=estado)
+            g2 = goals.transicionar(g["id"], goals.WAITING, "server reiniciado",
+                                    motivo_detalle={"git_status": estado})
+            goals.event(None, g["id"], "reconciliado", git_status=estado, unidades_paradas=vivas)
+            g2 = goals_runner.estacionar_retomar(g2, _estacionar_para_pedro)
             tocados.append(g["id"])
-            _lanzar_bucle(g["id"])
+            if (g2.get("espera") or {}).get("solicitud"):
+                _lanzar_bucle(g["id"])
         elif g.get("status") in (goals.WAITING, goals.PROPOSED) \
                 and (g.get("espera") or {}).get("solicitud"):
             tocados.append(g["id"])
@@ -2770,7 +2794,11 @@ async def _apagar_goals(plazo: float = GOAL_APAGADO_PLAZO_S) -> None:
                 await asyncio.to_thread(runner.esperar_golpe, plazo)
             g = goals.load(None, goal_id)
             if g and g.get("status") == goals.ACTIVE:
-                await asyncio.to_thread(goals.transicionar, goal_id, goals.WAITING, "server apagado")
+                g = await asyncio.to_thread(goals.transicionar, goal_id, goals.WAITING, "server apagado")
+                # Pedro no se pierde: la solicitud `retomar` queda en el
+                # inbox y la reconciliacion del proximo arranque relanza el
+                # bucle que la sondea
+                await asyncio.to_thread(goals_runner.estacionar_retomar, g, _estacionar_para_pedro)
         except Exception as exc:
             print(f"[calipso] goal {goal_id}: no se pudo apagar limpio: {exc}", file=sys.stderr)
         _cancelar_tarea(e.get("tarea"))
@@ -4413,8 +4441,9 @@ def _parar_goal(goal_id: str, motivo: str = "parado por Pedro") -> dict:
     """active -> waiting, y el golpe en curso se mata (el grupo entero). En
     HILO (to_thread o endpoint sync): espera con plazo a que el hilo del
     golpe vuelva antes de transicionar (la fila `fin` y el cobro quedan),
-    cancela la tarea por el loop y saca SU entrada (un segui posterior
-    pone otra)."""
+    cancela la tarea por el loop y saca SU entrada; despues estaciona la
+    solicitud `retomar` y lanza un bucle nuevo que la sondea (un segui
+    posterior pone otro)."""
     e = _GOALS_EN_CURSO.get(goal_id)
     if e and e.get("runner") is not None:
         e["runner"].cancelar.set()
@@ -4425,6 +4454,12 @@ def _parar_goal(goal_id: str, motivo: str = "parado por Pedro") -> dict:
         _cancelar_tarea(e.get("tarea"))
         if _GOALS_EN_CURSO.get(goal_id) is e:
             _GOALS_EN_CURSO.pop(goal_id, None)
+    # Pedro no se pierde (ruling del cierre): el parado estaciona `retomar`
+    # (aparece en el inbox; el si la retoma, el no la cancela) y un bucle
+    # nuevo la sondea (el viejo quedo cancelado con su runner)
+    goal = goals_runner.estacionar_retomar(goal, _estacionar_para_pedro)
+    if (goal.get("espera") or {}).get("solicitud"):
+        _lanzar_bucle(goal_id)
     return goal
 
 
@@ -4552,7 +4587,8 @@ async def _atender_goal(texto: str, features: dict, chat_id: str | None,
             if not activo or activo.get("status") != goals.ACTIVE:
                 return "no hay ningun goal corriendo", True
             g = await asyncio.to_thread(_parar_goal, activo["id"])
-            return f"goal {g['id']} waiting: parado; `/goal segui <nota>` para retomar", False
+            return (f"goal {g['id']} waiting: parado; `/goal segui <nota>` para retomar "
+                    f"(o si/no en el inbox)"), False
         if verbo == "segui":
             if not activo or activo.get("status") != goals.WAITING:
                 return "el goal no esta esperando nada", True
