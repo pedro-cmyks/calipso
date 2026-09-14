@@ -508,6 +508,7 @@ class Parser:
         self.costo_usd: float | None = None
         self.violacion: str | None = None
         self.texto_final: str = ""
+        self.error_texto: str = ""              # el `result` con is_error, y las lineas error/turn.failed
 
     def alimentar(self, linea: str) -> str | None:
         linea = (linea or "").strip()
@@ -528,6 +529,13 @@ class Parser:
             return self._user(fila)
         elif tipo == "result":
             self._result(fila)
+        elif tipo in ("error", "turn.failed"):
+            # donde un CLI cuenta por que corto (codex --json manda eventos
+            # error/turn.failed; claude lo dice en el result con is_error)
+            err = fila.get("error") if isinstance(fila.get("error"), dict) else {}
+            texto = str(fila.get("message") or err.get("message") or "")
+            if texto:
+                self.error_texto = (self.error_texto + "\n" + texto).strip()
         return None
 
     def _violar(self, motivo: str) -> str:
@@ -578,7 +586,7 @@ class Parser:
             self._tool_uses[tid] = {"name": nombre, "input": bloque.get("input") or {}}
             if nombre == "Bash":
                 self.comandos.append({"id": tid, "cmd": str((bloque.get("input") or {}).get("command") or ""),
-                                      "resultado_tail": None})
+                                      "resultado_tail": None, "error": None})
 
     def _user(self, fila: dict) -> str | None:
         msg = fila.get("message") or {}
@@ -607,11 +615,16 @@ class Parser:
                 for c in self.comandos:
                     if c["id"] == tid:
                         c["resultado_tail"] = str(salida or "")[-300:]
+                        # la senal real de que el comando fallo (exit != 0):
+                        # no_converge compara solo comandos con error
+                        c["error"] = bool(bloque.get("is_error"))
         return None
 
     def _result(self, fila: dict) -> None:
         self.resultado = fila
         self.session_id = fila.get("session_id") or self.session_id
+        if fila.get("is_error"):
+            self.error_texto = (self.error_texto + "\n" + str(fila.get("result") or "")).strip()
         iteraciones = (fila.get("usage") or {}).get("iterations")
         if isinstance(iteraciones, list) and iteraciones:
             self.unidades = len(iteraciones)
@@ -658,6 +671,7 @@ class Resultado:
     subtype: str | None = None
     model: str | None = None
     reintento: str | None = None       # la autocorreccion --session-id/--resume (goals_runner.correccion_de_sesion)
+    error_texto: str = ""              # Parser.error_texto: el result con is_error, los eventos error
 
     def a_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -831,7 +845,21 @@ def golpear(*, argv: list[str], stdin: str, cwd: str, env: dict, timeout_s: floa
     r.costo_usd = parser.costo_usd
     r.subtype = (parser.resultado or {}).get("subtype")
     r.model = parser.model
+    r.error_texto = parser.error_texto
     return r
+
+
+def texto_de_fallo(r: Resultado) -> str:
+    """Donde el CLI dice por que fallo, para `es_fallo_de_cuota`: stderr,
+    el `result` con is_error del stream (claude puede mandar el limite ahi
+    con exit 1, no por stderr: antes ese golpe contaba contra el tope y el
+    goal repetia golpes fallidos) y las lineas SUELTAS del stdout (no JSON:
+    un error impreso a secas). Las lineas JSON del stream no entran:
+    `rate_limit_event` esta en todo stream de claude y `rate_limit` es un
+    patron de cuota, un exit 1 por otra cosa pareceria cuota."""
+    sueltas = [l for l in (r.stdout_tail or "").splitlines()
+               if l.strip() and not l.lstrip().startswith("{")]
+    return "\n".join([r.stderr_tail or "", r.error_texto or "", *sueltas])
 
 
 def sondear_hook(compuertas_path: str, *, hook_python: str | None = None,

@@ -414,6 +414,50 @@ def test_parser_sonda_del_hook_aparea_por_id_si_el_stream_lo_trae():
     assert vistos.index(p2.violacion) == 3
 
 
+def test_parser_guarda_el_is_error_de_cada_comando_y_el_result_con_error():
+    """rev:manos-runner: el tool_result del stream trae `is_error: true`
+    cuando el comando salio distinto de 0: es la senal real de un fallo
+    (no_converge la usa en vez de buscar 'error' en la cola, que marcaba un
+    `ls` con errors.py como fallo); y el `result` con `is_error` es donde
+    el CLI cuenta por que corto (el limite de cuota puede venir ahi con
+    exit 1, no solo por stderr)."""
+    lineas = lineas_golpe(comandos=[("pytest -q", "1 failed"), ("ls", "errors.py")])
+    for l in lineas:
+        if l.get("type") == "user" and l["message"]["content"][0]["tool_use_id"] == "toolu_0":
+            l["message"]["content"][0]["is_error"] = True
+    p = gm.Parser()
+    for l in lineas:
+        p.alimentar(json.dumps(l))
+    assert [(c["cmd"], c["error"]) for c in p.comandos] == [("pytest -q", True), ("ls", False)]
+    assert p.error_texto == ""
+    p2 = gm.Parser()
+    p2.alimentar(json.dumps(lineas[0]))
+    p2.alimentar(json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                             "result": "You've hit your usage limit. Resets at 6pm", "session_id": "s-1"}))
+    assert p2.error_texto == "You've hit your usage limit. Resets at 6pm" and p2.veredicto is None
+    p3 = gm.Parser()
+    p3.alimentar(json.dumps({"type": "error", "message": "rate limit reached"}))
+    p3.alimentar(json.dumps({"type": "turn.failed", "error": {"message": "quota exceeded"}}))
+    assert "rate limit reached" in p3.error_texto and "quota exceeded" in p3.error_texto
+
+
+def test_texto_de_fallo_no_mira_las_lineas_json_del_stream():
+    """`rate_limit_event` esta en TODO stream de claude y `rate_limit` es un
+    patron de cuota: un golpe que sale 1 por otra cosa con esa linea en la
+    cola del stdout no es un fallo por cuota. Entran stderr, el `result`
+    con is_error y las lineas sueltas (no JSON) del stdout."""
+    r = gm.Resultado(exit=1, stderr_tail="", error_texto="",
+                     stdout_tail=json.dumps(lineas_golpe()[1]) + "\n" + json.dumps(
+                         {"type": "result", "is_error": True, "result": "Error: boom"}))
+    assert gm.es_fallo_de_cuota(gm.texto_de_fallo(r)) is False
+    r2 = gm.Resultado(exit=1, stderr_tail="", error_texto="You've hit your usage limit", stdout_tail="")
+    assert gm.es_fallo_de_cuota(gm.texto_de_fallo(r2)) is True
+    r3 = gm.Resultado(exit=1, stderr_tail="", error_texto="", stdout_tail="Claude usage limit reached\n")
+    assert gm.es_fallo_de_cuota(gm.texto_de_fallo(r3)) is True
+    r4 = gm.Resultado(exit=1, stderr_tail="rate limit", error_texto="", stdout_tail="")
+    assert gm.es_fallo_de_cuota(gm.texto_de_fallo(r4)) is True
+
+
 def test_parser_tolera_basura_y_denials():
     p = gm.Parser()
     assert p.alimentar("no es json") is None

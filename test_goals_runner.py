@@ -137,19 +137,23 @@ PASADO = 1789330200                   # 2026-09-13T20:10Z: una ventana ya vencid
 
 def resultado(estado="sigo", resumen="hice algo", unidades=2, comandos=(), exit=0, motivo=None,
               timeout=False, matado=False, veredicto=None, stderr="", rate=0.37, pregunta=None,
-              compuerta=None, resets_at=PASADO, stdout=""):
+              compuerta=None, resets_at=PASADO, stdout="", error_texto=""):
+    """`comandos`: (cmd, cola) o (cmd, cola, error) -- `error` es el
+    is_error del tool_result (False si no se dice)."""
     v = veredicto if veredicto is not None else {"estado": estado, "resumen": resumen}
     if pregunta:
         v["pregunta"] = pregunta
     if compuerta:
         v["compuerta"] = compuerta
     return gm.Resultado(exit=exit, motivo=motivo, timeout=timeout, matado=matado, session_id="s-1",
-                        unidades=unidades, comandos=[{"id": f"t{i}", "cmd": c, "resultado_tail": r}
-                                                     for i, (c, r) in enumerate(comandos)],
+                        unidades=unidades,
+                        comandos=[{"id": f"t{i}", "cmd": c[0], "resultado_tail": c[1],
+                                   "error": bool(c[2]) if len(c) > 2 else False}
+                                  for i, c in enumerate(comandos)],
                         veredicto=v if exit == 0 and not matado else None,
                         rate_limit={"five_hour": rate, "seven_day": 0.1, "resets_at": resets_at},
                         duracion_ms=1500, costo_usd=0.05, stderr_tail=stderr, stdout_tail=stdout,
-                        subtype="success")
+                        subtype="success", error_texto=error_texto)
 
 
 def goal_activo(home, tmp_path, **campos):
@@ -322,7 +326,7 @@ def test_no_convergencia_misma_falta_dos_veces(home, tmp_path):
 
 
 def test_no_convergencia_mismo_comando_fallando(home, tmp_path):
-    f = Falsas(resultados=[resultado("sigo", comandos=[("pytest -q", "1 failed, exit code 1")])])
+    f = Falsas(resultados=[resultado("sigo", comandos=[("pytest -q", "1 failed, exit code 1", True)])])
     g = goal_activo(home, tmp_path)
     r = f.runner(g["id"])
     f.diff_valor = "a"
@@ -330,6 +334,30 @@ def test_no_convergencia_mismo_comando_fallando(home, tmp_path):
     f.diff_valor = "b"
     assert r.iteracion()["estado"] == goals.WAITING
     assert "mismo comando" in goals.load(None, g["id"])["espera"]["diagnostico"]
+
+
+def test_el_mismo_comando_con_salida_igual_sin_error_no_es_no_convergencia(home, tmp_path):
+    """rev:manos-runner: 'el mismo comando fallando igual' se decidia por
+    substring ('error', 'failed', 'traceback') en la cola: dos `ls` con
+    `errors.py` en la salida, o un test que se llama test_error, eran no
+    convergencia con diagnostico falso. La senal real es el `is_error` del
+    tool_result (comandos[].error): solo cuentan los comandos con error."""
+    f = Falsas(resultados=[resultado("sigo", comandos=[("ls", "errors.py test_error.py failed.log"),
+                                                       ("git status", "nothing to commit, error: none")])])
+    g = goal_activo(home, tmp_path)
+    r = f.runner(g["id"])
+    f.diff_valor = "a"
+    assert r.iteracion()["estado"] == goals.ACTIVE
+    f.diff_valor = "b"
+    assert r.iteracion()["estado"] == goals.ACTIVE
+    # la misma cola con error: true dos veces seguidas si lo es; sin la
+    # clave (un ledger viejo) no se decide nada
+    fin = [{"n": 1, "fase": "fin", "diff_stat": "a", "comandos": [{"cmd": "ls", "resultado_tail": "x", "error": True}]},
+           {"n": 2, "fase": "fin", "diff_stat": "b", "comandos": [{"cmd": "ls", "resultado_tail": "x", "error": True}]}]
+    assert "mismo comando" in gr.no_converge(fin)
+    viejo = [{"n": 1, "fase": "fin", "diff_stat": "a", "comandos": [{"cmd": "ls", "resultado_tail": "error x"}]},
+             {"n": 2, "fase": "fin", "diff_stat": "b", "comandos": [{"cmd": "ls", "resultado_tail": "error x"}]}]
+    assert gr.no_converge(viejo) is None
 
 
 def test_no_converge_es_puro():
@@ -541,6 +569,41 @@ def test_fallo_del_cli_por_cuota_no_cuenta_contra_el_tope(home, tmp_path):
     assert it["estado"] == goals.WAITING and goals.load(None, g["id"])["espera"]["motivo"] == "cuota"
     fl = filas(g["id"])
     assert fl[0]["cuenta_para_tope"] is False and goals.consumo(goals.load(None, g["id"]))["golpes"] == 0
+
+
+def test_el_limite_de_cuota_por_stdout_deja_waiting_cuota(home, tmp_path, cli_falso_stream):
+    """rev:manos-runner: el fallo por cuota se buscaba solo en stderr; si el
+    CLI lo reporta en el `result` del stream (is_error, exit 1) el golpe
+    contaba contra el tope y el goal repetia golpes fallidos. Con el CLI
+    falso: el limite por stdout -> waiting cuota, sin contar. Y un golpe
+    que sale 1 por otra cosa con `rate_limit_event` en el stream (esta en
+    todos) NO es cuota: cuenta como golpe."""
+    cli = cli_falso_stream
+    g = goal_activo(home, tmp_path, tope={"golpes": 3, "minutos": 60, "unidades": 60})
+    sid = g["session_id"]
+    cli.guion([{"lineas": lineas_golpe(session_id=sid)[:2] + [
+                    {"type": "result", "subtype": "error_during_execution", "is_error": True, "session_id": sid,
+                     "result": "You've hit your usage limit. Your limit will reset at 6pm"}], "exit": 1}])
+    f = Falsas(juicios=[])
+    f.manos = gr.manos_con_cli({"claude": cli.ruta, "codex": cli.ruta_codex}, timeout_s=30, usar_systemd=False)
+    r = f.runner(g["id"])
+    it = r.iteracion()
+    assert it["accion"] == "cuota" and it["estado"] == goals.WAITING
+    e = goals.load(None, g["id"])["espera"]
+    assert e["motivo"] == "cuota" and "usage limit" in e["detalle"]
+    fl = filas(g["id"])
+    assert fl[0]["cuenta_para_tope"] is False and fl[0]["exit"] == 1
+    # exit 1 por otra cosa, con rate_limit_event en la cola del stdout: no es cuota
+    goals.transicionar(g["id"], goals.CANCELLED, "x")
+    g2 = goal_activo(home, tmp_path, tope={"golpes": 3, "minutos": 60, "unidades": 60})
+    cli.guion([{"lineas": lineas_golpe(session_id=g2["session_id"])[:2] + [
+                    {"type": "result", "subtype": "error_during_execution", "is_error": True,
+                     "session_id": g2["session_id"], "result": "Error: boom"}], "exit": 1}])
+    f2 = Falsas(juicios=[])
+    f2.manos = gr.manos_con_cli({"claude": cli.ruta, "codex": cli.ruta_codex}, timeout_s=30, usar_systemd=False)
+    it = f2.runner(g2["id"]).iteracion()
+    assert it["accion"] == "golpe" and it["estado"] == goals.ACTIVE
+    assert filas(g2["id"])[0]["cuenta_para_tope"] is True
 
 
 def test_el_ultimo_rate_limit_de_claude_frena(home, tmp_path):

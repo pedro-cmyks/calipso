@@ -83,7 +83,6 @@ OPCIONES_NO_CONVERGENCIA = ("cambiar el plan (/goal segui <nota con el plan nuev
                             "pedir a Pedro (contesta lo que falta con /goal segui <nota>)",
                             "cambiar de manos (/goal segui con: codex|claude)",
                             "achicar el alcance (/goal no y un /goal mas chico)")
-FALLO_TAIL = ("exit code", "error", "failed", "traceback")
 
 
 def _cwd_de(goal: dict) -> str:
@@ -285,9 +284,13 @@ def compuertas_usadas(registro: str, desde: int = 0) -> list[dict]:
 # --------------------------------------------------------------------------
 
 def _tail_fallido(c: dict) -> str | None:
-    cola = (c.get("resultado_tail") or "").lower()
-    if any(p in cola for p in FALLO_TAIL) and "exit code 0" not in cola:
-        return cola
+    """La cola de un comando que FALLO segun el `is_error` del tool_result
+    (Parser: comandos[].error); None si salio bien o no se sabe (un ledger
+    viejo sin la clave). Antes se decidia por substring ('error', 'failed',
+    'traceback') y dos `ls` con errors.py en la salida eran no
+    convergencia con diagnostico falso."""
+    if c.get("error") is True:
+        return (c.get("resultado_tail") or "").lower()
     return None
 
 
@@ -763,7 +766,9 @@ class Runner:
                 {"cuenta": None, "cobrado": False, "unidades": 0}
             veredicto = resultado.veredicto if isinstance(resultado.veredicto, dict) else None
             valido = bool(veredicto) and veredicto.get("estado") in ("sigo", "terminar", "preguntar")
-            cuota_fallo = resultado.exit not in (0, None) and gm.es_fallo_de_cuota(resultado.stderr_tail)
+            # el limite puede venir por stderr o en el result con is_error del
+            # stream (gm.texto_de_fallo): antes solo se miraba stderr
+            cuota_fallo = resultado.exit not in (0, None) and gm.es_fallo_de_cuota(gm.texto_de_fallo(resultado))
             # parar/apagar matan el CLI y el sondeo de golpear puede verlo
             # muerto antes que `cancelar`: la fila lo dice igual y el golpe
             # cortado no cuenta contra el tope (las unidades si se suman)
@@ -806,8 +811,8 @@ class Runner:
                                  or resultado.motivo.startswith("mcp inesperado")):
             return self._failed(resultado.motivo)
         if cuota_fallo:
-            detalle = {"motivo": "cuota", "detalle": resultado.stderr_tail[-300:], "resets_at": None,
-                       "manos": goal.get("manos")}
+            detalle = {"motivo": "cuota", "detalle": gm.texto_de_fallo(resultado).strip()[-300:],
+                       "resets_at": None, "manos": goal.get("manos")}
             g = goals.transicionar(self.goal_id, goals.WAITING, "cuota", motivo_detalle=detalle)
             return {"accion": "cuota", "estado": g["status"], "n": n}
         # 7. el veredicto
