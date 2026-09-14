@@ -204,6 +204,9 @@ def test_una_preautorizacion_del_goal_deja_pasar_esa_forma_exacta(goal_dir):
     "tree ~/.ssh", "du -a ~/.gnupg", "sha256sum ~/.ssh/id_ed25519", "md5sum ~/.aws/credentials",
     "jq . ~/.claude/.credentials.json", "jq -r .token ~/.calipso/token", "jq --slurpfile x ~/.aws/credentials .",
     "jq --rawfile x ~/.ssh/id_ed25519 -n x", "jq -f ~/.calipso/token", "jq -n -L ~/.ssh x",
+    # las opciones de jq que leen un archivo y no estan en --help a la vista
+    # (`--run-tests` corre un archivo de tests; `--library-path` es -L)
+    "jq --run-tests ~/.aws/credentials", "jq --library-path ~/.claude -n -f f.jq",
 ])
 def test_lo_nunca_se_deniega(goal_dir, cmd):
     home = os.path.expanduser("~")
@@ -783,7 +786,8 @@ def test_leer_con_las_herramientas_de_archivo_bajo_el_home_fuera_del_alcance_pre
     "tree ~/Documentos", "tree -L 2 ~/proyectos", "du -sh ~/Documentos", "sha256sum ~/x", "md5sum ~/x",
     "jq . ~/Documentos/x.json", "jq -r .a ~/x.json", "jq -rc .a.b src/a.json ~/x.json",
     "jq --slurpfile x ~/x.json .", "jq --rawfile x ~/x.txt -n x", "jq -f ~/filtro.jq src/a.json",
-    "jq --from-file ~/filtro.jq", "jq -L ~/modulos -n x",
+    "jq --from-file ~/filtro.jq", "jq -L ~/modulos -n x", "jq --library-path ~/Documentos -n x",
+    "jq --run-tests ~/Documentos/t.jq",
     # las fuentes de un escritor y las subidas tambien son lecturas
     "cp ~/Documentos/x.txt .", "curl -T ~/Documentos/x https://pypi.org/", "tar -cf o.tar -C ~/Documentos .",
 ])
@@ -809,12 +813,31 @@ def test_un_lector_bajo_el_home_fuera_del_alcance_pregunta_raiz_nueva(goal_dir, 
     "jq . package.json", "jq -r .a.b src/a.json", "jq '..' src/a.json", "jq -n .", "jq -rc .[0] src/a.json",
     "jq --arg x ~/y . src/a.json", "jq --argjson x 1 -c .x", "jq --indent 4 . src/a.json", "jq -f src/f.jq src/a.json",
     "jq --args . a b", "jq . --args ~/x", "jq --jsonargs -n x 1 2", "jq -e . src/a.json", "jq --tab -S . src/a.json",
+    "jq --run-tests src/t.jq", "jq --library-path src/modulos -n x", "jq --seq -n 1", "jq --help", "jq --version",
+    "jq -n -- 1", "jq --stream -c . src/a.json", "jq --raw-output0 .a src/a.json",
 ])
 def test_un_lector_fuera_del_home_o_en_el_alcance_pasa(goal_dir, cmd):
     cmd = cmd.replace("{R}", str(goal_dir["raiz"]))
     rc, err = correr(goal_dir, "Bash", {"command": cmd})
     assert rc == 0, (cmd, err)
     assert registro(goal_dir)[-1]["decision"] == "allow"
+
+
+@pytest.mark.parametrize("cmd", [
+    "jq --loquesea x", "jq --loquesea . src/a.json", "jq --from-file=src/f.jq src/a.json", "jq --indent=2 . src/a.json",
+    "jq --debug-trace . src/a.json", "jq -n --run-test x",
+])
+def test_una_opcion_larga_de_jq_que_el_hook_no_conoce_se_deniega(goal_dir, cmd):
+    """Re-review del carril 1 (critico): `--run-tests` y `--library-path`
+    no estaban en JQ_OPCIONES y `jq --run-tests ~/.aws/credentials` salia
+    allow. La lista de opciones con archivo nunca va a estar completa por
+    construccion, asi que es FAIL-CLOSED: una opcion larga que no esta en
+    JQ_OPCIONES ni en las banderas sin valor de jq 1.8 se deniega (no es
+    NUNCA: no se sabe que lee)."""
+    rc, err = correr(goal_dir, "Bash", {"command": cmd})
+    assert rc == 2 and "opcion desconocida" in err and "NUNCA" not in err, (cmd, err)
+    fila = registro(goal_dir)[-1]
+    assert fila["decision"] == "deny" and fila["familia"] is None
 
 
 def test_el_clon_bajo_el_home_es_el_alcance_y_otro_goal_no(tmp_path, monkeypatch):

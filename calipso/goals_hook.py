@@ -598,8 +598,6 @@ def _candidatos_de_ruta(exe: str, argv: list[str]) -> list[str]:
     para curl/wget, ademas, lo que sigue a `@` (`-d @archivo`,
     `-F campo=@archivo`, `--data-urlencode nombre@archivo`) y nunca las
     URLs (esas van por dominio)."""
-    if exe == "jq":
-        return _archivos_de_jq(argv)
     out = []
     sin_ruta = OPCIONES_SIN_RUTA.get(exe, ())
     saltar = False
@@ -631,25 +629,46 @@ def _candidatos_de_ruta(exe: str, argv: list[str]) -> list[str]:
 # Las opciones de jq con valor: (cuantos tokens se lleva, cuales de ellos
 # son un archivo). `--arg n v` y `--argjson n v` son cadenas; `--slurpfile`,
 # `--rawfile` y `--argfile` leen el segundo; `-f`/`--from-file` lee el filtro
-# de un archivo (y entonces TODOS los posicionales son entradas); `-L` es un
-# directorio de modulos.
+# de un archivo (y entonces TODOS los posicionales son entradas); `-L`/
+# `--library-path` es un directorio de modulos; `--run-tests` corre un
+# archivo de tests (no sale en `jq --help`: el re-review del carril 1 lo
+# paso con ~/.aws/credentials). jq 1.8 no acepta `--opcion=valor`.
 JQ_OPCIONES = {"--arg": (2, ()), "--argjson": (2, ()), "--slurpfile": (2, (1,)), "--rawfile": (2, (1,)),
                "--argfile": (2, (1,)), "--from-file": (1, (0,)), "--indent": (1, ()), "-f": (1, (0,)),
-               "-L": (1, (0,))}
+               "-L": (1, (0,)), "--library-path": (1, (0,)), "--run-tests": (1, (0,))}
+# Las banderas largas SIN valor de jq 1.8 (`jq --help` mas `--binary`, que
+# solo hace algo en Windows). Cualquier otra opcion larga se DENIEGA: la
+# lista de las que leen un archivo nunca esta completa por construccion
+# (fail-closed, como el resto del hook), y jq mismo rechaza lo que no
+# conoce, asi que no se pierde nada legitimo.
+JQ_BANDERAS = frozenset((
+    "--null-input", "--raw-input", "--slurp", "--compact-output", "--raw-output", "--raw-output0",
+    "--join-output", "--ascii-output", "--sort-keys", "--color-output", "--monochrome-output", "--tab",
+    "--unbuffered", "--stream", "--stream-errors", "--seq", "--exit-status", "--version",
+    "--build-configuration", "--help", "--binary", "--args", "--jsonargs"))
 
 
-def _archivos_de_jq(argv: list[str]) -> list[str]:
-    """Lo que `jq` lee: los archivos de entrada (los posicionales despues
-    del filtro, que no es una ruta aunque empiece con `.`), los de sus
-    opciones con archivo y el filtro de `-f`. Despues de `--args` o
-    `--jsonargs` los posicionales son cadenas, no archivos."""
+def _archivos_de_jq(argv: list[str]) -> tuple[list[str], str | None]:
+    """(lo que `jq` lee, motivo para DENEGAR): los archivos de entrada (los
+    posicionales despues del filtro, que no es una ruta aunque empiece con
+    `.`), los de sus opciones con archivo y el filtro de `-f`. Despues de
+    `--args` o `--jsonargs` los posicionales son cadenas, no archivos;
+    despues de `--` todo es posicional. Una opcion larga que no esta en
+    JQ_OPCIONES ni en JQ_BANDERAS deniega: no se sabe que lee."""
     out: list[str] = []
-    filtro_visto = cadenas = False
+    filtro_visto = cadenas = solo_pos = False
     toks = argv[1:]
     i = 0
     while i < len(toks):
         tok = toks[i]
-        if tok in ("--args", "--jsonargs"):
+        if solo_pos:
+            if not filtro_visto:
+                filtro_visto = True
+            elif not cadenas:
+                out.append(tok)
+        elif tok == "--":
+            solo_pos = True
+        elif tok in ("--args", "--jsonargs"):
             cadenas = True
         elif tok in JQ_OPCIONES:
             n, archivos = JQ_OPCIONES[tok]
@@ -658,9 +677,12 @@ def _archivos_de_jq(argv: list[str]) -> list[str]:
             if tok in ("-f", "--from-file"):
                 filtro_visto = True
             i += n
+        elif tok.startswith("--"):
+            if tok not in JQ_BANDERAS:
+                return [], f"jq {tok}: opcion desconocida"
         elif tok.startswith("-") and len(tok) > 1:
             letra = next((ch for ch in tok[1:] if ch in "fL"), None)
-            if letra and not tok.startswith("--"):
+            if letra:
                 resto = tok[tok.index(letra) + 1:]
                 if resto:
                     out.append(resto)
@@ -673,12 +695,17 @@ def _archivos_de_jq(argv: list[str]) -> list[str]:
         elif not cadenas:
             out.append(tok)
         i += 1
-    return out
+    return out, None
 
 
 def _rutas_resueltas(exe: str, argv: list[str], cwd: str | None) -> tuple[list[pathlib.Path], str | None]:
     """Todos los candidatos de ruta de la argv, resueltos (o el motivo para
     DENEGAR)."""
+    if exe == "jq":
+        tokens, motivo = _archivos_de_jq(argv)
+        if motivo:
+            return [], motivo
+        return _resolver_formas(exe, tokens, cwd)
     return _resolver_formas(exe, _candidatos_de_ruta(exe, argv), cwd)
 
 
