@@ -713,3 +713,37 @@ def test_responder_acepta_nota_y_el_runner_la_aplica_como_nota_de_pedro(goal_hom
     s3 = permisos_almacen.abiertas()[0]
     r = chat.cliente.post(f"/api/permisos/solicitudes/{s3['id']}/responder", json={"respuesta": "si", "nota": "  "})
     assert r.status_code == 200 and "nota" not in r.json()["solicitud"]
+
+
+def test_segui_sobre_cumplido_cierra_la_solicitud_cerrar_con_no_y_la_nota(goal_home, chat, repo):
+    """rev:server menor: `/goal segui <nota>` sobre espera `cumplido`
+    significa 'no esta cumplido, segui' y sin embargo cerraba la solicitud
+    `cerrar` con `si`: el registro de permisos decia que Pedro aprobo
+    'cumplido?' cuando lo devolvio con nota. Ahora se cierra con `no` y la
+    nota (como el runner por el inbox); `si` solo para las otras esperas."""
+    _proponer(chat, repo)
+    chat.turno("/goal dale")
+    g = goals.activo()
+    goals.transicionar(g["id"], goals.WAITING, "cumplido", motivo_detalle={"resumen": "listo"})
+    s = srv._estacionar_para_pedro(goals.load(None, g["id"]), "cerrar", n=3)
+    eventos = chat.turno("/goal segui falta el test del borde")
+    assert "active" in texto_visible(eventos) and not de_tipo(eventos, "error")
+    s2 = permisos_almacen.obtener(s["id"])
+    assert s2["estado"] == "negada" and s2["respondida"]["respuesta"] == "no"
+    assert s2["nota"] == "falta el test del borde"
+    g2 = goals.load(None, g["id"])
+    assert g2["status"] == goals.ACTIVE and g2["ultima_nota"] == "falta el test del borde"
+    assert permisos_almacen.abiertas() == []
+    # sin nota: la nota del runner (`no esta cumplido: falta algo`), no un si
+    goals.transicionar(g["id"], goals.WAITING, "cumplido", motivo_detalle={"resumen": "listo"})
+    s = srv._estacionar_para_pedro(goals.load(None, g["id"]), "cerrar", n=5)
+    chat.turno("/goal segui")
+    s2 = permisos_almacen.obtener(s["id"])
+    assert s2["estado"] == "negada" and "no esta cumplido" in s2["nota"]
+    assert "no esta cumplido" in goals.load(None, g["id"])["ultima_nota"]
+    # y sobre una pregunta el segui sigue siendo un si
+    goals.transicionar(g["id"], goals.WAITING, "pregunta", motivo_detalle={"pregunta": "sigo?"})
+    s = srv._estacionar_para_pedro(goals.load(None, g["id"]), "pregunta", {"n": 7}, n=7)
+    chat.turno("/goal segui si, con la libreria x")
+    s2 = permisos_almacen.obtener(s["id"])
+    assert s2["respondida"]["respuesta"] == "si" and s2["nota"] == "si, con la libreria x"

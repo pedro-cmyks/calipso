@@ -4111,14 +4111,16 @@ def _solicitud_abierta_del_goal(goal_id: str, operacion: str | None = None) -> d
     return None
 
 
-def _cerrar_solicitud_del_goal(goal_id: str, operacion: str | None, respuesta: str) -> bool:
+def _cerrar_solicitud_del_goal(goal_id: str, operacion: str | None, respuesta: str,
+                               nota: str | None = None) -> bool:
     """Pedro contesto por el chat: la solicitud abierta se cierra con la
-    misma respuesta (si/no) para que el inbox no la siga mostrando."""
+    misma respuesta (si/no) y su nota para que el inbox no la siga
+    mostrando y el registro diga lo que Pedro dijo."""
     s = _solicitud_abierta_del_goal(goal_id, operacion)
     if not s or _permisos_motor is None:
         return False
     try:
-        _permisos_motor.responder(s["id"], respuesta, quien="pedro")
+        _permisos_motor.responder(s["id"], respuesta, quien="pedro", nota=nota)
         return True
     except Exception:
         return False
@@ -4406,15 +4408,27 @@ def _retomar_goal(goal_id: str, nota: str | None = None, con: str | None = None,
         tocado = goals.tope_alcanzado(goal)
         if tocado:
             raise goals.ErrorGoal(f"el goal toco el tope de {tocado}: {_sugerir_tope(goal, tocado)}")
-    if (goal.get("espera") or {}).get("motivo") in goals.RESPUESTAS_QUE_APLICAN:
+    motivo = espera.get("motivo")
+    if motivo in goals.RESPUESTAS_QUE_APLICAN:
         # un segui es un si (decision 16): se aplica lo MISMO que el runner
         # aplica con el si del inbox (preautorizar la forma, sumar la raiz);
         # nunca un si sin aplicar (el hook seguiria denegando)
         goals.aplicar_respuesta(goal_id, "aprobada")
+    if motivo == "cumplido" and not nota:
+        # como el runner con el no del inbox: el martillo lee en el prompt
+        # que falta algo, aunque Pedro no haya dicho que
+        nota = "Pedro dijo que no esta cumplido: falta algo"
     if nota:
         goals.nota_de_pedro(goal_id, nota)
     goal = goals.transicionar(goal_id, goals.ACTIVE, f"segui de Pedro: {nota or con or ''}".strip())
-    _cerrar_solicitud_del_goal(goal_id, None, "si")
+    # sobre `cumplido` un segui es un NO ("no esta cumplido, segui"): la
+    # solicitud `cerrar` se cierra con no y la nota, como hace el runner
+    # por el inbox; un si dejaria el registro diciendo que Pedro aprobo
+    # 'cumplido?' cuando lo devolvio (rev:server). Sobre lo demas es un si
+    if motivo == "cumplido":
+        _cerrar_solicitud_del_goal(goal_id, "cerrar", "no", nota=nota)
+    else:
+        _cerrar_solicitud_del_goal(goal_id, None, "si", nota=nota)
     _lanzar_bucle(goal_id)
     return goal
 
