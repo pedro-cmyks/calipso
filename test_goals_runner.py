@@ -744,6 +744,37 @@ def test_raiz_nueva_aprobada_se_suma_al_goal(home, tmp_path):
     assert goals.load(None, g["id"])["compuertas"]["raices"] == [str(raiz)]
 
 
+@pytest.mark.parametrize("raiz", [os.path.expanduser("~"), "/", "~", "~/..", "~/.ssh", "", None, "src"])
+def test_una_raiz_nueva_amplia_no_se_estaciona_y_se_le_dice_al_martillo(home, tmp_path, raiz):
+    """Re-review del carril 2 (importante): `cat ~/.bashrc` hacia pedir
+    raiz_nueva con el home entero como raiz; se estacionaba, Pedro decia
+    si, `aplicar_respuesta` -> `validar_raices` levantaba y el goal
+    quedaba clavado (waiting con la solicitud cerrada). Ahora _preguntar
+    valida la raiz ANTES de estacionar: si no vale (amplia, protegida,
+    vacia, relativa) no hay solicitud, el goal sigue active y el golpe
+    siguiente lee en el prompt que pida la carpeta concreta o pregunte a
+    Pedro con estado preguntar."""
+    f = Falsas(resultados=[resultado("preguntar", "raiz", pregunta="puedo leer el home?",
+                                     compuerta={"familia": "raiz_nueva", "forma": {"raiz": raiz}}),
+                           resultado("sigo")])
+    g = goal_activo(home, tmp_path)
+    r = f.runner(g["id"])
+    it = r.iteracion()
+    assert it["estado"] == goals.ACTIVE and it["accion"] == "golpe" and it["raiz_invalida"] == raiz
+    assert f.llamadas["preguntar"] == []
+    g2 = goals.load(None, g["id"])
+    assert g2["status"] == goals.ACTIVE and g2.get("espera") in (None, {})
+    assert "carpeta concreta" in g2["ultima_nota"] and "estado preguntar" in g2["ultima_nota"]
+    if raiz and raiz not in ("", "src"):
+        assert "demasiado amplia" in g2["ultima_nota"] and str(raiz) in g2["ultima_nota"]
+    eventos = [e for e in goals.events(None, g["id"]) if e["action"] == "nota_pedro"]
+    assert eventos and "carpeta concreta" in eventos[-1]["texto"]
+    assert not any(e["action"] == "transicion" and e.get("a") == goals.WAITING for e in goals.events(None, g["id"]))
+    r.iteracion()
+    assert "carpeta concreta" in f.llamadas["manos"][1]["prompt"]
+    assert goals.load(None, g["id"])["compuertas"]["raices"] == []
+
+
 # --- carga y cuota -------------------------------------------------------------------------
 
 def test_cargada_pospone_sin_gastar(home, tmp_path):

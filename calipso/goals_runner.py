@@ -146,7 +146,8 @@ def contrato_del_goal(goal: dict) -> str:
         "no hagas push, PR, correo, gastos ni toques datos de Pedro (el hook lo deniega y el sandbox lo "
         "impide); instala solo dentro del cwd (venv, npm sin -g); si necesitas una compuerta en "
         "pregunta (instalar en el home o el sistema, borrar fuera, una raiz nueva), termina el golpe con "
-        "estado \"preguntar\", la pregunta y la compuerta (familia y forma exacta); " + cierre
+        "estado \"preguntar\", la pregunta y la compuerta (familia y forma exacta; una raiz nueva es la "
+        "carpeta concreta que necesitas, nunca el home ni /); " + cierre
         + " Termina SIEMPRE con el veredicto del esquema: estado sigo (hay mas "
         "por hacer), terminar (creo que el criterio se cumple: el juez lo verifica), preguntar; y un "
         "resumen de una o dos lineas de lo que hiciste.",
@@ -1089,8 +1090,24 @@ class Runner:
             goals.nota_de_pedro(goal["id"], f"la compuerta {familia} es NUNCA: no se pregunta, no se hace")
             return {"accion": "golpe", "estado": goals.ACTIVE, "n": n, "nunca": familia}
         if familia == "raiz_nueva":
-            operacion, forma, detalle = "raiz_nueva", {"raiz": (compuerta.get("forma") or {}).get("raiz")}, \
-                {"motivo": "raiz_nueva", "pregunta": pregunta, "raiz": (compuerta.get("forma") or {}).get("raiz")}
+            raiz = (compuerta.get("forma") or {}).get("raiz")
+            # se valida ANTES de estacionar (re-review del carril 2): una
+            # raiz que validar_raices rechaza (`~` por `cat ~/.bashrc`, `/`,
+            # una protegida, vacia, relativa) no llega al inbox: el si de
+            # Pedro levantaria en aplicar_respuesta y el goal quedaria
+            # clavado. Sin solicitud, el goal sigue active y el martillo
+            # lee en el golpe siguiente que pida la carpeta concreta
+            try:
+                goals.validar_raices([raiz])
+            except goals.ErrorGoal as exc:
+                amplia = "amplia" in str(exc)
+                que = (f"la raiz pedida es demasiado amplia ({raiz})" if amplia
+                       else f"la raiz pedida no vale ({exc})")
+                goals.nota_de_pedro(goal["id"], f"{que}: pedi la carpeta concreta, o pregunta a Pedro "
+                                                "con estado preguntar")
+                return {"accion": "golpe", "estado": goals.ACTIVE, "n": n, "raiz_invalida": raiz}
+            operacion, forma, detalle = "raiz_nueva", {"raiz": raiz}, \
+                {"motivo": "raiz_nueva", "pregunta": pregunta, "raiz": raiz}
         elif familia and niveles.get(familia) == "pregunta":
             operacion, forma = "compuerta", {"familia": familia, "forma": compuerta.get("forma") or {}}
             detalle = {"motivo": "compuerta", "pregunta": pregunta, "compuerta": compuerta}
