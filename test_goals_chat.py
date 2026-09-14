@@ -1028,3 +1028,84 @@ def test_el_goal_que_manda_el_chat_al_conectar_trae_consumo(goal_home, chat, rep
     assert len(inicial) == 1 and inicial[0]["action"] == "active" and inicial[0]["goal"]["id"] == g["id"]
     assert inicial[0]["goal"]["consumo"] == {"golpes": 2, "minutos": 0.03, "unidades": 8, "mm": 0}
     assert inicial[0]["goal"]["consumo"] == chat.cliente.get("/api/goals").json()["activo"]["consumo"]
+
+
+def _clon_con_trabajo(repo, goal_id, existe=True):
+    """Un clon real del repo con la rama goal/<id> y un commit (lo que deja
+    el martillo); `existe=False` deja la ruta sin clon."""
+    clon = goals.dir_trabajo(goal_id) / "repo"
+    if not existe:
+        return clon
+    subprocess.run(["git", "clone", "-q", str(repo), str(clon)], check=True)
+    subprocess.run(["git", "-C", str(clon), "checkout", "-q", "-b", f"goal/{goal_id}"], check=True)
+    (clon / "saludo.py").write_text("def hola():\n    return 'hola'\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(clon), "add", "saludo.py"], check=True)
+    subprocess.run(["git", "-C", str(clon), "-c", "user.name=t", "-c", "user.email=t@t",
+                    "commit", "-q", "-m", "saludo"], check=True)
+    return clon
+
+
+def _cumplido_con_clon(chat, repo, existe=True):
+    _proponer(chat, repo)
+    chat.turno("/goal dale")
+    g = goals.load(None, goals.activo()["id"])
+    clon = _clon_con_trabajo(repo, g["id"], existe)
+    g["repo"] = str(clon)
+    goals.escribir(g)
+    goals.transicionar(g["id"], goals.WAITING, "cumplido", motivo_detalle={"resumen": "listo"})
+    srv._estacionar_para_pedro(goals.load(None, g["id"]), "cerrar", n=3)
+    return g, clon
+
+
+def test_el_dale_final_trae_la_rama_y_el_mensaje_dice_donde_quedo(goal_home, chat, repo):
+    """rev:lente-spec importante: al complete nada traia la rama goal/<id>
+    al repo de origen ni le decia a Pedro donde quedo el trabajo (el clon
+    vive fuera de ~/.calipso). Ahora `_cerrar_goal` trae la rama (fetch
+    local, SIN merge: el merge es de Pedro) y el mensaje de cierre (chat,
+    POST dale y `estado`) dice la rama y el clon."""
+    g, clon = _cumplido_con_clon(chat, repo)
+    eventos = chat.turno("/goal dale")
+    texto = texto_visible(eventos)
+    assert f"goal {g['id']} complete: {g['title']}" in texto
+    assert f"rama goal/{g['id']} en {repo}" in texto and f"el clon en {clon}" in texto
+    assert goals.load(None, g["id"])["status"] == goals.COMPLETE
+    r = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", f"goal/{g['id']}"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0                                       # la rama esta en el origen
+    sha_clon = subprocess.run(["git", "-C", str(clon), "rev-parse", "HEAD"], capture_output=True,
+                              text=True).stdout.strip()
+    assert r.stdout.strip() == sha_clon
+    head = subprocess.run(["git", "-C", str(repo), "branch", "--show-current"], capture_output=True,
+                          text=True).stdout.strip()
+    assert head != f"goal/{g['id']}"                               # sin merge ni checkout
+    ev = [e for e in goals.events(None, g["id"]) if e["action"] == "rama_traida"]
+    assert ev and ev[-1]["proyecto"] == str(repo)
+    # `estado` (el endpoint) lo dice tambien
+    r = chat.cliente.get(f"/api/goals/{g['id']}/estado")
+    assert f"rama goal/{g['id']} en {repo}" in r.json()["resumen"]
+    assert permisos_almacen.abiertas() == []
+
+
+def test_si_la_rama_no_se_puede_traer_el_cierre_lo_dice_y_completa_igual(goal_home, chat, repo):
+    g, clon = _cumplido_con_clon(chat, repo, existe=False)
+    r = chat.cliente.post(f"/api/goals/{g['id']}/dale")
+    assert r.status_code == 200 and r.json()["goal"]["status"] == goals.COMPLETE
+    assert f"rama goal/{g['id']} no traida" in r.json()["mensaje"] and f"el clon en {clon}" in r.json()["mensaje"]
+    ev = [e for e in goals.events(None, g["id"]) if e["action"] == "rama_no_traida"]
+    assert ev and ev[-1]["error"]
+    assert "no traida" in chat.cliente.get(f"/api/goals/{g['id']}/estado").json()["resumen"]
+
+
+def test_el_dale_con_raiz_amplia_es_un_aviso(goal_home, chat, repo):
+    """Ruling del cierre (raices amplias): `_arrancar_goal` y `raiz:` pasan
+    por goals.validar_raices; `~`, `/` y las protegidas no son raices."""
+    _proponer(chat, repo)
+    g = goals.list_goals()[0]
+    eventos = chat.turno("/goal dale raiz: ~")
+    assert "raiz demasiado amplia" in _dicho(eventos)
+    assert goals.load(None, g["id"])["status"] == goals.PROPOSED
+    r = chat.cliente.post(f"/api/goals/{g['id']}/dale", json={"raiz": "/"})
+    assert r.status_code == 409 and "raiz demasiado amplia" in r.json()["detail"]
+    r = chat.cliente.post(f"/api/goals/{g['id']}/dale", json={"raiz": "relativa/x"})
+    assert r.status_code == 409 and "raiz relativa" in r.json()["detail"]
+    assert goals.load(None, g["id"])["compuertas"]["raices"] == []

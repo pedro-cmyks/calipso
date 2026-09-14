@@ -4447,8 +4447,10 @@ def _arrancar_goal(goal_id: str, tope: dict | None = None, raiz: str | None = No
         if tope:
             goal["tope"] = goals.validar_tope({**goal["tope"], **tope})
         if raiz:
-            goal["compuertas"]["raices"] = list(goal["compuertas"].get("raices") or []) + [
-                os.path.expanduser(raiz)]
+            # acotada como las de la propuesta (ruling del cierre: `~`, `/`,
+            # un ancestro del home o una protegida no son raices)
+            goal["compuertas"]["raices"] = (list(goal["compuertas"].get("raices") or [])
+                                            + goals.validar_raices([raiz]))
         goals.escribir(goal)
     goal = goals.transicionar(goal_id, goals.ACTIVE, "dale de Pedro")
     _cerrar_solicitud_del_goal(goal_id, "dale", "si")
@@ -4573,10 +4575,45 @@ def _retomar_goal(goal_id: str, nota: str | None = None, con: str | None = None,
 
 
 def _cerrar_goal(goal_id: str) -> dict:
-    """waiting (cumplido) -> complete: el dale final de Pedro (invariante 2)."""
+    """waiting (cumplido) -> complete: el dale final de Pedro (invariante 2).
+    Trae la rama goal/<id> al repo de origen (fetch local, SIN merge: el
+    merge es de Pedro) y deja el evento rama_traida/rama_no_traida, como el
+    runner con el si del inbox."""
     goal = goals.transicionar(goal_id, goals.COMPLETE, "dale final de Pedro")
     _cerrar_solicitud_del_goal(goal_id, None, "si")
+    goals_runner.traer_rama_al_cerrar(goal, _traer_rama_del_goal)
     return goal
+
+
+def _mensaje_de_cierre(goal: dict) -> str:
+    """`goal <id> complete: <titulo> -- rama goal/<id> en <proyecto>; el clon
+    en <repo>`: donde quedo el trabajo (rev:lente-spec: Pedro se perdia
+    justo al final, el clon vive en ~/.local/share/calipso/goals/<id>/repo
+    y el chat solo decia complete). Con `rama_no_traida`, el error. Lo
+    leen el chat, POST dale y `estado` (tambien tras un cierre por el
+    inbox: el runner deja el mismo evento)."""
+    base = f"goal {goal.get('id')} complete: {goal.get('title')}"
+    ultimo = None
+    for e in goals.events(None, goal["id"], limit=100_000):
+        if e.get("action") in ("rama_traida", "rama_no_traida"):
+            ultimo = e
+    rama = f"goal/{goal.get('id')}"
+    if ultimo and ultimo.get("action") == "rama_traida":
+        return f"{base} -- rama {rama} en {ultimo.get('proyecto') or goal.get('proyecto')}; el clon en {goal.get('repo')}"
+    if ultimo:
+        return (f"{base} -- rama {rama} no traida: {ultimo.get('error')}; el clon en {goal.get('repo')} "
+                f"(traela a mano: git -C {goal.get('proyecto')} fetch {goal.get('repo')} {rama}:{rama})")
+    if goal.get("repo"):
+        return f"{base} -- el clon en {goal.get('repo')} (rama {rama})"
+    return f"{base} -- sin repo: el trabajo en {goals.dir_trabajo(goal['id']) / 'trabajo'}"
+
+
+def _resumen_goal(goal: dict) -> str:
+    """goals.resumen mas, en un goal complete, donde quedo el trabajo."""
+    texto = goals.resumen(goal)
+    if goal.get("status") == goals.COMPLETE:
+        texto += "\n" + _mensaje_de_cierre(goal)
+    return texto
 
 
 async def _atender_goal(texto: str, features: dict, chat_id: str | None,
@@ -4589,7 +4626,7 @@ async def _atender_goal(texto: str, features: dict, chat_id: str | None,
     try:
         if verbo == "estado":
             g = activo or _ultimo_proposed()
-            return (goals.resumen(g) if g else "no hay ningun goal activo ni propuesto"), False
+            return (_resumen_goal(g) if g else "no hay ningun goal activo ni propuesto"), False
         if _goals_apagados():
             # el interruptor: ni la propuesta gasta la cabeza (leer el
             # estado, arriba, sigue valiendo)
@@ -4598,7 +4635,7 @@ async def _atender_goal(texto: str, features: dict, chat_id: str | None,
             if activo and activo.get("status") == goals.WAITING \
                     and (activo.get("espera") or {}).get("motivo") == "cumplido":
                 g = await asyncio.to_thread(_cerrar_goal, activo["id"])
-                return f"goal {g['id']} complete: {g['title']}", False
+                return _mensaje_de_cierre(g), False
             g = _ultimo_proposed()
             if not g and activo and activo.get("status") == goals.WAITING:
                 # la respuesta natural a "instalo typescript global?" es
@@ -6454,7 +6491,7 @@ def api_goal(goal_id: str) -> dict:
 @app.get("/api/goals/{goal_id}/estado")
 def api_goal_estado(goal_id: str) -> dict:
     goal = _goal_o_404(goal_id)
-    return {"goal": goal, "consumo": goals.consumo(goal), "resumen": goals.resumen(goal),
+    return {"goal": goal, "consumo": goals.consumo(goal), "resumen": _resumen_goal(goal),
             "golpes": goals.golpes(goal_id), "events": goals.events(str(ROOT), goal_id)}
 
 
@@ -6477,7 +6514,8 @@ def api_goal_dale(goal_id: str, body: GoalDaleBody | None = None) -> dict:
     tope = goals.parse_tope(body.tope) if body and body.tope else None
     if goal.get("status") == goals.WAITING:
         if (goal.get("espera") or {}).get("motivo") == "cumplido":
-            return _transicion_http(_cerrar_goal, goal_id)
+            salida = _transicion_http(_cerrar_goal, goal_id)
+            return {**salida, "mensaje": _mensaje_de_cierre(salida["goal"])}
         if body and body.raiz:
             raise HTTPException(status_code=409, detail="dale solo arranca un goal proposed; para uno "
                                 "waiting usa segui (raiz: solo con el dale de un proposed)")
