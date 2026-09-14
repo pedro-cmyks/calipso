@@ -66,6 +66,9 @@ aduana.
 Salida: permitir = exit 0 sin stdout (bajo --restricted un `allow` del hook
 se ignora igual: "a confined session takes grants only from its command
 line"); denegar = una linea `goal_hook: DENEGADO (...)` en stderr y exit 2.
+Solo decide eventos con `hook_event_name == "PreToolUse"`: sin nombre se
+deniega (JSON que no se entiende); con otro nombre sale 0 sin decidir ni
+anotar (no es un allow: el hook esta registrado solo en PreToolUse).
 """
 from __future__ import annotations
 
@@ -1282,8 +1285,21 @@ def main(stdin=None, stdout=None, stderr=None, argv: list[str] | None = None,
         compuertas = cargar_compuertas(argv, environ)
         crudo = stdin.read()
         evento = json.loads(crudo)
-        if not isinstance(evento, dict) or evento.get("hook_event_name", "PreToolUse") != "PreToolUse":
-            raise RuntimeError("evento que no es PreToolUse")
+        if not isinstance(evento, dict):
+            raise RuntimeError("evento inesperado: no es un objeto")
+        # El nombre del evento se exige explicito (C4 del cierre: sin nombre
+        # se tomaba como PreToolUse). Sin nombre es un JSON que no se
+        # entiende: deny. Con OTRO nombre no hay nada que decidir (el hook
+        # esta registrado solo en PreToolUse; si llega un Stop o un
+        # PostToolUse es el CLI o la config): exit 0 sin decidir, sin fila
+        # en el registro, y no es un allow (un exit 2 ahi bloquearia cosas
+        # que no se juzgan, como el fin de la sesion).
+        nombre = evento.get("hook_event_name")
+        if not isinstance(nombre, str) or not nombre:
+            raise RuntimeError("evento inesperado: sin hook_event_name")
+        if nombre != "PreToolUse":
+            stderr.write(f"goal_hook: evento {nombre} sin decidir (solo decide PreToolUse)\n")
+            return 0
         decision = decidir(evento, compuertas)
         anotar(compuertas, evento, decision)
         if decision.permitir:

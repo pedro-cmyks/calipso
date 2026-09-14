@@ -543,7 +543,9 @@ class Parser:
             raras = [t for t in self.tools if str(t).startswith("mcp__")]
             if raras:
                 return self._violar(f"mcp inesperado en la sesion: {raras[:3]}")
-        elif sub == "hook_response" and fila.get("hook_event", "PreToolUse") == "PreToolUse":
+        elif sub == "hook_response" and fila.get("hook_event") == "PreToolUse":
+            # solo el hook_event explicito cuenta para la sonda (C4 del
+            # cierre: uno sin hook_event contaba y tapaba un hook inactivo)
             self.hooks += 1
             if fila.get("tool_use_id"):
                 self._hook_ids.add(str(fila["tool_use_id"]))

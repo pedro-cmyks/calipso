@@ -309,6 +309,25 @@ def test_parser_sonda_del_hook():
     assert v and "mcp inesperado" in v
 
 
+def test_parser_solo_cuenta_hook_response_pretooluse():
+    """C4 (Codex): un `hook_response` sin `hook_event` (o de otro evento)
+    contaba como PreToolUse y evitaba `hook inactivo`. Solo cuenta el que
+    dice `hook_event == "PreToolUse"`."""
+    for fila_rara in ({"type": "system", "subtype": "hook_response", "exit_code": 0, "session_id": "s-1"},
+                      {"type": "system", "subtype": "hook_response", "hook_event": "PostToolUse", "exit_code": 0,
+                       "session_id": "s-1"},
+                      {"type": "system", "subtype": "hook_response", "hook_event": None, "exit_code": 0,
+                       "session_id": "s-1"}):
+        lineas = lineas_golpe(comandos=[("ls", "a")], con_hook=False)
+        i = next(k for k, l in enumerate(lineas) if l.get("type") == "user")
+        lineas.insert(i, fila_rara)
+        p = gm.Parser()
+        for l in lineas:
+            if p.alimentar(json.dumps(l)):
+                break
+        assert p.violacion and "hook inactivo" in p.violacion and p.hooks == 0, (fila_rara, p.violacion)
+
+
 def _stream_paralelo(hooks_antes_del_primero, hooks_entre, ids_en_hook=False):
     """Dos tool_use en el MISMO assistant (Claude Code corre en paralelo los
     Read/Grep/Glob): los hooks arrancan juntos y el stream sale en orden de

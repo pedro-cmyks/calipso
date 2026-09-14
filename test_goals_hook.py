@@ -407,6 +407,37 @@ def test_stdin_roto_o_evento_raro_deniega(goal_dir):
                      stdout=io.StringIO(), stderr=io.StringIO(), argv=[], environ=env) == 0
 
 
+def test_un_evento_sin_nombre_se_deniega_y_otro_evento_no_se_decide(goal_dir):
+    """C4 (Codex): un evento sin `hook_event_name` se trataba como
+    PreToolUse. Ruling del ledger: sin nombre (o con un nombre que no es
+    texto) -> deny `evento inesperado`; con OTRO nombre (PostToolUse, Stop:
+    el hook esta registrado solo en PreToolUse, si llega otro es el CLI o
+    la config) -> exit 0 SIN decidir: no es un allow, no toca el registro
+    y lo dice en stderr; PreToolUse decide como siempre."""
+    env = {hook.VAR_COMPUERTAS: str(goal_dir["ruta"])}
+
+    def main(evento):
+        err = io.StringIO()
+        rc = hook.main(stdin=io.StringIO(json.dumps(evento)), stdout=io.StringIO(), stderr=err,
+                       argv=[], environ=env)
+        return rc, err.getvalue()
+
+    for evento in ({"tool_name": "Bash", "tool_input": {"command": "ls"}},
+                   {"hook_event_name": None, "tool_name": "Bash", "tool_input": {"command": "ls"}},
+                   {"hook_event_name": 1, "tool_name": "Bash", "tool_input": {"command": "ls"}},
+                   {"hook_event_name": "", "tool_name": "Bash", "tool_input": {"command": "ls"}}):
+        rc, err = main(evento)
+        assert rc == 2 and "DENEGADO" in err and "evento inesperado" in err, (evento, err)
+    assert registro(goal_dir) == []
+    for nombre in ("PostToolUse", "Stop", "SessionStart", "UserPromptSubmit"):
+        rc, err = main({"hook_event_name": nombre, "tool_name": "Bash", "tool_input": {"command": "gh pr create"}})
+        assert rc == 0 and "DENEGADO" not in err and nombre in err and "sin decidir" in err, (nombre, err)
+    assert registro(goal_dir) == []
+    rc, err = main({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "gh pr create"}})
+    assert rc == 2 and "NUNCA" in err
+    assert len(registro(goal_dir)) == 1
+
+
 def test_un_error_interno_deniega(goal_dir, monkeypatch):
     monkeypatch.setattr(hook, "decidir", lambda *a, **k: 1 / 0)
     rc, err = correr(goal_dir, "Bash", {"command": "ls"})
