@@ -56,6 +56,9 @@ def goal_home(chat, tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "_backend_availability",
                         lambda: {k: True for k in srv.capabilities.REGISTRY})
     monkeypatch.setattr(srv, "_backend_quota_low", lambda: {})
+    # dale/segui fallan rapido si las manos no estan en el PATH del server
+    # (cierre 2026-09-14): en el harness estan, sin depender de la maquina
+    monkeypatch.setattr(srv, "_subscription_command", lambda c: f"/x/{c}")
     return home
 
 
@@ -945,3 +948,30 @@ def test_calipso_goals_on_por_defecto(goal_home, chat, repo, monkeypatch):
     assert srv._goals_apagados() is False
     monkeypatch.setenv("CALIPSO_GOALS", "")
     assert srv._goals_apagados() is False
+
+
+def test_dale_y_segui_fallan_rapido_si_las_manos_no_estan_en_el_path(goal_home, chat, repo, monkeypatch):
+    """rev:lente-riesgo importante: el server resuelve claude/codex por SU
+    PATH; relanzado desde una shell sin .bashrc (ssh no interactivo, un
+    servicio) el goal no fallaba rapido: cada golpe devolvia exit 127 hasta
+    no convergencia. Ahora `_arrancar_goal` y `_retomar_goal` lo dicen
+    antes de transicionar (chat y 409 por HTTP) y no se gasta ningun golpe."""
+    _proponer(chat, repo)
+    g = goals.list_goals()[0]
+    monkeypatch.setattr(srv, "_subscription_command", lambda c: None)
+    eventos = chat.turno("/goal dale")
+    assert "claude no esta en el PATH del server" in _dicho(eventos)
+    assert goals.load(None, g["id"])["status"] == goals.PROPOSED and goals.activo() is None
+    r = chat.cliente.post(f"/api/goals/{g['id']}/dale")
+    assert r.status_code == 409 and "claude no esta en el PATH" in r.json()["detail"]
+    # con las manos presentes arranca; parado, un segui con: codex sin codex falla igual
+    monkeypatch.setattr(srv, "_subscription_command", lambda c: "/x/claude" if c == "claude" else None)
+    chat.turno("/goal dale")
+    assert goals.activo()["status"] == goals.ACTIVE
+    chat.turno("/goal parar")
+    assert "codex no esta en el PATH del server" in _dicho(chat.turno("/goal segui con: codex"))
+    g2 = goals.load(None, g["id"])
+    assert g2["status"] == goals.WAITING and g2["manos"] == "claude"    # no se cambio nada
+    r = chat.cliente.post(f"/api/goals/{g['id']}/segui", json={"con": "codex"})
+    assert r.status_code == 409 and "codex no esta" in r.json()["detail"]
+    assert "active" in texto_visible(chat.turno("/goal segui"))

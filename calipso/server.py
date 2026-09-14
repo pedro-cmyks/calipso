@@ -4426,6 +4426,7 @@ def _arrancar_goal(goal_id: str, tope: dict | None = None, raiz: str | None = No
         raise goals.ErrorGoal("dale solo arranca un goal proposed; para uno waiting usa segui")
     if goal.get("privado"):
         raise goals.ErrorGoal("un goal privado no puede usar manos de suscripcion")
+    _exigir_manos_en_path(goal.get("manos") or "claude")
     if tope or raiz:
         if tope:
             goal["tope"] = goals.validar_tope({**goal["tope"], **tope})
@@ -4480,6 +4481,18 @@ def _parar_goal(goal_id: str, motivo: str = "parado por Pedro") -> dict:
     return goal
 
 
+def _exigir_manos_en_path(manos: str) -> None:
+    """Fail-fast al activar (rev:lente-riesgo): el server resuelve claude y
+    codex por SU PATH, y relanzado desde una shell sin .bashrc (ssh no
+    interactivo, un servicio) no los tiene; sin esto el goal no fallaba
+    rapido: cada golpe devolvia exit 127 hasta no convergencia. Dale y
+    segui lo dicen antes de transicionar y no se gasta ningun golpe."""
+    if not _subscription_command(manos):
+        ruta = os.environ.get("PATH", "")
+        raise goals.ErrorGoal(f"{manos} no esta en el PATH del server ({ruta[:80]}"
+                              + ("..." if len(ruta) > 80 else "") + ")")
+
+
 def _sugerir_tope(goal: dict, tocado: str) -> str:
     """`/goal segui tope: 9 golpes`: la clave tocada un 50 % mas arriba (el
     mismo factor que el si del inbox), en la gramatica que parse_tope lee."""
@@ -4499,9 +4512,10 @@ def _retomar_goal(goal_id: str, nota: str | None = None, con: str | None = None,
         raise goals.ErrorGoal(f"goal inexistente: {goal_id}")
     if _goals_apagados():
         raise goals.ErrorGoal(APAGADOS)
+    if con and con not in goals.MANOS:
+        raise goals.ErrorGoal(f"manos invalidas: {con!r} (son {goals.MANOS})")
+    _exigir_manos_en_path(con or goal.get("manos") or "claude")
     if con:
-        if con not in goals.MANOS:
-            raise goals.ErrorGoal(f"manos invalidas: {con!r} (son {goals.MANOS})")
         goal["manos"] = con
         goals.escribir(goal)
     if tope:
