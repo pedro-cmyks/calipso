@@ -673,6 +673,72 @@ def test_segui_acepta_tope_y_sobre_waiting_tope_sin_tope_nuevo_dice_como(goal_ho
     assert r.status_code == 409 and "tope" in r.json()["detail"]
 
 
+def test_segui_por_http_sobre_un_proposed_es_409_y_no_lo_arranca(goal_home, chat, repo):
+    """Re-review del carril 3 (importante): `POST /api/goals/{id}/segui`
+    sobre un proposed lo ponia active saltando las guardas de
+    _arrancar_goal (proposed, no privado, manos en el PATH) y sin cerrar la
+    solicitud `dale` del inbox. Ahora _retomar_goal exige waiting: 409 y el
+    goal sigue proposed, tambien uno privado."""
+    _proponer(chat, repo)
+    g = goals.list_goals()[0]
+    assert g["status"] == goals.PROPOSED
+    r = chat.cliente.post(f"/api/goals/{g['id']}/segui", json={"nota": "dale"})
+    assert r.status_code == 409 and "segui solo retoma un goal waiting" in r.json()["detail"], r.text
+    assert "dale" in r.json()["detail"]
+    assert goals.load(None, g["id"])["status"] == goals.PROPOSED and goals.activo() is None
+    assert len(permisos_almacen.abiertas()) == 1                   # la solicitud dale sigue abierta
+    # un proposed privado tampoco (era la guarda que se saltaba)
+    gp = goals.load(None, g["id"])
+    gp["privado"] = True
+    goals.escribir(gp)
+    r = chat.cliente.post(f"/api/goals/{g['id']}/segui", json={"con": "codex"})
+    assert r.status_code == 409
+    g2 = goals.load(None, g["id"])
+    assert g2["status"] == goals.PROPOSED and g2["manos"] == "claude"
+    with pytest.raises(goals.ErrorGoal, match="segui solo retoma un goal waiting"):
+        srv._retomar_goal(g["id"])
+    assert srv._runner_de(g["id"]) is None or goals.load(None, g["id"])["status"] == goals.PROPOSED
+
+
+def test_segui_valida_todo_antes_de_escribir_manos_tope_o_evento(goal_home, chat, repo):
+    """Re-review del carril 3 (menor): _retomar_goal escribia las manos y
+    el tope a medida que validaba, asi que `/goal segui con: codex tope: 0
+    golpes` dejaba manos=codex con el error del tope, y `tope: 5 golpes`
+    con 6 gastados escribia el tope y el evento tope_cambiado y despues
+    fallaba por tope tocado. Ahora se calcula el tope nuevo, se corre el
+    chequeo de tope tocado sobre una copia y recien despues se escribe
+    manos + tope + evento de una vez."""
+    _proponer(chat, repo)
+    chat.turno("/goal dale")
+    g = goals.activo()
+    goals.transicionar(g["id"], goals.WAITING, "parado por Pedro")
+    eventos = chat.turno("/goal segui con: codex tope: 0 golpes")
+    assert "tope" in _dicho(eventos) and de_tipo(eventos, "error")
+    g2 = goals.load(None, g["id"])
+    assert g2["manos"] == "claude" and g2["tope"]["golpes"] == 6 and g2["status"] == goals.WAITING
+    assert not [e for e in goals.events(None, g["id"]) if e["action"] == "tope_cambiado"]
+    # el tope nuevo que sigue tocado: ni tope ni evento
+    _gastar_golpes(g["id"], 6)
+    goals.transicionar(g["id"], goals.ACTIVE, "segui")
+    goals.transicionar(g["id"], goals.WAITING, "tope", motivo_detalle={"tope": "golpes", "solicitud": "sol_t"})
+    eventos = chat.turno("/goal segui con: codex tope: 5 golpes")
+    assert "toco el tope de golpes" in _dicho(eventos)
+    g3 = goals.load(None, g["id"])
+    assert g3["manos"] == "claude" and g3["tope"]["golpes"] == 6 and g3["status"] == goals.WAITING
+    assert not [e for e in goals.events(None, g["id"]) if e["action"] == "tope_cambiado"]
+    # manos invalidas por HTTP: nada escrito
+    r = chat.cliente.post(f"/api/goals/{g['id']}/segui", json={"con": "gemini", "tope": "20 golpes"})
+    assert r.status_code == 409 and "manos invalidas" in r.json()["detail"]
+    assert goals.load(None, g["id"])["tope"]["golpes"] == 6
+    # y con todo valido, se escribe todo de una vez
+    eventos = chat.turno("/goal segui con: codex tope: 9 golpes")
+    assert "active" in texto_visible(eventos) and not de_tipo(eventos, "error")
+    g4 = goals.load(None, g["id"])
+    assert g4["manos"] == "codex" and g4["tope"]["golpes"] == 9 and g4["status"] == goals.ACTIVE
+    ev = [e for e in goals.events(None, g["id"]) if e["action"] == "tope_cambiado"]
+    assert len(ev) == 1 and ev[0]["de"]["golpes"] == 6 and ev[0]["a"]["golpes"] == 9
+
+
 def test_segui_sin_tope_sobre_waiting_tope_pasa_si_el_runner_ya_lo_amplio(goal_home, chat, repo):
     """El si del inbox a la solicitud `retomar` amplia el tope un 50 %
     (goals.ampliar_tope); si el goal quedo waiting:tope igual (p. ej. otro

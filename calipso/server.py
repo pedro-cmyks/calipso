@@ -4528,31 +4528,42 @@ def _retomar_goal(goal_id: str, nota: str | None = None, con: str | None = None,
                   tope: dict | None = None) -> dict:
     """waiting -> active con la nota de Pedro en el ledger, otras manos si
     vino `con:` y el tope ajustado si vino `tope:` (parcial: solo las
-    claves que Pedro escribio, validado entero); relanza el runner."""
+    claves que Pedro escribio, validado entero); relanza el runner. Solo
+    sobre un waiting (re-review del carril 3: por HTTP arrancaba un
+    proposed saltando las guardas de _arrancar_goal, la de privado
+    incluida) y todo se VALIDA antes de escribir nada: `con: codex tope: 0
+    golpes` dejaba las manos cambiadas con el error del tope, y un tope
+    nuevo que seguia tocado quedaba escrito con su evento."""
     goal = goals.load(None, goal_id)
     if goal is None:
         raise goals.ErrorGoal(f"goal inexistente: {goal_id}")
     if _goals_apagados():
         raise goals.ErrorGoal(APAGADOS)
+    if goal.get("status") != goals.WAITING:
+        raise goals.ErrorGoal("segui solo retoma un goal waiting; para un proposed usa dale")
     if con and con not in goals.MANOS:
         raise goals.ErrorGoal(f"manos invalidas: {con!r} (son {goals.MANOS})")
     _exigir_manos_en_path(con or goal.get("manos") or "claude")
-    if con:
-        goal["manos"] = con
-        goals.escribir(goal)
-    if tope:
-        viejo = dict(goal.get("tope") or {})
-        goal["tope"] = goals.validar_tope({**viejo, **tope})
-        goals.escribir(goal)
-        goals.event(None, goal_id, "tope_cambiado", de=viejo, a=goal["tope"], por="segui")
+    viejo = dict(goal.get("tope") or {})
+    nuevo_tope = goals.validar_tope({**viejo, **tope}) if tope else None
     espera = goal.get("espera") or {}
     if espera.get("motivo") == "tope":
         # un segui que deja el tope como esta volveria a waiting:tope en el
         # primer tick sin golpear y sin decirlo (rev:server); salvo que el
-        # tope ya no este tocado (el si del inbox lo amplio un 50 %)
-        tocado = goals.tope_alcanzado(goal)
+        # tope ya no este tocado (el si del inbox lo amplio un 50 %). Se
+        # mira sobre una copia con el tope nuevo: nada escrito todavia
+        candidato = {**goal, "tope": nuevo_tope or viejo}
+        tocado = goals.tope_alcanzado(candidato)
         if tocado:
-            raise goals.ErrorGoal(f"el goal toco el tope de {tocado}: {_sugerir_tope(goal, tocado)}")
+            raise goals.ErrorGoal(f"el goal toco el tope de {tocado}: {_sugerir_tope(candidato, tocado)}")
+    if con:
+        goal["manos"] = con
+    if nuevo_tope:
+        goal["tope"] = nuevo_tope
+    if con or nuevo_tope:
+        goals.escribir(goal)
+    if nuevo_tope:
+        goals.event(None, goal_id, "tope_cambiado", de=viejo, a=nuevo_tope, por="segui")
     motivo = espera.get("motivo")
     if motivo in goals.RESPUESTAS_QUE_APLICAN:
         # un segui es un si (decision 16): se aplica lo MISMO que el runner
