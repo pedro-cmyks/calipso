@@ -717,6 +717,33 @@ def test_la_sonda_de_destinos_del_smoke_con_el_hook_real(goal_dir, tmp_path):
         assert fila["familia"] == "raiz_nueva" and fila["forma"] == {"raiz": str(fuera)}, (cmd, fila)
 
 
+def test_la_funcion_sondear_destinos_del_smoke_contra_el_hook_real(goal_dir, tmp_path):
+    """Cierre 2026-09-14 (rev:ui-smoke): la asercion de G1 del smoke espera
+    `2 == raiz_nueva` para cp/sed -i/mv/tee con destino fuera del clon y las
+    raices, y el hook del carril 1 ya lo hace. Se verifica con LA FUNCION del
+    smoke (`goals_smoke.sondear_destinos_en`, la parte sin server) en un
+    subproceso: el modulo fija su propio CALIPSO_HOME temporal al importarse
+    y no puede entrar al proceso de pytest; HOME es el falso de goal_dir.
+    Sin server, sin claude: solo el hook real con stdin sintetico."""
+    codigo = (
+        "import json, sys, pathlib, shutil\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "from experimentos import goals_smoke as s\n"
+        "out = s.sondear_destinos_en(pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]))\n"
+        "shutil.rmtree(s.HOME_SMOKE, ignore_errors=True)\n"
+        "print(json.dumps(out))\n")
+    r = subprocess.run([sys.executable, "-c", codigo, str(pathlib.Path(__file__).resolve().parent),
+                        str(goal_dir["ruta"]), str(tmp_path / "sonda-fuera")],
+                       capture_output=True, text=True, timeout=60,
+                       env={**os.environ, "HOME": os.environ["HOME"]})
+    assert r.returncode == 0, r.stderr[-800:]
+    sonda = json.loads(r.stdout.strip().splitlines()[-1])
+    assert set(sonda) == {"cp", "sed", "mv", "tee"} and all(c == 2 for c in sonda.values()), sonda
+    filas = registro(goal_dir)
+    assert len(filas) == 4 and all(f["familia"] == "raiz_nueva" and f["decision"] == "deny" for f in filas)
+    assert all(f["forma"] == {"raiz": str(tmp_path / "sonda-fuera")} for f in filas), filas
+
+
 # --- lecturas bajo el HOME fuera del alcance (cierre 2026-09-14, C3) ---------------------
 
 def test_leer_con_las_herramientas_de_archivo_bajo_el_home_fuera_del_alcance_pregunta(goal_dir, tmp_path):

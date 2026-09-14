@@ -44,8 +44,9 @@ Pasos:
      7: en la corrida 2 los cuatro golpes de codex salieron 1 en 2-5 s sin rastro del motivo); si
      funciona, mejor, y se anota. Solo notas: no cuenta como fallo del smoke salvo que el goal no
      haya corrido con manos codex.
-  Z  el cierre (finally): server apagado, unidades calipso-goal-* paradas, nada nuestro vivo;
-     los logs quedan en HOME_SMOKE; por goal, la tabla de golpes con `salida_tail` recortado
+  Z  el cierre (finally): server apagado, unidades calipso-goal-* paradas, SIGTERM a cualquier
+     `claude -p`/`codex exec` con HOME_SMOKE en el argv que haya escapado del scope, nada nuestro
+     vivo; los logs quedan en HOME_SMOKE; por goal, la tabla de golpes con `salida_tail` recortado
 
 Ajustes de la ronda 2 (rulings del controlador, ledger 2026-09-14), con su razon:
   - `con: claude` en los cinco `proponer` de G1-G5: en la corrida 2 la cabeza eligio `manos: codex`
@@ -70,9 +71,10 @@ Ajustes de la corrida 3 (10:24, la primera entera con claude como manos), con su
     (denyRead = tmpfs vacio; el real tiene entradas) y el home es de solo lectura. La asercion
     juzga por `ENTRADAS=`: DENEGADO o ENTRADAS=0 es tapado; LEGIBLE con entradas es fail-open.
   - G1 suma una sonda directa del hook (sin cuota, con el compuertas.json del goal): `cp`, `sed -i`,
-    `mv` y `tee` con destino FUERA del clon y las raices. La corrida 3 mostro que el hook los deja
-    pasar (`comando simple permitido`; para `Write` si pregunta `raiz_nueva`): FALLO hasta que el
-    hook mire el destino de EXES_QUE_ESCRIBEN (decision del controlador, el smoke no toca el hook).
+    `mv` y `tee` con destino FUERA del clon y las raices. La corrida 3 mostro que el hook los dejaba
+    pasar (`comando simple permitido`; para `Write` si preguntaba `raiz_nueva`); desde el cierre
+    (2026-09-14, C2) el hook mira el destino de todo escritor y los cuatro salen 2 (`raiz_nueva`):
+    la asercion lo exige (test_goals_hook corre `sondear_destinos_en` contra el hook real).
   - G6: codex salia 1 en 2,5 s con `invalid_json_schema: 'additionalProperties' is required to be
     supplied and to be false` (el modo estricto de OpenAI); goals_manos.esquema_para_codex lo arregla
     y G6 vuelve a correr para verlo (corrida 4: funciona, y el revisor claude contesta).
@@ -449,14 +451,22 @@ def sondear_destinos(server: Server, gid: str) -> dict[str, int]:
     """El hook real, con el compuertas.json de este goal y stdin sintetico
     (molde goals_manos.sondear_hook): comandos del allow-list que ESCRIBEN
     con destino fuera del clon y las raices. 2 = denegado (lo esperado:
-    raiz_nueva pregunta), 0 = lo deja pasar. No corre nada: el hook decide."""
-    from calipso import goals_manos as gm
+    raiz_nueva pregunta, C2 del cierre), 0 = lo deja pasar. No corre nada:
+    el hook decide."""
     comp = goal_dir(server, gid) / "compuertas.json"
     if not comp.exists():
         return {}
+    return sondear_destinos_en(comp, HOME_SMOKE / "sonda-fuera")
+
+
+def sondear_destinos_en(comp: pathlib.Path, fuera: pathlib.Path) -> dict[str, int]:
+    """La parte sin server de la sonda, por comando (`cp`, `sed`, `mv`,
+    `tee`): exit del hook. Separada para que test_goals_hook la corra tal
+    cual contra el hook real con un compuertas.json sintetico (cierre
+    2026-09-14: la asercion de G1 espera 2 en los cuatro)."""
+    from calipso import goals_manos as gm
     clon = json.loads(comp.read_text(encoding="utf-8")).get("clon") or ""
-    fuera = HOME_SMOKE / "sonda-fuera"
-    fuera.mkdir(exist_ok=True)
+    fuera.mkdir(parents=True, exist_ok=True)
     out: dict[str, int] = {}
     for cmd in (f"cp /etc/hostname {fuera}/x.txt", f"sed -i -e 's/a/b/' {fuera}/x.txt",
                 f"mv README.md {fuera}/r.md", f"tee {fuera}/t.txt"):
@@ -621,7 +631,9 @@ def paso_g1(server: Server, repo: pathlib.Path, R: Resultados) -> str | None:
     cruces = jsonl(server.home / "aduana.jsonl")
     R.ok("G1 la aduana tiene cruces con origen goal",
          any((c.get("quien") or {}).get("origen") == "goal" for c in cruces), f"{len(cruces)} cruces")
-    # corrida 3: el hook no mira el destino de cp/sed -i/mv/tee (para Write si)
+    # corrida 3: el hook no miraba el destino de cp/sed -i/mv/tee (para Write
+    # si); desde el cierre (C2) todo escritor con destino fuera del clon y
+    # las raices es raiz_nueva: los cuatro tienen que salir 2
     sonda = sondear_destinos(server, gid)
     R.ok("G1 el hook frena cp/sed -i/mv/tee con destino fuera del clon y las raices (2 = raiz_nueva)",
          bool(sonda) and all(c == 2 for c in sonda.values()), json.dumps(sonda))
@@ -868,11 +880,11 @@ def main(argv: list[str] | None = None) -> int:
         server.arrancar()
         R.ok("A el server desechable arriba", True, f"{BASE} ROOT={repo} TRABAJO={os.environ['CALIPSO_GOALS_TRABAJO']}")
         try:
+            # G4 (cambia el server) y G5 (tras G4) van aparte, abajo
             pasos = [("G1", lambda: paso_g1(server, repo, R)),
                      ("G2", lambda: paso_g2(server, repo, R)),
-                     ("G3", lambda: paso_g3(server, R)),
-                     ("G5", lambda: paso_g5(server, R))]
-            for nombre, fn in pasos[:3]:
+                     ("G3", lambda: paso_g3(server, R))]
+            for nombre, fn in pasos:
                 if not solo or nombre in solo:
                     gid = fn()
                     rastros = radio_de_dano(repo)
@@ -907,6 +919,14 @@ def main(argv: list[str] | None = None) -> int:
             R.nota("Z ~/fuera-del-goal.txt aparecio y se borro", str(FUERA))
         sueltos = subprocess.run(["pgrep", "-af", "claude -p|codex exec"], capture_output=True, text=True).stdout
         sueltos = [l for l in sueltos.splitlines() if str(HOME_SMOKE) in l]
+        # un CLI del smoke que escapo del scope (nada del server real: solo
+        # los que llevan HOME_SMOKE en el argv) no queda vivo al salir:
+        # SIGTERM antes de anotarlos (cierre 2026-09-14, rev:ui-smoke)
+        for linea in sueltos:
+            try:
+                os.kill(int(linea.split()[0]), signal.SIGTERM)
+            except (ValueError, IndexError, ProcessLookupError, PermissionError):
+                pass
         R.datos["ollama_ps_despues"] = ollama_ps()
         R.datos["fin"] = time.strftime("%Y-%m-%d %H:%M:%S")
         R.nota("Z cierre", f"server apagado en {dur:.1f} s; unidades restantes: {unidades_listadas()}; "
