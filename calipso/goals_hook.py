@@ -29,7 +29,10 @@ Que decide:
             (`--directory=~/.ssh`, `-C~/.ssh`) o como archivo que curl/wget
             subirian (`-T`, `-d @`, `-F x=@`, `--data-urlencode n@`); una
             variable en una ruta (`/var/home/$USER/.ssh`) se deniega porque
-            bash la expande despues del hook); y las
+            bash la expande despues del hook); los ESCRITORES por su ruta
+            DESTINO (cp, mv, sed -i, tee, touch, mkdir, chmod, tar -x -C,
+            unzip -d, curl -o, wget -O/-P, dd of=, find -fprint...: fuera
+            del clon y las raices = pregunta raiz_nueva, como Write); y las
             compuertas por familia con la tabla del goal (instalar_en_goal
             directo dentro del venv del clon / npm sin -g; instalar_home,
             instalar_sistema, borrar_fuera en pregunta salvo preautorizada).
@@ -119,6 +122,7 @@ ALLOW_EXES = {
     "gzip", "gunzip", "sha256sum", "md5sum", "chmod", "ln", "seq", "xxd", "hexdump", "less",
     "more", "yes", "nproc", "uname", "id", "whoami", "hostname", "uv", "poetry", "pipx", "rm",
     "git", "pip", "pip3", "npm", "yarn", "pnpm", "flatpak", "rpm-ostree", "curl", "wget",
+    "install", "chown", "truncate", "dd",
 }
 GIT_PERMITIDOS = {"status", "diff", "log", "show", "add", "commit", "checkout", "switch",
                   "restore", "branch", "stash", "rev-parse", "ls-files", "mv", "rm", "tag",
@@ -144,6 +148,46 @@ EXES_DE_RUTAS = ("cat", "head", "tail", "less", "more", "cp", "mv", "ln", "tar",
 EXES_QUE_TOCAN = ("touch", "tee", "mkdir", "chmod")
 EXES_QUE_ESCRIBEN = ("cp", "mv", "ln", "sed") + EXES_QUE_TOCAN
 SUBEN_ARCHIVOS = ("curl", "wget")
+# Los que escriben, y DONDE: la ruta destino decide como en Write (protegida
+# -> NUNCA; fuera del clon y las raices -> raiz_nueva, pregunta; adentro ->
+# allow). Sin esto `curl -o /tmp/x`, `tar -x -C /tmp`, `cp x /tmp/x` salian
+# allow porque el exe estaba en la lista y el destino no era protegido (C2
+# del cierre; la sonda de destinos del smoke, corrida 6). Por exe:
+#   cp/mv/ln/install  el ultimo argumento que no es opcion, o el de -t
+#   sed -i            los archivos (el script no); sin -i no escribe
+#   tee/touch/mkdir/chmod/chown/truncate  cada argumento
+#   tar -x            el -C (sin -C: el cwd); tar -c/-r/-u: el -f
+#   unzip             el -d (sin -d: el cwd); zip: el archivo (y -O)
+#   gzip/gunzip       cada archivo (escriben al lado; -c/-t/-l no)
+#   curl              -o/--output, --output-dir, -D, -c, --trace...; -O es el cwd
+#   wget              -O, -P, -o/-a (el log); sin ellos el cwd
+#   dd                of=
+#   find              el archivo de -fprint/-fprintf/-fprint0
+# `-` (stdout) y /dev/null no son destinos.
+ESCRITORES = {"cp", "mv", "ln", "install", "sed", "tee", "touch", "mkdir", "chmod", "chown", "truncate",
+              "tar", "unzip", "zip", "gzip", "gunzip", "curl", "wget", "dd", "find"}
+EXES_CON_RUTAS = set(EXES_DE_RUTAS) | set(EXES_QUE_TOCAN) | set(SUBEN_ARCHIVOS) | ESCRITORES
+# Las opciones que toman valor (letras cortas, largas sin `=`): al buscar los
+# argumentos posicionales de un escritor se saltan sus valores, si no
+# `cp x /tmp/x -S .bak` tendria como destino `.bak`.
+OPCIONES_CON_VALOR = {
+    "cp": ("tS", ("--target-directory", "--suffix")), "mv": ("tS", ("--target-directory", "--suffix")),
+    "ln": ("tS", ("--target-directory", "--suffix")),
+    "install": ("tSmog", ("--target-directory", "--suffix", "--mode", "--owner", "--group", "--strip-program")),
+    "touch": ("dtr", ("--date", "--reference", "--time")), "mkdir": ("m", ("--mode", "--context")),
+    "chmod": ("", ("--reference",)), "chown": ("", ("--reference", "--from")),
+    "truncate": ("sr", ("--size", "--reference")), "tee": ("", ()),
+    "zip": ("btnxiOPZ", ()), "gzip": ("S", ("--suffix",)), "gunzip": ("S", ("--suffix",)),
+}
+OPCIONES_DESTINO = {
+    "curl": ("oDc", ("--output", "--output-dir", "--dump-header", "--cookie-jar", "--trace", "--trace-ascii",
+                     "--stderr")),
+    "wget": ("OPoa", ("--output-document", "--directory-prefix", "--output-file", "--append-output")),
+    "unzip": ("d", ()), "zip": ("O", ("--out",)),
+    "cp": ("t", ("--target-directory",)), "mv": ("t", ("--target-directory",)),
+    "ln": ("t", ("--target-directory",)), "install": ("t", ("--target-directory",)),
+}
+FIND_ESCRIBE = ("-fprint", "-fprintf", "-fprint0")
 # Un glob, unas llaves o una variable en un token con pinta de ruta: bash los
 # expande DESPUES del hook (el hook ve `~/.ss*` o `~/.{ssh,aws}`, bash corre
 # `cat ~/.ssh`). El glob y las llaves se expanden aca como lo haria bash; la
@@ -527,6 +571,9 @@ def _candidatos_de_ruta(exe: str, argv: list[str]) -> list[str]:
             continue
         if exe in SUBEN_ARCHIVOS and "://" in tok:
             continue
+        if exe == "dd" and "=" in tok and not tok.startswith("-"):
+            out.append(tok.split("=", 1)[1])
+            continue
         if tok.startswith("--"):
             val = tok.split("=", 1)[1] if "=" in tok else ""
         elif tok.startswith("-"):
@@ -541,6 +588,12 @@ def _candidatos_de_ruta(exe: str, argv: list[str]) -> list[str]:
 
 
 def _rutas_resueltas(exe: str, argv: list[str], cwd: str | None) -> tuple[list[pathlib.Path], str | None]:
+    """Todos los candidatos de ruta de la argv, resueltos (o el motivo para
+    DENEGAR)."""
+    return _resolver_formas(exe, _candidatos_de_ruta(exe, argv), cwd)
+
+
+def _resolver_formas(exe: str, tokens: list[str], cwd: str | None) -> tuple[list[pathlib.Path], str | None]:
     """(rutas resueltas, motivo para DENEGAR). Primero las llaves (bash las
     abre antes que nada: `{~,x}` da `~`). Una forma con pinta de ruta (lleva
     `/` o empieza con `~` o `.`) con una variable adentro se deniega: bash la
@@ -551,7 +604,7 @@ def _rutas_resueltas(exe: str, argv: list[str], cwd: str | None) -> tuple[list[p
     el presupuesto del comando; agotarlo deniega."""
     rutas: list[pathlib.Path] = []
     presupuesto = Presupuesto(PRESUPUESTO_EXPANSION)
-    for tok in _candidatos_de_ruta(exe, argv):
+    for tok in tokens:
         try:
             formas = _expandir_llaves(tok, presupuesto) if "{" in tok else [tok]
             for forma in formas:
@@ -571,6 +624,217 @@ def _rutas_resueltas(exe: str, argv: list[str], cwd: str | None) -> tuple[list[p
         except PresupuestoAgotado as exc:
             return [], f"{exe}: la expansion de {tok} agota el presupuesto ({exc}): no se sabe que abarca"
     return rutas, None
+
+
+def _valores_de(argv: list[str], cortas: str, largas: tuple[str, ...]) -> list[str]:
+    """Los valores de las opciones dadas, como las lee getopt: `-o v`,
+    `-ov`, `-sSLo v` (la letra con valor se lleva el resto del cluster o el
+    token siguiente), `--out v`, `--out=v`. `-` es stdout, no un valor."""
+    out: list[str] = []
+    siguiente = False
+    for tok in argv[1:]:
+        if siguiente:
+            out.append(tok)
+            siguiente = False
+            continue
+        if tok == "--":
+            break
+        if tok.startswith("--"):
+            base, _, val = tok.partition("=")
+            if base in largas:
+                if val:
+                    out.append(val)
+                else:
+                    siguiente = True
+            continue
+        if tok.startswith("-") and len(tok) > 1:
+            for k, ch in enumerate(tok[1:], 1):
+                if ch in cortas:
+                    resto = tok[k + 1:]
+                    if resto:
+                        out.append(resto)
+                    else:
+                        siguiente = True
+                    break
+    return [v for v in out if v != "-"]
+
+
+def _posicionales(argv: list[str], cortas: str, largas: tuple[str, ...]) -> list[str]:
+    """Los argumentos que no son opcion ni valor de una opcion (cortas y
+    largas son las que toman valor); despues de `--` todo es posicional."""
+    out: list[str] = []
+    siguiente = solo_pos = False
+    for tok in argv[1:]:
+        if siguiente:
+            siguiente = False
+            continue
+        if solo_pos or tok == "-" or not tok.startswith("-"):
+            out.append(tok)
+            continue
+        if tok == "--":
+            solo_pos = True
+            continue
+        if tok.startswith("--"):
+            siguiente = "=" not in tok and tok in largas
+            continue
+        for k, ch in enumerate(tok[1:], 1):
+            if ch in cortas:
+                siguiente = k == len(tok) - 1
+                break
+    return out
+
+
+def _archivos_de_sed(argv: list[str]) -> list[str] | None:
+    """Los archivos que `sed -i` reescribe (None si no es in-place). El
+    script no es un archivo: es el primer posicional salvo que venga por
+    `-e`/`-f`; `-ie` es `-i` con sufijo `e` (como lo lee GNU sed)."""
+    in_place = tiene_script = False
+    posicionales: list[str] = []
+    siguiente = solo_pos = False
+    for tok in argv[1:]:
+        if siguiente:
+            siguiente = False
+            continue
+        if solo_pos or tok == "-" or not tok.startswith("-"):
+            posicionales.append(tok)
+            continue
+        if tok == "--":
+            solo_pos = True
+            continue
+        if tok.startswith("--"):
+            base, _, val = tok.partition("=")
+            if base == "--in-place":
+                in_place = True
+            elif base in ("--expression", "--file"):
+                tiene_script = True
+                siguiente = not val
+            elif base == "--line-length":
+                siguiente = not val
+            continue
+        for k, ch in enumerate(tok[1:], 1):
+            if ch == "i":
+                in_place = True
+                break
+            if ch in "ef":
+                tiene_script = True
+                siguiente = k == len(tok) - 1
+                break
+            if ch == "l":
+                siguiente = k == len(tok) - 1
+                break
+    if not in_place:
+        return None
+    return posicionales if tiene_script else posicionales[1:]
+
+
+def _destinos_de_tar(argv: list[str]) -> tuple[list[str], str | None]:
+    """(destinos, motivo para DENEGAR) de tar: al extraer, el `-C` (sin
+    `-C`, el cwd); al crear/agregar, el `-f`. Las letras con valor (`f`,
+    `C`, `T`, `X`) se llevan el resto del cluster o el token siguiente; en
+    el estilo viejo (`tar xfC a.tar dir`) los valores vienen en orden.
+    `-P` al extraer escribe rutas absolutas del archivo: se deniega."""
+    modo = ""
+    absolutas = a_stdout = False
+    archivos: list[str] = []
+    dirs: list[str] = []
+    pendientes: list[str] = []
+    for i, tok in enumerate(argv[1:], 1):
+        if pendientes:
+            letra = pendientes.pop(0)
+            if letra == "f":
+                archivos.append(tok)
+            elif letra == "C":
+                dirs.append(tok)
+            continue
+        if tok.startswith("--"):
+            base, _, val = tok.partition("=")
+            if base in ("--extract", "--get"):
+                modo += "x"
+            elif base in ("--create", "--append", "--update"):
+                modo += "c"
+            elif base == "--absolute-names":
+                absolutas = True
+            elif base == "--to-stdout":
+                a_stdout = True
+            elif base in ("--file", "--directory", "--files-from", "--exclude-from"):
+                letra = {"--file": "f", "--directory": "C"}.get(base, "T")
+                if val:
+                    (archivos if letra == "f" else dirs if letra == "C" else []).append(val)
+                else:
+                    pendientes.append(letra)
+            continue
+        viejo = i == 1 and not tok.startswith("-") and tok.isalpha()
+        if not viejo and not (tok.startswith("-") and len(tok) > 1):
+            continue
+        cuerpo = tok if viejo else tok[1:]
+        for k, ch in enumerate(cuerpo):
+            if ch in "xcru":
+                modo += "x" if ch == "x" else "c"
+            elif ch == "P":
+                absolutas = True
+            elif ch == "O":
+                a_stdout = True
+            elif ch in "fCTX":
+                resto = cuerpo[k + 1:]
+                if viejo:
+                    pendientes.append(ch)
+                    continue
+                if resto:
+                    (archivos if ch == "f" else dirs if ch == "C" else []).append(resto)
+                else:
+                    pendientes.append(ch)
+                break
+    if "x" in modo:
+        if absolutas:
+            return [], "tar -P al extraer: escribe rutas absolutas del archivo"
+        if a_stdout:
+            return [], None
+        return dirs or ["."], None
+    if "c" in modo:
+        return [a for a in archivos if a != "-"], None
+    return [], None
+
+
+def _tokens_destino(exe: str, argv: list[str]) -> tuple[list[str], str | None]:
+    """(tokens destino, motivo para DENEGAR) de un escritor (ESCRITORES)."""
+    if exe == "tar":
+        return _destinos_de_tar(argv)
+    if exe == "sed":
+        return _archivos_de_sed(argv) or [], None
+    if exe == "find":
+        return [argv[i + 1] for i, t in enumerate(argv[:-1]) if t in FIND_ESCRIBE], None
+    if exe == "dd":
+        return [t.split("=", 1)[1] for t in argv[1:] if t.startswith("of=")], None
+    if exe in ("curl", "wget"):
+        return _valores_de(argv, *OPCIONES_DESTINO[exe]), None
+    if exe == "unzip":
+        if any(t.startswith("-") and set(t[1:]) & set("ltpcz") for t in argv[1:]):
+            return [], None
+        return _valores_de(argv, *OPCIONES_DESTINO[exe]) or ["."], None
+    cortas, largas = OPCIONES_CON_VALOR.get(exe, ("", ()))
+    posicionales = _posicionales(argv, cortas, largas)
+    if exe in ("gzip", "gunzip"):
+        if any(t in ("--stdout", "--to-stdout", "--test", "--list") or (t.startswith("-") and not t.startswith("--")
+                                                                         and set(t[1:]) & set("ctl"))
+               for t in argv[1:]):
+            return [], None
+        return posicionales, None
+    if exe == "zip":
+        return _valores_de(argv, *OPCIONES_DESTINO[exe]) + posicionales[:1], None
+    if exe in OPCIONES_DESTINO:
+        return _valores_de(argv, *OPCIONES_DESTINO[exe]) or posicionales[-1:], None
+    return posicionales, None
+
+
+def _raiz_de(p: pathlib.Path) -> str:
+    """La raiz que se le pediria a Pedro por este destino: el directorio si
+    ya lo es, si no el padre (como el `raiz` de Write)."""
+    try:
+        if p.is_dir():
+            return str(p)
+    except OSError:
+        pass
+    return str(p.parent)
 
 
 def _exe_de(argv: list[str], compuertas: dict) -> tuple[str, str]:
@@ -721,7 +985,7 @@ def familia_de_argv(argv: list[str], compuertas: dict) -> tuple[str | None, str,
             if _en_alcance(p, compuertas) is None:
                 return "borrar_fuera", f"rm fuera del clon y las raices: {p}", {"ruta": str(p)}
         return None, "rm dentro del clon o de una raiz", None
-    if exe in EXES_DE_RUTAS or exe in EXES_QUE_TOCAN or exe in SUBEN_ARCHIVOS:
+    if exe in EXES_CON_RUTAS:
         rutas, motivo = _rutas_resueltas(exe, argv, cwd)
         if motivo:
             return "DENEGAR", motivo, None
@@ -733,10 +997,24 @@ def familia_de_argv(argv: list[str], compuertas: dict) -> tuple[str | None, str,
                               {"ruta": str(p)})
         if exe == "find" and any(t in ("-exec", "-execdir", "-ok", "-okdir", "-delete") for t in argv):
             return "DENEGAR", "find con -exec/-delete: no se ve adentro", None
+        urls = [t for t in argv[1:] if "://" in t] if exe in SUBEN_ARCHIVOS else []
+        if exe in SUBEN_ARCHIVOS and (not urls or not all(_dominio_permitido(u, compuertas) for u in urls)):
+            return "DENEGAR", "dominio no declarado", None
+        if exe in ESCRITORES:
+            tokens, motivo = _tokens_destino(exe, argv)
+            if motivo:
+                return "DENEGAR", motivo, None
+            destinos, motivo = _resolver_formas(exe, tokens, cwd)
+            if motivo:
+                return "DENEGAR", motivo, None
+            for p in destinos:
+                if _auto_escalada(p, compuertas):
+                    return _nunca(None, f"{exe} sobre {p}: auto-escalada (.claude, .git/hooks, .git/config)",
+                                  {"ruta": str(p)})
+            for p in destinos:
+                if str(p) != "/dev/null" and _en_alcance(p, compuertas) is None:
+                    return "raiz_nueva", f"{exe} escribe fuera del alcance: {p}", {"raiz": _raiz_de(p)}
         if exe in SUBEN_ARCHIVOS:
-            urls = [t for t in argv[1:] if "://" in t]
-            if not urls or not all(_dominio_permitido(u, compuertas) for u in urls):
-                return "DENEGAR", "dominio no declarado", None
             return "web", "web a un dominio declarado", {"urls": urls}
         return None, "comando simple permitido", None
     if exe in ("pip", "pip3") or (exe in ("python", "python3") and argv[1:3] == ["-m", "pip"]) \

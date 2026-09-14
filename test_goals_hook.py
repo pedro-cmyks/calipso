@@ -227,7 +227,7 @@ def test_una_variable_en_la_ruta_se_deniega(goal_dir, cmd):
     "curl -d x=1 https://pypi.org/", "wget -O ./x.html https://pypi.org/x",
     # el separador de awk no es una ruta (pegado o separado), ni el . de tar -C.
     "awk -F/ '{print $NF}' src/a.py", "awk -F / '{print $NF}' src/a.py", "awk -F. '{print $1}' src/a.py",
-    "tar -cf /tmp/o.tar -C. src", "awk '{print $1,$2}' src/a.py",
+    "tar -cf o.tar -C. src", "awk '{print $1,$2}' src/a.py",      # el .tar en el clon (fuera seria raiz_nueva)
     # el glob con un segmento mas o barra final, dentro del clon o de una raiz, se expande normal
     "cat src/*/x", "cat ./*", "cat */a.py", "rm -rf build/*/", "rm -rf {R}/*/", "rm -rf {R}/*/*",
     # llaves legitimas: se expanden en el clon (con o sin match)
@@ -576,3 +576,104 @@ def test_scripts_runners_y_git_de_consulta_siguen_pasando(goal_dir, cmd):
     rc, err = correr(goal_dir, "Bash", {"command": cmd})
     assert rc == 0, (cmd, err)
     assert registro(goal_dir)[-1]["decision"] == "allow"
+
+
+# --- escritores con destino (cierre 2026-09-14, C2 + cp/sed -i/mv/tee/touch + find -fprint*) ---
+
+@pytest.mark.parametrize("cmd", [
+    "cp src/a.py {F}/a.py", "cp -r src {F}/", "cp src/a.py -t {F}", "cp -t{F} src/a.py",
+    "cp --target-directory={F} src/a.py", "cp src/a.py {F}/b.py -S .bak", "mv README.md {F}/r.md",
+    "ln -s src/a.py {F}/lnk", "install -m 644 src/a.py {F}/a.py", "install -d {F}/dir",
+    "sed -i 's/a/b/' {F}/x.txt", "sed -i.bak -e s/a/b/ {F}/x.txt", "sed -ie s/a/b/ {F}/x.txt",
+    "sed -n -i s/a/b/ {F}/x.txt", "sed --in-place s/a/b/ src/a.py {F}/x.txt", "sed -e s/a/b/ -i {F}/x.txt",
+    "tee {F}/t.txt", "tee -a {F}/t.txt", "touch {F}/x", "mkdir -p {F}/d", "mkdir -m 755 {F}/d",
+    "chmod 777 {F}/x", "chmod -R u+w {F}", "chown pedro {F}/x", "truncate -s 0 {F}/x",
+    "tar -xf a.tar -C {F}", "tar xf a.tar -C{F}", "tar --extract -f a.tar --directory={F}", "tar xfC a.tar {F}",
+    "tar -cf {F}/o.tar src", "tar cf {F}/o.tar src", "tar --create --file={F}/o.tar src",
+    "unzip a.zip -d {F}", "unzip -d {F}/x a.zip", "unzip -od {F} a.zip", "zip -r {F}/o.zip src",
+    "gzip {F}/x.txt", "gunzip {F}/x.txt.gz", "gzip -d {F}/x.txt.gz",
+    "curl -o {F}/x https://pypi.org/simple/x/", "curl --output={F}/x https://pypi.org/simple/x/",
+    "curl -o{F}/x https://pypi.org/simple/x/", "curl -sSLo {F}/x https://pypi.org/simple/x/",
+    "curl --output-dir {F} -O https://pypi.org/x", "curl -D {F}/h https://pypi.org/x", "curl -c {F}/jar https://pypi.org/x",
+    "wget -O {F}/x https://pypi.org/x", "wget -qO {F}/x https://pypi.org/x", "wget -P {F} https://pypi.org/x",
+    "wget --directory-prefix={F} https://pypi.org/x", "wget -o {F}/log https://pypi.org/x",
+    "dd if=/dev/zero of={F}/x bs=1 count=1",
+    "find . -fprintf {F}/x %p", "find src -fprint {F}/y", "find . -fprint0 {F}/z",
+    "cp src/a.py {F}/{a,b}.py", "cp src/a.py ~/otro/a.py", "mkdir ~/proyecto",
+])
+def test_un_escritor_con_destino_fuera_del_clon_pregunta_raiz_nueva(goal_dir, tmp_path, cmd):
+    """C2 (Codex) y la sonda de destinos del smoke: para cada comando que
+    escribe, la ruta DESTINO decide como en Write: fuera del clon y las
+    raices es la compuerta raiz_nueva (pregunta, forma {"raiz": ...}), no
+    un allow porque el exe esta en la lista."""
+    fuera = tmp_path / "fuera"
+    fuera.mkdir(exist_ok=True)
+    cmd = cmd.replace("{F}", str(fuera))
+    rc, err = correr(goal_dir, "Bash", {"command": cmd})
+    assert rc == 2 and "pregunta:raiz_nueva" in err and "escribe fuera del alcance" in err, (cmd, err)
+    assert "NUNCA" not in err
+    fila = registro(goal_dir)[-1]
+    assert fila["decision"] == "deny" and fila["familia"] == "raiz_nueva", (cmd, fila)
+    raiz = fila["forma"]["raiz"]
+    assert raiz.startswith(str(fuera)) or raiz.startswith(os.path.expanduser("~")), (cmd, raiz)
+
+
+@pytest.mark.parametrize("cmd", [
+    "cp src/a.py b.py", "cp -r src {R}/copia", "mv README.md {R}/r.md", "sed -i s/a/b/ src/a.py",
+    "sed -i 's#/tmp/x#y#' src/a.py", "sed '/x/d' src/a.py", "tee salida.txt", "tee", "touch {R}/x",
+    "mkdir -p build/x", "chmod +x run.sh", "chown pedro src/a.py", "truncate -s 0 src/a.py",
+    "tar -xf a.tar", "tar -xf a.tar -C {R}", "tar -cf o.tar src", "tar -tf a.tar", "tar -xOf a.tar",
+    "unzip a.zip", "unzip a.zip -d {R}", "unzip -l a.zip", "zip -r o.zip src", "gzip x.txt", "gzip -c x.txt",
+    "curl -O https://pypi.org/x", "curl -o ./salida.txt https://pypi.org/simple/x/", "curl -o - https://pypi.org/x",
+    "curl -o /dev/null https://pypi.org/x", "curl -sSLo salida.txt https://pypi.org/x",
+    "wget https://pypi.org/x", "wget -O ./x.html https://pypi.org/x", "wget -O- https://pypi.org/x",
+    "dd if=/dev/urandom of=x.bin bs=1 count=1", "find . -fprint lista.txt", "install -m 644 src/a.py {R}/a.py",
+    "ln -s src/a.py lnk", "cp src/a.py -t {R}",
+])
+def test_un_escritor_con_destino_en_el_clon_o_una_raiz_pasa(goal_dir, cmd):
+    cmd = cmd.replace("{R}", str(goal_dir["raiz"]))
+    rc, err = correr(goal_dir, "Bash", {"command": cmd})
+    assert rc == 0, (cmd, err)
+    assert registro(goal_dir)[-1]["decision"] == "allow"
+
+
+@pytest.mark.parametrize("cmd", [
+    "cp src/a.py ~/.ssh/x", "curl -o ~/.ssh/x https://pypi.org/x", "tar -xf a.tar -C ~/.aws",
+    "unzip a.zip -d ~/.claude", "wget -P ~/.gnupg https://pypi.org/x", "dd if=/dev/zero of=~/.ssh/x",
+    "find . -fprint ~/.ssh/x", "chown pedro ~/.ssh/id_ed25519", "truncate -s 0 ~/.calipso/token",
+    "install -m 600 src/a.py ~/.ssh/config", "zip ~/.aws/o.zip src", "gzip ~/.gnupg/pubring.kbx",
+    # la auto-escalada del clon tambien por los escritores nuevos
+    "curl -o .git/config https://pypi.org/x", "tar -xf a.tar -C .git/hooks", "unzip a.zip -d .claude",
+    "install -m 755 x .git/hooks/pre-commit", "dd if=x of=.git/config", "find . -fprint .claude/settings.json",
+])
+def test_un_escritor_con_destino_protegido_o_auto_escalada_es_nunca(goal_dir, cmd):
+    rc, err = correr(goal_dir, "Bash", {"command": cmd})
+    assert rc == 2 and "NUNCA" in err, (cmd, err)
+    assert registro(goal_dir)[-1]["decision"] == "deny"
+
+
+def test_tar_que_extrae_con_rutas_absolutas_se_deniega(goal_dir):
+    for cmd in ("tar -xPf a.tar", "tar --extract --absolute-names -f a.tar", "tar xPf a.tar"):
+        rc, err = correr(goal_dir, "Bash", {"command": cmd})
+        assert rc == 2 and "absolut" in err and "NUNCA" not in err, (cmd, err)
+
+
+def test_la_sonda_de_destinos_del_smoke_con_el_hook_real(goal_dir, tmp_path):
+    """Molde experimentos/goals_smoke.py:sondear_destinos (corrida 6: FALLO
+    hasta que el hook mire el destino): el hook real, como proceso, con
+    stdin sintetico y compuertas.json de este goal; cp/sed -i/mv/tee/touch
+    a un destino fuera del clon y las raices salen 2 con raiz_nueva en
+    hook.jsonl."""
+    fuera = tmp_path / "sonda-fuera"
+    fuera.mkdir()
+    for cmd in (f"cp /etc/hostname {fuera}/x.txt", f"sed -i -e 's/a/b/' {fuera}/x.txt",
+                f"mv README.md {fuera}/r.md", f"tee {fuera}/t.txt", f"touch {fuera}/n.txt"):
+        evento = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                             "tool_input": {"command": cmd}, "tool_use_id": "sonda-destino",
+                             "cwd": str(goal_dir["clon"])})
+        r = subprocess.run([sys.executable, str(HOOK), "--compuertas", str(goal_dir["ruta"])],
+                           input=evento, capture_output=True, text=True,
+                           env={**os.environ, hook.VAR_COMPUERTAS: str(goal_dir["ruta"])}, timeout=20)
+        assert r.returncode == 2 and "raiz_nueva" in r.stderr, (cmd, r.stderr)
+        fila = registro(goal_dir)[-1]
+        assert fila["familia"] == "raiz_nueva" and fila["forma"] == {"raiz": str(fuera)}, (cmd, fila)
