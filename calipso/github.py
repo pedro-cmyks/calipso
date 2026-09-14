@@ -268,13 +268,21 @@ def clonar_para_goal(proyecto: str, destino: str, rama: str) -> dict:
     if rc != 0:
         shutil.rmtree(destino, ignore_errors=True)
         return {"ok": False, "clon": None, "rama": rama, "error": err.strip() or f"git checkout exit {rc}"}
-    return {"ok": True, "clon": destino, "rama": rama, "error": None}
+    # la base de la rama del goal: el runner mide el diff de cada golpe
+    # contra ella (no contra HEAD), asi un commit del martillo cuenta como
+    # diff nuevo y el revisor ve el trabajo acumulado
+    rc, out, _ = git_local(["rev-parse", "HEAD"], cwd=destino)
+    base_sha = out.strip() if rc == 0 and out.strip() else None
+    return {"ok": True, "clon": destino, "rama": rama, "error": None, "base_sha": base_sha}
 
 
-def diff_stat(clon: str) -> str:
-    """`git diff --stat HEAD` mas los archivos sin seguimiento (uno por
-    linea, `?? ruta`): lo que el martillo dejo en el clon tras el golpe."""
-    rc, out, _ = git_local(["diff", "--stat", "HEAD"], cwd=clon)
+def diff_stat(clon: str, base: str = "HEAD") -> str:
+    """`git diff --stat <base>` mas los archivos sin seguimiento (uno por
+    linea, `?? ruta`): lo que el martillo dejo en el clon tras el golpe.
+    `base` es el `base_sha` de la rama del goal (el runner lo pasa): el
+    contrato manda commitear al cerrar cada golpe, y contra HEAD un golpe
+    que commiteo daria diff vacio (falsa no convergencia)."""
+    rc, out, _ = git_local(["diff", "--stat", base], cwd=clon)
     partes = [out.strip()] if rc == 0 and out.strip() else []
     rc, out, _ = git_local(["status", "--porcelain", "--untracked-files=all"], cwd=clon)
     if rc == 0:
@@ -287,17 +295,19 @@ def diff_stat(clon: str) -> str:
 DIFF_COMPLETO_MAX = 60_000
 
 
-def diff_completo(clon: str, maximo: int = DIFF_COMPLETO_MAX) -> str:
+def diff_completo(clon: str, maximo: int = DIFF_COMPLETO_MAX, base: str = "HEAD") -> str:
     """El diff REAL para el revisor (spec seccion 6.2 y ruling 15.1: 'el juez
-    ve el diff real'): `git diff HEAD` mas el contenido de cada archivo sin
+    ve el diff real'): `git diff <base>` mas el contenido de cada archivo sin
     seguimiento (cabecera `?? ruta` y sus lineas con `+`), recortado a
-    `maximo` caracteres con una marca. `diff_stat` sigue siendo lo que va
-    al ledger y al prompt del martillo. `--no-ext-diff` porque el escudo
-    de `env_git_blindado` pone `diff.external=""` y con eso git 2.55
-    intenta correr un comando vacio para la salida en parche (`external
-    diff died`, rc 128); `--stat` no pasa por ahi."""
+    `maximo` caracteres con una marca. `base` como en `diff_stat` (el
+    trabajo acumulado de la rama del goal, commits incluidos). `diff_stat`
+    sigue siendo lo que va al ledger y al prompt del martillo.
+    `--no-ext-diff` porque el escudo de `env_git_blindado` pone
+    `diff.external=""` y con eso git 2.55 intenta correr un comando vacio
+    para la salida en parche (`external diff died`, rc 128); `--stat` no
+    pasa por ahi."""
     partes: list[str] = []
-    rc, out, _ = git_local(["diff", "--no-ext-diff", "HEAD"], cwd=clon)
+    rc, out, _ = git_local(["diff", "--no-ext-diff", base], cwd=clon)
     if rc == 0 and out.strip():
         partes.append(out.rstrip("\n"))
     rc, out, _ = git_local(["status", "--porcelain", "--untracked-files=all"], cwd=clon)

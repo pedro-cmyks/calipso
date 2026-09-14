@@ -467,6 +467,20 @@ def test_golpear_cancelar_mata_y_publica_el_handle(cli_falso_stream, goal_en_dis
     assert len(vistos) == 1 and vistos[0].pid and vistos[0].poll() is not None   # el Popen, ya muerto
 
 
+def test_golpear_con_cancelar_ya_puesto_dice_cancelado_aunque_el_cli_ya_murio(cli_falso_stream,
+                                                                             goal_en_disco, tmp_path):
+    """El sondeo mira `cancelar` antes que poll(): un CLI matado por parar
+    (muere en ms) vuelve con motivo cancelado, no None."""
+    cli = cli_falso_stream
+    cli.guion([{"lineas": lineas_golpe()[:1]}])
+    cancelar = threading.Event()
+    cancelar.set()
+    r = gm.golpear(argv=_argv_falso(cli, [_contrato(tmp_path)]), stdin="x",
+                   cwd=str(goal_en_disco["clon"]), env=dict(os.environ), timeout_s=20,
+                   usar_systemd=False, cancelar=cancelar, sondeo_s=0.5)
+    assert r.motivo == "cancelado" and r.matado is True
+
+
 def test_golpear_exit_distinto_de_cero_y_cuota(cli_falso_stream, goal_en_disco, tmp_path):
     cli = cli_falso_stream
     cli.guion([{"lineas": lineas_golpe()[:1], "stderr": "You've hit your usage limit.", "exit": 1}])
@@ -537,6 +551,29 @@ def test_revisar_con_claude_falso_cuando_las_manos_fueron_codex(cli_falso_stream
     ll = cli.llamadas()[0]
     assert ll["argv"][ll["argv"].index("--tools") + 1] == "Read,Glob,Grep"     # solo lectura
     assert "--restricted" in ll["argv"] and "Write" not in ll["argv"][ll["argv"].index("--tools") + 1]
+
+
+def test_revisar_publica_el_handle_y_matarlo_lo_corta(cli_falso_stream, goal_en_disco):
+    """El revisor cuenta como golpe (spec 6.2): `al_lanzar` publica su Popen
+    apenas existe (el runner lo guarda en golpe_en_curso, como el del
+    martillo) y matarlo lo corta: revisar -> None, sin colgar."""
+    cli = cli_falso_stream
+    cli.guion([{"salida_codex": {"cumplido": True, "falta": [], "nota": ""}, "dormir": 30}])
+    vistos, salida = [], {}
+
+    def _corre():
+        salida["r"] = gm.revisar(manos_del_golpe="claude", exes={"codex": cli.ruta_codex}, goal_texto="x",
+                                 criterio={}, resumen_ledger="", diff="", salidas="",
+                                 cwd=str(goal_en_disco["clon"]), timeout=60, al_lanzar=vistos.append)
+    hilo = threading.Thread(target=_corre)
+    hilo.start()
+    limite = time.monotonic() + 10
+    while not vistos and time.monotonic() < limite:
+        time.sleep(0.05)
+    assert vistos and vistos[0].pid and vistos[0].poll() is None
+    gm.matar(vistos[0])
+    hilo.join(timeout=15)
+    assert not hilo.is_alive() and salida["r"] is None and vistos[0].poll() is not None
 
 
 def test_revisar_sin_la_otra_familia_es_none(goal_en_disco):

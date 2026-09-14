@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import subprocess
 import sys
 import threading
@@ -67,7 +68,13 @@ class Falsas:
         return r
 
     def juez(self, goal, resumen, diff, salidas):
-        self.llamadas["juez"].append({"resumen": resumen, "diff": diff})
+        # invariante 3 tambien para el revisor: su fila `inicio` (manos
+        # revisor:<otra familia>, paso revisar) ya esta en el ledger
+        ultima = goals.golpes(goal["id"])[-1]
+        assert ultima["fase"] == "inicio" and ultima["manos"].startswith("revisor:"), \
+            "revisor sin fila inicio antes de ejecutarse"
+        assert ultima["paso"] == "revisar"
+        self.llamadas["juez"].append({"resumen": resumen, "diff": diff, "n": ultima["n"]})
         if not self.juicios:
             return None
         return self.juicios[min(len(self.llamadas["juez"]) - 1, len(self.juicios) - 1)]
@@ -124,9 +131,13 @@ class Falsas:
                          correr_criterio=self.criterio, aduana_fn=self.aduana)
 
 
+FUTURO = int(time.time()) + 3600      # un resets_at que todavia no paso
+PASADO = 1789330200                   # 2026-09-13T20:10Z: una ventana ya vencida
+
+
 def resultado(estado="sigo", resumen="hice algo", unidades=2, comandos=(), exit=0, motivo=None,
               timeout=False, matado=False, veredicto=None, stderr="", rate=0.37, pregunta=None,
-              compuerta=None):
+              compuerta=None, resets_at=PASADO):
     v = veredicto if veredicto is not None else {"estado": estado, "resumen": resumen}
     if pregunta:
         v["pregunta"] = pregunta
@@ -136,7 +147,7 @@ def resultado(estado="sigo", resumen="hice algo", unidades=2, comandos=(), exit=
                         unidades=unidades, comandos=[{"id": f"t{i}", "cmd": c, "resultado_tail": r}
                                                      for i, (c, r) in enumerate(comandos)],
                         veredicto=v if exit == 0 and not matado else None,
-                        rate_limit={"five_hour": rate, "seven_day": 0.1, "resets_at": 1789330200},
+                        rate_limit={"five_hour": rate, "seven_day": 0.1, "resets_at": resets_at},
                         duracion_ms=1500, costo_usd=0.05, stderr_tail=stderr, subtype="success")
 
 
@@ -451,14 +462,36 @@ def test_el_sensor_de_carga_que_revienta_no_frena_el_goal(home, tmp_path):
 
 def test_cuota_agotada_deja_waiting_sin_caer_al_7b(home, tmp_path):
     f = Falsas(resultados=[resultado("sigo")],
-               consumo={"codex_used_percent": 95.0, "claude_limite": False, "resets_at": 1789330200})
+               consumo={"codex_used_percent": 95.0, "claude_limite": False, "resets_at": FUTURO})
     g = goal_activo(home, tmp_path, manos="codex")
     r = f.runner(g["id"])
     it = r.iteracion()
     assert it["accion"] == "cuota" and it["estado"] == goals.WAITING
     e = goals.load(None, g["id"])["espera"]
-    assert e["motivo"] == "cuota" and e["resets_at"] == 1789330200 and f.llamadas["manos"] == []
+    assert e["motivo"] == "cuota" and e["resets_at"] == FUTURO and f.llamadas["manos"] == []
     assert goals.load(None, g["id"])["manos"] == "codex"      # nadie cambio de manos
+
+
+def test_la_cuota_de_codex_con_la_ventana_vencida_no_frena(home, tmp_path):
+    """El freno pasivo no es pegajoso: una lectura cuyo `resets_at` ya paso
+    es de una ventana vieja (nadie la refresca sin golpear) y no vale."""
+    f = Falsas(resultados=[resultado("sigo")],
+               consumo={"codex_used_percent": 95.0, "claude_limite": False, "resets_at": PASADO})
+    g = goal_activo(home, tmp_path, manos="codex")
+    it = f.runner(g["id"]).iteracion()
+    assert it["accion"] == "golpe" and it["estado"] == goals.ACTIVE and len(f.llamadas["manos"]) == 1
+    # claude_limite con la ventana vencida tampoco
+    f2 = Falsas(resultados=[resultado("sigo")],
+                consumo={"codex_used_percent": 0.0, "claude_limite": True, "resets_at": PASADO})
+    goals.transicionar(g["id"], goals.CANCELLED, "x")
+    g2 = goal_activo(home, tmp_path)
+    assert f2.runner(g2["id"]).iteracion()["accion"] == "golpe"
+    # y con la ventana viva si frena
+    f3 = Falsas(resultados=[resultado("sigo")],
+                consumo={"codex_used_percent": 0.0, "claude_limite": True, "resets_at": FUTURO})
+    goals.transicionar(g2["id"], goals.CANCELLED, "x")
+    g3 = goal_activo(home, tmp_path)
+    assert f3.runner(g3["id"]).iteracion()["accion"] == "cuota"
 
 
 def test_fallo_del_cli_por_cuota_no_cuenta_contra_el_tope(home, tmp_path):
@@ -472,12 +505,45 @@ def test_fallo_del_cli_por_cuota_no_cuenta_contra_el_tope(home, tmp_path):
 
 
 def test_el_ultimo_rate_limit_de_claude_frena(home, tmp_path):
-    f = Falsas(resultados=[resultado("sigo", rate=0.96), resultado("sigo")])
+    f = Falsas(resultados=[resultado("sigo", rate=0.96, resets_at=FUTURO), resultado("sigo")])
     g = goal_activo(home, tmp_path)
     r = f.runner(g["id"])
     assert r.iteracion()["estado"] == goals.ACTIVE
     it = r.iteracion()
     assert it["accion"] == "cuota" and goals.load(None, g["id"])["espera"]["motivo"] == "cuota"
+    assert goals.load(None, g["id"])["espera"]["resets_at"] == FUTURO and len(f.llamadas["manos"]) == 1
+
+
+def test_el_rate_limit_de_claude_con_la_ventana_vencida_no_frena(home, tmp_path):
+    """La fila del ledger no se refresca sin golpear: si su `resets_at` ya
+    paso, la ventana es otra y el goal golpea (antes quedaba atrapado en
+    waiting cuota hasta `segui con: codex` o cancelar)."""
+    f = Falsas(resultados=[resultado("sigo", rate=0.96, resets_at=PASADO), resultado("sigo")])
+    g = goal_activo(home, tmp_path)
+    r = f.runner(g["id"])
+    assert r.iteracion()["estado"] == goals.ACTIVE
+    it = r.iteracion()
+    assert it["accion"] == "golpe" and it["estado"] == goals.ACTIVE and len(f.llamadas["manos"]) == 2
+
+
+def test_el_segui_de_pedro_no_vuelve_a_caer_en_la_cuota_ya_vista(home, tmp_path):
+    """Una lectura anterior a la ultima activacion ya freno una vez: el
+    `/goal segui` de Pedro (una activacion nueva) golpea, y la lectura del
+    golpe nuevo decide de ahi en mas."""
+    f = Falsas(resultados=[resultado("sigo", rate=0.96, resets_at=FUTURO),
+                           resultado("sigo", rate=0.97, resets_at=FUTURO)])
+    g = goal_activo(home, tmp_path)
+    r = f.runner(g["id"])
+    assert r.iteracion()["estado"] == goals.ACTIVE
+    assert r.iteracion()["accion"] == "cuota"
+    # _now() resuelve segundos: la lectura vieja queda ANTES de la activacion
+    # y el golpe nuevo DESPUES (un empate cuenta como lectura nueva)
+    time.sleep(1.1)
+    goals.transicionar(g["id"], goals.ACTIVE, "segui de Pedro")
+    time.sleep(1.1)
+    it = r.iteracion()
+    assert it["accion"] == "golpe" and len(f.llamadas["manos"]) == 2
+    assert r.iteracion()["accion"] == "cuota"                  # la lectura NUEVA (0.97, viva) frena
 
 
 # --- el juez -------------------------------------------------------------------------------
@@ -531,6 +597,91 @@ def test_sin_otra_familia_pedro_sin_veredicto_de_modelo(home, tmp_path):
     assert e["motivo"] == "cumplido" and e["sin_veredicto_de_modelo"] is True
     assert e["independencia"] == "ninguna" and "sin veredicto de modelo" in e["resumen"]
     assert f.llamadas["preguntar"][0]["operacion"] == "cerrar"
+    # la fila del revisor se abrio ANTES de invocarlo (invariante 3) y cierra sin cobrar ni contar
+    fl = filas(g["id"])
+    assert fl[1]["manos"] == "revisor:codex" and fl[1]["fase"] == "fin" and fl[1]["motivo"] == "sin otra familia"
+    assert fl[1]["unidades"] == 0 and fl[1]["cuenta_para_tope"] is False and "cobro" not in fl[1]
+
+
+def test_el_revisor_es_un_golpe_con_fila_inicio_antes_y_sin_golpe_apagado(home, tmp_path):
+    """Spec 6.2: el revisor cuenta como golpe y se cobra. Invariante 3: su
+    fila `inicio` va ANTES de invocarlo (Falsas.juez lo exige), y mientras
+    corren el criterio y el revisor `sin_golpe` esta apagado (parar y el
+    apagado los esperan en vez de transicionar por encima)."""
+    f = Falsas(resultados=[resultado("terminar")],
+               juicios=[{"cumplido": True, "falta": [], "nota": "bien", "revisor": "codex"}])
+    g = goal_activo(home, tmp_path)
+    r = f.runner(g["id"])
+    vistos = {}
+    juez_base, crit_base = f.juez, f.criterio
+
+    def juez(goal, resumen, diff, salidas):
+        vistos["revisor"] = r.sin_golpe.is_set()
+        return juez_base(goal, resumen, diff, salidas)
+
+    def criterio(goal):
+        vistos["criterio"] = r.sin_golpe.is_set()
+        return crit_base(goal)
+    r.juez, r.correr_criterio = juez, criterio
+    it = r.iteracion()
+    assert it["estado"] == goals.WAITING and vistos == {"criterio": False, "revisor": False}
+    assert r.sin_golpe.is_set() and r.golpe_en_curso is None
+    fl = filas(g["id"])
+    assert fl[1]["manos"] == "revisor:codex" and fl[1]["paso"] == "revisar" and fl[1]["fase"] == "fin"
+    assert fl[1]["unidades"] == 1 and fl[1]["cobro"]["unidades"] == 1 and fl[1]["ts"] and fl[1]["ts_fin"]
+    assert fl[1]["duracion_ms"] >= 0 and f.llamadas["juez"][0]["n"] == 2
+
+
+def test_parar_durante_el_revisor_no_transiciona_y_deja_la_fila(home, tmp_path):
+    """`cancelar` puesto mientras corre el revisor (parar/apagar lo mataron:
+    vuelve None): la fila del revisor cierra con motivo cancelado, sin
+    cobro, y el runner NO transiciona (lo hace parar/apagar, sin la carrera
+    waiting -> waiting). Si el revisor alcanzo a contestar, la revision
+    queda anotada pero tampoco se transiciona. Y con `cancelar` puesto
+    durante el criterio, el revisor ni se invoca."""
+    f = Falsas(resultados=[resultado("terminar")], juicios=[])
+    g = goal_activo(home, tmp_path)
+    r = f.runner(g["id"])
+    juez_base = f.juez
+
+    def juez_matado(goal, resumen, diff, salidas):
+        juez_base(goal, resumen, diff, salidas)
+        r.cancelar.set()
+        return None
+    r.juez = juez_matado
+    it = r.iteracion()
+    assert it["motivo"] == "cancelado" and goals.load(None, g["id"])["status"] == goals.ACTIVE
+    fl = filas(g["id"])
+    assert fl[1]["manos"] == "revisor:codex" and fl[1]["motivo"] == "cancelado"
+    assert fl[1]["cuenta_para_tope"] is False and "cobro" not in fl[1]
+    assert f.llamadas["preguntar"] == [] and f.llamadas["pagador"][-1]["manos"] == "claude"
+    assert fl[0]["juez"]["criterio"]["ok"] is True
+    # el revisor que alcanzo a contestar: queda anotado y cobrado, no se transiciona
+    r.cancelar.clear()
+    f.juicios = [{"cumplido": True, "falta": [], "nota": "ok", "revisor": "codex"}]
+
+    def juez_justo(goal, resumen, diff, salidas):
+        v = juez_base(goal, resumen, diff, salidas)
+        r.cancelar.set()
+        return v
+    r.juez = juez_justo
+    it = r.iteracion()
+    assert it["motivo"] == "cancelado" and goals.load(None, g["id"])["status"] == goals.ACTIVE
+    fl = filas(g["id"])
+    assert fl[3]["manos"] == "revisor:codex" and fl[3]["juez"]["cumplido"] is True and fl[3]["cobro"]["unidades"] == 1
+    assert f.llamadas["preguntar"] == []
+    # cancelar durante el criterio: el revisor no se invoca
+    r.cancelar.clear()
+    antes = len(f.llamadas["juez"])
+
+    def criterio(goal):
+        r.cancelar.set()
+        return True, "1 passed"
+    r.correr_criterio = criterio
+    it = r.iteracion()
+    assert it["motivo"] == "cancelado" and len(f.llamadas["juez"]) == antes
+    assert goals.load(None, g["id"])["status"] == goals.ACTIVE and filas(g["id"])[-1]["manos"] == "claude"
+    assert r.sin_golpe.is_set()
 
 
 def test_criterio_medible_ok_y_sin_otra_familia_es_cumplido_con_criterio(home, tmp_path):
@@ -578,6 +729,81 @@ def test_manos_que_revientan_es_failed_no_tumba_nada(home, tmp_path):
     g = goal_activo(home, tmp_path)
     it = f.runner(g["id"]).iteracion()
     assert it["estado"] == goals.FAILED and "se rompio todo" in goals.load(None, g["id"])["motivo_cierre"]
+
+
+def test_parar_durante_el_golpe_no_juzga_ni_transiciona(home, tmp_path):
+    """/goal parar y el apagado ponen `cancelar` y matan el CLI; si el sondeo
+    de golpear vio el proceso muerto antes que `cancelar` (motivo None), el
+    runner igual corta: la fila dice cancelado y no cuenta para el tope, no
+    se llama al juez ni se transiciona (parar/apagar lo hacen; sin eso, con
+    un tope chico, tope/no_convergencia corrian contra 'parado por Pedro'
+    y uno de los dos reventaba con waiting -> waiting)."""
+    f = Falsas(resultados=[resultado("terminar")],
+               juicios=[{"cumplido": True, "falta": [], "nota": "", "revisor": "codex"}])
+    g = goal_activo(home, tmp_path, tope={"golpes": 1, "minutos": 60, "unidades": 60})
+    r = f.runner(g["id"])
+    manos_base = f.manos
+
+    def manos_con_veredicto(goal, n, prompt, contrato, cancelar):
+        res = manos_base(goal, n, prompt, contrato, cancelar)
+        cancelar.set()                       # parar llego justo cuando el CLI terminaba
+        return res
+    r.manos = manos_con_veredicto
+    it = r.iteracion()
+    assert it["accion"] == "golpe" and it["motivo"] == "cancelado" and it["estado"] == goals.ACTIVE
+    assert f.llamadas["juez"] == [] and goals.load(None, g["id"])["status"] == goals.ACTIVE
+    fila = filas(g["id"])[0]
+    assert fila["motivo"] == "cancelado" and fila["cuenta_para_tope"] is False and fila["unidades"] == 2
+    # parar transiciona sin carrera; segui y otro golpe matado (exit -15, motivo None)
+    goals.transicionar(g["id"], goals.WAITING, "parado por Pedro")
+    goals.transicionar(g["id"], goals.ACTIVE, "segui")
+    r2 = f.runner(g["id"])
+
+    def manos_matadas(goal, n, prompt, contrato, cancelar):
+        manos_base(goal, n, prompt, contrato, cancelar)
+        cancelar.set()
+        return gm.Resultado(exit=-15, motivo=None, session_id="s-1", unidades=1, duracion_ms=10)
+    r2.manos = manos_matadas
+    it = r2.iteracion()
+    assert it["motivo"] == "cancelado" and goals.load(None, g["id"])["status"] == goals.ACTIVE
+    assert filas(g["id"])[1]["motivo"] == "cancelado" and filas(g["id"])[1]["exit"] == -15
+    assert goals.consumo(goals.load(None, g["id"])) == {"golpes": 0, "minutos": 0.03, "unidades": 3, "mm": 0}
+    # con cancelar puesto antes del golpe no se abre fila ni se invoca nada
+    r3 = f.runner(g["id"])
+    r3.cancelar.set()
+    it = r3.iteracion()
+    assert it["motivo"] == "cancelado" and len(filas(g["id"])) == 2 and len(f.llamadas["manos"]) == 2
+
+
+def test_parar_goal_mientras_corre_el_golpe_deja_parado_por_pedro(home, tmp_path):
+    """La carrera del ultimo golpe por el camino del server: manos que
+    esperan `cancelar` (el CLI matado por parar) y vuelven con motivo None;
+    _parar_goal espera el golpe y transiciona; el runner (tope de 1 golpe)
+    no transiciona ni revienta, y la espera queda con el motivo de Pedro."""
+    g = goal_activo(home, tmp_path, tope={"golpes": 1, "minutos": 60, "unidades": 60})
+    f = Falsas(resultados=[resultado("sigo")])
+    r = f.runner(g["id"])
+    manos_base = f.manos
+
+    def manos(goal, n, prompt, contrato, cancelar):
+        manos_base(goal, n, prompt, contrato, cancelar)
+        cancelar.wait(10)
+        return gm.Resultado(exit=-15, session_id="s-1", unidades=1, duracion_ms=10)
+    r.manos = manos
+    srv._GOALS_EN_CURSO[g["id"]] = {"tarea": None, "runner": r}
+    salida = {}
+    hilo = threading.Thread(target=lambda: salida.update(r.iteracion()))
+    hilo.start()
+    limite = time.monotonic() + 5
+    while r.sin_golpe.is_set() and time.monotonic() < limite:
+        time.sleep(0.02)
+    assert not r.sin_golpe.is_set()                            # el golpe esta corriendo
+    goal = srv._parar_goal(g["id"])
+    hilo.join(timeout=10)
+    assert not hilo.is_alive() and salida["motivo"] == "cancelado"
+    assert goal["status"] == goals.WAITING and goal["espera"]["motivo"] == "parado por Pedro"
+    assert goals.load(None, g["id"])["espera"]["motivo"] == "parado por Pedro"
+    assert filas(g["id"])[0]["motivo"] == "cancelado" and srv._GOALS_EN_CURSO == {}
 
 
 def test_otro_goal_en_curso_no_muere_en_silencio(home, tmp_path):
@@ -671,16 +897,53 @@ def test_goal_sin_repo_corre_en_trabajo(home, tmp_path):
     assert c["cwd"] == str(goals.dir_trabajo(g["id"]) / "trabajo") and c["clon"] is None
 
 
+def test_el_diff_se_mide_contra_la_base_de_la_rama_no_contra_head(home, tmp_path):
+    """El contrato manda commitear al cerrar cada golpe: el diff (stat y
+    completo) se mide contra el `base_sha` que el clon guardo en goal.json,
+    asi un commit cuenta como diff nuevo, el revisor ve el trabajo acumulado
+    y tres golpes que commitean no son 'sin diff nuevo'. Clon y diff
+    REALES (sin inyectar)."""
+    f = Falsas(resultados=[resultado("sigo")])
+    g = goal_activo(home, tmp_path)
+    r = gr.Runner(g["id"], juez=f.juez, carga_fn=f.carga, consumo_fn=f.consumo, pagador_fn=f.pagador,
+                  preguntar=f.preguntar, evaluar_solicitud=f.evaluar, sondear=f.sondear,
+                  correr_criterio=f.criterio, aduana_fn=f.aduana)
+    manos_base = f.manos
+
+    def manos(goal, n, prompt, contrato, cancelar):
+        clon = goal["repo"]
+        (pathlib.Path(clon) / f"paso{n}.py").write_text(f"x = {n}\n", encoding="utf-8")
+        subprocess.run(["git", "-C", clon, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", clon, "-c", "user.name=t", "-c", "user.email=t@t",
+                        "commit", "-q", "-m", f"golpe {n}"], check=True)
+        return manos_base(goal, n, prompt, contrato, cancelar)
+    r.manos = manos
+    for _ in (1, 2, 3):
+        it = r.iteracion()
+        assert it["accion"] == "golpe" and it["estado"] == goals.ACTIVE, it
+    goal = goals.load(None, g["id"])
+    base = subprocess.run(["git", "-C", goal["proyecto"], "rev-parse", "HEAD"], capture_output=True,
+                          text=True, check=True).stdout.strip()
+    assert goal["base_sha"] == base and len(base) == 40
+    fl = filas(g["id"])
+    assert "paso1.py" in fl[0]["diff_stat"] and "paso1.py" in fl[2]["diff_stat"] and "paso3.py" in fl[2]["diff_stat"]
+    assert len({fl[0]["diff_stat"], fl[1]["diff_stat"], fl[2]["diff_stat"]}) == 3
+    completo = r.diff_completo_fn(goal)
+    assert "diff --git" in completo and "+x = 1" in completo and "+x = 3" in completo
+    assert gr.no_converge(fl) is None
+
+
 # --- las manos reales sobre el CLI falso ---------------------------------------------------------
 
 def test_manos_con_cli_arma_el_golpe_entero(home, tmp_path, cli_falso_stream, monkeypatch):
     cli = cli_falso_stream
-    cli.guion([{"lineas": lineas_golpe(comandos=[("pytest -q", "1 passed")],
+    g = goal_activo(home, tmp_path, dominios=["pypi.org"])
+    sid = g["session_id"]            # el CLI reporta el --session-id que le dimos; la fila lo guarda
+    cli.guion([{"lineas": lineas_golpe(session_id=sid, comandos=[("pytest -q", "1 passed")],
                                        veredicto={"estado": "sigo", "resumen": "hice"})},
-               {"lineas": lineas_golpe(session_id="s-1", veredicto={"estado": "terminar", "resumen": "listo"})}])
+               {"lineas": lineas_golpe(session_id=sid, veredicto={"estado": "terminar", "resumen": "listo"})}])
     f = Falsas(juicios=[])
     f.manos = gr.manos_con_cli({"claude": cli.ruta, "codex": cli.ruta_codex}, timeout_s=30, usar_systemd=False)
-    g = goal_activo(home, tmp_path, dominios=["pypi.org"])
     r = f.runner(g["id"])
     assert r.iteracion()["accion"] == "golpe"
     ll = cli.llamadas()[0]
@@ -693,11 +956,49 @@ def test_manos_con_cli_arma_el_golpe_entero(home, tmp_path, cli_falso_stream, mo
     assert ll["env"]["CALIPSO_HOME"] == str(goals.dir_goal(g["id"]) / "home_vacio")
     assert ll["cwd"] == goals.load(None, g["id"])["repo"]
     assert "crea saludo.py" in ll["stdin"] and "CONTRATO DEL GOAL" in ll["contrato"]
-    assert filas(g["id"])[0]["session_id"] == "s-1" and filas(g["id"])[0]["unidades"] == 2
+    assert filas(g["id"])[0]["session_id"] == sid and filas(g["id"])[0]["unidades"] == 2
     assert filas(g["id"])[0]["comandos"][0]["cmd"] == "pytest -q"
     r.iteracion()
     a2 = cli.llamadas()[1]["argv"]
     assert a2[a2.index("--resume") + 1] == g["session_id"] and "--session-id" not in a2
+
+
+def test_cambiar_de_manos_a_claude_arranca_la_sesion_y_no_resume_una_que_no_existe(home, tmp_path,
+                                                                                    cli_falso_stream):
+    """`--resume` solo si el ledger tiene una fila de claude con la sesion
+    del goal: tras golpes con codex (`/goal segui con: claude`), o tras un
+    golpe de claude cortado antes de que el CLI persistiera la sesion (sin
+    session_id en la fila), el golpe arranca con --session-id; recien con
+    una fila de claude con esa sesion, --resume."""
+    cli = cli_falso_stream
+    g = goal_activo(home, tmp_path, manos="codex")
+    sid = g["session_id"]
+    cli.guion([{"salida_codex": {"estado": "sigo", "resumen": "hice"}, "lineas": []},
+               {"lineas": [], "exit": 1, "stderr": "boom"},                       # claude cortado: sin sesion
+               {"lineas": lineas_golpe(session_id=sid, veredicto={"estado": "sigo", "resumen": "x"})},
+               {"lineas": lineas_golpe(session_id=sid, veredicto={"estado": "sigo", "resumen": "y"})}])
+    f = Falsas(juicios=[])
+    f.manos = gr.manos_con_cli({"claude": cli.ruta, "codex": cli.ruta_codex}, timeout_s=30, usar_systemd=False)
+    r = f.runner(g["id"])
+    f.diff_valor = "a"
+    assert r.iteracion()["accion"] == "golpe" and filas(g["id"])[0]["manos"] == "codex"
+    goal = goals.load(None, g["id"])
+    goal["manos"] = "claude"                                   # lo que hace /goal segui con: claude
+    goals.escribir(goal)
+    f.diff_valor = "b"
+    assert r.iteracion()["accion"] == "golpe"
+    a2 = cli.llamadas()[1]["argv"]
+    assert a2[a2.index("--session-id") + 1] == sid and "--resume" not in a2
+    assert filas(g["id"])[1]["manos"] == "claude" and filas(g["id"])[1]["session_id"] is None
+    f.diff_valor = "c"
+    assert r.iteracion()["accion"] == "golpe"
+    a3 = cli.llamadas()[2]["argv"]
+    assert a3[a3.index("--session-id") + 1] == sid and "--resume" not in a3    # todavia sin sesion de claude
+    assert filas(g["id"])[2]["session_id"] == sid
+    f.diff_valor = "d"
+    assert r.iteracion()["accion"] == "golpe"
+    a4 = cli.llamadas()[3]["argv"]
+    assert a4[a4.index("--resume") + 1] == sid and "--session-id" not in a4
 
 
 def test_manos_con_cli_codex(home, tmp_path, cli_falso_stream):

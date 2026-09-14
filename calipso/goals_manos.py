@@ -124,32 +124,47 @@ def argv_cabeza_codex(exe: str, cwd: str, salida: str, schema_file: str,
 
 
 def _correr_cabeza(argv: list[str], stdin: str, cwd: str, env: dict,
-                   timeout: float) -> tuple[int, str, str]:
+                   timeout: float, al_lanzar: Callable | None = None) -> tuple[int, str, str]:
     """El unico subprocess de la cabeza: CLI de suscripcion, lo mide la
     telemetria y la economia (canario: `modelo:`). Bloqueante: se llama en
-    hilo (`asyncio.to_thread`) y con timeout."""
+    hilo (`asyncio.to_thread`) y con timeout. Popen con sesion propia (el
+    timeout mata el grupo, como el golpe) y `al_lanzar(proc)` apenas
+    existe: el revisor cuenta como golpe y el runner guarda su handle en
+    `golpe_en_curso` para que parar/apagar lo maten en vez de dejarlo
+    gastando cuota huerfano."""
     try:
-        r = subprocess.run(argv, input=stdin, cwd=cwd, env=env, text=True,
-                           capture_output=True, encoding="utf-8", errors="replace",
-                           timeout=timeout)
-        return (r.returncode, r.stdout or "", r.stderr or "")
-    except subprocess.TimeoutExpired:
-        return (124, "", f"timeout a los {timeout} s")
+        proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                encoding="utf-8", errors="replace", start_new_session=True)
     except Exception as e:
         return (1, "", str(e))
+    if al_lanzar is not None:
+        try:
+            al_lanzar(proc)
+        except Exception:
+            pass
+    try:
+        out, err = proc.communicate(stdin, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        matar(proc)
+        return (124, "", f"timeout a los {timeout} s")
+    except Exception as e:
+        matar(proc)
+        return (1, "", str(e))
+    return (proc.returncode, out or "", err or "")
 
 
 def cabeza_sin_herramientas(client: str, exe: str, system: str, prompt: str,
                             schema: dict, *, cwd: str, env: dict | None = None,
                             model: str | None = None,
                             timeout: float = TIMEOUT_CABEZA_S,
-                            tools: str = "") -> dict | None:
+                            tools: str = "", al_lanzar: Callable | None = None) -> dict | None:
     """Un golpe SIN herramientas: devuelve el JSON del esquema o None (exit
     distinto de 0, timeout, sin JSON). El contrato (`system`) se escribe en
     un temporal FUERA de `cwd` y se borra al salir; el prompt va por stdin.
     `cwd` tiene que ser un directorio vacio o de solo lectura para el
     modelo: la cabeza no tiene herramientas, pero el CLI lista el cwd al
-    arrancar."""
+    arrancar. `al_lanzar(proc)` publica el Popen (el revisor)."""
     env = env if env is not None else env_saneado()
     temporales: list[str] = []
     try:
@@ -159,7 +174,7 @@ def cabeza_sin_herramientas(client: str, exe: str, system: str, prompt: str,
                 f.write(system)
                 temporales.append(f.name)
             argv = argv_cabeza_claude(exe, temporales[0], schema, model, tools=tools)
-            rc, out, _ = _correr_cabeza(argv, prompt, cwd, env, timeout)
+            rc, out, _ = _correr_cabeza(argv, prompt, cwd, env, timeout, al_lanzar=al_lanzar)
             if rc != 0:
                 return None
             return goals.structured_output_de(out)
@@ -172,7 +187,8 @@ def cabeza_sin_herramientas(client: str, exe: str, system: str, prompt: str,
                                              delete=False) as f:
                 temporales.append(f.name)
             argv = argv_cabeza_codex(exe, cwd, temporales[1], temporales[0], model)
-            rc, out, _ = _correr_cabeza(argv, f"{system}\n\n{prompt}", cwd, env, timeout)
+            rc, out, _ = _correr_cabeza(argv, f"{system}\n\n{prompt}", cwd, env, timeout,
+                                        al_lanzar=al_lanzar)
             if rc != 0:
                 return None
             try:
@@ -693,11 +709,14 @@ def golpear(*, argv: list[str], stdin: str, cwd: str, env: dict, timeout_s: floa
                                 r.motivo, r.matado = v, True
                                 matar(proc, unidad if usar_systemd else None)
                                 break
-                    if proc.poll() is not None:
-                        break
+                    # `cancelar` ANTES de poll(): parar/apagar matan el CLI
+                    # (muere en ms) y el sondeo lo veria muerto antes que
+                    # cancelado, dejando la fila con motivo None
                     if cancelar is not None and cancelar.is_set():
                         r.motivo, r.matado = "cancelado", True
                         matar(proc, unidad if usar_systemd else None)
+                        break
+                    if proc.poll() is not None:
                         break
                     if time.monotonic() - t0 > timeout_s:
                         r.motivo, r.timeout, r.matado = "timeout", True, True
@@ -801,14 +820,15 @@ def tapar_fila(fila: dict) -> tuple[dict, int]:
 
 def revisar(*, manos_del_golpe: str, exes: dict, goal_texto: str, criterio: dict,
             resumen_ledger: str, diff: str, salidas: str, cwd: str, env: dict | None = None,
-            timeout: float = TIMEOUT_REVISOR_S) -> dict | None:
+            timeout: float = TIMEOUT_REVISOR_S, al_lanzar: Callable | None = None) -> dict | None:
     """El revisor de OTRA familia en solo lectura sobre el clon (spec
     seccion 6.2): manos claude -> `codex exec -s read-only`; manos codex ->
     `claude -p --restricted --tools Read,Glob,Grep`. `diff` es el diff
     COMPLETO (`github.diff_completo`: ruling 15.1, el juez ve el diff real),
     no el diff_stat del ledger. None si la otra familia no esta (`exes` sin
     su ejecutable): entonces no hay veredicto de modelo (decision 15).
-    Cuenta como golpe y se cobra: lo hace el runner."""
+    Cuenta como golpe y se cobra: lo hace el runner, que ademas recibe el
+    Popen por `al_lanzar` (parar/apagar lo matan como al martillo)."""
     otra = otra_familia(manos_del_golpe)
     exe = (exes or {}).get(otra)
     if not exe:
@@ -818,7 +838,8 @@ def revisar(*, manos_del_golpe: str, exes: dict, goal_texto: str, criterio: dict
     prompt, _ = tapar(prompt)
     v = cabeza_sin_herramientas(otra, exe, CONTRATO_REVISOR, prompt, ESQUEMA_REVISOR, cwd=cwd,
                                 env=env, timeout=timeout,
-                                tools=HERRAMIENTAS_LECTURA if otra == "claude" else "")
+                                tools=HERRAMIENTAS_LECTURA if otra == "claude" else "",
+                                al_lanzar=al_lanzar)
     if not isinstance(v, dict) or "cumplido" not in v:
         return None
     return {"cumplido": bool(v.get("cumplido")), "falta": [str(x) for x in (v.get("falta") or [])],

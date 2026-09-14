@@ -451,6 +451,30 @@ def test_clonar_para_goal_crea_la_rama_y_diff_stat(home, repo, tmp_path):
     assert out.strip().count("\n") == 0 and "inicial" in out
 
 
+def test_diff_stat_y_diff_completo_contra_la_base_del_goal(home, repo, tmp_path):
+    """El runner mide contra `base_sha` (el HEAD del clon al clonar, que
+    `clonar_para_goal` devuelve), no contra HEAD: el contrato manda
+    commitear al cerrar cada golpe y un commit tiene que contar como diff
+    nuevo (y el revisor ver el trabajo acumulado). Sin `base`, HEAD como
+    siempre."""
+    destino = tmp_path / "clon"
+    r = github.clonar_para_goal(str(repo), str(destino), "goal/goal_base")
+    rc, out, _ = github.git_local(["rev-parse", "HEAD"], cwd=str(destino))
+    assert rc == 0 and r["base_sha"] == out.strip() and len(r["base_sha"]) == 40
+    (destino / "saludo.py").write_text("def hola():\n    return 'hola'\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(destino), "add", "saludo.py"], check=True)
+    subprocess.run(["git", "-C", str(destino), "-c", "user.name=t", "-c", "user.email=t@t",
+                    "commit", "-q", "-m", "saludo"], check=True)
+    assert github.diff_stat(str(destino)) == ""                                  # contra HEAD: nada
+    assert "saludo.py" in github.diff_stat(str(destino), base=r["base_sha"])     # contra la base: el commit
+    completo = github.diff_completo(str(destino), base=r["base_sha"])
+    assert "diff --git" in completo and "+def hola" in completo
+    assert github.diff_completo(str(destino)) == ""
+    (destino / "chau.py").write_text("x\n", encoding="utf-8")                     # sin seguimiento: tambien
+    assert "?? chau.py" in github.diff_stat(str(destino), base=r["base_sha"])
+    assert "+x" in github.diff_completo(str(destino), base=r["base_sha"])
+
+
 def test_clonar_para_goal_falla_limpio(home, tmp_path):
     r = github.clonar_para_goal(str(tmp_path / "no-existe"), str(tmp_path / "clon"), "goal/x")
     assert r["ok"] is False and r["error"]

@@ -22,19 +22,25 @@ Cada vuelta, con el goal `active`:
      ledger resumido con el diff_stat y las `falta` SIN recortar), el
      golpe (la cabeza ES el martillo: una sesion headless con herramientas,
      --resume entre golpes; ruling 15.1);
-  5. despues: diff_stat, comandos, unidades reales, las compuertas usadas
-     segun hook.jsonl (con la linea de deshacer de cada instalacion: spec
-     7/8, ruling 15.14), el detector de secretos, la fila de la aduana, el
-     cobro, la fila `fin`;
-  6. hook inactivo / mcp inesperado -> `failed`; fallo por cuota -> `waiting`
-     cuota (no cuenta contra el tope de golpes); timeout -> cuenta;
+  5. despues: diff_stat (contra el `base_sha` de la rama del goal, no
+     contra HEAD: el contrato manda commitear y un commit es diff nuevo),
+     comandos, unidades reales, las compuertas usadas segun hook.jsonl (con
+     la linea de deshacer de cada instalacion: spec 7/8, ruling 15.14), el
+     detector de secretos, la fila de la aduana, el cobro, la fila `fin`;
+  6. `cancelar` puesto (parar, apagar) -> la fila dice cancelado, no cuenta
+     para el tope y la vuelta termina SIN juez ni transicion (transiciona el
+     que cancelo); hook inactivo / mcp inesperado -> `failed`; fallo por
+     cuota -> `waiting` cuota (no cuenta contra el tope de golpes); timeout
+     -> cuenta;
   7. el veredicto: `preguntar` -> una solicitud estacionada (pregunta,
      compuerta o raiz_nueva; lo NUNCA no se pregunta) y `waiting`;
      `terminar` -> el juez: criterio medible primero (comando/archivo/
-     numero), despues el revisor de OTRA familia (cuenta como golpe y se
-     cobra; `independencia`); cumplido -> `waiting` motivo `cumplido` con la
-     solicitud `cerrar` para Pedro; no cumplido -> la `falta` al ledger y el
-     martillo sigue; sin otra familia -> Pedro sin veredicto de modelo;
+     numero), despues el revisor de OTRA familia (cuenta como golpe: su fila
+     `inicio` va ANTES de invocarlo, invariante 3; se cobra; `sin_golpe`
+     apagado y su Popen en `golpe_en_curso` mientras corre; `independencia`);
+     cumplido -> `waiting` motivo `cumplido` con la solicitud `cerrar` para
+     Pedro; no cumplido -> la `falta` al ledger y el martillo sigue; sin
+     otra familia -> Pedro sin veredicto de modelo;
   8. no convergencia (tres golpes sin diff nuevo, la misma falta dos veces,
      el mismo comando fallando igual) -> `waiting` con diagnostico y
      opciones; y el tope, de nuevo.
@@ -58,6 +64,7 @@ import os
 import pathlib
 import subprocess
 import threading
+import time
 from typing import Callable
 
 from calipso import github as calipso_github
@@ -355,11 +362,15 @@ def manos_con_cli(exes: dict, *, timeout_s: int | None = None,
                   al_lanzar: Callable | None = None) -> Callable:
     """Devuelve `manos(goal, n, prompt, contrato, cancelar) -> Resultado`
     sobre `goals_manos.golpear`: arma settings (sandbox + hook), argv
-    (claude: --session-id en el golpe 1, --resume despues; codex: -o y
-    --output-schema en archivos del goal), env (CALIPSO_GOAL_COMPUERTAS,
-    CALIPSO_HOME vacio), escribe el contrato FUERA del clon y lanza con la
-    unidad `calipso-goal-<id>-<n>`. `al_lanzar` (= `runner.registrar_golpe`)
-    publica el Popen en el runner apenas existe (decision 17)."""
+    (claude: --resume solo si el ledger tiene una fila de claude con la
+    sesion del goal, si no --session-id: tras golpes con codex o un golpe
+    cortado antes de que el CLI persistiera la sesion, un --resume de una
+    sesion inexistente es exit 1 sin veredicto que cuenta y no converge;
+    codex: -o y --output-schema en archivos del goal), env
+    (CALIPSO_GOAL_COMPUERTAS, CALIPSO_HOME vacio), escribe el contrato
+    FUERA del clon y lanza con la unidad `calipso-goal-<id>-<n>`.
+    `al_lanzar` (= `runner.registrar_golpe`) publica el Popen en el runner
+    apenas existe (decision 17)."""
     def manos(goal: dict, n: int, prompt: str, contrato: str,
               cancelar: threading.Event | None) -> gm.Resultado:
         carpeta = goals.dir_goal(goal["id"])
@@ -380,9 +391,11 @@ def manos_con_cli(exes: dict, *, timeout_s: int | None = None,
         unidad = f"calipso-goal-{goal['id']}-{n}"
         if cliente == "claude":
             settings = gm.settings_del_goal(compuertas, compuertas_path=compuertas_path)
+            resume = any(f.get("manos") == "claude" and f.get("session_id") == goal["session_id"]
+                         for f in goals.golpes(goal["id"]))
             argv = gm.argv_claude(exe, contrato=str(ruta_contrato), settings=settings,
                                   schema=gm.ESQUEMA_VEREDICTO, session_id=goal["session_id"],
-                                  resume=n > 1, model=_modelo_claude(goal), web=bool(goal.get("dominios")))
+                                  resume=resume, model=_modelo_claude(goal), web=bool(goal.get("dominios")))
             return gm.golpear(argv=argv, stdin=prompt, cwd=cwd, env=env, timeout_s=tout,
                               cancelar=cancelar, usar_systemd=usar_systemd, unidad=unidad,
                               al_lanzar=al_lanzar)
@@ -460,17 +473,21 @@ class Runner:
 
     @staticmethod
     def _diff_real(goal: dict) -> str:
+        """Contra el `base_sha` de la rama del goal (lo guardo el clon), no
+        contra HEAD: el contrato manda commitear al cerrar cada golpe, y
+        contra HEAD un golpe que commiteo daria '' (falsa no convergencia y
+        un revisor sin diff). Sin base (clon viejo), HEAD."""
         if goal.get("repo"):
-            return calipso_github.diff_stat(goal["repo"])
+            return calipso_github.diff_stat(goal["repo"], base=goal.get("base_sha") or "HEAD")
         trabajo = goals.dir_trabajo(goal["id"]) / "trabajo"
         return "\n".join(f"?? {p.relative_to(trabajo)}" for p in sorted(trabajo.rglob("*")) if p.is_file())
 
     @staticmethod
     def _diff_completo_real(goal: dict) -> str:
-        """El diff REAL para el revisor (ruling 15.1); sin repo, el contenido
-        de la carpeta de trabajo."""
+        """El diff REAL para el revisor (ruling 15.1), acumulado desde el
+        `base_sha`; sin repo, el contenido de la carpeta de trabajo."""
         if goal.get("repo"):
-            return calipso_github.diff_completo(goal["repo"])
+            return calipso_github.diff_completo(goal["repo"], base=goal.get("base_sha") or "HEAD")
         trabajo = goals.dir_trabajo(goal["id"]) / "trabajo"
         partes = []
         for p in sorted(trabajo.rglob("*")):
@@ -581,8 +598,21 @@ class Runner:
         return {"accion": "retomado", "estado": g["status"]}
 
     # -- active --
+    def _cancelado(self, n: int | None = None, accion: str = "golpe") -> dict:
+        """La vuelta corta porque parar/apagar pusieron `cancelar`: sin juez
+        ni transicion (transiciona el que cancelo; si no, tope/no
+        convergencia/cumplido correrian contra 'parado por Pedro' y uno de
+        los dos reventaria con waiting -> waiting)."""
+        estado = (goals.load(None, self.goal_id) or {}).get("status")
+        out = {"accion": accion, "estado": estado, "motivo": "cancelado"}
+        if n is not None:
+            out["n"] = n
+        return out
+
     def _activo(self, goal: dict) -> dict:
         carpeta = goals.dir_goal(goal["id"])
+        if self.cancelar.is_set():
+            return self._cancelado(accion="nada")
         # 0. el clon (o la carpeta de trabajo) y la sonda del hook
         if goal.get("proyecto") and not goal.get("repo"):
             r = self.clonar(goal)
@@ -593,6 +623,7 @@ class Runner:
             # que un reintento no encuentre el destino "ya existe"
             goal = goals.load(None, self.goal_id)
             goal["repo"] = r["clon"]
+            goal["base_sha"] = r.get("base_sha")        # la base de la rama: los diffs se miden contra ella
             goals.escribir(goal)
             if goal.get("status") != goals.ACTIVE:
                 return {"accion": "clonado", "estado": goal.get("status")}
@@ -643,6 +674,8 @@ class Runner:
         paso = plan[min(n - 1, len(plan) - 1)] if plan else None
         registro = str(carpeta / "hook.jsonl")                  # = compuertas["registro"]
         desde = _lineas_de(registro)
+        if self.cancelar.is_set():           # llego parar/apagar mientras clonaba o sondeaba: no se lanza nada
+            return self._cancelado(accion="nada")
         # `sin_golpe` apagado desde la fila `inicio` hasta la fila `fin` y la
         # aduana: el apagado y /goal parar esperan esto antes de transicionar
         self.sin_golpe.clear()
@@ -665,14 +698,21 @@ class Runner:
             veredicto = resultado.veredicto if isinstance(resultado.veredicto, dict) else None
             valido = bool(veredicto) and veredicto.get("estado") in ("sigo", "terminar", "preguntar")
             cuota_fallo = resultado.exit not in (0, None) and gm.es_fallo_de_cuota(resultado.stderr_tail)
+            # parar/apagar matan el CLI y el sondeo de golpear puede verlo
+            # muerto antes que `cancelar`: la fila lo dice igual y el golpe
+            # cortado no cuenta contra el tope (las unidades si se suman)
+            cancelado = resultado.motivo == "cancelado" or self.cancelar.is_set()
             fila = {"manos": goal.get("manos"), "session_id": resultado.session_id,
                     "unidades": resultado.unidades, "duracion_ms": resultado.duracion_ms,
                     "veredicto_del_golpe": veredicto if valido else None,
-                    "veredicto_invalido": (not valido) and not resultado.matado and resultado.exit == 0,
+                    "veredicto_invalido": (not valido) and not resultado.matado and resultado.exit == 0
+                    and not cancelado,
                     "comandos": resultado.comandos, "diff_stat": diff, "exit": resultado.exit,
-                    "motivo": resultado.motivo, "cobro": cobro, "rate_limit": resultado.rate_limit,
+                    "motivo": resultado.motivo or ("cancelado" if cancelado else None), "cobro": cobro,
+                    "rate_limit": resultado.rate_limit,
                     "denials": resultado.denials, "costo_usd": resultado.costo_usd,
-                    "cuenta_para_tope": not cuota_fallo, "stderr_tail": resultado.stderr_tail[-500:],
+                    "cuenta_para_tope": not cuota_fallo and not cancelado,
+                    "stderr_tail": resultado.stderr_tail[-500:],
                     "model": resultado.model, "compuertas_usadas": usadas}
             fila, tapados = gm.tapar_fila(fila)
             fila["secretos_tapados"] = tapados + tapados_p + tapados_c
@@ -684,13 +724,13 @@ class Runner:
             self.golpe_en_curso = None
             self.sin_golpe.set()
         # 6. lo que corta
+        if cancelado:
+            return self._cancelado(n)                   # parar/apagar transicionan; aca no se juzga nada
         if goal.get("status") != goals.ACTIVE:
             return {"accion": "golpe", "estado": goal["status"], "n": n}      # lo paro Pedro o el apagado
         if resultado.motivo and (resultado.motivo.startswith("hook inactivo")
                                  or resultado.motivo.startswith("mcp inesperado")):
             return self._failed(resultado.motivo)
-        if resultado.motivo == "cancelado":
-            return {"accion": "golpe", "estado": goal["status"], "n": n}
         if cuota_fallo:
             detalle = {"motivo": "cuota", "detalle": resultado.stderr_tail[-300:], "resets_at": None,
                        "manos": goal.get("manos")}
@@ -720,12 +760,34 @@ class Runner:
             return {**r, "accion": accion, "n": n}
         return {"accion": accion, "estado": goals.ACTIVE, "n": n}
 
+    @staticmethod
+    def _ventana_vencida(resets_at) -> bool:
+        """True si la lectura es de una ventana que ya se reseteo: el freno
+        pasivo no puede ser pegajoso (nadie refresca la lectura sin
+        golpear). Sin `resets_at` no se sabe: la lectura vale."""
+        try:
+            return resets_at is not None and float(resets_at) <= time.time()
+        except (TypeError, ValueError):
+            return False
+
+    def _ultima_activacion(self) -> str:
+        """El ts de la ultima transicion a `active` (events.jsonl), '' si no
+        hay: una lectura del ledger anterior a ella ya freno una vez y el
+        `/goal segui` de Pedro es una activacion nueva."""
+        ts = ""
+        for e in goals.events(None, self.goal_id):
+            if e.get("action") == "transicion" and e.get("a") == goals.ACTIVE:
+                ts = e.get("ts") or ts
+        return ts
+
     def _cuota(self, goal: dict) -> dict | None:
         try:
             c = self.consumo_fn() or {}
         except Exception:
             c = {}
         manos = goal.get("manos")
+        if self._ventana_vencida(c.get("resets_at")):
+            c = {}
         if manos == "codex" and (c.get("codex_used_percent") or 0) > CUOTA_CODEX_MAX:
             return {"motivo": "cuota", "manos": "codex", "used_percent": c.get("codex_used_percent"),
                     "resets_at": c.get("resets_at")}
@@ -735,10 +797,15 @@ class Runner:
             filas = goals.golpes(goal["id"])
             ultimo = next((f for f in reversed(filas) if f.get("rate_limit")), None)
             if ultimo:
-                u = (ultimo["rate_limit"] or {}).get("five_hour")
-                if u is not None and float(u) >= CUOTA_CLAUDE_MAX:
+                rl = ultimo["rate_limit"] or {}
+                u = rl.get("five_hour")
+                # estricto: `_now()` resuelve segundos y un empate cuenta como
+                # lectura nueva (frena: lo conservador)
+                vieja = self._ventana_vencida(rl.get("resets_at")) \
+                    or (ultimo.get("ts_fin") or ultimo.get("ts") or "") < self._ultima_activacion()
+                if u is not None and float(u) >= CUOTA_CLAUDE_MAX and not vieja:
                     return {"motivo": "cuota", "manos": "claude", "five_hour": u,
-                            "resets_at": (ultimo["rate_limit"] or {}).get("resets_at")}
+                            "resets_at": rl.get("resets_at")}
         return None
 
     def _waiting_tope(self, goal: dict, tope: str, motivo: str) -> dict:
@@ -789,7 +856,18 @@ class Runner:
     def _juez(self, goal: dict, n: int, resultado: gm.Resultado, diff: str) -> dict | None:
         """None = no cumplido, el martillo sigue (la falta ya esta en el
         ledger). `diff` es el diff_stat de la fila; el revisor recibe el diff
-        REAL (`diff_completo_fn`, ruling 15.1)."""
+        REAL (`diff_completo_fn`, ruling 15.1). El criterio (hasta 600 s) y
+        el revisor (hasta 300 s) corren con `sin_golpe` apagado: parar y el
+        apagado los esperan (y matan al revisor por `golpe_en_curso`) en vez
+        de transicionar por encima."""
+        self.sin_golpe.clear()
+        try:
+            return self._juzgar(goal, n, resultado)
+        finally:
+            self.golpe_en_curso = None
+            self.sin_golpe.set()
+
+    def _juzgar(self, goal: dict, n: int, resultado: gm.Resultado) -> dict | None:
         ok, salida = juzgar_criterio(goal, self.correr_criterio)
         juez: dict = {}
         if ok is not None:
@@ -797,28 +875,46 @@ class Runner:
             if not ok:
                 self._anotar_juez(goal["id"], n, juez)
                 return None
+        if self.cancelar.is_set():                    # parar/apagar durante el criterio: el revisor ni sale
+            self._anotar_juez(goal["id"], n, juez)
+            return self._cancelado(n, accion="juez")
         filas = goals.golpes(goal["id"])
         salidas = "\n".join((c.get("resultado_tail") or "") for c in resultado.comandos)
+        # el revisor de OTRA familia cuenta como golpe (spec 6.2): su fila
+        # `inicio` ANTES de invocarlo (invariante 3: un crash en el medio
+        # deja rastro) y su Popen en golpe_en_curso (al_lanzar de revisar)
+        m = n + 1
+        revisor = f"revisor:{gm.otra_familia(goal.get('manos'))}"
+        goals.golpe_inicio(goal["id"], m, manos=revisor, paso="revisar")
+        self.telemetria("goal", accion="golpe", goal_id=goal["id"], n=m, manos=revisor)
+        t0 = time.monotonic()
         # el revisor ve el diff REAL (ruling 15.1, spec 6.2), no el diff_stat
         # que va al ledger y al prompt
         revision = self.juez(goal, resumen_ledger(filas), self.diff_completo_fn(goal), salidas)
+        duracion_ms = int((time.monotonic() - t0) * 1000)
+        self.golpe_en_curso = None
         if revision:
-            m = n + 1
-            revisor = f"revisor:{revision.get('revisor', gm.otra_familia(goal.get('manos')))}"
-            goals.golpe_inicio(goal["id"], m, manos=revisor, paso="revisar")
             cobro = self.pagador_fn(goal, 1, revisor)
             juez_rev = {**revision, "independencia": "proveedor_distinto"}
-            goals.golpe_fin(goal["id"], m, unidades=1, duracion_ms=0, juez=juez_rev, cobro=cobro,
+            goals.golpe_fin(goal["id"], m, unidades=1, duracion_ms=duracion_ms, juez=juez_rev, cobro=cobro,
                             veredicto_del_golpe={"estado": "revisar", "resumen": revision.get("nota", "")})
-            self.telemetria("goal", accion="golpe", goal_id=goal["id"], n=m, manos=revisor)
             juez["independencia"] = "proveedor_distinto"
             self._anotar_juez(goal["id"], n, juez)
+            if self.cancelar.is_set():                # contesto justo antes de parar: anotado, sin transicion
+                return self._cancelado(n, accion="juez")
             if not revision.get("cumplido"):
                 return None
             detalle = {"motivo": "cumplido", "resumen": (resultado.veredicto or {}).get("resumen", ""),
                        "criterio": juez.get("criterio"), "independencia": "proveedor_distinto",
                        "revisor": revision, "sin_veredicto_de_modelo": False}
+        elif self.cancelar.is_set():                  # parar/apagar lo mataron: la fila lo dice, sin cobro
+            goals.golpe_fin(goal["id"], m, unidades=0, duracion_ms=duracion_ms, motivo="cancelado",
+                            cuenta_para_tope=False)
+            self._anotar_juez(goal["id"], n, juez)
+            return self._cancelado(n, accion="juez")
         else:
+            goals.golpe_fin(goal["id"], m, unidades=0, duracion_ms=duracion_ms, motivo="sin otra familia",
+                            cuenta_para_tope=False)
             juez["independencia"] = "ninguna"
             self._anotar_juez(goal["id"], n, juez)
             detalle = {"motivo": "cumplido",
