@@ -145,7 +145,7 @@ class Pagador:
             # escribir el consumo de cristal.
             m.consumir_capacidad(cargo["ts"], cargo["semana"], cuenta,
                                  cargo["suscripcion"], cargo["unidades"],
-                                 dueno=dueno)
+                                 ref=cargo.get("ref"), dueno=dueno)
 
     def _cobrar(self, cargo: dict) -> None:
         with candado(self.ruta_libro):
@@ -169,7 +169,14 @@ class Pagador:
         return mm
 
     def cargar_suscripcion(self, ts: str, semana: str, cuenta: str,
-                           suscripcion: str, unidades: int = 1) -> None:
-        self._cobrar({"ts": ts, "semana": semana, "tipo": "suscripcion",
-                      "cuenta": cuenta, "suscripcion": suscripcion,
-                      "unidades": unidades})
+                           suscripcion: str, unidades: int = 1,
+                           ref: str | None = None) -> None:
+        """`unidades` son llamadas reales (el golpe de un goal trae 10-40,
+        ruling 15.12) y `ref` el concepto (`goal:<id>`); el turno del chat
+        sigue cobrando 1 sin ref."""
+        cargo = {"ts": ts, "semana": semana, "tipo": "suscripcion",
+                 "cuenta": cuenta, "suscripcion": suscripcion,
+                 "unidades": unidades}
+        if ref:
+            cargo["ref"] = ref
+        self._cobrar(cargo)

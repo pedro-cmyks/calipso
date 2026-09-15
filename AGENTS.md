@@ -120,6 +120,39 @@
   `/api/jobs`, `/api/jobs/{job_id}` y
   `/api/jobs/{job_id}/artifacts/{name}`; el panel Trabajo puede listar jobs
   recientes y abrir su detalle/evidencia.
+- **El goal que corre** (spec `docs/superpowers/specs/2026-09-13-goals-design.md`):
+  `/goal <texto> [hasta: ...] [tope: 2h | 20 golpes | 60 unidades] [en: <repo>]
+  [raiz: <dir>] [con: claude|codex]` (o su alias `meta: <texto>`) crea un goal
+  `proposed` con criterio medible, tope y compuertas (la propuesta la hace la
+  cabeza frontera y es el golpe 0 del ledger: cruza la aduana y se cobra con
+  unidades reales; sin `con:` las manos son siempre claude); `/goal dale [tope:
+  ...] [raiz: <dir>]` lo arranca (solo un `proposed`; una raiz amplia -- `~`,
+  `/`, una protegida -- se rechaza) en un clon del repo
+  (`~/.local/share/calipso/goals/<id>/repo`, o bajo `CALIPSO_GOALS_TRABAJO`;
+  rama `goal/<id>`; `goal.json`, `events.jsonl`, `golpes.jsonl`,
+  `compuertas.json` y `hook.jsonl` siguen en `~/.calipso/goals/<id>/`, que el
+  sandbox no deja leer) con Claude Code o Codex como manos dentro del sandbox
+  nativo del CLI mas el hook fail-closed `calipso/goals_hook.py`; el runner
+  (`calipso/goals_runner.py`) golpea, mide carga/cuota/tope, juzga (criterio
+  medible confinado bajo bwrap, o revisor de OTRA familia) y deja el goal
+  `waiting` para Pedro; nunca `complete` sin su dale, y al `complete` trae la
+  rama `goal/<id>` al repo de origen sin mergear (el chat dice donde quedo).
+  Todo `waiting` deja una solicitud en el inbox (la propuesta `dale`, el
+  cierre `cerrar`, las compuertas, `raiz_nueva`, y `retomar` para
+  tope/cuota/no convergencia/parado/server apagado o reiniciado; el `responder`
+  acepta `nota`); por el chat: `/goal segui [<nota>] [tope: 10 golpes|1h|20
+  unidades] [con: claude|codex]` (sobre `cumplido` es un no: sigue), `/goal
+  dale` con el goal esperando vale como `segui`, `/goal parar`, `/goal no
+  [<id>]`, `/goal estado`. Dale y segui fallan rapido si las manos no estan en
+  el PATH del server; `CALIPSO_GOALS=off` apaga la funcion entera (nada gasta
+  la cabeza, ningun bucle se lanza). `goals.transicionar` es la unica puerta de
+  `status`; `activo.json` es global; `golpes.jsonl` es el ledger por golpe.
+  `detect` (`meta: ...` interceptando el turno), `check_auto_close`, `PUT
+  status/active` y los endpoints `advance`/`draft` se retiraron. `POST
+  /api/goals` pasa por la misma propuesta que el chat. Pestana Goals en
+  `/fabrica`; `#goalBar` de la PWA de solo lectura; un tablero (sesion tipo
+  `tablero`) ve los goals y contesta sus solicitudes por el inbox, pero los
+  POST `dale/no/parar/segui` no entran en su alcance.
 - **Goal Mode minimo** (`calipso/goals.py`): detecta lenguaje natural tipo
   `meta: ...`, crea meta persistente con criterios/subtareas/evidencia, mantiene
   meta activa por proyecto y la muestra en Goal Bar. Endpoints `/api/goals`,

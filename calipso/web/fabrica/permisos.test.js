@@ -332,3 +332,51 @@ test("las aprobadas no cuentan como pendientes: ya tienen el si de Pedro",
      () => {
   assert.equal(contadorPendientes(datos({aprobadas: [SOL_ACUNAR]})), 0);
 });
+
+// --- una solicitud de familia goal (retomar): el item se ve como los demas y
+// admite una nota (cierre 2026-09-14, Pedro no se pierde) --------------------
+
+const SOL_RETOMAR = {
+  id: "sol_goal_retomar_1", ts: "2026-09-14T12:00:00", estado: "estacionada",
+  accion: {familia: "goal", operacion: "retomar",
+           forma: {goal: "goal_abc123", motivo: "tope", vez: 1},
+           detalle: {titulo: "saludo.py con hola() y su test", niveles: {}},
+           titulo: "goal: saludo.py con hola() y su test -- tope de golpes alcanzado " +
+                   "(6/6 golpes, 4.2/10 min, 6/30 unidades): seguir?"},
+  contexto: {origen: "goal", chat: null, departamento: null, corrida: "goal_abc123:retomar:1"},
+  nivel: "pregunta", motivo: "goal retomar: lo decide Pedro, cada vez",
+  siempre_pregunta: true, texto: "goal: saludo.py ... seguir?",
+  estaciono_corrida: true, intentos: [], respondida: null, resultado: null,
+};
+
+test("una solicitud retomar de un goal se pinta con su titulo, su motivo y si/no", () => {
+  const html = textoDePermisos(datos({estacionadas: [SOL_RETOMAR]}));
+  assert.match(html, /tope de golpes alcanzado \(6\/6 golpes/);
+  assert.match(html, /seguir\?/);
+  assert.match(html, /goal retomar: lo decide Pedro, cada vez/);
+  assert.match(html, /una rutina quedo parada esperando esta respuesta/);
+  assert.match(html, /data-accion="responder" data-id="sol_goal_retomar_1" data-respuesta="si"/);
+  assert.match(html, /data-accion="responder" data-id="sol_goal_retomar_1" data-respuesta="no"/);
+  assert.match(html, /pregunta siempre/);                // sin permiso permanente
+});
+
+test("una solicitud de familia goal lleva un campo de nota; las demas no", () => {
+  // el runner aplica la nota como nota de Pedro (POST responder acepta
+  // `nota`); la pregunta abierta del martillo se contesta con texto, no
+  // solo con si/no. Una solicitud de plata no tiene donde ponerla. El
+  // atributo es el mismo `data-nota-de` de la pestana Goals: app.js repone
+  // lo escrito con goals.notasEscritas al repintar (tercer parametro).
+  const html = textoDePermisos(datos({estacionadas: [SOL_RETOMAR], pendientes: [SOL_ACUNAR]}));
+  assert.match(html, /<input data-nota-de="sol_goal_retomar_1" type="text"/);
+  assert.doesNotMatch(html, /data-nota-de="sol_8b49901d70cc"/);
+  // sin nota previa el input nace sin value (el value= del techo es otro)
+  assert.match(html, /data-nota-de="sol_goal_retomar_1" type="text" placeholder="[^"]*">/);
+  const conNota = textoDePermisos(datos({estacionadas: [SOL_RETOMAR]}), null,
+                                  {sol_goal_retomar_1: 'falta el test <b class="x">'});
+  assert.match(conNota, /data-nota-de="sol_goal_retomar_1"[^>]*value="falta el test &lt;b class=&quot;x&quot;&gt;"/);
+  assert.doesNotMatch(conNota, /<b class/);
+  // el id del input tambien se escapa
+  const malo = {...SOL_RETOMAR, id: '"><img src=x onerror=alert(1)>'};
+  const h2 = textoDePermisos(datos({estacionadas: [malo]}));
+  assert.doesNotMatch(h2, /<img/);
+});

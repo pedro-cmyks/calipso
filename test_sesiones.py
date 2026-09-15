@@ -401,6 +401,8 @@ def test_los_alcances_son_la_tabla_del_spec():
     ("/api/routines", "GET"),
     ("/api/aduana", "GET"),                   # ver los cruces (sin carga ni chat: lo recorta el endpoint)
     ("/api/carga", "GET"),                    # la maquina: numeros y nombres de modelos
+    ("/api/goals", "GET"),                    # ver los goals (spec goals 2026-09-13)
+    ("/api/goals/goal_abc/estado", "GET"),
 ])
 def test_el_tablero_ve_toda_la_fabrica(path, metodo):
     assert sesiones.permite("tablero", path, metodo) is True
@@ -416,6 +418,20 @@ def test_el_tablero_ve_toda_la_fabrica(path, metodo):
 ])
 def test_el_tablero_firma_la_mesa_y_los_permisos(path):
     assert sesiones.permite("tablero", path, "POST") is True
+
+
+def test_el_tablero_contesta_las_solicitudes_de_familia_goal_por_el_inbox():
+    """La politica real (ruling del cierre 2026-09-14, rev:server): la
+    propuesta (`dale`), el cierre (`cerrar`), las compuertas, `raiz_nueva` y
+    `retomar` de un goal son solicitudes estacionadas de familia goal, y el
+    tablero las contesta por el MISMO endpoint que firma la mesa: es Pedro
+    autenticado. Lo que NO entra son los POST dale/no/parar/segui y el
+    PUT (tocan la maquina sin pasar por el inbox)."""
+    assert sesiones.permite("tablero", "/api/permisos/solicitudes/sol_goal_1/responder", "POST") is True
+    assert sesiones.permite("tablero", "/api/inbox", "GET") is True
+    for accion in ("dale", "no", "parar", "segui"):
+        assert sesiones.permite("tablero", f"/api/goals/goal_abc/{accion}", "POST") is False
+    assert sesiones.permite("tablero", "/api/goals/goal_abc", "PUT") is False
 
 
 @pytest.mark.parametrize("path,metodo", [
@@ -451,6 +467,14 @@ def test_el_tablero_firma_la_mesa_y_los_permisos(path):
     ("/api/routines/abc", "PUT"),
     ("/api/routines/abc", "DELETE"),
     ("/api/routines/abc/run", "POST"),
+    # los POST de goals no entran; el tablero arranca, cierra y preautoriza
+    # goals contestando sus solicitudes por el inbox (test de abajo)
+    ("/api/goals", "POST"),
+    ("/api/goals/goal_abc/dale", "POST"),
+    ("/api/goals/goal_abc/no", "POST"),
+    ("/api/goals/goal_abc/parar", "POST"),
+    ("/api/goals/goal_abc/segui", "POST"),
+    ("/api/goals/goal_abc", "PUT"),
     # la conversacion es del navegador, no de la mesa
     ("/api/chats", "GET"),
     ("/ws/chat", "GET"),

@@ -96,6 +96,16 @@ def test_un_quien_exige_origen_proyecto_y_desde():
         q.origen = "gesto"                                        # type: ignore[misc]
 
 
+def test_el_origen_goal_lleva_el_id_en_rutina():
+    """El golpe de un goal (spec goals 2026-09-13, seccion 8): origen `goal`,
+    `proyecto` el del goal (nunca `_proyecto()`), el id en `rutina`."""
+    q = quien_de_prueba(origen="goal", proyecto="otro", gesto="/goal", ruta=None,
+                        rutina={"kind": "goal", "id": "goal_abc"})
+    assert q.origen == "goal" and q.rutina["id"] == "goal_abc"
+    with pytest.raises(ValueError):
+        quien_de_prueba(origen="goal", rutina={"kind": "goal"})   # sin id
+
+
 def test_cruzar_sin_quien_no_pasa(libro):
     with pytest.raises(TypeError):
         with aduana.cruzar({"origen": "turno"}, "x", None):       # type: ignore[arg-type]

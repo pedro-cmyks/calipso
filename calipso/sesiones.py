@@ -93,8 +93,13 @@ ALCANCES: dict[str, tuple] = {
         ("/api/routines", ("GET",)),      # ver las rutinas, no correrlas
         ("/api/aduana", ("GET",)),        # ver los cruces (sin carga ni chat: lo recorta el endpoint)
         ("/api/carga", ("GET",)),         # la maquina: la medicion y las cuentas del dia (numeros, sin datos de Pedro)
+        ("/api/goals", ("GET",)),         # ver los goals y su ledger; los POST dale/no/parar/segui y el PUT NO entran
         ("/api/economia/bus/", ("POST",)),          # LA MESA
-        ("/api/permisos/solicitudes/", ("POST",)),  # firmar solicitudes
+        # firmar solicitudes: la mesa y las de familia goal (la propuesta
+        # `dale`, el cierre `cerrar`, las compuertas, `raiz_nueva`,
+        # `retomar`): el tablero SI arranca, cierra y preautoriza goals por
+        # el inbox (es Pedro autenticado; ruling del cierre 2026-09-14)
+        ("/api/permisos/solicitudes/", ("POST",)),
     ),
 }
 

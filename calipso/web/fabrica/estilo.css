@@ -480,6 +480,11 @@ html, body {
 .permisos-panel .botones .nota {
   flex: 1 1 100%; color: var(--tenue); font-size: 11px;
 }
+/* el campo nota de una solicitud de un goal (cierre 2026-09-14, Pedro no se
+   pierde): ocupa el renglon entero antes de los botones, como en Goals */
+.permisos-panel .botones label { display: flex; gap: 4px; align-items: center; font-size: 12px; flex: 1 1 100%; }
+.permisos-panel .botones input { flex: 1; min-height: 28px; font: inherit; padding: 2px 6px;
+  border: 1px solid var(--linea); border-radius: 4px; background: var(--fondo); color: var(--texto); }
 .permisos-panel .permiso button {
   align-self: flex-start; min-height: 32px; cursor: pointer;
 }
@@ -677,3 +682,41 @@ html, body {
    `:disabled` la regla de arriba (cursor: pointer) los dejaria viendose
    tan vivos como un boton que si contesta. */
 .inbox-panel .acciones button:disabled { cursor: not-allowed; opacity: .5; }
+
+/* La septima sub-pestana: "Goals" (spec goals 2026-09-13, seccion 10).
+   Mismo molde que .aduana-panel: acotado bajo la clase del panel; el
+   diff_stat en monoespacio (.carga), la espera en --aviso. */
+.goals-panel { padding: 8px; display: flex; flex-direction: column; gap: 10px; }
+.goals-panel .subtitulo {
+  color: var(--tenue); font-size: 11px; letter-spacing: .4px; text-transform: uppercase;
+}
+.goals-panel .vacio, .goals-panel .tenue { color: var(--tenue); font-size: 12px; }
+.goals-panel .aviso { color: var(--aviso); font-size: 12px; }
+.goals-panel .fila { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.goals-panel .fila.resumen { color: var(--tenue); }
+.goals-panel .goal {
+  border: 1px solid var(--linea); border-radius: 6px; padding: 8px;
+  background: var(--panel); display: flex; flex-direction: column; gap: 6px;
+}
+.goals-panel .goal.waiting { border-color: var(--aviso); }
+.goals-panel .titulo-goal { font-weight: 600; }
+.goals-panel .estado {
+  border: 1px solid var(--linea); border-radius: 999px; padding: 1px 7px; font-size: 11px;
+}
+.goals-panel .estado.waiting { color: var(--aviso); border-color: var(--aviso); }
+.goals-panel .espera { color: var(--aviso); font-size: 12px; }
+/* las opciones de la espera (si = ..., no = ...) y la instruccion por el chat */
+.goals-panel .opciones { margin: 2px 0; padding-left: 18px; font-size: 12px; }
+.goals-panel .golpe { border-top: 1px solid var(--linea); padding: 6px 0; font-size: 12px; }
+.goals-panel .golpe .comando { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.goals-panel .carga {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--fondo); border: 1px solid var(--linea); border-radius: 4px;
+  padding: 6px 8px; overflow-x: auto; font-size: 11px; margin: 2px 0 0;
+  white-space: pre-wrap; word-break: break-word;
+}
+.goals-panel .botones { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.goals-panel .botones button { min-height: 32px; cursor: pointer; }
+.goals-panel .botones label { display: flex; gap: 4px; align-items: center; font-size: 12px; flex: 1 1 160px; }
+.goals-panel .botones input { flex: 1; min-height: 28px; font: inherit; padding: 2px 6px;
+  border: 1px solid var(--linea); border-radius: 4px; background: var(--fondo); color: var(--texto); }

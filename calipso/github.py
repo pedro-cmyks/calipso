@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import pathlib
 import re
 import shutil
 import subprocess
@@ -215,6 +216,122 @@ def git_runner(cwd: str | None = None, timeout: int = 10,
             return (1, "", str(e))
 
     return run
+
+
+def git_local(args: list[str], cwd: str | None = None,
+              timeout: int = 120) -> tuple[int, str, str]:
+    """git LOCAL para el clon del goal (spec 2026-09-13, ruling 15.4):
+    clone de una ruta, checkout -b, diff --stat, fetch de una ruta local.
+    NO va por `git_runner`: `clone`/`fetch` estan en GIT_DE_RED y un clon
+    local cruzaria la aduana con destino None (Trampa 11), y `git_runner`
+    anula el gitconfig global (sin identidad no hay commit desde el
+    server). El escudo por entorno queda (core.fsmonitor, diff.external,
+    core.pager). Entra al canario de la aduana como `git local:`."""
+    exe = shutil.which("git.exe") or shutil.which("git")
+    if not exe:
+        return (127, "", "git no esta en PATH")
+    env = env_git_blindado(anular_global=False)
+    try:
+        proc = subprocess.run(
+            [exe, *args], cwd=cwd, env=env, text=True, capture_output=True,
+            encoding="utf-8", errors="replace", timeout=timeout)
+        return (proc.returncode, proc.stdout or "", proc.stderr or "")
+    except Exception as e:
+        return (1, "", str(e))
+
+
+def clonar_para_goal(proyecto: str, destino: str, rama: str) -> dict:
+    """`git clone --no-hardlinks <proyecto> <destino>` + `git checkout -b
+    <rama>`. Siempre un clon, nunca un worktree (ruling 15.4: un worktree
+    comparte .git, .venv y el checkout que sirve el server real). Copia
+    REAL de los objetos: un clone local por defecto los enlaza (hardlink)
+    con el origen, y el origen es el checkout que sirve el server; con el
+    enlace, una escritura in-place sobre `.git/objects` desde un golpe
+    corromperia el proyecto real (invariante 5). El .git de Calipso pesa
+    unos MB: la copia cuesta lo mismo que el enlace. Un `destino` que ya
+    existe es un error y NO se toca (un reintento tras un crash o la
+    reconciliacion del arranque no puede llevarse el trabajo de los golpes
+    anteriores); un fallo del clone no deja nada (git limpia lo que el
+    mismo creo); un fallo del checkout borra el clon recien creado (ese
+    si es nuestro). `error` lleva el stderr."""
+    origen = pathlib.Path(proyecto).expanduser()
+    if not (origen / ".git").exists():
+        return {"ok": False, "clon": None, "rama": rama,
+                "error": f"{origen} no es un repo git"}
+    if pathlib.Path(destino).exists():
+        return {"ok": False, "clon": None, "rama": rama,
+                "error": f"{destino} ya existe"}
+    rc, _, err = git_local(["clone", "--no-hardlinks", "--quiet", str(origen), destino])
+    if rc != 0:
+        return {"ok": False, "clon": None, "rama": rama, "error": err.strip() or f"git clone exit {rc}"}
+    rc, _, err = git_local(["checkout", "-q", "-b", rama], cwd=destino)
+    if rc != 0:
+        shutil.rmtree(destino, ignore_errors=True)
+        return {"ok": False, "clon": None, "rama": rama, "error": err.strip() or f"git checkout exit {rc}"}
+    # la base de la rama del goal: el runner mide el diff de cada golpe
+    # contra ella (no contra HEAD), asi un commit del martillo cuenta como
+    # diff nuevo y el revisor ve el trabajo acumulado
+    rc, out, _ = git_local(["rev-parse", "HEAD"], cwd=destino)
+    base_sha = out.strip() if rc == 0 and out.strip() else None
+    return {"ok": True, "clon": destino, "rama": rama, "error": None, "base_sha": base_sha}
+
+
+def diff_stat(clon: str, base: str = "HEAD") -> str:
+    """`git diff --stat <base>` mas los archivos sin seguimiento (uno por
+    linea, `?? ruta`): lo que el martillo dejo en el clon tras el golpe.
+    `base` es el `base_sha` de la rama del goal (el runner lo pasa): el
+    contrato manda commitear al cerrar cada golpe, y contra HEAD un golpe
+    que commiteo daria diff vacio (falsa no convergencia)."""
+    rc, out, _ = git_local(["diff", "--stat", base], cwd=clon)
+    partes = [out.strip()] if rc == 0 and out.strip() else []
+    rc, out, _ = git_local(["status", "--porcelain", "--untracked-files=all"], cwd=clon)
+    if rc == 0:
+        sin = [l for l in out.splitlines() if l.startswith("??")]
+        if sin:
+            partes.append("\n".join(sin))
+    return "\n".join(partes)
+
+
+DIFF_COMPLETO_MAX = 60_000
+
+
+def diff_completo(clon: str, maximo: int = DIFF_COMPLETO_MAX, base: str = "HEAD") -> str:
+    """El diff REAL para el revisor (spec seccion 6.2 y ruling 15.1: 'el juez
+    ve el diff real'): `git diff <base>` mas el contenido de cada archivo sin
+    seguimiento (cabecera `?? ruta` y sus lineas con `+`), recortado a
+    `maximo` caracteres con una marca. `base` como en `diff_stat` (el
+    trabajo acumulado de la rama del goal, commits incluidos). `diff_stat`
+    sigue siendo lo que va al ledger y al prompt del martillo.
+    `--no-ext-diff` porque el escudo de `env_git_blindado` pone
+    `diff.external=""` y con eso git 2.55 intenta correr un comando vacio
+    para la salida en parche (`external diff died`, rc 128); `--stat` no
+    pasa por ahi."""
+    partes: list[str] = []
+    rc, out, _ = git_local(["diff", "--no-ext-diff", base], cwd=clon)
+    if rc == 0 and out.strip():
+        partes.append(out.rstrip("\n"))
+    rc, out, _ = git_local(["status", "--porcelain", "--untracked-files=all"], cwd=clon)
+    if rc == 0:
+        for l in out.splitlines():
+            if not l.startswith("??"):
+                continue
+            ruta = l[3:].strip()
+            try:
+                contenido = (pathlib.Path(clon) / ruta).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            partes.append(f"?? {ruta}\n" + "\n".join("+" + x for x in contenido.splitlines()))
+    texto = "\n".join(partes)
+    if len(texto) > maximo:
+        texto = texto[:maximo] + f"\n[... diff recortado a {maximo} caracteres]"
+    return texto
+
+
+def traer_rama(proyecto: str, clon: str, rama: str) -> tuple[int, str, str]:
+    """Trae la rama del clon al repo de origen SIN mergear (`git fetch
+    <clon> rama:rama`, ruta local, sin red): el merge es de Pedro
+    (compuerta `merge`, pregunta)."""
+    return git_local(["fetch", "--quiet", clon, f"{rama}:{rama}"], cwd=proyecto)
 
 
 def _json(stdout: str, fallback: Any) -> Any:

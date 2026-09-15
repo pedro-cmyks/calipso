@@ -72,7 +72,6 @@
                          padding: 2px 7px; color: var(--text); background: var(--bg); }
   #goalBar .goal-progress { color: var(--good); }
   #goalBar .spacer { flex: 1; }
-  #goalBar .goal-actions { display: inline-flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
   .toolbtn { background: transparent; border: 1px solid var(--border); color: var(--text);
              border-radius: 6px; height: 26px; padding: 0 9px; font-size: 12px;
              cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
@@ -187,8 +186,6 @@
                 border: 1px solid var(--border); color: var(--muted); font-size: 11.5px; }
   .msg.detail summary { cursor: pointer; color: var(--accent); }
   .msg.detail pre { margin: 8px 0 0; white-space: pre-wrap; color: var(--text); }
-  .criterion-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-  .criterion-actions button { height: auto; min-height: 26px; max-width: 100%; white-space: normal; text-align: left; }
   #composer { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); }
   #attach { width: 34px; border: 1px solid var(--border); background: transparent;
             color: var(--text); border-radius: 8px; cursor: pointer; font-size: 18px; }
@@ -358,21 +355,13 @@
     <span class="status" id="status">listo</span>
   </header>
   <div id="goalBar">
-    <span>Meta</span>
+    <span>Goal</span>
     <strong id="goalTitle">-</strong>
     <span class="goal-state" id="goalState">active</span>
-    <span class="goal-progress" id="goalProgress">0/0 criterios</span>
+    <span class="goal-progress" id="goalProgress">0/0 golpes</span>
     <span id="goalNext"></span>
     <span class="spacer"></span>
-    <span class="goal-actions">
-      <button class="toolbtn primary" id="goalAdvance" title="Preparar siguiente accion">Avanzar</button>
-      <button class="toolbtn" id="goalVerify" title="Correr verificacion segura">Verificar</button>
-      <button class="toolbtn" id="goalEvidence" title="Registrar evidencia">Evidencia</button>
-      <button class="toolbtn" id="goalBlock" title="Marcar bloqueo">Bloquear</button>
-      <button class="toolbtn" id="goalComplete" title="Marcar completa">Completar</button>
-      <button class="toolbtn" id="goalCancel" title="Cancelar meta">Cancelar</button>
-    </span>
-    <button class="toolbtn" id="goalOpen" title="Abrir detalle de meta">Detalle</button>
+    <button class="toolbtn" id="goalOpen" title="Abrir detalle del goal">Detalle</button>
   </div>
   <main>
     <nav id="sidebar">
@@ -1991,6 +1980,9 @@ function processKey(m) {
   return m.job_id || `${m.label || "proceso"}:${m.client || ""}:${m.model || ""}`;
 }
 function renderGoal(goal) {
+  // la barra de SOLO LECTURA (spec goals 2026-09-13, ruling 15.3): titulo,
+  // estado, consumo contra el tope y lo que espera; nada se transiciona
+  // desde aca (dale/no/parar/segui van por el chat o por /fabrica)
   currentGoal = goal || null;
   const bar = document.getElementById("goalBar");
   if (!bar) return;
@@ -1998,170 +1990,49 @@ function renderGoal(goal) {
     bar.classList.remove("active");
     return;
   }
-  const criteria = goal.criteria || [];
-  const done = criteria.filter(c => c.done).length;
-  const next = (goal.subtasks || []).find(t => t.status !== "done");
-  document.getElementById("goalTitle").textContent = goal.title || goal.objective || "Meta activa";
+  const c = goal.consumo || {};
+  const t = goal.tope || {};
+  document.getElementById("goalTitle").textContent = goal.title || goal.objective || "Goal activo";
   document.getElementById("goalState").textContent = goal.status || "active";
-  document.getElementById("goalProgress").textContent = `${done}/${criteria.length} criterios`;
-  document.getElementById("goalNext").textContent = next ? `siguiente: ${next.text || ""}` : "";
+  document.getElementById("goalProgress").textContent =
+    `${c.golpes || 0}/${t.golpes ?? "?"} golpes, ${c.minutos || 0}/${t.minutos ?? "?"} min, ${c.unidades || 0}/${t.unidades ?? "?"} unidades`;
+  const e = goal.espera || {};
+  document.getElementById("goalNext").textContent =
+    goal.status === "waiting" ? `esperando a Pedro: ${e.motivo || ""}${e.pregunta ? " - " + e.pregunta : ""}` : "";
   bar.classList.add("active");
 }
 function showGoal(goal) {
   if (!goal) return;
-  const criteria = (goal.criteria || []).map(c => `${c.done ? "[x]" : "[ ]"} ${c.text || ""}`);
-  const subtasks = (goal.subtasks || []).map(t => `${t.status || "pending"} - ${t.text || ""}`);
-  const evidence = (goal.evidence || []).slice(-10).map(e => `${e.ts || ""} - ${e.kind || "nota"} - ${e.text || ""}`);
-  const detail = addDetail(
+  const c = goal.consumo || {};
+  const t = goal.tope || {};
+  addDetail(
     `goal-detail:${goal.id}`,
-    `meta ${goal.status || ""}: ${goal.title || goal.id}`,
+    `goal ${goal.status || ""}: ${goal.title || goal.id}`,
     [
       `id: ${goal.id}`,
       `objetivo: ${goal.objective || ""}`,
+      `criterio: ${JSON.stringify(goal.criterio || {})}`,
+      `consumo: ${c.golpes || 0}/${t.golpes ?? "?"} golpes, ${c.minutos || 0}/${t.minutos ?? "?"} min, ${c.unidades || 0}/${t.unidades ?? "?"} unidades`,
+      `manos: ${goal.manos || "?"} - repo: ${goal.repo || "sin repo"}`,
+      `plan: ${(goal.plan || []).join(" -> ") || "-"}`,
+      `espera: ${goal.status === "waiting" ? JSON.stringify(goal.espera || {}) : "-"}`,
       "",
-      "criterios:",
-      ...(criteria.length ? criteria : ["sin criterios"]),
-      "",
-      "subtareas:",
-      ...(subtasks.length ? subtasks : ["sin subtareas"]),
-      "",
-      "evidencia:",
-      ...(evidence.length ? evidence : ["sin evidencia todavia"])
+      "para actuar: /goal dale | /goal no | /goal parar | /goal segui <nota> | /goal estado, o la pestana Goals de /fabrica"
     ].join("\n")
   );
-  const actions = document.createElement("div");
-  actions.className = "criterion-actions";
-  for (const c of (goal.criteria || [])) {
-    const btn = document.createElement("button");
-    btn.className = "toolbtn";
-    btn.textContent = `${c.done ? "Desmarcar" : "Cumplir"}: ${c.text || c.id}`;
-    btn.onclick = () => goalToggleCriterion(c.id, !c.done);
-    actions.appendChild(btn);
-  }
-  detail.appendChild(actions);
-}
-async function refreshGoalFromResponse(r) {
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({ detail: "No pude actualizar la meta." }));
-    addMsg("meta", "! " + (err.detail || "No pude actualizar la meta."));
-    return null;
-  }
-  const data = await r.json();
-  const goal = data.goal || data.active || null;
-  if (data.active === null) {
-    renderGoal(null);
-  } else {
-    renderGoal(goal);
-  }
-  currentGoal = data.active === null ? null : goal;
-  return goal;
-}
-async function goalPatch(body) {
-  if (!currentGoal) return null;
-  const r = await fetch(`/api/goals/${encodeURIComponent(currentGoal.id)}`, {
-    method: "PUT", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  return refreshGoalFromResponse(r);
-}
-async function goalAddEvidence() {
-  if (!currentGoal) return;
-  const text = prompt("Evidencia para la meta:");
-  if (!text) return;
-  const r = await fetch(`/api/goals/${encodeURIComponent(currentGoal.id)}/evidence`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ kind: "manual", text }),
-  });
-  const goal = await refreshGoalFromResponse(r);
-  await loadGoal();
-  if (goal) addMsg("meta", "evidencia registrada en la meta");
-}
-async function goalAdvance() {
-  if (!currentGoal) return;
-  const r = await fetch(`/api/goals/${encodeURIComponent(currentGoal.id)}/advance`, {
-    method: "POST",
-  });
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({ detail: "No pude avanzar la meta." }));
-    addMsg("meta", "! " + (err.detail || "No pude avanzar la meta."));
-    return;
-  }
-  const data = await r.json();
-  renderGoal(data.goal || currentGoal);
-  if (data.job) {
-    workItem(data.job.id, data.job.title || "Siguiente accion", `${data.job.status || ""} - ${data.job.updated_at || ""}`).onclick = () => showJob(data.job.id);
-    await showJob(data.job.id);
-  }
-  await loadJobs();
-  addMsg("meta", "siguiente accion preparada y guardada como artifact");
-}
-async function goalVerify() {
-  const r = await fetch("/api/verify/run", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ goal_id: currentGoal?.id || null }),
-  });
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({ detail: "No pude correr la verificacion." }));
-    addMsg("meta", "! " + (err.detail || "No pude correr la verificacion."));
-    return;
-  }
-  const data = await r.json();
-  if (data.goal) renderGoal(data.goal);
-  if (data.job) {
-    workItem(data.job.id, data.job.title || "Verificacion fuerte", `${data.job.status || ""} - ${data.job.updated_at || ""}`).onclick = () => showJob(data.job.id);
-    await showJob(data.job.id);
-  }
-  await loadJobs();
-  addMsg("meta", `verificacion fuerte ${data.report?.status || data.job?.status || ""}`);
-}
-async function goalBlock() {
-  if (!currentGoal) return;
-  const blocker = prompt("Que bloquea esta meta?");
-  if (!blocker) return;
-  const goal = await goalPatch({ status: "blocked", blocker });
-  await loadGoal();
-  if (goal) addMsg("meta", "meta marcada como bloqueada");
-}
-async function goalComplete() {
-  if (!currentGoal) return;
-  const ok = confirm("Marcar esta meta como completa? Usa esto solo si los criterios tienen evidencia.");
-  if (!ok) return;
-  const goal = await goalPatch({ status: "complete" });
-  if (goal) addMsg("meta", "meta marcada como completa");
-  await loadGoal();
-}
-async function goalCancel() {
-  if (!currentGoal) return;
-  const ok = confirm("Cancelar esta meta activa?");
-  if (!ok) return;
-  await goalPatch({ status: "cancelled" });
-  renderGoal(null);
-  addMsg("meta", "meta cancelada");
-}
-async function goalToggleCriterion(criterionId, done) {
-  if (!currentGoal) return;
-  const evidence = done ? prompt("Evidencia para cumplir este criterio:") : null;
-  if (done && !evidence) return;
-  const r = await fetch(`/api/goals/${encodeURIComponent(currentGoal.id)}/criteria/${encodeURIComponent(criterionId)}`, {
-    method: "PUT", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ done, evidence }),
-  });
-  const goal = await refreshGoalFromResponse(r);
-  if (goal) showGoal(goal);
 }
 async function loadGoal() {
-  const r = await fetch("/api/goals?limit=8");
-  if (!r.ok) return;
-  const data = await r.json();
-  renderGoal(data.active || null);
+  // sondeo (spec goals 2026-09-13, seccion 10): no hay push al ws fuera de un turno
+  try {
+    const r = await fetch("/api/goals?limit=1");
+    if (!r.ok) return;
+    const data = await r.json();
+    renderGoal(data.activo || data.active || null);
+  } catch (_) {}
 }
-document.getElementById("goalOpen").onclick = () => showGoal(currentGoal);
-document.getElementById("goalAdvance").onclick = goalAdvance;
-document.getElementById("goalVerify").onclick = goalVerify;
-document.getElementById("goalEvidence").onclick = goalAddEvidence;
-document.getElementById("goalBlock").onclick = goalBlock;
-document.getElementById("goalComplete").onclick = goalComplete;
-document.getElementById("goalCancel").onclick = goalCancel;
+const goalOpenBtn = document.getElementById("goalOpen");
+if (goalOpenBtn) goalOpenBtn.onclick = () => showGoal(currentGoal);
+setInterval(loadGoal, 60_000);
 function setSideView(id) {
   document.querySelectorAll(".side-view").forEach(v => v.classList.toggle("active", v.id === id));
   document.querySelectorAll(".side-tab").forEach(b => b.classList.toggle("active", b.dataset.side === id));
@@ -2343,23 +2214,11 @@ function connect() {
     } else if (m.type === "web") {
       renderWeb(m);
     } else if (m.type === "goal") {
-      stopThinking();
+      // al conectar el ws llega el activo CON consumo (server.py: ws.accept
+      // manda _goal_con_consumo, la misma vista que /api/goals: cierre
+      // 2026-09-14); el resto es sondeo (loadGoal cada 60 s); ya no hay
+      // cierre automatico (ruling 15.3)
       renderGoal(m.goal || null);
-      if (m.action === "active" && m.goal) {
-        addMsg("meta", `meta activa: ${m.goal.title || m.goal.objective || m.goal.id}`);
-      } else if (m.action === "auto_closed") {
-        renderGoal(null);
-        const title = m.title || m.goal_id || "meta";
-        const el = document.createElement("div");
-        el.className = "msg proposal-card";
-        el.style.borderColor = "var(--accent2)";
-        el.innerHTML = `<div class="proposal-header" style="background:transparent">
-          <span style="color:var(--accent2);font-size:13px">&#x2705; Meta completada: <strong>${title}</strong></span>
-          <span style="color:var(--muted);font-size:11px">todos los criterios ✓</span>
-        </div>`;
-        messages.appendChild(el);
-        messages.scrollTop = messages.scrollHeight;
-      }
     } else if (m.type === "process") {
       const key = processKey(m);
       let el = processEls.get(key);

@@ -76,14 +76,23 @@ function bloqueCrudo(accion) {
  *  por que no esta en vez de dibujar un boton que miente. El cuarto esta
  *  siempre: negar para siempre lo irreversible es el lado conservador, asi
  *  que no tiene la restriccion que tiene su gemelo. */
-function botonesDeRespuesta(s) {
+function botonesDeRespuesta(s, nota = "") {
   const id = escapar(s.id);
   const siSiempre = s.siempre_pregunta
     ? `<span class="nota">esta accion pregunta siempre: no admite ` +
       `permiso permanente</span>`
     : `<button data-accion="responder" data-id="${id}" ` +
       `data-respuesta="si_siempre">si, no preguntes mas</button>`;
-  return `<div class="botones">` +
+  // una solicitud de un goal (dale, cerrar, pregunta, raiz_nueva, retomar)
+  // admite una nota: POST responder la guarda y el runner la aplica como
+  // nota de Pedro (la pregunta abierta del martillo se contesta con texto,
+  // no solo con si/no). Mismo `data-nota-de` que la pestana Goals: app.js
+  // repone lo escrito al repintar con goals.notasEscritas.
+  const campoNota = (s.accion || {}).familia === "goal"
+    ? `<label>nota<input data-nota-de="${id}" type="text" ` +
+      `placeholder="que cambio o que falta (opcional)"` +
+      (nota ? ` value="${escapar(nota)}"` : "") + `></label>` : "";
+  return `<div class="botones">` + campoNota +
     `<button data-accion="responder" data-id="${id}" ` +
     `data-respuesta="si">si, una vez</button>` +
     siSiempre +
@@ -100,7 +109,7 @@ function intentosDeRodeo(s) {
     `${n === 1 ? "vez" : "veces"}</div>`;
 }
 
-function tarjetaSolicitud(s, etiquetaEstado) {
+function tarjetaSolicitud(s, etiquetaEstado, notas = {}) {
   const accion = s.accion || {};
   return `<div class="solicitud ${escapar(s.estado || "")}">` +
     `<div class="etiqueta">${escapar(etiquetaEstado)}</div>` +
@@ -111,7 +120,7 @@ function tarjetaSolicitud(s, etiquetaEstado) {
     `</span></div>` +
     `<div class="fila"><span>pedido</span><span>${escapar(s.ts || "")}</span>` +
     `</div>` +
-    intentosDeRodeo(s) + bloqueCrudo(accion) + botonesDeRespuesta(s) +
+    intentosDeRodeo(s) + bloqueCrudo(accion) + botonesDeRespuesta(s, (notas || {})[s.id] || "") +
     `</div>`;
 }
 
@@ -122,11 +131,11 @@ function tarjetaAprobada(s) {
     `</div>`;
 }
 
-function seccionEsperando(pendientes, estacionadas) {
+function seccionEsperando(pendientes, estacionadas, notas = {}) {
   const todas = [
-    ...pendientes.map(s => tarjetaSolicitud(s, "esperando tu respuesta")),
+    ...pendientes.map(s => tarjetaSolicitud(s, "esperando tu respuesta", notas)),
     ...estacionadas.map(s => tarjetaSolicitud(
-      s, "una rutina quedo parada esperando esta respuesta")),
+      s, "una rutina quedo parada esperando esta respuesta", notas)),
   ];
   if (!todas.length) {
     return `<div class="vacio">Nada esperando tu respuesta.</div>`;
@@ -187,7 +196,9 @@ export function contadorPendientes(datos) {
  * `{activo: true, pendientes, estacionadas, aprobadas, concedidos, techos,
  * error}`. `mensaje`: el aviso pasajero de la ultima accion, o null.
  */
-export function textoDePermisos(datos, mensaje = null) {
+/** `notas`: lo que Pedro tenia escrito en el campo nota de cada solicitud
+ *  (por id) antes del repintado; se repone en el value. */
+export function textoDePermisos(datos, mensaje = null, notas = {}) {
   const listo = mensaje
     ? `<div class="listo">${escapar(mensaje)}</div>` : "";
   if (!datos || !datos.activo) {
@@ -207,7 +218,7 @@ export function textoDePermisos(datos, mensaje = null) {
     : "";
   return listo + error +
     `<div class="subtitulo">esperando tu respuesta</div>` +
-    seccionEsperando(pendientes, estacionadas) +
+    seccionEsperando(pendientes, estacionadas, notas) +
     bloqueAprobadas +
     seccionConcedidos(datos.concedidos || []) +
     seccionTecho(datos.techos || {});

@@ -52,7 +52,7 @@ from calipso.economia.candado import ErrorCandado, candado
 from calipso.permisos.acciones import calipso_home
 from calipso.privacidad import detector
 
-ORIGENES = ("turno", "gesto", "rutina", "jefe", "arranque", "ui")
+ORIGENES = ("turno", "gesto", "rutina", "jefe", "arranque", "ui", "goal")
 RUTAS = ("local", "subscription", "api", "orchestrator")
 CREDENCIALES = ("maquina", "sesion")
 

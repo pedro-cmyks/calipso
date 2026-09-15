@@ -75,6 +75,29 @@ def main() -> int:
     check("parse /mia conserva el resto", "respondele a ana" in d8["clean"])
     check("sin /mia -> mia False", cap.parse_directives("hola")["mia"] is False)
 
+    # /goal (spec goals 2026-09-13, seccion 4): el resto CRUDO, con las rutas
+    # absolutas que :244 borra de `clean`, y `meta:` como alias
+    d9 = cap.parse_directives("/goal crea saludo.py hasta: pytest en verde en: /tmp/repo")
+    check("parse /goal -> goal con el resto crudo",
+          d9["goal"] == "crea saludo.py hasta: pytest en verde en: /tmp/repo")
+    check("parse /goal limpia el slash de clean", "/goal" not in d9["clean"])
+    check("sin /goal -> goal None", cap.parse_directives("hola")["goal"] is None)
+    check("parse /goal solo -> goal vacio", cap.parse_directives("/goal")["goal"] == "")
+    d10 = cap.parse_directives("meta: dejame listo el iPhone")
+    check("parse meta: -> goal", d10["goal"] == "dejame listo el iPhone")
+    d11 = cap.parse_directives("/goal /claude crea saludo.py")
+    check("parse /goal saca los slash del texto", d11["goal"] == "crea saludo.py")
+    check("parse /goal /claude fuerza la ruta", d11["force_route"] == "subscription"
+          and d11["force_model"] == "claude")
+    check("un /goal en el medio no es goal",
+          cap.parse_directives("hola /goal x")["goal"] is None)
+    # cierre 2026-09-14 (rev:server): del texto del goal se sacan SOLO los
+    # slash que el bucle reconoce; una ruta absoluta de un solo segmento
+    # (`en: /srv`, `raiz: /opt`) se conserva
+    d12 = cap.parse_directives("/goal ordena esto raiz: /srv en: /opt")
+    check("parse /goal conserva /srv y /opt", d12["goal"] == "ordena esto raiz: /srv en: /opt")
+    d13 = cap.parse_directives("/goal /claude /think ordena esto en: /tmp")
+    check("parse /goal saca solo los slash conocidos", d13["goal"] == "ordena esto en: /tmp")
     # discovery
     reg = dict(cap.REGISTRY)
     key = cap.discover("api", "gpt-5.5", tier="frontier", registry=reg)
@@ -86,6 +109,23 @@ def main() -> int:
         return 1
     print("\nOK: ruteo a nivel de modelo + intensidad + descubrimiento")
     return 0
+
+
+# --- pytest (la suite completa corre este archivo; main() es el camino historico) ---
+
+def test_el_texto_del_goal_conserva_las_rutas_de_un_segmento():
+    """rev:server menor: `_RE_SLASH_SUELTO` sacaba TODO token `^/[a-zA-Z?]+$`
+    del texto del goal: `en: /srv` o `raiz: /opt` desaparecian en silencio y
+    el goal nacia sin repo o sin raiz. Solo se sacan los slash que el bucle
+    reconoce."""
+    assert cap.parse_directives("/goal ordena esto raiz: /srv en: /opt")["goal"] == "ordena esto raiz: /srv en: /opt"
+    assert cap.parse_directives("/goal /claude /think ordena esto en: /tmp")["goal"] == "ordena esto en: /tmp"
+    d = cap.parse_directives("/goal /codex crea x en: /var")
+    assert d["goal"] == "crea x en: /var" and d["force_model"] == "codex"
+    for slash in cap.SLASH_CONOCIDOS:
+        assert cap.parse_directives(f"/goal {slash} x")["goal"] == "x", slash
+    assert cap.parse_directives("/goal /HELP x")["goal"] == "x"        # sin distinguir mayusculas
+    assert cap.parse_directives("/goal /Srv x")["goal"] == "/Srv x"
 
 
 if __name__ == "__main__":

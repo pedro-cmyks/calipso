@@ -45,6 +45,13 @@ import tempfile
 
 _HOME_SUITE = pathlib.Path(tempfile.mkdtemp(prefix="calipso_suite_home_"))
 os.environ["CALIPSO_HOME"] = str(_HOME_SUITE)
+# El clon y la carpeta de trabajo de cada goal viven FUERA de ~/.calipso
+# (goals.raiz_trabajo: ~/.local/share/calipso/goals por defecto, porque
+# ~/.calipso es DENY_READ del sandbox y PROTEGIDA del hook). Misma red de
+# seguridad: un temporal junto al home, para que ningun test siembre
+# carpetas en el ~/.local/share real de Pedro.
+_TRABAJO_SUITE = pathlib.Path(tempfile.mkdtemp(prefix="calipso_suite_trabajo_"))
+os.environ["CALIPSO_GOALS_TRABAJO"] = str(_TRABAJO_SUITE)
 # La memoria embebe por Ollama (spec 2026-09-12, ruling 8.10): en la suite
 # NADIE llama a Ollama. Con esta variable `memory.Memory()` construye
 # `memoria_embed.EmbedFalsa` (hash determinista, 1024 dims, sin red), y tiene

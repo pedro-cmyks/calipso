@@ -37,6 +37,12 @@ EXCEPCIONES: dict[str, str] = {
     # --- modelos: la aduana no conoce a los modelos (invariante 7) ---
     "calipso/server.py:_run_subscription_text": "modelo: CLI de suscripcion, lo mide la telemetria y la economia",
     "calipso/server.py:_run_subscription_text_live": "modelo: CLI de suscripcion en vivo, idem",
+    "calipso/goals_manos.py:_correr_cabeza": "modelo: la cabeza sin herramientas del goal (codex exec -s read-only; la de claude va por `lanzar`): CLI de suscripcion. La propuesta es el golpe 0 en golpes.jsonl (cuenta_para_tope False, con cabeza/modelo/ok/duracion_s/unidades/cobro) y una fila de telemetria (goal/propuesta); su cruce de la aduana (origen goal, `golpe 0`) y su cobro los hace server._proponer_goal con _aduana_del_goal y el Pagador (cierre 2026-09-14), y el revisor se mide como un golpe mas del ledger",
+    "calipso/goals_manos.py:lanzar": "modelo: el golpe del goal (claude -p / codex exec con herramientas dentro del sandbox); CLI de suscripcion; el runner declara el cruce alrededor (goals_runner: aduana.declarar al lanzar y cruzar al terminar, origen goal)",
+    "calipso/goals_manos.py:_parar_unidad": "local: systemctl --user stop del scope del golpe (el apagado y el timeout)",
+    "calipso/goals_manos.py:unidad_activa": "local: systemctl --user is-active del scope de un golpe cortado (la reconciliacion del arranque anota si el huerfano existia antes de pararlo)",
+    "calipso/goals_manos.py:sondear_hook": "local: el hook del goal con stdin sintetico (gh pr create -> exit 2) antes del primer golpe; no sale de la maquina",
+    "calipso/goals_manos.py:lanzar_confinado": "local: el comando del criterio medible del goal bajo bwrap (espejo del sandbox del golpe: sin red, home de solo lectura, DENY_READ tapado); no sale de la maquina (`--unshare-net`)",
     "calipso/plugins.py:install": "modelo: `claude -p` para instalar un plugin; CLI agente",
     "dispatch.py:run_subscription": "modelo: el CLI suelto de dispatch.py no mide",
     "dispatch.py:_http_post_json": "modelo: LiteLLM/Ollama por config; base_url no loopback se DECLARA al cargar la config",
@@ -56,6 +62,7 @@ EXCEPCIONES: dict[str, str] = {
     # --- git local ---
     "calipso/catastro.py:_git": "git local: rev-parse/log/status sobre el catastro",
     "calipso/server.py:_git": "git local: /api/git/* sobre ROOT",
+    "calipso/github.py:git_local": "git local: el clon del goal (clone de una ruta, checkout -b, diff --stat, fetch de una ruta local; spec goals 2026-09-13, ruling 15.4). Sin remoto: nunca sale de la maquina",
     "calipso/tools/commands.py:run": "subprocesos de la allowlist: git local y tests; `test_memory` habla con Ollama en loopback desde OTRO proceso (test_memory.py construye Memory() -> POST /api/embed) y llama reflect -> `claude -p`, fuera de la aduana: limite conocido, como los CLIs agentes",
     # --- muertos en Linux ---
     "calipso/server.py:api_connector_action": "muerto en Linux: Popen con CREATE_NEW_CONSOLE (solo Windows); cuando se arregle cruza como gesto",

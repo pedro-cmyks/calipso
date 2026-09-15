@@ -22,6 +22,7 @@ import copy
 import json
 import os
 import pathlib
+import re
 
 CALIPSO_HOME = pathlib.Path(os.environ.get(
     "CALIPSO_HOME", os.path.expanduser("~/.calipso")))
@@ -196,12 +197,33 @@ _ULTRA_WORDS = ("ultrathink", "ultra think", "piensa profundo", "maximo esfuerzo
                 "/ultrathink", "/ultra")
 
 
+_RE_GOAL = re.compile(r"^\s*(?:/goal\b|meta\s*:)\s*(.*)$", re.IGNORECASE | re.DOTALL)
+# Los slash que el bucle de parse_directives reconoce: SOLO estos se sacan del
+# texto del goal (cierre 2026-09-14, rev:server): sacar cualquier `/palabra`
+# borraba en silencio una ruta absoluta de un solo segmento (`en: /srv`,
+# `raiz: /opt`) y el goal nacia sin repo o sin raiz.
+SLASH_CONOCIDOS = ("/help", "/?", "/web", "/plan", "/team", "/equipo", "/fast", "/think",
+                   "/ultrathink", "/ultra", "/local", "/claude", "/codex", "/api", "/nube",
+                   "/redacta", "/otra", "/mia", "/model", "/goal")
+
+
 def parse_directives(message: str) -> dict:
     """Extrae slash-commands y palabras de intensidad. Devuelve overrides + msg limpio."""
     out = {"clean": message, "effort": None, "force_model": None,
            "force_route": None, "help": False, "force_web": False,
            "force_team": False, "nube": False, "redacta": False, "otra": False,
-           "mia": False}
+           "mia": False, "goal": None}
+    # /goal <texto> y su alias `meta: <texto>` (spec goals 2026-09-13,
+    # seccion 4): se capturan del mensaje CRUDO y antes del bucle, porque
+    # el `keep` de abajo borra todo token con `/` -- incluidas las rutas
+    # absolutas de `en:` (Trampa 21). Solo como PREFIJO: un `/goal` en el
+    # medio de una frase no es un goal. Los slash sueltos del resto
+    # (`/goal /claude crea ...`) los sigue viendo el bucle (fuerzan la ruta
+    # de la cabeza) y se sacan del texto del goal.
+    m = _RE_GOAL.match(message or "")
+    if m:
+        out["goal"] = " ".join(t for t in m.group(1).split()
+                               if t.lower() not in SLASH_CONOCIDOS).strip()
     low = message.lower()
     tokens = message.split()
     keep = []
@@ -233,6 +255,8 @@ def parse_directives(message: str) -> dict:
                 out["force_model"] = tl[1:]  # marcador de cliente
         elif tl == "/model":
             keep.append(t)  # el valor lo toma el siguiente token abajo
+        elif tl == "/goal":
+            pass            # ya capturado arriba sobre el mensaje crudo
         else:
             keep.append(t)
     # /model <valor>
