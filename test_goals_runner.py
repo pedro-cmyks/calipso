@@ -1486,6 +1486,18 @@ def test_el_contrato_de_codex_no_manda_commitear():
     assert gr.contrato_del_goal(base) == claude                    # sin manos = claude
 
 
+def test_el_contrato_dice_como_usar_bash_para_no_gastar_golpes_en_denegaciones():
+    """Primer goal real en produccion (2026-09-15): 5 de 14 Bash denegados por
+    el hook (`&&`, `|`, `2>&1`, `python -c`, un mensaje de commit con salto
+    de linea) y una pregunta por pypi.org. El contrato lo dice de entrada:
+    un comando simple por Bash, sin codigo inline, commit de una linea o
+    con -F, y que pip/npm en el cwd llegan a los indices."""
+    base = {"id": "goal_x", "title": "t", "objective": "o", "criterio": {}, "tope": {}, "compuertas": {}}
+    c = gr.contrato_del_goal(base)
+    assert "un comando simple por llamada" in c and "&&" in c and "python -c" in c
+    assert "-F" in c and "pypi" in c
+
+
 def test_linea_de_deshacer_es_pura():
     d = gr.linea_de_deshacer
     assert d("instalar_en_goal", {"argv": ["pip", "install", "a", "b"]}) == "pip uninstall -y a b"
@@ -1564,7 +1576,7 @@ def test_manos_con_cli_arma_el_golpe_entero(home, tmp_path, cli_falso_stream, mo
     a = ll["argv"]
     assert a[a.index("--session-id") + 1] == g["session_id"] and "--resume" not in a
     assert a[a.index("--tools") + 1].endswith("WebSearch,WebFetch")          # el goal declaro dominios
-    assert ll["settings"]["sandbox"]["network"]["allowedDomains"] == ["api.anthropic.com", "pypi.org"]
+    assert ll["settings"]["sandbox"]["network"]["allowedDomains"] == ["api.anthropic.com", *gm.DOMINIOS_INDICES]
     assert ll["settings"]["hooks"]["PreToolUse"][0]["hooks"][0]["args"][0] == str(gm.HOOK_PATH)
     assert ll["env"]["CALIPSO_GOAL_COMPUERTAS"] == str(goals.dir_goal(g["id"]) / "compuertas.json")
     assert ll["env"]["CALIPSO_HOME"] == str(goals.dir_goal(g["id"]) / "home_vacio")

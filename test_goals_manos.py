@@ -198,7 +198,12 @@ def test_settings_del_goal_enciende_el_sandbox_y_el_hook(goal_en_disco):
               "~/.codex", "~/.calipso"):
         assert os.path.expanduser(d) in sb["filesystem"]["denyRead"]
     assert all(os.path.isabs(p) for p in sb["filesystem"]["denyRead"])
-    assert sb["network"]["allowedDomains"] == ["api.anthropic.com", "pypi.org"]
+    # instalar_en_goal es directo (la tabla de Pedro): sin los indices de paquetes
+    # en la red del sandbox era una compuerta imposible (primer goal real en
+    # produccion: `pip install pytest` en el venv del clon -> pypi.org denegado)
+    # (el goal declara pypi.org como dominio: no se repite)
+    assert sb["network"]["allowedDomains"] == ["api.anthropic.com", *gm.DOMINIOS_INDICES]
+    assert "files.pythonhosted.org" in gm.DOMINIOS_INDICES and "registry.npmjs.org" in gm.DOMINIOS_INDICES
     assert sb["network"]["deniedDomains"] == ["github.com", "api.github.com"]
     assert sb["network"]["strictAllowlist"] is True
     h = s["hooks"]["PreToolUse"]
@@ -1141,3 +1146,20 @@ def test_revisar_sin_la_otra_familia_es_none(goal_en_disco):
     assert gm.revisar(manos_del_golpe="claude", exes={"claude": "/x"}, goal_texto="x",
                       criterio={}, resumen_ledger="", diff="", salidas="",
                       cwd=str(goal_en_disco["clon"])) is None
+
+
+def test_los_indices_de_paquetes_entran_solo_con_instalar_en_goal_directo(goal_en_disco):
+    """La red del sandbox lleva pypi/npm SOLO porque `instalar_en_goal` es
+    directo en la tabla del goal; si Pedro la baja a pregunta o nunca, los
+    indices salen de la lista y el martillo tiene que preguntar (web)."""
+    c = json.loads(goal_en_disco["compuertas"].read_text(encoding="utf-8"))   # el JSON que lee el hook
+    c["niveles"] = {**c.get("niveles", {}), "instalar_en_goal": "pregunta"}
+    c["dominios"] = []
+    s = gm.settings_del_goal(c, hook_python="/venv/bin/python", hook_path="/repo/calipso/goals_hook.py",
+                             compuertas_path="/x/compuertas.json")
+    assert s["sandbox"]["network"]["allowedDomains"] == ["api.anthropic.com"]
+    c["niveles"]["instalar_en_goal"] = "directo"
+    s = gm.settings_del_goal(c, hook_python="/venv/bin/python", hook_path="/repo/calipso/goals_hook.py",
+                             compuertas_path="/x/compuertas.json")
+    assert s["sandbox"]["network"]["allowedDomains"] == ["api.anthropic.com", *gm.DOMINIOS_INDICES]
+    assert "github.com" not in s["sandbox"]["network"]["allowedDomains"]

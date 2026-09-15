@@ -144,7 +144,10 @@ def contrato_del_goal(goal: dict) -> str:
         "",
         "Reglas: sos las manos de Calipso dentro de un sandbox; trabaja solo en el cwd y las raices; "
         "no hagas push, PR, correo, gastos ni toques datos de Pedro (el hook lo deniega y el sandbox lo "
-        "impide); instala solo dentro del cwd (venv, npm sin -g); si necesitas una compuerta en "
+        "impide); instala solo dentro del cwd (venv, npm sin -g: pip y npm llegan a pypi/npm); "
+        "Bash: un comando simple por llamada -- el hook deniega && || ; | 2>&1 $( ) heredocs, "
+        "python -c / node -e y los mensajes de commit con salto de linea (usa una linea o -F archivo); "
+        "si necesitas una compuerta en "
         "pregunta (instalar en el home o el sistema, borrar fuera, una raiz nueva), termina el golpe con "
         "estado \"preguntar\", la pregunta y la compuerta (familia y forma exacta; una raiz nueva es la "
         "carpeta concreta que necesitas, nunca el home ni /); " + cierre
