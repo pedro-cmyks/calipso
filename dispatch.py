@@ -139,8 +139,8 @@ WEB = re.compile(
 # Lo que pide MANOS sobre la maquina o un archivo nuevo (instalar, descargar,
 # guardar, generar un pdf/imagen, abrir, borrar): el modelo chico no puede
 # hacerlo y ademas inventa que lo hizo (probe 2026-09-15, el PDF); sube la
-# complejidad a 3 (max_complexity del 7b es 2) para que conteste alguien
-# capaz de decir la verdad o de proponer un /goal.
+# complejidad a 4 (el 7b llega a 3) para que conteste alguien capaz de decir
+# la verdad o de proponer un /goal, y sin equipo (server._should_orchestrate).
 MANOS = re.compile(
     r"\b(instal[aá]|desinstal[aá]|descarg[aá]|guard[aá]|d[eé]jalo|dejalo|d[eé]jame el|"
     r"gener[aá] (un[a]? )?(pdf|imagen|archivo|foto|documento)|hazme (un[a]? )?(pdf|imagen|archivo|documento)|"
@@ -204,7 +204,10 @@ def extract_features(prompt: str) -> dict:
         feat["type"] = "reasoning"
     feat["complexity"] = _estimate_complexity(p, feat["type"])
     if feat["needs_hands"]:
-        feat["complexity"] = max(feat["complexity"], 3)
+        # 4: fuera del 7b (max_complexity 3) y de haiku; sonnet/opus/codex
+        # contestan (o proponen un /goal). Con 3 el 7b seguia entrando y,
+        # como sintesis de un equipo, cargo 5 GB con el swap lleno (OOM)
+        feat["complexity"] = max(feat["complexity"], 4)
     return feat
 
 
