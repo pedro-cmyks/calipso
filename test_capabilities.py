@@ -159,7 +159,26 @@ def test_un_pedido_que_necesita_manos_no_va_al_modelo_chico():
               "instala torch en el venv", "guarda este texto en un archivo notas.txt",
               "abre blender y exporta el modelo", "borra los archivos temporales de la carpeta build"):
         f = dispatch.extract_features(t)
-        assert f["needs_hands"] is True and f["complexity"] >= 3, (t, f)
+        # complejidad 4: el 7b (max 3) y haiku (max 3) quedan fuera; sonnet/opus/codex contestan
+        assert f["needs_hands"] is True and f["complexity"] >= 4, (t, f)
     for t in ("hola, como estas?", "cuanto es 17 por 23", "explica por que el cielo es azul"):
         f = dispatch.extract_features(t)
         assert f["needs_hands"] is False, (t, f)
+
+
+def test_un_pedido_con_manos_no_arma_equipo():
+    """Probe de capacidades (2026-09-15, segunda vuelta): "hazme un PDF ... y
+    dejalo en Descargas" armo un equipo (haiku + sonnet + la sintesis con el
+    7b LOCAL, que cargo 5 GB con el swap lleno y el kernel mato a Ollama). Un
+    pedido con manos quiere UNA respuesta honesta de un modelo capaz (o un
+    /goal), no un equipo: `_should_orchestrate` lo deja fuera."""
+    import dispatch
+    from calipso import server as srv
+    f = dispatch.extract_features("hazme un PDF de una pagina con un resumen de que es Calipso y dejalo en mi carpeta de Descargas")
+    assert f["needs_hands"] and f["complexity"] >= 4
+    assert srv._should_orchestrate(f, {"force_team": False}, "hazme un PDF de una pagina con un resumen de que es Calipso y dejalo en mi carpeta de Descargas") is False
+    # /plan explicito sigue armando equipo
+    assert srv._should_orchestrate(f, {"force_team": True}, "x") is True
+    # un pedido largo y complejo sin manos sigue yendo al equipo
+    g = dict(dispatch.extract_features("analiza este problema con muchas partes y luego proponeme tres alternativas"), complexity=4)
+    assert srv._should_orchestrate(g, {"force_team": False}, "analiza este problema con muchas partes y luego proponeme tres alternativas") is True

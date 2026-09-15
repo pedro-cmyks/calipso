@@ -3094,6 +3094,12 @@ def _should_orchestrate(features: dict, directives: dict, message: str) -> bool:
         return False
     if directives.get("force_team"):
         return True  # /plan o /team: planning mode explícito
+    if features.get("needs_hands"):
+        # un pedido con manos (instalar, generar un pdf, guardar en el disco)
+        # quiere UNA respuesta honesta de un modelo capaz, o un /goal: un
+        # equipo no puede actuar y su sintesis cayo en el 7b local con el
+        # swap lleno (probe de capacidades 2026-09-15: OOM de Ollama)
+        return False
     if directives.get("effort") == capabilities.EFFORT["fast"]:
         return False
     low = message.lower()
