@@ -28,3 +28,31 @@ siguiente (la ronda 4 quedo 16/0):
 Lo que dejan los probes en el home real: `~/.calipso/goals/<id>/` (siete goals, todos finales),
 `~/.local/share/calipso/goals/<id>/repo` (los clones), y los chats `probe ...` en la PWA (se pueden
 borrar). Nada fuera de eso; el server real se reinicio tres veces con main.
+
+## Probe de capacidades del chat (2026-09-15, pedido de Pedro: "un turno que pruebe todas las capacidades")
+
+`probes_capacidades.py` (un turno por capacidad en el chat real, mas un goal que instala torch) y los logs
+`capacidades-vuelta1..6.log`. Cada vuelta encontro algo real que se arreglo, mergeo y desplego antes de la
+siguiente:
+
+- Vuelta 1 (14 turnos + goal): `/fast` sonnet, `/think` y `/ultrathink` opus, `/claude` honesto, `/codex`
+  dice "soy Codex" (la identidad de Calipso no llega por esa ruta: pendiente), `/local` 7b honesto sin
+  reloj, `/web` 3.14.7 con fuente, imagen honesta (no hay modelo; ofrece SVG), `/plan` >7 min (equipo),
+  `/nube` bien. Bugs: `hoy` disparaba la busqueda web; el PDF fue al 7b que invento que lo hacia; python.org
+  llegaba en gzip; el goal de torch murio como `hook inactivo` por un `sleep 60` que bloqueo el propio CLI,
+  y `hasta: python verifica.py` caia en revisor (ruling 35).
+- Vuelta 2: la RAM en 0. Dos causas: cada turno de chat por suscripcion lanzaba `claude -p` con TODOS los
+  MCP/plugins/hooks/herramientas de Pedro (playwright = node + Chromium), y con el equipo de agentes en
+  paralelo el swap se lleno y el kernel mato a Ollama; y `/tmp` (tmpfs = RAM) tenia 4,6 GB de homes de
+  tests y experimentos filtrados (932 + 187 + 199 + 167 directorios). Arreglado: `--strict-mcp-config
+  --setting-sources "" --tools ""` en el chat; la suite y los experimentos borran su home al salir.
+- Vuelta 3: el PDF fue a sonnet pero narro "despues genero el PDF. Empecemos." (sin manos); el goal quedo
+  `waiting compuerta` sin solicitud porque `web` es directo y el motor la concedio sin preguntar (ruling 37).
+- Vuelta 4: el PDF contesta honesto y propone `/goal generar PDF ... hasta: archivo .pdf en ~/Descargas`;
+  el goal de torch cerro de punta a punta (2 golpes + revisor codex, 2,6 min, 4 unidades, ~0,66 USD,
+  `torch 2.14.0+cpu` en el venv del clon, `verifica.py` imprime el producto de dos tensores, rama traida).
+  Ultimo hallazgo: el hook denegaba `.venv/bin/python` por ser symlink al sistema (ruling 38).
+
+Pendientes que dejo el probe: la identidad de Calipso por la ruta Codex; la fecha y hora en el contexto del
+modelo local; `/plan` tarda mas de 7 minutos; la regla de carga no mira el swap lleno (zram) al decidir si
+carga el 7b; un goal para "instalar una app" pasa por `instalar_sistema` (pregunta) y no se probo.
