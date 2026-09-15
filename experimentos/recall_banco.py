@@ -63,7 +63,11 @@ import tempfile
 import time
 
 RAIZ = pathlib.Path(__file__).resolve().parent.parent
-os.environ.setdefault("CALIPSO_HOME", tempfile.mkdtemp(prefix="recall-banco-home-"))
+if "CALIPSO_HOME" not in os.environ:
+    # un home propio y se borra al salir (/tmp es RAM); si vino de afuera NO se toca
+    import atexit, shutil
+    os.environ["CALIPSO_HOME"] = tempfile.mkdtemp(prefix="recall-banco-home-")
+    atexit.register(shutil.rmtree, os.environ["CALIPSO_HOME"], True)
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 os.environ.pop("CALIPSO_EMBED_FALSA", None)

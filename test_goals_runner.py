@@ -697,6 +697,32 @@ def test_preguntar_deja_waiting_y_la_respuesta_retoma(home, tmp_path):
     assert "Pedro respondio: si" in f.llamadas["manos"][1]["prompt"]
 
 
+def test_un_host_nuevo_es_una_compuerta_web_y_el_si_abre_la_red(home, tmp_path):
+    """Probe de capacidades (2026-09-15, el goal de torch): el martillo pidio
+    el host `download-r2.pytorch.org` (la CDN a la que redirige el indice)
+    con compuerta web, pero `web` es directo y el runner lo estaciono como
+    `pregunta` a secas: el si de Pedro no sumo el host (ruling 36 solo
+    aplicaba a motivo `compuerta`) y el sandbox lo siguio denegando, dos
+    veces. Un host que el goal no declaro es una compuerta `web` con forma
+    {host}: el motor decide por la tabla, y aprobada suma el host."""
+    f = Falsas(resultados=[resultado("preguntar", "la CDN", pregunta="habilitas download-r2.pytorch.org?",
+                                     compuerta={"familia": "web", "forma": {"host": "download-r2.pytorch.org"}}),
+                           resultado("sigo")])
+    g = goal_activo(home, tmp_path, dominios=["download.pytorch.org"])
+    r = f.runner(g["id"])
+    it = r.iteracion()
+    assert it["estado"] == goals.WAITING and it["operacion"] == "compuerta"
+    e = goals.load(None, g["id"])["espera"]
+    assert e["motivo"] == "compuerta" and e["compuerta"]["familia"] == "web"
+    assert f.llamadas["preguntar"][0]["forma"] == {"familia": "web", "forma": {"host": "download-r2.pytorch.org"}}
+    f.solicitudes["sol_1"] = "aprobada"
+    assert r.iteracion()["estado"] == goals.ACTIVE
+    g2 = goals.load(None, g["id"])
+    assert g2["dominios"] == ["download.pytorch.org", "download-r2.pytorch.org"]
+    c = json.loads((goals.dir_goal(g["id"]) / "compuertas.json").read_text(encoding="utf-8"))
+    assert c["dominios"] == ["download.pytorch.org", "download-r2.pytorch.org"]
+
+
 def test_compuerta_pregunta_preautoriza_en_el_goal(home, tmp_path):
     f = Falsas(resultados=[resultado("preguntar", "instalar", pregunta="instalo typescript global?",
                                      compuerta={"familia": "instalar_home",

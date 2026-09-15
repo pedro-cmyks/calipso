@@ -40,6 +40,7 @@ import tempfile
 import time
 
 os.environ["CALIPSO_HOME"] = tempfile.mkdtemp(prefix="juez-exp-")
+import atexit, shutil; atexit.register(shutil.rmtree, os.environ["CALIPSO_HOME"], True)   # /tmp es RAM
 # experimentos/ no esta en sys.path cuando se corre como script suelto.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import dispatch  # noqa: E402

@@ -34,6 +34,7 @@ import tempfile
 import time
 
 os.environ["CALIPSO_HOME"] = tempfile.mkdtemp(prefix="abismo-exp-")
+import atexit, shutil; atexit.register(shutil.rmtree, os.environ["CALIPSO_HOME"], True)   # /tmp es RAM
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import dispatch  # noqa: E402
 from calipso.abismo import contrato, marca  # noqa: E402

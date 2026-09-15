@@ -1116,7 +1116,12 @@ class Runner:
                 return {"accion": "golpe", "estado": goals.ACTIVE, "n": n, "raiz_invalida": raiz}
             operacion, forma, detalle = "raiz_nueva", {"raiz": raiz}, \
                 {"motivo": "raiz_nueva", "pregunta": pregunta, "raiz": raiz}
-        elif familia and niveles.get(familia) == "pregunta":
+        elif familia and niveles.get(familia) == "pregunta" or (
+                familia == "web" and (compuerta.get("forma") or {}).get("host")):
+            # un host que el goal no declaro es una compuerta `web` con forma
+            # {host} aunque web sea directo: el motor decide por la tabla y
+            # el si suma el host a los dominios (ruling 36); como `pregunta`
+            # a secas el si no abria la red (probe 2026-09-15, la CDN de torch)
             operacion, forma = "compuerta", {"familia": familia, "forma": compuerta.get("forma") or {}}
             detalle = {"motivo": "compuerta", "pregunta": pregunta, "compuerta": compuerta}
         else:
