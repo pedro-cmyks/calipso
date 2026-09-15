@@ -486,3 +486,6 @@ ledger `.superpowers/sdd/2026-09-13-goals/progress.md`; aca queda lo que hay que
     del goal pero del mismo probe: `hoy` solo ya no dispara la busqueda web, un pedido que necesita manos
     (instalar, descargar, generar un pdf/imagen, guardar en el disco) sube a complejidad 3 (el 7b inventaba
     que hacia el PDF), y `web._get` descomprime gzip/deflate (python.org llegaba como binario).
+36. **Un `si` a una compuerta `web` suma el host a los dominios del goal** (y a `compuertas.json`, de donde
+    salen los settings del golpe siguiente): antes quedaba solo como preautorizada del hook y el sandbox
+    seguia denegando el host (la CDN `download-r2.pytorch.org` a la que redirige `download.pytorch.org`).
