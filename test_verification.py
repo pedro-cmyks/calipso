@@ -2,12 +2,16 @@
 """
 test_verification.py - recomendador y runner de verificacion fuerte.
 """
+import atexit
 import importlib
 import os
+import shutil
 import tempfile
 
 _HOME = tempfile.mkdtemp(prefix="calipso_verification_home_")
 os.environ["CALIPSO_HOME"] = _HOME
+# 18 MB de chroma por corrida en /tmp (tmpfs = RAM): 187 corridas eran 2,8 GB
+atexit.register(shutil.rmtree, _HOME, True)
 os.environ["CALIPSO_ROOT"] = os.getcwd()
 
 from fastapi.testclient import TestClient  # noqa: E402

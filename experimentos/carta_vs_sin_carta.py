@@ -27,6 +27,7 @@ import tempfile
 
 # ANTES de importar calipso: el paquete escribe en el home real.
 os.environ["CALIPSO_HOME"] = tempfile.mkdtemp(prefix="carta-exp-")
+import atexit, shutil; atexit.register(shutil.rmtree, os.environ["CALIPSO_HOME"], True)   # /tmp es RAM
 
 # Este script vive en experimentos/, no en la raiz: sin esto, `import
 # dispatch` y `import calipso` fallan con ModuleNotFoundError apenas se corre

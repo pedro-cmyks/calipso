@@ -39,12 +39,18 @@ se cerro fueron los caminos del paquete que ignoraban la variable aun estando
 puesta: `server._TOKEN_FILE` y `server._TOTP_SECRET_FILE` (ver
 `_home_calipso`), que ademas ESCRIBEN la primera vez.
 """
+import atexit
 import os
 import pathlib
+import shutil
 import tempfile
 
 _HOME_SUITE = pathlib.Path(tempfile.mkdtemp(prefix="calipso_suite_home_"))
 os.environ["CALIPSO_HOME"] = str(_HOME_SUITE)
+# /tmp es tmpfs (RAM + zram): cada corrida de la suite dejaba su home con
+# el chroma adentro y 900 corridas sumaron gigas de RAM ocupada (2026-09-15:
+# swap lleno, Ollama muerto por OOM). Se borra al salir del proceso.
+atexit.register(shutil.rmtree, str(_HOME_SUITE), True)
 # El clon y la carpeta de trabajo de cada goal viven FUERA de ~/.calipso
 # (goals.raiz_trabajo: ~/.local/share/calipso/goals por defecto, porque
 # ~/.calipso es DENY_READ del sandbox y PROTEGIDA del hook). Misma red de
