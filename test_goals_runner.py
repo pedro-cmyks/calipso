@@ -723,6 +723,38 @@ def test_un_host_nuevo_es_una_compuerta_web_y_el_si_abre_la_red(home, tmp_path):
     assert c["dominios"] == ["download.pytorch.org", "download-r2.pytorch.org"]
 
 
+def test_una_compuerta_que_el_motor_concede_directo_se_aplica_y_el_goal_sigue(home, tmp_path):
+    """Tercera vuelta del probe (2026-09-15): `web` es directo en la tabla de
+    Pedro, asi que el motor concedio el host sin solicitud (`evaluar` ->
+    permitido, solicitud None) y el runner igual paso el goal a `waiting
+    compuerta` sin nada que sondear: clavado hasta un /goal segui. Si el
+    motor concede, se aplica en el acto (el host entra a los dominios, la
+    forma queda preautorizada) y el goal sigue active con una nota al
+    martillo."""
+    f = Falsas(resultados=[resultado("preguntar", "la CDN", pregunta="habilitas download-r2.pytorch.org?",
+                                     compuerta={"familia": "web", "forma": {"host": "download-r2.pytorch.org"}}),
+                           resultado("sigo")])
+    f.preguntar = lambda goal, operacion, forma_extra=None, titulo=None, n=0: {"id": None, "estado": "permitido",
+                                                                                 "nivel": "directo"}
+    g = goal_activo(home, tmp_path, dominios=["download.pytorch.org"])
+    r = f.runner(g["id"])
+    it = r.iteracion()
+    assert it["estado"] == goals.ACTIVE and it["accion"] == "compuerta_directa", it
+    g2 = goals.load(None, g["id"])
+    assert g2["status"] == goals.ACTIVE and g2["dominios"] == ["download.pytorch.org", "download-r2.pytorch.org"]
+    assert g2["compuertas"]["preautorizadas"] == [{"familia": "web", "forma": {"host": "download-r2.pytorch.org"}}]
+    c = json.loads((goals.dir_goal(g["id"]) / "compuertas.json").read_text(encoding="utf-8"))
+    assert c["dominios"] == ["download.pytorch.org", "download-r2.pytorch.org"]
+    r.iteracion()
+    assert "download-r2.pytorch.org" in f.llamadas["manos"][1]["prompt"]     # la nota al martillo
+    # y sin motor (None) sigue siendo un waiting sin solicitud, como antes
+    goals.transicionar(g["id"], goals.CANCELLED, "fin del test")          # un goal activo por vez
+    f2 = Falsas(resultados=[resultado("preguntar", "x", pregunta="p", compuerta={"familia": "instalar_home", "forma": {"argv": ["pip"]}})])
+    f2.preguntar = lambda *a, **k: None
+    g3 = goal_activo(home, tmp_path)
+    assert f2.runner(g3["id"]).iteracion()["estado"] == goals.WAITING
+
+
 def test_compuerta_pregunta_preautoriza_en_el_goal(home, tmp_path):
     f = Falsas(resultados=[resultado("preguntar", "instalar", pregunta="instalo typescript global?",
                                      compuerta={"familia": "instalar_home",

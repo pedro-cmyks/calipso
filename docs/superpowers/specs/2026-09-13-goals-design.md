@@ -489,3 +489,10 @@ ledger `.superpowers/sdd/2026-09-13-goals/progress.md`; aca queda lo que hay que
 36. **Un `si` a una compuerta `web` suma el host a los dominios del goal** (y a `compuertas.json`, de donde
     salen los settings del golpe siguiente): antes quedaba solo como preautorizada del hook y el sandbox
     seguia denegando el host (la CDN `download-r2.pytorch.org` a la que redirige `download.pytorch.org`).
+37. **Una compuerta que el motor concede directo se aplica en el acto** (tercera vuelta del probe,
+    2026-09-15): `web` es directo en la tabla de Pedro, asi que el motor concedio el host nuevo sin
+    solicitud y el runner igual dejaba el goal en `waiting compuerta` sin nada que sondear (clavado hasta
+    un `/goal segui`). Si `evaluar` lo permite sin solicitud: preautorizada, el host a los dominios, el goal
+    sigue `active` y una nota le dice al martillo que ya puede. Y el turno de CHAT por suscripcion declara
+    en su system que no tiene herramientas y propone `/goal` como camino (sonnet contestaba "despues genero
+    el PDF. Empecemos." y terminaba).

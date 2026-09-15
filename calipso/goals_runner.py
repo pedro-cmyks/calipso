@@ -1128,6 +1128,18 @@ class Runner:
             operacion, forma, detalle = "pregunta", {"n": n, "pregunta": pregunta}, \
                 {"motivo": "pregunta", "pregunta": pregunta}
         s = self.preguntar(goal, operacion, forma, f"goal {goal['title']}: {pregunta}"[:200], n) or {}
+        if operacion == "compuerta" and s.get("id") is None and s.get("nivel") == "directo":
+            # el motor la concede sin preguntar (la tabla de Pedro): se
+            # aplica en el acto -- preautorizada y, si es un host, a los
+            # dominios -- y el goal sigue; una nota le dice al martillo que
+            # ya puede (probe 2026-09-15: quedaba waiting sin solicitud)
+            goals.transicionar(self.goal_id, goals.WAITING, "compuerta", motivo_detalle=detalle)
+            goals.aplicar_respuesta(self.goal_id, "aprobada")
+            g = goals.transicionar(self.goal_id, goals.ACTIVE, f"compuerta {familia} concedida (directo)")
+            forma_txt = json.dumps(compuerta.get("forma") or {}, ensure_ascii=False)
+            goals.nota_de_pedro(self.goal_id, f"compuerta {familia} {forma_txt} concedida por la tabla: "
+                                              "segui, ya podes")
+            return {"accion": "compuerta_directa", "estado": g["status"], "n": n, "operacion": operacion}
         detalle["solicitud"] = s.get("id")
         g = goals.transicionar(self.goal_id, goals.WAITING, detalle["motivo"], motivo_detalle=detalle)
         return {"accion": "pregunta", "estado": g["status"], "n": n, "operacion": operacion}

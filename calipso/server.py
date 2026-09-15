@@ -3837,7 +3837,16 @@ def _subscription_invocation(client: str, system: str, user_msg: str,
         raise RuntimeError(f"{client} no esta instalado")
     system_prompt = (
         f"{system}\n\n"
-        "Responde como Calipso. No digas que eres el backend usado."
+        "Responde como Calipso. No digas que eres el backend usado.\n"
+        # el turno de chat es SOLO texto (las manos son los goals): sin esto
+        # el modelo narra lo que "va a hacer" y termina (probe 2026-09-15:
+        # 'despues genero el PDF. Empecemos.')
+        "En este turno no tenes herramientas: no podes leer ni escribir archivos, correr comandos, "
+        "instalar, descargar, generar imagenes ni PDFs, ni navegar (lo que sabes de la web ya viene "
+        "en el contexto). Si Pedro pide una accion sobre su maquina o un archivo nuevo, decilo sin "
+        "fingir y proponele el camino real: `/goal <lo que pidio> hasta: <criterio medible>` (un goal "
+        "corre solo con manos en un clon del repo y pide permiso en el inbox). Podes redactar el "
+        "contenido aca mismo si sirve."
     )
     # Historial de conversación para que el CLI tenga contexto multi-turno
     history = _history_messages(chat_id)
@@ -4198,6 +4207,11 @@ def _estacionar_para_pedro(goal: dict, operacion: str, forma_extra: dict | None 
         print(f"[calipso] goal {goal['id']}: no se pudo estacionar {operacion}: {exc}",
               file=sys.stderr)
         return None
+    if res.solicitud is None and res.permitido:
+        # el motor lo concede directo (la tabla de Pedro: p. ej. un host
+        # nuevo con `web` directo): no hay solicitud que sondear; el runner
+        # lo aplica en el acto y sigue (probe 2026-09-15: quedaba waiting)
+        return {"id": None, "estado": res.estado, "nivel": res.nivel or "directo"}
     return res.solicitud
 
 
