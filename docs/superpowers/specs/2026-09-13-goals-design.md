@@ -456,3 +456,12 @@ ledger `.superpowers/sdd/2026-09-13-goals/progress.md`; aca queda lo que hay que
     `cp`/`sed -i`/`mv`/`tee`. Abiertos: el timeout del hook (No confirmado 2), pip/npm bajo el sandbox (4),
     `hook_response.outcome` (8), `/tmp` escribible por defecto (3, parcial), por que el sandbox devolvio EROFS
     con el home en `allowWrite` (corrida 4).
+32. **Los indices de paquetes entran a la red del sandbox** (`pypi.org`, `files.pythonhosted.org`,
+    `registry.npmjs.org`, `registry.yarnpkg.com`) SOLO si `instalar_en_goal` es directo en los niveles del
+    goal (la tabla de Pedro): sin ellos la compuerta era imposible y el primer goal real en produccion
+    (2026-09-15, `hasta: pytest en verde`) gasto un golpe de 2 min preguntando por pypi.org (el sistema no
+    tiene pytest; el server real no expone su venv al martillo, y no debe). Subir a un indice exige
+    credenciales (denyRead) y `twine`/`npm publish` no estan en el allow-list; `curl -T` a pypi es NUNCA.
+    El contrato del martillo dice ademas como usar Bash para no gastar turnos en denegaciones: un comando
+    simple por llamada (el hook deniega `&&`, `|`, `2>&1`, heredocs, `python -c`) y commit de una linea o
+    con `-F` (en ese golpe 5 de 14 Bash fueron denegados por eso).

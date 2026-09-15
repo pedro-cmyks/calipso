@@ -281,6 +281,14 @@ DENY_READ = ["~/.ssh", "~/.gnupg", "~/.aws", "~/.config/gh", "~/.claude/.credent
              "~/.codex", "~/.calipso"]
 DOMINIO_API = "api.anthropic.com"
 DOMINIOS_NEGADOS = ["github.com", "api.github.com"]
+# Los indices de paquetes que `instalar_en_goal` (directo en la tabla de
+# Pedro: venv y npm dentro del clon) necesita para existir: sin ellos la
+# compuerta era imposible y el primer goal real en produccion (2026-09-15)
+# gasto un golpe entero preguntando por pypi.org. Entran a la red del
+# sandbox SOLO si `instalar_en_goal` es directo en los niveles del goal.
+# Subir algo a un indice exige credenciales (denyRead) y `twine`/`npm
+# publish` no estan en el allow-list del hook; `curl -T` a pypi es NUNCA.
+DOMINIOS_INDICES = ("pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "registry.yarnpkg.com")
 SIN_TAPAR = {"session_id", "request_id", "diff_stat", "id", "goal", "n", "ts", "ts_fin",
              "message_id", "tool_use_id"}
 PATRONES_CUOTA = ("usage limit", "rate limit", "hit your usage", "rate_limit", "quota",
@@ -399,6 +407,19 @@ def otra_familia(manos: str) -> str:
 # settings, argv, env
 # --------------------------------------------------------------------------
 
+def _dominios_permitidos(compuertas: dict) -> list[str]:
+    """api.anthropic.com, los indices de paquetes si instalar_en_goal es
+    directo, y los dominios del goal; sin repetidos y en ese orden."""
+    niveles = compuertas.get("niveles") or {}
+    out = [DOMINIO_API]
+    if niveles.get("instalar_en_goal", "directo") == "directo":
+        out += list(DOMINIOS_INDICES)
+    for d in compuertas.get("dominios") or []:
+        if str(d) not in out:
+            out.append(str(d))
+    return out
+
+
 def settings_del_goal(compuertas: dict, *, hook_python: str | None = None,
                       hook_path: str | None = None,
                       compuertas_path: str | None = None) -> dict:
@@ -437,7 +458,7 @@ def settings_del_goal(compuertas: dict, *, hook_python: str | None = None,
                 "denyRead": [os.path.expanduser(d) for d in DENY_READ],
             },
             "network": {
-                "allowedDomains": [DOMINIO_API] + [str(d) for d in compuertas.get("dominios") or []],
+                "allowedDomains": _dominios_permitidos(compuertas),
                 "deniedDomains": list(DOMINIOS_NEGADOS),
                 "strictAllowlist": True,
             },
