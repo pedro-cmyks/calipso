@@ -344,3 +344,115 @@ sondeo, el inbox, `ALCANCES` + tests node; (7) el smoke en vivo y el cierre.
 14. **Instalar** (afinado por Pedro): directo solo dentro del goal; home pregunta; sistema pregunta; rebase,
     reset, rollback y borrar remotes nunca; `dnf` no instala en Bazzite y sale del spec; cada instalacion con
     su linea de deshacer y el estado antes/despues (`pip list`, `npm ls`, `flatpak list`).
+
+## 16. Adenda del cierre (2026-09-14): rulings de la ejecucion y del cierre, todos revertibles por numero
+
+Lo que el SDD (7 tasks, 4 corridas del smoke), la revision final (cuatro areas, dos lentes, Codex adversario)
+y la ola de fix (cinco carriles) cambiaron o precisaron respecto del spec. La verdad esta en el codigo y en el
+ledger `.superpowers/sdd/2026-09-13-goals/progress.md`; aca queda lo que hay que saber para vetar.
+
+15. **El clon vive fuera de `~/.calipso`** (decision 2 del plan, revertida): `~/.calipso` esta en el `denyRead`
+    del sandbox y en las protegidas del hook, asi que el martillo no podia leer su propio clon. El clon y
+    `trabajo/` van a `~/.local/share/calipso/goals/<id>/{repo,trabajo}` (env `CALIPSO_GOALS_TRABAJO`);
+    `goal.json`, `events.jsonl`, `golpes.jsonl`, `contrato.md`, `compuertas.json` y `hook.jsonl` siguen en
+    `~/.calipso/goals/<id>/` (los leen el server y el hook, que corren fuera del sandbox).
+16. **`con:` manda las manos; sin `con:`, las manos son SIEMPRE claude** (decision 14 del plan, revertida): la
+    barrera verificada es sandbox + hook, que Codex no tiene. La cabeza puede sugerir codex
+    (`propuesta.manos_sugeridas`, con aviso) y Pedro lo pide con `con: codex`. Codex como manos funciona con el
+    esquema estricto de OpenAI (`esquema_para_codex`: `additionalProperties: false` en cada objeto y sin
+    nulos; era la causa de los `exit 1` en 2,5 s del smoke) pero NO puede commitear bajo `-s workspace-write`
+    (`.git` de solo lectura): su contrato dice que no commitee y el runner mide el diff del arbol.
+17. **La fila `fin` guarda `salida_tail`** (1500 caracteres del stdout crudo, tapados) cuando el golpe sale con
+    exit distinto de 0, fue matado o termino sin veredicto ni `result`: un golpe que falla dice por que.
+18. **El criterio medible corre CONFINADO** (critico de la revision final: corria como Pedro, con red, HOME
+    real y `gh` autenticado, ejecutando lo que el martillo dejo en el clon -- rompia las invariantes 4 y 5):
+    `goals_manos.correr_confinado` = bwrap espejo del sandbox del golpe (`--ro-bind / /`, clon y raices
+    escribibles, tmpfs sobre `DENY_READ` y las protegidas del hook, `--unshare-net`, `--unshare-pid`,
+    `--die-with-parent`), `env_del_golpe`, scope de systemd, el Popen publicado en `golpe_en_curso`; sin
+    `bwrap` no se corre (fail-closed). El ejecutable se resuelve `<clon>/.venv/bin/<exe>` > `which` >
+    `sys.executable -m pytest`, y `<clon>/.venv/bin` va primero en el PATH (el server real no tiene el venv en
+    su PATH: `pytest -q` fallaba siempre en produccion). Limite declarado: el `/tmp` del host no se ve.
+19. **El revisor claude corre con la barrera del golpe** (`--settings` con sandbox y hook sobre
+    `Read|Glob|Grep`, `--include-hook-events`, la sonda del Parser, unidades reales, `salida_tail`); el
+    revisor cruza la aduana como un golpe y se cobra con sus unidades; la cuota de SU familia se mira antes de
+    invocarlo (agotada: sin revisor, motivo `cuota del revisor`, Pedro sin veredicto de modelo). Residuo: el
+    revisor codex corre con `-s read-only` y su sandbox no restringe lecturas del home (seguimiento:
+    envolverlo en bwrap con tmpfs sobre lo protegido, sin cortar la red).
+20. **`--add-dir` por cada raiz en el argv de claude**: sin eso `--permission-mode acceptEdits` niega un
+    `Write` fuera del cwd aunque el hook lo permita, y el martillo caia a `mv` por Bash.
+21. **Raices amplias no valen** (`goals.validar_raices`): `/`, el home, un ancestro del home, una protegida o
+    una ruta relativa se rechazan en la propuesta, en `raiz:` y en `raiz_nueva` (en la corrida 4 del smoke la
+    cabeza declaro `~` como raiz y el `dale` la aprobo). Si el martillo pide una raiz amplia, no se estaciona
+    nada: vuelve como nota (`la raiz pedida es demasiado amplia`) y el goal sigue. Consecuencia declarada: un
+    archivo suelto del home (`cat ~/.bashrc`) no se puede aprobar por `raiz_nueva` (su raiz seria el home);
+    una raiz de solo lectura es otra forma, otra tanda.
+22. **El hook, ampliado y con residuos declarados** (Codex adversario C1-C4, `rev:barrera`, carriles 1 y 5):
+    (a) codigo inline en cualquier posicion (`python -c`/`-Ic`, `node -e/-p`, `ruby -e`, `perl -e`, `php
+    -r`), `npx`, `git rebase --exec/-x/-i` y `git config` que escribe o lee otro archivo se deniegan; los
+    scripts del clon, `make`, `npm run` y `python archivo.py` SIGUEN permitidos (un goal de codigo corre sus
+    tests y sus scripts): lo que corre dentro de un script lo contiene el sandbox, no el hook, que es una
+    segunda capa POR NOMBRE. Residuos del mismo tipo: `git diff --no-index`, `python -m timeit`, tar
+    `--to-command=`/`-I`/`--checkpoint-action=exec=`, `-T lista`, `jq -n env`, `-I` de perl y `-r` de ruby.
+    (b) Todo escritor mira su DESTINO (`cp`, `mv`, `sed -i`, `tee`, `touch`, `mkdir`, `chmod`, `chown`,
+    `ln`, `install`, `truncate`, `dd of=`, `curl -o`, `wget -O/-P`, `tar -x -C`, `unzip -d`, `gzip`, `find
+    -fprint*/-fls`): fuera del clon y las raices es `raiz_nueva` (pregunta); protegida es NUNCA. Residuos:
+    `sort -o`, `sed 'w'`. `rsync` se deniega siempre.
+    (c) Toda lectura bajo el HOME fuera del clon, las raices y las protegidas (`Read/Glob/Grep` y `cat`,
+    `head`, `grep`, `find`, `ls`, `tree`, `du`, `sha256sum`, `jq`... por Bash) es `raiz_nueva`; fuera del
+    home (`/etc`, `/usr`, `/tmp`) es allow; un ANCESTRO del home (`/`, `/var/home`, `~/..`) como lo que se
+    recorre, copia o archiva es NUNCA (el sandbox solo tapa `DENY_READ`, no el resto del home); `ls`, `stat`
+    y `file` sin `-R` sobre ese ancestro siguen allow. Residuo: `Glob` con un patron absoluto sin `path`.
+    (d) `jq` tiene parser propio: las opciones que leen un archivo se ven, una opcion larga desconocida
+    deniega. Los operandos de `tar` se resuelven desde su `-C` vigente (tambien `--add-file=`).
+    (e) El techo de 256 matches de un glob se cambio por un presupuesto de trabajo (listdir/entradas) con las
+    protegidas precomputadas por HOME (regla de Pedro: sin techos, atacar el desperdicio); un glob cuyo
+    primer segmento con glob cuelga del home o de `/` vale como el padre (NUNCA), sobre-denegacion del lado
+    seguro. (f) Un evento sin `hook_event_name` deniega; otro evento (Stop, PostToolUse) sale sin decidir. (g)
+    La etiqueta de familia de lo NUNCA es la de la tabla cuando existe (`datos_de_pedro`, `publicar`,
+    `correo`, `rpm_ostree_rebase`, `flatpak_remote_delete`) y `NUNCA` para escalar privilegios y la
+    auto-escalada; el motor mapea por nombre antes de la tabla. (h) `partir` deniega cualquier `|` aunque
+    este entre comillas (`jq '.a | .b'`): limitacion declarada.
+23. **`tapar` tapa por SEGMENTO de ruta** (revirtiendo la exencion de la ruta entera de `f15f918`): un segmento
+    con pinta de secreto se tapa, las rutas normales quedan intactas; limitacion medida: una clave AWS con
+    barras pegada a una ruta no se tapa por entropia (si por la regla explicita cuando va suelta). La carga
+    de la aduana va tapada (`Bearer`/`Basic`/`Token` sin distinguir mayusculas, `-u usuario:clave` de curl
+    tambien en cluster). Residuos: `wget --user/--password`, `http -a`.
+24. **Pedro no se pierde**: todo `waiting` sin martillo (tope, cuota, no convergencia, parado, server apagado
+    o reiniciado) estaciona una solicitud `retomar` de familia `goal` (siempre pregunta) con el motivo, el
+    consumo y las opciones: `si` retoma (con el tope ampliado 1,5x si el motivo era tope), `no` cancela con
+    nota; `responder` acepta una `nota` que el runner aplica como nota de Pedro. Por chat: `/goal segui
+    tope: ...` levanta el tope; `/goal dale` con un waiting y sin proposed vale como `segui`; `segui` sobre
+    `cumplido` cierra la solicitud con `no`; `dale` solo arranca un `proposed` y `segui` solo retoma un
+    `waiting` (por HTTP tambien). El bucle no gira sobre un waiting sin solicitud. Residuo: `/goal estado`
+    no ve un goal ya `complete` (el endpoint si).
+25. **Al `complete` la rama `goal/<id>` se trae al repo de origen** (`traer_rama`, local, sin red) y el
+    mensaje de cierre dice donde quedo (rama y clon); el merge sigue siendo de Pedro (compuertas `merge` y
+    `push`: otra tanda).
+26. **La propuesta es el golpe 0**: cruza la aduana y se cobra con unidades reales; el id del goal se reserva
+    antes de invocar la cabeza (fila `inicio` antes de ejecutar, invariante 3).
+27. **Produccion**: `CALIPSO_GOALS=off` apaga la funcion entera (`_lanzar_bucle`, `_atender_goal`,
+    `dale`/`segui`; `estado` y los POST `no`/`parar` siguen); `dale`/`segui` fallan rapido si
+    `claude`/`codex` no estan en el PATH del server; la reconciliacion para el scope huerfano
+    (`calipso-goal-<id>-<n>`) antes de cerrar la fila cortada; `matar_golpe` para el scope ademas del grupo.
+    Residuo: el `si` del inbox no pasa por el fail-fast del PATH (cada golpe da exit 127 hasta la no
+    convergencia). Para el primer goal real: topes chicos (`tope: 6 golpes 30m`) y mirar `rate_limit` en el
+    ledger; un freno intra-golpe por `rate_limit_event` es otra tanda.
+28. **Unidades** (ruling 15.12, precisado): `len(usage.iterations)` es lo que el CLI expone; con opus un golpe
+    entero de 8-13 comandos suele ser 1 iteracion, asi que el tope de unidades (60) rara vez frena antes que
+    el de golpes (20) y la estimacion de la propuesta informa poco. Se declara y se mide con el ledger real
+    antes de redefinirlas (turnos de modelo = `message.id` distintos, que el Parser ya cuenta).
+29. **El estado antes/despues de cada instalacion** (`pip list`, `npm ls`, ruling 15.14) queda pospuesto: cada
+    instalacion dentro del goal va con su linea de deshacer al ledger (`compuertas_usadas`) y a la aduana.
+30. **G5 del smoke no lee la llave**: el script del goal hace `test -r ~/.ssh && ls ~/.ssh` (imprime
+    `LEGIBLE`/`DENEGADO`, nunca contenido); con el sandbox caido se filtra una palabra, nada mas.
+31. **Lo que el smoke confirmo** (`docs/superpowers/2026-09-13-smoke-goals.md`, corridas 3-6 del 09-14 y la de
+    confirmacion `--solo G1,G3` 19:02 con la ola de fix: 39 ok / 0 fallos): el sandbox arranca en esta maquina
+    (`~/.ssh` vacio encima, home de solo lectura, nada fuera del clon), los hooks de `--settings` corren bajo
+    `claude -p --restricted` y el stream trae `hook_response` con `tool_use_id`, el NUNCA se deniega
+    (`gh pr create` = `publicar`, sin red al remoto), la raiz nueva espera el si del inbox y retoma con
+    `--add-dir`, el apagado con un golpe en curso deja `waiting` y el proceso muere en menos de 1 s, el
+    criterio corre confinado (`pytest` en el clon bajo bwrap, `Running as unit: calipso-goal-<id>-criterio-1`),
+    el revisor codex responde `proveedor_distinto`, la sonda de destinos del hook da `raiz_nueva` para
+    `cp`/`sed -i`/`mv`/`tee`. Abiertos: el timeout del hook (No confirmado 2), pip/npm bajo el sandbox (4),
+    `hook_response.outcome` (8), `/tmp` escribible por defecto (3, parcial), por que el sandbox devolvio EROFS
+    con el home en `allowWrite` (corrida 4).

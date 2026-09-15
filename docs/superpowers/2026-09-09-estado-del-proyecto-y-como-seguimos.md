@@ -380,3 +380,36 @@ fabrica viva.
   `sentence-transformers --index-url .../whl/cpu` de antes estaba roto: reemplazaba PyPI); la coleccion
   vieja `episodic` sigue intacta en cada home y main la abre tal cual. NO vale `CALIPSO_EMBED_MODEL` como
   vuelta atras: abriria otra coleccion vacia.
+
+- **Los goals (2026-09-13/14): la tarea con objetivo, criterio, tope y compuertas.** El norte de Pedro es que
+  Calipso haga lo que hace con Claude Code y mas (manos: Blender, servicios, iterar); esta tanda es el
+  subproyecto 1: `/goal <texto> [hasta: <criterio>] [tope: N golpes M min] [en: <repo>] [raiz: <dir>]
+  [con: claude|codex]` crea un goal `proposed` (la cabeza frontera lo propone con `--json-schema`: titulo,
+  criterio medible, tope, familias, plan), la propuesta aparece en el inbox como solicitud `dale`, y con el
+  `dale` corre solo en un CLON del repo (`~/.local/share/calipso/goals/<id>/repo`, rama `goal/<id>`) con
+  Claude Code como martillo (`claude -p --restricted` dentro del sandbox nativo bubblewrap: escribe solo en
+  el clon y las raices declaradas, no lee credenciales ni `~/.calipso`, red solo a api.anthropic.com y los
+  dominios del goal, github negado) y un hook `PreToolUse` fail-closed como segunda capa (allow-list de
+  comandos, lo NUNCA por nombre, destinos y lecturas fuera del alcance = pregunta). Golpe a golpe (una
+  sesion `claude -p` por golpe, `--resume`), ledger `golpes.jsonl` con la fila `inicio` ANTES de ejecutar,
+  unidades reales, diff, comandos, compuertas usadas; bajo `cargada` espera, con la cuota agotada espera
+  (nunca el 7b); juez = criterio medible confinado bajo bwrap y despues un revisor de OTRA familia (codex
+  para manos claude) y Pedro al final (`waiting cumplido` -> `/goal dale` = complete, y la rama se trae al
+  origen sin merge). Compuertas (decision de Pedro): sin preguntar = repo del goal, web, raices declaradas,
+  instalar solo dentro del goal; pregunta = merge, push, borrar fuera, raiz nueva, instalar home/sistema;
+  NUNCA = gastar, publicar, correo, borrar datos de Pedro, rpm-ostree rebase/reset/rollback, borrar remotes
+  flatpak. Todo waiting sin martillo (tope, cuota, no convergencia, parado, reinicio) deja una solicitud
+  `retomar` en el inbox. Pestana Goals en `/fabrica` (dale/no/parar/segui con nota) y `#goalBar` de la PWA
+  de solo lectura; el Goal Mode viejo (detect/auto_close/los seis botones) se retiro. Spec
+  `docs/superpowers/specs/2026-09-13-goals-design.md` (v2 con 14 rulings + adenda seccion 16 con los rulings
+  15-31 del cierre), plan de 7 tasks `docs/superpowers/plans/2026-09-13-goals.md`, rama `feat/goals` por SDD
+  en el worktree `.claude/worktrees/goals`, revision final por cuatro areas + dos lentes + Codex adversario,
+  ola de fix de cinco carriles (el critico: el criterio corria FUERA del sandbox como Pedro; el hook con
+  destinos, lecturas, codigo inline, jq, ancestros del home). Smoke con Claude Code REAL
+  (`experimentos/goals_smoke.py`, `docs/superpowers/2026-09-13-smoke-goals.md`): seis escenarios en verde y la
+  corrida de confirmacion 39/0. **Rollback en caliente:** `CALIPSO_GOALS=off` en el entorno del server (leido
+  por llamada) apaga la funcion entera sin tocar lo demas. **Para Pedro:** el primer goal real chico con la
+  pestana Goals abierta (`tope: 6 golpes 30m`), mirando `rate_limit` en el ledger; los residuos declarados
+  en la adenda (el revisor codex lee el home; los scripts del clon los contiene solo el sandbox; las
+  unidades son iteraciones del CLI); subproyecto 2 (las manos: MCP hacia Calipso, aduana por comando,
+  herramientas propias) y 3 (los ojos) y las rutinas -> goals (`reflect` primero) son las tandas siguientes.

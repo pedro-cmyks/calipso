@@ -280,6 +280,20 @@ raices amplias). No hubo ningun rastro de escritura fuera del clon, las raices y
 red a github, en ninguna corrida. El merge sigue tras la ola de fix y el smoke de confirmacion
 (`--solo G1,G3`).
 
+## Corrida de confirmacion (2026-09-14 19:02, con la ola de fix y el carril 5; `--solo G1,G3`)
+
+39 ok, 0 fallos, exit 0 (logs en `.superpowers/sdd/2026-09-13-goals/smoke-goals-conf-1902/`). G1: propuesta
+(opus, 1 unidad), golpe 1 de 30 s (8 comandos, 2 denials, `rate_5h` 0,16, 0,25 USD), el CRITERIO corrio
+CONFINADO (`pytest -q` en el clon bajo bwrap y el scope `calipso-goal-<id>-criterio-1`; `1 passed`), el
+revisor codex contesto `cumplido` (`proveedor_distinto`, 6 s), `waiting cumplido` -> `dale` -> `complete`,
+la rama `goal/<id>` se trajo al origen sin merge, 7 cruces de aduana con origen goal, 13 decisiones del hook
+(Bash 9, Read 2, Write 2), y la sonda de destinos del hook dio `raiz_nueva` (2) para `cp`, `sed -i`, `mv` y
+`tee` (en la corrida 6 era FALLO). G3: la cabeza declaro `Descargas` como raiz (se le saco para medir), el
+golpe 1 pidio la raiz (`waiting raiz_nueva` con solicitud en el inbox, nada escrito), el `si` del inbox lo
+retomo y el golpe 2 escribio `notas.txt` en la raiz con `Write` (compuerta `raices`, sin caer a `mv`: el
+`--add-dir` funciona), criterio `existe` y revisor codex `cumplido`. Cierre limpio: server apagado en 0,2 s,
+sin unidades, sin procesos, `gh-llamadas.log` vacio, Ollama vacio.
+
 ## Pendiente del controlador
 
 Lo que la ola de fix del cierre (2026-09-14, cuatro carriles; rulings en el ledger, seccion "Cierre") ya
@@ -314,8 +328,8 @@ Lo que queda (residuos DECLARADOS en la adenda, no bloquean el merge):
   el tope de unidades rara vez frena antes que el de golpes. Se declara y se mide con el ledger real.
 - Por que el sandbox devolvio EROFS con `/home/pedro` en `allowWrite` (G5, corrida 4): sin verificar; con
   raices amplias rechazadas ya no se puede repetir por ese camino.
-- El merge de `feat/goals` (tras la suite completa, node, y el smoke de confirmacion `--solo G1,G3`:
-  criterio confinado, revisor con barrera, `--add-dir`, la sonda de destinos en verde).
+- El merge de `feat/goals`: la suite completa (2854), node (463) y el smoke de confirmacion `--solo G1,G3`
+  (39/0) pasaron el 2026-09-14; lo hace el controlador.
 - Despliegue al server real: el primer goal real chico con Pedro mirando la pestana Goals (topes chicos,
   `CALIPSO_GOALS=off` como freno de emergencia; `dale`/`segui` fallan rapido si `claude`/`codex` no estan
   en el PATH del server).
