@@ -465,3 +465,10 @@ ledger `.superpowers/sdd/2026-09-13-goals/progress.md`; aca queda lo que hay que
     El contrato del martillo dice ademas como usar Bash para no gastar turnos en denegaciones: un comando
     simple por llamada (el hook deniega `&&`, `|`, `2>&1`, heredocs, `python -c`) y commit de una linea o
     con `-F` (en ese golpe 5 de 14 Bash fueron denegados por eso).
+33. **El revisor recibe el resultado del criterio** (segundo goal real, 2026-09-15): el criterio `pytest -q`
+    paso confinado (el runner resuelve el ejecutable contra `.venv/bin` del clon primero) y el revisor codex
+    dijo NO cumplido porque `pytest -q` a secas da command not found, y el martillo, ante esa `falta`, pidio
+    instalar pytest en el home. El prompt del revisor lleva `RESULTADO DEL CRITERIO` (ok/NO y la salida) y
+    su contrato dice que no lo rejuzgue: juzga el objetivo (completo y correcto), no la invocacion. El
+    contrato del martillo dice lo mismo (no instalar en el home para que el criterio "exista"). Y `git -C
+    <dir>` con un dir dentro del clon pasa por el hook (se denegaba y costaba un turno).

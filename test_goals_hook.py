@@ -242,6 +242,22 @@ def test_una_variable_en_la_ruta_se_deniega(goal_dir, cmd):
     assert registro(goal_dir)[-1]["decision"] == "deny"
 
 
+def test_git_con_C_dentro_del_clon_pasa(goal_dir):
+    """Segundo goal real (2026-09-15): `git -C <clon> ls-files` se denegaba
+    ('git con -C: sale del clon') aunque la ruta ERA el clon: un turno
+    perdido. -C con una ruta dentro del clon pasa; fuera sigue denegado."""
+    clon = goal_dir["clon"]
+    for cmd in (f"git -C {clon} ls-files", f"git -C {clon}/src status", "git -C . log --oneline -3",
+                f"git -C{clon} status"):
+        rc, err = correr(goal_dir, "Bash", {"command": cmd})
+        assert rc == 0, (cmd, err)
+    for cmd in ("git -C /otro status", f"git -C {clon}/.. status", "git --git-dir=/otro/.git status",
+                "git -C ~ status", "git -C"):
+        rc, err = correr(goal_dir, "Bash", {"command": cmd})
+        assert rc == 2, (cmd, err)
+
+
+
 @pytest.mark.parametrize("cmd", [
     "cat src/*.py", "cat ./src/*.py", "grep -rn hola ./src/*", "rm -rf build/*", "rm -f src/*.pyc",
     "head -n 5 src/a.p?", "cat src/[a].py", "cat src/*.md",       # sin match: el literal, en el clon

@@ -380,6 +380,11 @@ CONTRATO_REVISOR = (
     "Eres el REVISOR de un goal de Calipso: otro modelo hizo el trabajo y vos "
     "no lo hiciste. Solo lectura sobre el clon (podes leer archivos). Recibis "
     "el goal, el criterio, el resumen del ledger, el diff y las salidas. "
+    "Si viene RESULTADO DEL CRITERIO, el criterio medible ya lo corrio el "
+    "runner de Calipso en el clon (confinado, con el ejecutable resuelto "
+    "contra .venv/bin del repo primero): no lo rejuzgues ni exijas que el "
+    "comando exista fuera del venv; juzga el OBJETIVO (que el trabajo este "
+    "hecho de verdad, completo y correcto). "
     "Contesta SOLO el JSON del esquema: cumplido (true solo si el goal esta "
     "hecho de verdad, no si 'casi'), falta (la lista concreta de lo que "
     "falta, vacia si cumplido) y nota (una linea)."
@@ -1209,7 +1214,8 @@ def revisar(*, manos_del_golpe: str, exes: dict, goal_texto: str, criterio: dict
             resumen_ledger: str, diff: str, salidas: str, cwd: str, env: dict | None = None,
             timeout: float = TIMEOUT_REVISOR_S, al_lanzar: Callable | None = None,
             compuertas: dict | None = None, compuertas_path: str | None = None,
-            cancelar: threading.Event | None = None) -> dict | None:
+            cancelar: threading.Event | None = None,
+            criterio_resultado: dict | None = None) -> dict | None:
     """El revisor de OTRA familia en solo lectura sobre el clon (spec
     seccion 6.2): manos claude -> `codex exec -s read-only`; manos codex ->
     `claude -p --restricted --tools Read,Glob,Grep` CON la barrera del golpe
@@ -1234,7 +1240,15 @@ def revisar(*, manos_del_golpe: str, exes: dict, goal_texto: str, criterio: dict
     exe = (exes or {}).get(otra)
     if not exe:
         return None
-    prompt = (f"GOAL: {goal_texto}\nCRITERIO: {json.dumps(criterio or {}, ensure_ascii=False)}\n\n"
+    # el resultado del criterio medible (segundo goal real, 2026-09-15: el
+    # revisor codex dijo NO cumplido porque `pytest -q` a secas no existe,
+    # sin saber que el runner ya lo corrio confinado con .venv/bin primero)
+    cr = ""
+    if criterio_resultado:
+        cr = ("RESULTADO DEL CRITERIO (lo corrio el runner en el clon, confinado, ejecutable resuelto "
+              f"contra .venv/bin del repo primero): {'ok' if criterio_resultado.get('ok') else 'NO'} - "
+              f"{str(criterio_resultado.get('salida') or '')[:600]}\n")
+    prompt = (f"GOAL: {goal_texto}\nCRITERIO: {json.dumps(criterio or {}, ensure_ascii=False)}\n{cr}\n"
               f"LEDGER (resumen):\n{resumen_ledger}\n\nDIFF:\n{diff[:20000]}\n\nSALIDAS:\n{salidas[:8000]}\n")
     prompt, _ = tapar(prompt)
     settings, tools = None, ""

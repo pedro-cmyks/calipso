@@ -1007,6 +1007,26 @@ def test_revisar_con_codex_falso_cuando_las_manos_fueron_claude(cli_falso_stream
     assert ll["schema_codex"] and ll["salida_codex"]                 # --output-schema y -o, archivos
 
 
+def test_el_revisor_recibe_el_resultado_del_criterio_que_corrio_el_runner(cli_falso_stream, goal_en_disco):
+    """Segundo goal real en produccion (2026-09-15): el criterio `pytest -q`
+    paso confinado (el runner resuelve el ejecutable contra .venv/bin del
+    clon) y el revisor codex dijo NO cumplido porque `pytest -q` a secas da
+    command not found: no sabia que el runner ya lo habia corrido ni como.
+    Ahora el prompt lleva el resultado del criterio y el contrato del
+    revisor le dice que no lo rejuzgue."""
+    cli = cli_falso_stream
+    cli.guion([{"salida_codex": {"cumplido": True, "falta": [], "nota": "ok"}}])
+    r = gm.revisar(manos_del_golpe="claude", exes={"codex": cli.ruta_codex}, goal_texto="crea saludo.py",
+                   criterio={"tipo": "comando", "comando": "pytest -q"}, resumen_ledger="golpe 1",
+                   diff="+def hola()", salidas="", cwd=str(goal_en_disco["clon"]), timeout=30,
+                   criterio_resultado={"ok": True, "salida": "1 passed"})
+    assert r["cumplido"] is True
+    st = cli.llamadas()[0]["stdin"]
+    assert "RESULTADO DEL CRITERIO" in st and "ok" in st and "1 passed" in st
+    assert ".venv/bin" in st                      # como lo resolvio el runner
+    assert "no lo rejuzgues" in gm.CONTRATO_REVISOR or "no rejuzgues" in gm.CONTRATO_REVISOR
+
+
 def _revisar_claude(cli, goal_en_disco, **extra):
     c = goals.compuertas_de(goal_en_disco["goal"])
     return gm.revisar(manos_del_golpe="codex", exes={"claude": cli.ruta}, goal_texto="x",
