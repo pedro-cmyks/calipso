@@ -195,6 +195,27 @@ def test_env_de_suscripcion_sin_credenciales_y_con_escudo(monkeypatch):
         srv._cleanup_subscription_files(temps, out)
 
 
+def test_el_turno_de_chat_por_claude_va_sin_mcp_sin_settings_y_sin_herramientas(monkeypatch):
+    """Probe de capacidades (2026-09-15): cada turno de chat por suscripcion
+    lanzaba `claude -p` con la configuracion ENTERA de Pedro: sus MCP
+    (playwright = node + Chromium, Google Drive, github, supabase), sus
+    plugins y hooks, y las herramientas del CLI (el modelo intento
+    `flatpak remotes` y `rpm-ostree` y el CLI las nego). Con un equipo de
+    agentes en paralelo la RAM llego a 0 (carga: `mem 0 < 5746`, swap
+    lleno, Ollama muerto). El chat es un generador de TEXTO: las manos son
+    los goals. `--strict-mcp-config`, `--setting-sources ""` y `--tools ""`."""
+    monkeypatch.setattr(srv, "_subscription_command", lambda c: "/bin/echo")
+    cmd, env, temps, out = srv._subscription_invocation("claude", "sistema", "hola", model="sonnet")
+    try:
+        assert "--strict-mcp-config" in cmd
+        assert cmd[cmd.index("--setting-sources") + 1] == ""
+        assert cmd[cmd.index("--tools") + 1] == ""
+        assert cmd[cmd.index("--model") + 1] == "sonnet"
+        assert cmd[-2] == "-p" and "hola" in cmd[-1]
+    finally:
+        srv._cleanup_subscription_files(temps, out)
+
+
 # --- C4: el lanzador ya no pasea el token -----------------------------------
 
 def test_lanzador_sin_token_en_la_url():

@@ -3868,6 +3868,13 @@ def _subscription_invocation(client: str, system: str, user_msg: str,
         cmd = [exe]
         if model in ("haiku", "sonnet", "opus"):
             cmd += ["--model", model]  # elige el tier de Claude
+        # el chat es un generador de TEXTO (las manos son los goals): sin
+        # los MCP de Pedro (playwright = node + Chromium por turno, Google
+        # Drive, github, supabase), sin sus settings/plugins/hooks y sin
+        # herramientas del CLI. Probe de capacidades 2026-09-15: un equipo
+        # de agentes en paralelo con todo eso dejo la RAM en 0 y el modelo
+        # gastaba turnos en `flatpak remotes`/`rpm-ostree` que el CLI negaba.
+        cmd += ["--strict-mcp-config", "--setting-sources", "", "--tools", ""]
         cmd += ["--append-system-prompt-file", temp_name, "-p", prompt]
     elif client == "codex":
         with tempfile.NamedTemporaryFile(
