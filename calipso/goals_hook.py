@@ -658,6 +658,10 @@ def _candidatos_de_tar(argv: list[str]) -> list[str]:
                     out.append(val)
                 else:
                     pendientes.append("f")
+            elif opcion == "--add-file" and val:
+                # un operando mas (se archiva desde el -C vigente, como los
+                # sueltos; sin `=` cae abajo como operando y ya se ve desde -C)
+                out.append(_contra(base, val))
             elif val:
                 out.append(val)
             continue

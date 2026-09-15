@@ -2548,9 +2548,12 @@ def _quien_del_goal(goal: dict) -> aduana.Quien:
 
 # `Bearer`, `Basic` y `Token` sin distinguir mayusculas (un header se
 # escribe como sea y HTTP no distingue), y el `-u`/`--user usuario:clave`
-# de curl (re-review del carril 3: solo se veia `Bearer` con mayuscula).
+# de curl (re-review del carril 3: solo se veia `Bearer` con mayuscula),
+# tambien con la -u al final de un cluster de flags cortas (`-sSu`, la
+# forma comun en scripts; `--user-agent a:b` no es --user: sin `:` antes
+# del espacio no hay match).
 _RE_BEARER = re.compile(r"(?i)(\b(?:Bearer|Basic|Token)\s+)[A-Za-z0-9_\-./+=]{6,}")
-_RE_USER_PASS = re.compile(r"((?:^|\s)(?:-u|--user)\s*)\S+:\S+")
+_RE_USER_PASS = re.compile(r"((?:^|\s)(?:-[A-Za-z]*u|--user)\s*)\S+:\S+")
 
 
 def _tapar_carga(texto: str) -> str:
