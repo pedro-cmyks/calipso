@@ -8,10 +8,12 @@ La UI muestra un preview de lo que Calipso buscó/leyó.
 """
 from __future__ import annotations
 
+import gzip
 import html
 import re
 import urllib.parse
 import urllib.request
+import zlib
 
 from calipso import aduana
 
@@ -29,7 +31,20 @@ def _get(url: str, quien: aduana.Quien, proposito: str, carga,
     with aduana.cruzar(quien, proposito, destino=url, carga=carga) as cruce:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             crudo = r.read()
+            codificacion = str((getattr(r, "headers", None) or {}).get("Content-Encoding") or "").lower()
         cruce.entro(len(crudo))
+    # algunos sitios mandan gzip sin pedirlo (python.org: el modelo lo vio
+    # como "contenido corrupto/binario", probe 2026-09-15)
+    if "gzip" in codificacion or crudo[:2] == b"\x1f\x8b":
+        try:
+            crudo = gzip.decompress(crudo)
+        except OSError:
+            pass
+    elif "deflate" in codificacion:
+        try:
+            crudo = zlib.decompress(crudo)
+        except zlib.error:
+            pass
     return crudo.decode("utf-8", "replace")
 
 

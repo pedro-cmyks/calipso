@@ -87,6 +87,26 @@ def test_fetch_cruza_con_la_url_saneada_y_un_fallo_devuelve_vacio(libro, monkeyp
     assert "pw" not in libro.read_text() and "abc123" not in libro.read_text()
 
 
+def test_fetch_descomprime_una_pagina_que_llega_en_gzip(libro, monkeypatch):
+    """Probe de capacidades (2026-09-15, /web): python.org/downloads manda el
+    cuerpo en gzip aunque no se le pida (Content-Encoding: gzip) y el
+    modelo lo vio como "contenido corrupto/binario". `_get` descomprime por
+    Content-Encoding (gzip y deflate)."""
+    import gzip
+    cuerpo = gzip.compress(b"<html><body><p>Python 3.14.7</p></body></html>")
+
+    class _Gzip(_RespuestaFalsa):
+        headers = {"Content-Encoding": "gzip"}
+    visto = []
+
+    def urlopen(req, timeout=None):
+        visto.append(req.full_url)
+        return _Gzip(cuerpo)
+    monkeypatch.setattr(web.urllib.request, "urlopen", urlopen)
+    assert web.fetch("https://www.python.org/downloads/", 2500, quien_de_prueba()) == "Python 3.14.7"
+    assert visto == ["https://www.python.org/downloads/"]
+
+
 def test_research_hereda_el_mismo_quien_a_search_fetch_y_render(libro, monkeypatch):
     q = quien_de_prueba(chat="chat_web")
     monkeypatch.setattr(web, "search", lambda query, n, quien: (

@@ -1515,6 +1515,7 @@ def test_el_contrato_dice_como_usar_bash_para_no_gastar_golpes_en_denegaciones()
     # el criterio lo corre el runner en el clon con .venv/bin primero: que no
     # instale en el home para que `pytest` exista fuera del venv
     assert "el criterio lo corre el runner" in c and ".venv/bin" in c
+    assert "compuerta web" in c and "segundo plano" in c        # el goal de torch del probe de capacidades
 
 
 def test_linea_de_deshacer_es_pura():

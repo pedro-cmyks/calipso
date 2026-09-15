@@ -550,6 +550,18 @@ def env_del_golpe(compuertas_path: str, home_vacio: str, base: dict | None = Non
 # el parser del stream-json
 # --------------------------------------------------------------------------
 
+def _bloqueado_por_el_cli(bloque: dict) -> bool:
+    """Un tool_result `is_error` cuyo contenido es un `<tool_use_error>` del
+    CLI (Blocked: ...): la herramienta nunca corrio."""
+    if not bloque.get("is_error"):
+        return False
+    c = bloque.get("content")
+    if isinstance(c, list):
+        c = " ".join(str(b.get("text", "")) for b in c if isinstance(b, dict))
+    c = str(c or "").lstrip()
+    return c.startswith("<tool_use_error>") and "Blocked:" in c[:200]
+
+
 class Parser:
     """Lee el stream-json linea a linea (terreno A.5): `system/init`
     (session_id, model, tools), `rate_limit_event` (la cuota de Claude por
@@ -682,7 +694,12 @@ class Parser:
             tid = bloque.get("tool_use_id")
             uso = self._tool_uses.get(tid) or {}
             nombre = uso.get("name")
-            if nombre in CON_HOOK:
+            # lo que el CLI bloqueo por su cuenta ANTES del hook (`Blocked:
+            # standalone sleep`, un tool_use_error del propio Claude Code)
+            # no ejecuto nada y no paso por el hook: no cuenta contra la
+            # sonda (probe de capacidades 2026-09-15: el goal de torch
+            # murio como 'hook inactivo' por un `sleep 60` bloqueado)
+            if nombre in CON_HOOK and not _bloqueado_por_el_cli(bloque):
                 self._resultados_con_hook += 1
                 if self.hooks < self._resultados_con_hook:
                     return self._violar(f"hook inactivo: tool_result de {nombre} sin hook_response "

@@ -130,3 +130,36 @@ def test_el_texto_del_goal_conserva_las_rutas_de_un_segmento():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_hoy_solo_no_dispara_la_busqueda_web():
+    """Probe de capacidades (2026-09-15): "hola Calipso, que sabes hacer
+    hoy?" fue a DuckDuckGo por la palabra `hoy` (google.com y hola.com como
+    resultados): un canal lateral por nada. `hoy` cuenta solo junto a algo
+    que cambia con el dia (noticias, clima, precio, que paso)."""
+    import dispatch
+    assert dispatch.extract_features("hola Calipso, que sabes hacer hoy?")["needs_web"] is False
+    assert dispatch.extract_features("como estas hoy")["needs_web"] is False
+    assert dispatch.extract_features("que paso hoy en Bogota")["needs_web"] is True
+    assert dispatch.extract_features("noticias de hoy")["needs_web"] is True
+    assert dispatch.extract_features("clima de hoy en Medellin")["needs_web"] is True
+    assert dispatch.extract_features("busca la ultima version de python")["needs_web"] is True
+
+
+def test_un_pedido_que_necesita_manos_no_va_al_modelo_chico():
+    """Probe de capacidades (2026-09-15): "hazme un PDF ... y dejalo en mi
+    carpeta de Descargas" fue al qwen2.5:7b (complejidad 2, effort fast), que
+    inventa que lo hace. Instalar, descargar, generar un archivo o una
+    imagen, guardar en el disco: eso necesita manos y honestidad, no cabe
+    en el modelo chico (max_complexity 2): complejidad 3 y `needs_hands`."""
+    import dispatch
+    for t in ("hazme un PDF de una pagina con un resumen y dejalo en mi carpeta de Descargas",
+              "genera una imagen de un ave azul posada en una rama",
+              "descarga e instala en mi computador una aplicacion para editar audio",
+              "instala torch en el venv", "guarda este texto en un archivo notas.txt",
+              "abre blender y exporta el modelo", "borra los archivos temporales de la carpeta build"):
+        f = dispatch.extract_features(t)
+        assert f["needs_hands"] is True and f["complexity"] >= 3, (t, f)
+    for t in ("hola, como estas?", "cuanto es 17 por 23", "explica por que el cielo es azul"):
+        f = dispatch.extract_features(t)
+        assert f["needs_hands"] is False, (t, f)
