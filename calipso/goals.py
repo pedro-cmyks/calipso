@@ -798,6 +798,12 @@ def aplicar_respuesta(goal_id: str, respuesta: str, nota: str | None = None) -> 
         c["preautorizadas"] = pre
     if si and motivo == "raiz_nueva" and espera.get("raiz"):
         c["raices"] = list(c.get("raices") or []) + validar_raices([espera["raiz"]])
+    if si and motivo == "compuerta" and (espera.get("compuerta") or {}).get("familia") == "web":
+        # la red del sandbox sale de `dominios`: un si a un host lo suma ahi
+        # (probe 2026-09-15: la CDN de un indice, download-r2.pytorch.org)
+        host = str(((espera.get("compuerta") or {}).get("forma") or {}).get("host") or "").strip().lower()
+        if re.fullmatch(r"[a-z0-9.-]+\.[a-z]{2,}", host) and host not in (goal.get("dominios") or []):
+            goal["dominios"] = list(goal.get("dominios") or []) + [host]
     escribir(goal)
     escribir_compuertas(goal)
     if si and motivo == "tope":

@@ -647,3 +647,26 @@ def test_parse_criterio_reconoce_un_script_como_comando():
         assert goals.parse_criterio(t) == {"tipo": "comando", "comando": cmd}, t
     assert goals.parse_criterio("que el readme explique el uso")["tipo"] == "revisor"
     assert goals.parse_criterio("pytest en verde") == {"tipo": "comando", "comando": "pytest -q"}
+
+
+def test_el_si_a_una_compuerta_web_suma_el_host_a_los_dominios(home, repo):
+    """Probe de capacidades (2026-09-15, el goal de torch): la red del sandbox
+    sale de `dominios`; una compuerta `web` aprobada solo quedaba como
+    preautorizada del hook y el sandbox seguia denegando el host. El si suma
+    el host a los dominios del goal (y a compuertas.json, de donde salen los
+    settings del golpe siguiente)."""
+    g = goals.crear("x", proyecto=str(repo), dominios=["download.pytorch.org"])
+    goals.transicionar(g["id"], goals.ACTIVE)
+    compuerta = {"familia": "web", "forma": {"host": "download-r2.pytorch.org"}}
+    goals.transicionar(g["id"], goals.WAITING, "compuerta", motivo_detalle={
+        "pregunta": "la CDN?", "compuerta": compuerta, "solicitud": "sol_9"})
+    g2 = goals.aplicar_respuesta(g["id"], "aprobada")
+    assert g2["dominios"] == ["download.pytorch.org", "download-r2.pytorch.org"]
+    c = json.loads((goals.dir_goal(g["id"]) / "compuertas.json").read_text(encoding="utf-8"))
+    assert c["dominios"] == ["download.pytorch.org", "download-r2.pytorch.org"]
+    assert c["preautorizadas"] == [compuerta]
+    # un host invalido o vacio no entra
+    goals.transicionar(g["id"], goals.ACTIVE)
+    goals.transicionar(g["id"], goals.WAITING, "compuerta", motivo_detalle={
+        "pregunta": "?", "compuerta": {"familia": "web", "forma": {"host": "no vale/esto"}}, "solicitud": "sol_10"})
+    assert goals.aplicar_respuesta(g["id"], "aprobada")["dominios"] == ["download.pytorch.org", "download-r2.pytorch.org"]
