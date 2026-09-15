@@ -242,6 +242,33 @@ def test_una_variable_en_la_ruta_se_deniega(goal_dir, cmd):
     assert registro(goal_dir)[-1]["decision"] == "deny"
 
 
+def test_el_python_del_venv_pasa_aunque_sea_un_symlink_al_sistema(goal_dir):
+    """Cuarta vuelta del probe (2026-09-15, el goal de torch): `.venv/bin/python`
+    es un symlink a /usr/bin/python3 (asi nace todo venv) y el hook lo
+    resolvia y lo denegaba como 'ejecutable fuera del clon y de su venv';
+    el martillo gasto dos denegaciones y reemplazo el symlink por una copia
+    del interprete. El ejecutable se juzga por la ruta ESCRITA (dentro del
+    venv o del clon), no por adonde apunta; y `rm` sobre un symlink del clon
+    borra el link, no el destino."""
+    clon = goal_dir["clon"]
+    py = clon / ".venv" / "bin" / "python"
+    py.unlink()
+    py.symlink_to("/usr/bin/python3")
+    (clon / ".venv" / "bin" / "python3").symlink_to("/usr/bin/python3")
+    for cmd in (".venv/bin/python --version", f"{clon}/.venv/bin/python3 verifica.py", ".venv/bin/python verifica.py"):
+        rc, err = correr(goal_dir, "Bash", {"command": cmd})
+        assert rc == 0, (cmd, err)
+    rc, err = correr(goal_dir, "Bash", {"command": "rm .venv/bin/python"})
+    assert rc == 0, err                                          # borra el link, no /usr/bin/python3
+    # un ejecutable de verdad fuera del clon sigue denegado
+    rc, err = correr(goal_dir, "Bash", {"command": "/usr/bin/python3 -m venv x"})
+    assert rc == 2 and "fuera del clon" in err
+    # y un symlink del clon hacia una protegida como DESTINO de escritura no engaña
+    (clon / "atajo").symlink_to(os.path.expanduser("~/.ssh"))
+    rc, err = correr(goal_dir, "Bash", {"command": "cp README.md atajo/x"})
+    assert rc == 2 and "NUNCA" in err
+
+
 def test_git_con_C_dentro_del_clon_pasa(goal_dir):
     """Segundo goal real (2026-09-15): `git -C <clon> ls-files` se denegaba
     ('git con -C: sale del clon') aunque la ruta ERA el clon: un turno

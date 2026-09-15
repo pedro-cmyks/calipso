@@ -496,3 +496,11 @@ ledger `.superpowers/sdd/2026-09-13-goals/progress.md`; aca queda lo que hay que
     sigue `active` y una nota le dice al martillo que ya puede. Y el turno de CHAT por suscripcion declara
     en su system que no tiene herramientas y propone `/goal` como camino (sonnet contestaba "despues genero
     el PDF. Empecemos." y terminaba).
+38. **El ejecutable se juzga por la ruta escrita** (cuarta vuelta del probe, 2026-09-15): `.venv/bin/python`
+    es un symlink al interprete del sistema (asi nace todo venv) y el hook lo resolvia y lo denegaba como
+    "fuera del clon y de su venv"; el martillo gasto dos denegaciones y copio el interprete adentro.
+    Dentro del venv o del clon por la ruta escrita = allow (lo que corre es el interprete, que como
+    `python` a secas ya es "sistema"); `rm` sobre un symlink del clon borra el link, no el destino. Los
+    DESTINOS de escritura se siguen resolviendo (un symlink del clon hacia una protegida no engaña).
+    Con esto el goal de torch cerro de punta a punta: 2 golpes + revisor, 2,6 min, 4 unidades, ~0,66 USD,
+    `torch 2.14.0+cpu` instalado en el venv del clon desde la CDN concedida por la tabla (`web` directo).

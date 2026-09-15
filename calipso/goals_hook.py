@@ -1118,14 +1118,29 @@ def _exe_de(argv: list[str], compuertas: dict) -> tuple[str, str]:
     tok = argv[0]
     nombre = pathlib.Path(tok).name
     if "/" in tok:
-        p = _resolver(tok, compuertas.get("cwd"))
+        # por la ruta ESCRITA primero: el python de un venv es un symlink al
+        # interprete del sistema (probe 2026-09-15: se denegaba y el martillo
+        # copio el interprete adentro); lo que corre es el interprete, que
+        # como `python` a secas ya es 'sistema'
+        lex = _lexica(tok, compuertas.get("cwd"))
         venv = compuertas.get("venv")
+        if venv and _dentro(lex, _lexica(venv, None)):
+            return nombre, "venv"
+        p = _resolver(tok, compuertas.get("cwd"))
         if venv and _dentro(p, pathlib.Path(venv).resolve()):
             return nombre, "venv"
-        if _en_alcance(p, compuertas) == "repo":
+        if _en_alcance(p, compuertas) == "repo" or _en_alcance(lex, compuertas) == "repo":
             return nombre, "clon"
         return nombre, "ruta_fuera"
     return nombre, "sistema"
+
+
+def _lexica(ruta: str, cwd: str | None) -> pathlib.Path:
+    """La ruta normalizada SIN seguir symlinks (`..` y `.` resueltos)."""
+    p = pathlib.Path(os.path.expanduser(str(ruta)))
+    if not p.is_absolute() and cwd:
+        p = pathlib.Path(cwd) / p
+    return pathlib.Path(os.path.normpath(str(p)))
 
 
 def _nunca(familia: str | None, motivo: str, forma: dict | None = None) -> tuple[str, str, dict | None]:
@@ -1267,6 +1282,10 @@ def familia_de_argv(argv: list[str], compuertas: dict) -> tuple[str | None, str,
         rutas, motivo = _rutas_resueltas(exe, argv, cwd)
         if motivo:
             return "DENEGAR", motivo, None
+        # rm sobre un symlink borra el LINK, no el destino: se juzga la ruta
+        # escrita cuando es un symlink del clon (el .venv/bin/python del probe)
+        rutas = [_lexica(t, cwd) if os.path.islink(str(_lexica(t, cwd))) and _en_alcance(_lexica(t, cwd), compuertas) == "repo"
+                 else p for t, p in zip(_candidatos_de_ruta(exe, argv), rutas)] if len(_candidatos_de_ruta(exe, argv)) == len(rutas) else rutas
         for p in rutas:
             if _protegida(p):
                 return _nunca("datos_de_pedro", f"rm sobre {p}: datos de Pedro", {"ruta": str(p)})
