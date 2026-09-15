@@ -907,6 +907,11 @@ def parse_tope(texto: str) -> dict:
     return out
 
 
+EXES_DE_CRITERIO = frozenset({"python", "python3", "pytest", "node", "npm", "npx", "yarn", "pnpm", "bash", "sh",
+                              "make", "cargo", "go", "ruff", "mypy", "flake8", "black", "eslint", "tsc", "jest",
+                              "vitest", "mvn", "gradle", "dotnet", "php", "ruby", "bundle", "rspec"})
+
+
 def parse_criterio(texto: str) -> dict:
     """`pytest en verde` / `pytest -q x` -> comando; `existe <ruta>` ->
     archivo; `que salga 0: <cmd>` -> comando; lo demas -> revisor."""
@@ -925,6 +930,11 @@ def parse_criterio(texto: str) -> dict:
     for exe in ("npm test", "make ", "cargo test", "go test"):
         if low.startswith(exe):
             return {"tipo": "comando", "comando": t}
+    # un ejecutable conocido al frente (o un script del repo) es un comando
+    # (probe de capacidades 2026-09-15: `python verifica.py` caia en revisor)
+    primero = low.split()[0] if low.split() else ""
+    if primero in EXES_DE_CRITERIO or primero.startswith(("./", ".venv/bin/", "bin/")):
+        return {"tipo": "comando", "comando": t}
     return {"tipo": "revisor", "texto": t}
 
 

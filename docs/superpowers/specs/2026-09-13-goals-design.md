@@ -477,3 +477,12 @@ ledger `.superpowers/sdd/2026-09-13-goals/progress.md`; aca queda lo que hay que
     dos commits denegados por golpe): entre comillas simples nada es operador; entre dobles `$( )`, los
     backticks y `$VAR` siguen contando porque bash los expande ahi; una comilla sin cerrar deniega. Cierra
     la limitacion declarada en 22(h).
+35. **Del probe de capacidades del chat real (2026-09-15, pedido de Pedro: un turno por capacidad)**: (a) un
+    tool_result que el propio CLI bloqueo antes del hook (`<tool_use_error>Blocked: standalone sleep`) no
+    cuenta contra la sonda de hook inactivo (el goal de torch murio `failed` por eso); (b) `hasta: python
+    verifica.py` (y node/bash/ruff/mypy/`./script`) es un criterio comando, no revisor; (c) el contrato del
+    martillo: ante un host denegado por la red (la CDN de un indice, `download-r2.pytorch.org`), pedirlo
+    con compuerta web en vez de bajar otra cosa mas pesada, y nada en segundo plano ni `sleep`; (d) fuera
+    del goal pero del mismo probe: `hoy` solo ya no dispara la busqueda web, un pedido que necesita manos
+    (instalar, descargar, generar un pdf/imagen, guardar en el disco) sube a complejidad 3 (el 7b inventaba
+    que hacia el PDF), y `web._get` descomprime gzip/deflate (python.org llegaba como binario).

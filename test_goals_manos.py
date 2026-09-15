@@ -329,6 +329,34 @@ def test_parser_sonda_del_hook():
     assert v and "mcp inesperado" in v
 
 
+def test_parser_un_bloqueo_del_propio_cli_no_es_hook_inactivo():
+    """Probe de capacidades (2026-09-15, el goal de torch): Claude Code
+    bloquea por su cuenta `sleep 60` a secas ("Blocked: standalone sleep")
+    ANTES de llamar al hook y emite un tool_result `is_error` con
+    `<tool_use_error>Blocked: ...`; la sonda contaba ese resultado como
+    'sin hook_response' y mataba el golpe (failed: hook inactivo). Un
+    resultado que el CLI bloqueo no ejecuto nada: no cuenta."""
+    lineas = lineas_golpe(comandos=[("ls", "a")])
+    # un tool_use de Bash (sleep 60) SIN hook_response y con el tool_result bloqueado por el CLI
+    i = next(k for k, l in enumerate(lineas) if l.get("type") == "result")
+    lineas[i:i] = [
+        {"type": "assistant", "message": {"id": "msg_b", "content": [{"type": "tool_use", "id": "toolu_b", "name": "Bash",
+                                                                      "input": {"command": "sleep 60"}}]}, "session_id": "s-1"},
+        {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_b", "is_error": True,
+                                                   "content": "<tool_use_error>Blocked: standalone sleep 60. To wait for a condition, use Monitor.</tool_use_error>"}]},
+         "session_id": "s-1"},
+    ]
+    p = gm.Parser()
+    for l in lineas:
+        v = p.alimentar(json.dumps(l))
+        assert v is None, (v, l)
+    assert p.violacion is None
+    # pero un tool_result normal sin hook_response sigue siendo violacion
+    lineas2 = lineas_golpe(comandos=[("ls", "a")], con_hook=False)
+    p2 = gm.Parser()
+    assert any(p2.alimentar(json.dumps(l)) for l in lineas2)
+
+
 def test_parser_solo_cuenta_hook_response_pretooluse():
     """C4 (Codex): un `hook_response` sin `hook_event` (o de otro evento)
     contaba como PreToolUse y evitaba `hook inactivo`. Solo cuenta el que

@@ -634,3 +634,16 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_parse_criterio_reconoce_un_script_como_comando():
+    """Probe de capacidades (2026-09-15): `hasta: python verifica.py` caia en
+    `revisor` (solo pytest/npm test/make/cargo/go eran comandos), asi que
+    el goal de torch no tenia criterio medible. Un ejecutable conocido al
+    frente es un comando."""
+    for t, cmd in (("python verifica.py", "python verifica.py"), ("python3 -m unittest", "python3 -m unittest"),
+                   ("node test.js", "node test.js"), ("bash check.sh", "bash check.sh"), (".venv/bin/pytest -q", ".venv/bin/pytest -q"),
+                   ("./run.sh", "./run.sh"), ("ruff check .", "ruff check ."), ("mypy src", "mypy src")):
+        assert goals.parse_criterio(t) == {"tipo": "comando", "comando": cmd}, t
+    assert goals.parse_criterio("que el readme explique el uso")["tipo"] == "revisor"
+    assert goals.parse_criterio("pytest en verde") == {"tipo": "comando", "comando": "pytest -q"}

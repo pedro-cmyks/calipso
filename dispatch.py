@@ -130,10 +130,23 @@ SUMMARIZE = re.compile(r"\b(resumen|resumir|sintetiza)\b", re.IGNORECASE)
 AGENTIC = re.compile(
     r"\b(ejecuta|corre los tests|automatiza|agente|herramienta|run)\b",
     re.IGNORECASE)
+# `hoy` solo no busca (probe 2026-09-15: "que sabes hacer hoy?" fue a
+# DuckDuckGo): cuenta junto a lo que cambia con el dia
 WEB = re.compile(
-    r"\b(busca|b[uú]scame|googlea|noticias?|actualidad|hoy|[uú]ltim[ao]s?|"
+    r"\b(busca|b[uú]scame|googlea|noticias?|actualidad|[uú]ltim[ao]s?|"
     r"reciente|precio de|cotizaci[oó]n|clima|qui[eé]n gan|qu[eé] pas[oó]|"
     r"en internet|en la web|search)\b", re.IGNORECASE)
+# Lo que pide MANOS sobre la maquina o un archivo nuevo (instalar, descargar,
+# guardar, generar un pdf/imagen, abrir, borrar): el modelo chico no puede
+# hacerlo y ademas inventa que lo hizo (probe 2026-09-15, el PDF); sube la
+# complejidad a 3 (max_complexity del 7b es 2) para que conteste alguien
+# capaz de decir la verdad o de proponer un /goal.
+MANOS = re.compile(
+    r"\b(instal[aá]|desinstal[aá]|descarg[aá]|guard[aá]|d[eé]jalo|dejalo|d[eé]jame el|"
+    r"gener[aá] (un[a]? )?(pdf|imagen|archivo|foto|documento)|hazme (un[a]? )?(pdf|imagen|archivo|documento)|"
+    r"cre[aá] (un[a]? )?(archivo|pdf|carpeta|documento)|abr[eií]|ejecut[aá]|borr[aá]|elimin[aá]|"
+    r"mueve|mov[eé]|copi[aá]|export[aá]|en mi (computador|m[aá]quina|pc|carpeta|disco|escritorio|descargas))\b",
+    re.IGNORECASE)
 
 VALID_TYPES = {"trivial", "translate", "summarize", "writing", "reasoning",
                "analysis", "code", "repo", "agentic"}
@@ -167,7 +180,8 @@ def extract_features(prompt: str) -> dict:
     p = prompt.strip()
     feat = {"type": None, "complexity": 2,
             "private": bool(PRIVATE.search(p)), "needs_repo": False,
-            "needs_web": bool(WEB.search(p)) or bool(re.search(r"https?://", p))}
+            "needs_web": bool(WEB.search(p)) or bool(re.search(r"https?://", p)),
+            "needs_hands": bool(MANOS.search(p))}
     if CODE_HEAVY.search(p):
         if REPO.search(p):
             feat["type"], feat["needs_repo"] = "repo", True
@@ -189,6 +203,8 @@ def extract_features(prompt: str) -> dict:
     if feat["type"] is None:
         feat["type"] = "reasoning"
     feat["complexity"] = _estimate_complexity(p, feat["type"])
+    if feat["needs_hands"]:
+        feat["complexity"] = max(feat["complexity"], 3)
     return feat
 
 
