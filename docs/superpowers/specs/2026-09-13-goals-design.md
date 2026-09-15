@@ -472,3 +472,8 @@ ledger `.superpowers/sdd/2026-09-13-goals/progress.md`; aca queda lo que hay que
     su contrato dice que no lo rejuzgue: juzga el objetivo (completo y correcto), no la invocacion. El
     contrato del martillo dice lo mismo (no instalar en el home para que el criterio "exista"). Y `git -C
     <dir>` con un dir dentro del clon pasa por el hook (se denegaba y costaba un turno).
+34. **Los operadores del shell se buscan FUERA de las comillas** (tercer goal real, 2026-09-15: Claude Code
+    firma los commits con `<noreply@anthropic.com>` y el `<`/`>` entre comillas se leia como redireccion,
+    dos commits denegados por golpe): entre comillas simples nada es operador; entre dobles `$( )`, los
+    backticks y `$VAR` siguen contando porque bash los expande ahi; una comilla sin cerrar deniega. Cierra
+    la limitacion declarada en 22(h).
