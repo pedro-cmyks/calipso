@@ -583,15 +583,61 @@ def _dominio_permitido(url: str, compuertas: dict) -> bool:
 # Bash
 # --------------------------------------------------------------------------
 
+def _fuera_de_comillas(texto: str) -> str | None:
+    """El texto con lo que va entre comillas SACADO, para buscar los
+    operadores del shell donde bash los lee: entre comillas simples nada es
+    operador; entre dobles bash sigue expandiendo `$( )`, backticks y
+    `$VAR`, asi que esos se conservan. Un `\\` fuera de comillas escapa el
+    caracter siguiente (se saca con el). None si una comilla no cierra.
+    Tercer goal real (2026-09-15): Claude Code firma los commits con
+    `<noreply@anthropic.com>` y el `<`/`>` entre comillas se leia como
+    redireccion: dos commits denegados por golpe."""
+    out, i, n = [], 0, len(texto)
+    while i < n:
+        ch = texto[i]
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == "'":
+            j = texto.find("'", i + 1)
+            if j < 0:
+                return None
+            i = j + 1
+            continue
+        if ch == '"':
+            j = i + 1
+            while j < n:
+                if texto[j] == "\\":
+                    j += 2
+                    continue
+                if texto[j] == '"':
+                    break
+                if texto[j] in "$`":
+                    out.append(texto[j])
+                j += 1
+            if j >= n:
+                return None
+            i = j + 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def partir(comando: str) -> list[str] | None:
     """argv de un comando SIMPLE; None si esta vacio, es compuesto, tiene
-    heredoc/redireccion/subshell o no se puede tokenizar. Se mira el texto
-    ANTES de shlex (shlex se come los operadores)."""
+    heredoc/redireccion/subshell o no se puede tokenizar. Los operadores se
+    buscan FUERA de las comillas (`_fuera_de_comillas`): un `>` o un `&&`
+    citado es texto, no shell; `$( )` y backticks cuentan tambien entre
+    comillas dobles porque bash los expande ahi."""
     texto = (comando or "").strip()
-    if not texto or "\n" in texto:
+    if not texto:
+        return None
+    fuera = _fuera_de_comillas(texto)
+    if fuera is None or "\n" in fuera:
         return None
     for op in COMPUESTOS:
-        if op in texto:
+        if op in fuera:
             return None
     try:
         argv = shlex.split(texto)

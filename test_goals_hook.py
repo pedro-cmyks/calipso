@@ -389,6 +389,31 @@ def test_compuestos_envoltorios_y_desconocidos_se_deniegan(goal_dir, cmd):
     assert err.startswith("goal_hook: DENEGADO")
 
 
+@pytest.mark.parametrize("cmd", [
+    # tercer goal real (2026-09-15): Claude Code firma los commits con
+    # `Co-Authored-By: ... <noreply@anthropic.com>` y el `<`/`>` entre
+    # comillas se leia como redireccion (dos commits denegados por golpe)
+    'git commit -q -m "Add saludo" -m "Co-Authored-By: Claude <noreply@anthropic.com>"',
+    "git commit -m 'a && b; c | d > e'", "git commit -m \"linea 1\nlinea 2\"",
+    "grep -e '>' src/a.py", "grep -F 'a || b' src/a.py", "echo 'x; y'", "git log --grep='fix <x>'",
+    "echo x'; rm -rf /; echo '",     # bash lo lee como UN echo de un texto (la comilla abre y cierra)
+])
+def test_los_operadores_entre_comillas_no_son_compuestos(goal_dir, cmd):
+    rc, err = correr(goal_dir, "Bash", {"command": cmd})
+    assert rc == 0, (cmd, err)
+
+
+@pytest.mark.parametrize("cmd", [
+    # dentro de comillas DOBLES bash sigue expandiendo $( ), ` ` y $VAR: compuesto igual
+    'echo "$(gh auth token)"', 'git commit -m "x `id`"', 'echo "$HOME"', "echo 'a' > f", 'echo "a" | sh',
+    "echo 'a'; rm -rf /", "git commit -m 'x' && git push", "cat 'x' <<EOF\ny\nEOF",
+    'echo "sin cerrar', "echo 'sin cerrar",
+])
+def test_los_operadores_fuera_de_comillas_o_expandibles_siguen_siendo_compuestos(goal_dir, cmd):
+    rc, err = correr(goal_dir, "Bash", {"command": cmd})
+    assert rc == 2, (cmd, err)
+
+
 def test_curl_a_un_dominio_declarado_pasa(goal_dir):
     rc, _ = correr(goal_dir, "Bash", {"command": "curl -sL https://pypi.org/simple/x/"})
     assert rc == 0

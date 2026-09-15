@@ -1511,7 +1511,7 @@ def test_el_contrato_dice_como_usar_bash_para_no_gastar_golpes_en_denegaciones()
     base = {"id": "goal_x", "title": "t", "objective": "o", "criterio": {}, "tope": {}, "compuertas": {}}
     c = gr.contrato_del_goal(base)
     assert "un comando simple por llamada" in c and "&&" in c and "python -c" in c
-    assert "-F" in c and "pypi" in c
+    assert "entre comillas" in c and "pypi" in c
     # el criterio lo corre el runner en el clon con .venv/bin primero: que no
     # instale en el home para que `pytest` exista fuera del venv
     assert "el criterio lo corre el runner" in c and ".venv/bin" in c
