@@ -212,6 +212,11 @@ def test_el_turno_de_chat_por_claude_va_sin_mcp_sin_settings_y_sin_herramientas(
         assert cmd[cmd.index("--tools") + 1] == ""
         assert cmd[cmd.index("--model") + 1] == "sonnet"
         assert cmd[-2] == "-p" and "hola" in cmd[-1]
+        # y el system se lo dice: sin manos, y con /goal como camino (tercera
+        # vuelta del probe: sonnet contesto "despues genero el PDF. Empecemos."
+        # y termino, sin poder hacerlo)
+        system = open(cmd[cmd.index("--append-system-prompt-file") + 1], encoding="utf-8").read()
+        assert "no tenes herramientas" in system and "/goal" in system and "sin fingir" in system
     finally:
         srv._cleanup_subscription_files(temps, out)
 
