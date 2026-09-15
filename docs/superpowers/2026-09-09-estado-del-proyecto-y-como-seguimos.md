@@ -1,5 +1,7 @@
 # Calipso: estado del proyecto y como seguimos (2026-09-09)
 
+> **Desde el 2026-09-15 el punto de entrada es `docs/superpowers/2026-09-15-estado-y-ruta.md`** (que es Calipso, objetivos, subproyectos y su estado, como retomar). Este documento queda como la historia detallada de agosto-septiembre.
+
 Escrito al cerrar la sesion del 2026-09-08 (la mas larga del proyecto: la capa de sesion y el abismo 1b
 aterrizaron en main el mismo dia), para que Pedro pueda parar semanas y retomar sin releer nada mas.
 Todo lo que dice esta verificado contra el codigo de main `c38dadb` y contra la maquina de Pedro (la Ally).
