@@ -145,6 +145,8 @@ def contrato_del_goal(goal: dict) -> str:
         "Reglas: sos las manos de Calipso dentro de un sandbox; trabaja solo en el cwd y las raices; "
         "no hagas push, PR, correo, gastos ni toques datos de Pedro (el hook lo deniega y el sandbox lo "
         "impide); instala solo dentro del cwd (venv, npm sin -g: pip y npm llegan a pypi/npm); "
+        "el criterio lo corre el runner en el clon con el ejecutable resuelto contra .venv/bin del "
+        "repo primero (un `pytest -q` del criterio usa .venv/bin/pytest: no instales en el home para eso); "
         "Bash: un comando simple por llamada -- el hook deniega && || ; | 2>&1 $( ) heredocs, "
         "python -c / node -e y los mensajes de commit con salto de linea (usa una linea o -F archivo); "
         "si necesitas una compuerta en "
@@ -1175,7 +1177,8 @@ class Runner:
             self.aduana_fn(goal, m, "inicio", manos=revisor)
             # el revisor ve el diff REAL (ruling 15.1, spec 6.2), no el
             # diff_stat que va al ledger y al prompt
-            revision = self.juez(goal, resumen_ledger(filas), self.diff_completo_fn(goal), salidas)
+            revision = self.juez(goal, resumen_ledger(filas), self.diff_completo_fn(goal), salidas,
+                                 juez.get("criterio"))
             self.aduana_fn(goal, m, "fin", comandos=[],
                            bytes_entrados=len(str((revision or {}).get("salida_tail") or "")),
                            dominios=list(goal.get("dominios") or []), compuertas=[])

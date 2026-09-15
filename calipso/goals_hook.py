@@ -1147,8 +1147,24 @@ def _rebase_ejecuta(resto: list[str]) -> str | None:
     return None
 
 
-def _familia_git(argv: list[str]) -> tuple[str | None, str, dict | None]:
-    resto = argv[1:]
+def _familia_git(argv: list[str], compuertas: dict | None = None) -> tuple[str | None, str, dict | None]:
+    resto = list(argv[1:])
+    # `git -C <dir>` con un dir DENTRO del clon pasa (segundo goal real,
+    # 2026-09-15: `git -C <clon> ls-files` se denegaba y costo un turno);
+    # fuera del clon, o sin dir, sigue denegado como las demas opciones
+    # que cambian de repo (--git-dir, --work-tree, -c, --exec-path...)
+    clon = str((compuertas or {}).get("clon") or (compuertas or {}).get("cwd") or "")
+    i = 0
+    while i < len(resto):
+        tok = resto[i]
+        if tok == "-C" or (tok.startswith("-C") and len(tok) > 2 and not tok.startswith("--")):
+            valor = resto[i + 1] if tok == "-C" and i + 1 < len(resto) else (tok[2:] if tok != "-C" else "")
+            p = _resolver(valor, clon) if valor else None
+            if not clon or p is None or _tiene_variable(valor) or not _dentro(p, _resolver(clon, None)):
+                return "DENEGAR", f"git con -C {valor or ''}: sale del clon", None
+            del resto[i:i + (2 if tok == "-C" else 1)]
+            continue
+        i += 1
     for tok in resto:
         if tok in GIT_OPCIONES_PROHIBIDAS or any(tok.startswith(o + "=") for o in GIT_OPCIONES_PROHIBIDAS):
             return "DENEGAR", f"git con {tok}: sale del clon", None
@@ -1200,7 +1216,7 @@ def familia_de_argv(argv: list[str], compuertas: dict) -> tuple[str | None, str,
         return "DENEGAR", f"{argv[0]}: ejecutable fuera del clon y de su venv", None
     cwd = compuertas.get("cwd")
     if exe == "git":
-        return _familia_git(argv)
+        return _familia_git(argv, compuertas)
     if exe == "rm":
         rutas, motivo = _rutas_resueltas(exe, argv, cwd)
         if motivo:

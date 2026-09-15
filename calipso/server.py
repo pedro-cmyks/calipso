@@ -2622,7 +2622,8 @@ def _manos_reales(al_lanzar=None):
         al_lanzar=al_lanzar)
 
 
-def _juez_real(goal: dict, resumen: str, diff: str, salidas: str, al_lanzar=None) -> dict | None:
+def _juez_real(goal: dict, resumen: str, diff: str, salidas: str, criterio_resultado: dict | None = None,
+               al_lanzar=None) -> dict | None:
     """En HILO. El revisor de otra familia; `al_lanzar` (= `runner.
     registrar_golpe`) publica su Popen en el runner: cuenta como golpe y
     parar/apagar lo matan como al martillo en vez de dejarlo gastando cuota
@@ -2644,7 +2645,7 @@ def _juez_real(goal: dict, resumen: str, diff: str, salidas: str, al_lanzar=None
     return goals_manos.revisar(manos_del_golpe=goal.get("manos") or "claude", exes=exes,
                                goal_texto=goal.get("objective") or "", criterio=goal.get("criterio") or {},
                                resumen_ledger=resumen, diff=diff, salidas=salidas, cwd=cwd,
-                               al_lanzar=al_lanzar, compuertas=compuertas,
+                               al_lanzar=al_lanzar, compuertas=compuertas, criterio_resultado=criterio_resultado,
                                compuertas_path=str(compuertas_path))
 
 
@@ -2664,7 +2665,7 @@ def _runner_de(goal_id: str) -> "goals_runner.Runner":
     # en dos pasos: las manos reales y el revisor publican su Popen en el
     # runner (decision 17; el revisor cuenta como golpe y se mata igual)
     runner.manos = _manos_reales(al_lanzar=runner.registrar_golpe)
-    runner.juez = lambda goal, resumen, diff, salidas: _juez_real(goal, resumen, diff, salidas,
+    runner.juez = lambda goal, resumen, diff, salidas, cr=None: _juez_real(goal, resumen, diff, salidas, cr,
                                                                   al_lanzar=runner.registrar_golpe)
     return runner
 

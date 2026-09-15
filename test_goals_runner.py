@@ -67,14 +67,15 @@ class Falsas:
         r = self.resultados[min(len(self.llamadas["manos"]) - 1, len(self.resultados) - 1)]
         return r
 
-    def juez(self, goal, resumen, diff, salidas):
+    def juez(self, goal, resumen, diff, salidas, criterio_resultado=None):
         # invariante 3 tambien para el revisor: su fila `inicio` (manos
         # revisor:<otra familia>, paso revisar) ya esta en el ledger
         ultima = goals.golpes(goal["id"])[-1]
         assert ultima["fase"] == "inicio" and ultima["manos"].startswith("revisor:"), \
             "revisor sin fila inicio antes de ejecutarse"
         assert ultima["paso"] == "revisar"
-        self.llamadas["juez"].append({"resumen": resumen, "diff": diff, "n": ultima["n"]})
+        self.llamadas["juez"].append({"resumen": resumen, "diff": diff, "n": ultima["n"],
+                                      "criterio": criterio_resultado})
         if not self.juicios:
             return None
         return self.juicios[min(len(self.llamadas["juez"]) - 1, len(self.juicios) - 1)]
@@ -1102,7 +1103,7 @@ def test_el_revisor_es_un_golpe_con_fila_inicio_antes_y_sin_golpe_apagado(home, 
     vistos = {}
     juez_base, crit_base = f.juez, f.criterio
 
-    def juez(goal, resumen, diff, salidas):
+    def juez(goal, resumen, diff, salidas, criterio_resultado=None):
         vistos["revisor"] = r.sin_golpe.is_set()
         return juez_base(goal, resumen, diff, salidas)
 
@@ -1131,8 +1132,8 @@ def test_parar_durante_el_revisor_no_transiciona_y_deja_la_fila(home, tmp_path):
     r = f.runner(g["id"])
     juez_base = f.juez
 
-    def juez_matado(goal, resumen, diff, salidas):
-        juez_base(goal, resumen, diff, salidas)
+    def juez_matado(goal, resumen, diff, salidas, cr=None):
+        juez_base(goal, resumen, diff, salidas, cr)
         r.cancelar.set()
         return None
     r.juez = juez_matado
@@ -1147,8 +1148,8 @@ def test_parar_durante_el_revisor_no_transiciona_y_deja_la_fila(home, tmp_path):
     r.cancelar.clear()
     f.juicios = [{"cumplido": True, "falta": [], "nota": "ok", "revisor": "codex"}]
 
-    def juez_justo(goal, resumen, diff, salidas):
-        v = juez_base(goal, resumen, diff, salidas)
+    def juez_justo(goal, resumen, diff, salidas, cr=None):
+        v = juez_base(goal, resumen, diff, salidas, cr)
         r.cancelar.set()
         return v
     r.juez = juez_justo
@@ -1486,6 +1487,21 @@ def test_el_contrato_de_codex_no_manda_commitear():
     assert gr.contrato_del_goal(base) == claude                    # sin manos = claude
 
 
+def test_el_revisor_recibe_el_resultado_del_criterio(home, tmp_path):
+    """El runner le pasa al juez lo que dio el criterio (ok y salida) para que
+    el revisor no lo rejuzgue (segundo goal real en produccion)."""
+    f = Falsas(resultados=[resultado("terminar", "hice ok.txt")],
+               juicios=[{"cumplido": True, "falta": [], "nota": "", "revisor": "codex", "unidades": 1}])
+    g = goal_activo(home, tmp_path, criterio={"tipo": "archivo", "ruta": "ok.txt"})
+    r = f.runner(g["id"])
+    ruta = goals.dir_trabajo(g["id"]) / "repo" / "ok.txt"
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_text("x", encoding="utf-8")
+    it = r.iteracion()
+    assert it["estado"] == goals.WAITING and f.llamadas["juez"], it        # cumplido: espera a Pedro
+    assert f.llamadas["juez"][-1]["criterio"] == {"ok": True, "salida": f"{ruta} existe"}
+
+
 def test_el_contrato_dice_como_usar_bash_para_no_gastar_golpes_en_denegaciones():
     """Primer goal real en produccion (2026-09-15): 5 de 14 Bash denegados por
     el hook (`&&`, `|`, `2>&1`, `python -c`, un mensaje de commit con salto
@@ -1496,6 +1512,9 @@ def test_el_contrato_dice_como_usar_bash_para_no_gastar_golpes_en_denegaciones()
     c = gr.contrato_del_goal(base)
     assert "un comando simple por llamada" in c and "&&" in c and "python -c" in c
     assert "-F" in c and "pypi" in c
+    # el criterio lo corre el runner en el clon con .venv/bin primero: que no
+    # instale en el home para que `pytest` exista fuera del venv
+    assert "el criterio lo corre el runner" in c and ".venv/bin" in c
 
 
 def test_linea_de_deshacer_es_pura():
