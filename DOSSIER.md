@@ -23,16 +23,17 @@ libreria: es de un usuario, en una maquina.
 
 ## Estado
 
-Vivo, y no hay ambiguedad sobre donde. El ultimo commit es `9ea10e8`, del 2026-09-15 10:32 ("docs: el
-documento para volver..."); `main` es la rama por defecto, y `main` esta exactamente a la par de
-`origin/main` (0 commits adelante, 0 atras). El arbol esta limpio salvo tres documentos sin trackear de hoy
-(2026-09-16) en `docs/superpowers/`. El server real esta arriba ahora mismo, escuchando en 127.0.0.1:8000,
+Vivo, y no hay ambiguedad sobre donde. El ultimo commit de trabajo es `9ea10e8`, del 2026-09-15 10:32
+("docs: el documento para volver..."); `main` es la rama por defecto, y no diverge de `origin/main`: no
+esta ningun commit atras, y lo unico que tiene adelante son los commits de este dossier, todavia sin
+push. El arbol esta limpio salvo tres documentos sin trackear de hoy (2026-09-16) en
+`docs/superpowers/`. El server real esta arriba ahora mismo, escuchando en 127.0.0.1:8000,
 y sirve desde este mismo checkout: por eso main se queda quieto aca y las ramas se trabajan en worktrees.
 
-777 commits desde el primero (`b6f8fdb`, 2026-06-14), un solo autor. 21 ramas locales, de las cuales la
-unica que no esta mergeada en main es `wip/sobre-obligatorio`: todas las demas son restos de tandas ya
-cerradas con merge --no-ff. Lo detenido esta detenido por decision de Pedro (su limite semanal de
-suscripcion), no por un problema del proyecto.
+777 commits hasta ahi desde el primero (`b6f8fdb`, 2026-06-14), un solo autor. 21 ramas locales, de las
+cuales la unica que no esta mergeada en main es `wip/sobre-obligatorio`: todas las demas son restos de
+tandas ya cerradas con merge --no-ff. Lo detenido esta detenido por decision de Pedro (su limite semanal
+de suscripcion), no por un problema del proyecto.
 
 ## Por donde entrar
 
