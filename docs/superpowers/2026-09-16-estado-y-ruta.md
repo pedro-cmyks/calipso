@@ -103,6 +103,23 @@ repo, fijo y revisado.
 **La que queda abierta es la deteccion**, y es la mas interesante. Pedro eligio que la propuesta automatica
 se dispare siempre que haya manos, con una condicion: *"la deteccion tiene que ser perfecta, arreglemosla"*.
 
+**El spec v2 esta ESCRITO y CERRADO** (`specs/2026-09-15-manos-design.md`, de 135 a 1.520 lineas, commit
+`d226136`): las ocho decisiones escritas como tales, una seccion nueva que desarma las tres premisas falsas
+del borrador con evidencia, la propuesta automatica reescrita alrededor del banco con su compuerta de
+medicion (piso: precision >= 95%, recall >= 60%), y el corte en ocho tareas, cada una con lo que la
+bloquea. Seis lentes adversarias (seguridad, factibilidad, contradicciones, completitud, costo, y Codex
+gpt-5.5 como familia distinta) dejaron **73 hallazgos: 41 entraron como rulings numerados, 9 quedaron como
+decisiones de Pedro (§13) y 2 se descartaron con evidencia**.
+
+Lo que caza una revision asi, y justifica el metodo: **la lente de seguridad encontro una escalada total en
+el propio diseño del MCP**. El spec lanzaba el servidor con `python -m calipso.mcp_calipso`, y con el
+directorio de trabajo en el clon **Python ejecuta el archivo del clon**: el martillo escribia su propio
+`mcp_calipso.py` en un golpe y en el siguiente ese archivo corria COMO PEDRO, fuera del sandbox y fuera del
+hook. La pieza pensada para ser el limite del goal era la puerta para saltearlo. Medido tambien el arreglo:
+`PYTHONPATH` solo no alcanza porque el cwd le gana; hace falta `-P` mas ruta explicita. Ademas se verifico
+en la maquina que `failIfUnavailable` sigue existiendo en el CLI 2.1.273 (tacha un bloqueante sin gastar un
+golpe) y que la tool `Read` del CLI es in-process y NO pasa por el sandbox.
+
 ## 6. El banco del detector de manos
 
 Construido hoy, con el metodo de siempre: medir antes de cablear.
@@ -140,16 +157,51 @@ de codigo que los declaren, validen o lean**. El vault nacio como artefactos, no
 Advertencia: OpenMontage es **AGPL-3.0 con clausula de red** y Calipso sirve una PWA por HTTP. Se miran los
 patrones, no se copia una linea.
 
+## 7b. La cosmologia afinada y el reino
+
+Despues de todo lo anterior, Pedro afino el modelo del mundo y quedo escrito en
+`2026-09-16-el-reino-modelo-economico.md`, que es el documento base de la sesion del padron:
+
+- **El abismo es una BOVEDA con NIVELES; la fabrica es el REINO** donde viven los que quieren (jefes y
+  departamentos), lo que se quiere (proyectos, metas) y con que se paga (la economia).
+- **Los departamentos no tienen manos ni son manos: INVOCAN.** El cuerpo es uno solo y es de Calipso. De
+  ahi: el carril unico de goals deja de ser una limitacion accidental (muchas voluntades, un cuerpo, una
+  cola), y el padron se simplifica (un departamento declara QUE QUIERE, HASTA DONDE y CON QUE; el COMO lo
+  pone el cuerpo).
+- **La simetria del sistema:** la boveda tiene niveles para lo que entra; la puerta tiene compuertas para
+  lo que sale. Anillos y familias son la misma idea en los dos ejes: saber y hacer.
+- **El objetivo de fondo:** que Calipso administre su economia y despues pueda ganar. Hoy no puede ganar
+  por decision de Pedro: `gastar`, `publicar` y `correo` son NUNCA, y "solo el libro exterior vota" es un
+  invariante sin numerador. Orden propuesto: primero administrar lo que ya se gasta, despues abrir la
+  frontera que firma.
+- **Dos clases de departamento y dos varas:** los que producen hacia afuera (vara: el libro exterior) y los
+  que sirven al sistema (vara: utilidad demostrada, nunca actividad), estos ultimos con bolsillo apartado
+  -- que hay que medir en CRISTALES, y el escrow hoy es solo en monedas.
+- **El ranking y su trampa:** la metrica se vuelve la meta. Al vigia medido por alarmas emitidas le conviene
+  llenar el inbox; medido por alarmas atendidas, le conviene callarse lo irrelevante. Y el departamento
+  cuyo exito es que no pase nada rompe cualquier ranking ingenuo. Ademas: **la vara no la toca el
+  departamento** -- quien reescribe con que se lo mide no esta siendo medido.
+- **La vista:** la UI del reino es un city-builder de vista superior (Anno), donde la fabrica y el abismo
+  son lugares interactuables. Es la rebanada 3 del abismo. Dos reglas: hacer visible que es real y que es
+  simulado ("un juego, pero con mi plata"), y nada decorativo -- si no hay dato, no hay elemento.
+
 ## 8. Lo que queda, en orden
 
-1. **El spec v2 de las manos**, con las siete decisiones y el hallazgo del contexto en la deteccion; despues
-   las lentes, el plan y el SDD.
-2. **El detector con contexto**, medido contra el banco. Y los 12 casos que quedaron para Pedro.
-3. **La sesion del padron**: definir cada departamento, su alcance y lo que se espera. Es irreversible.
-4. **El esquema del nodo del vault** (`calipso/vault/esquema.py`), que es lo que le falta a los ocho
-   dossieres para dejar de ser archivos sueltos. Horas, no dias.
-5. La deriva (`calipso/deriva.py`), determinista y a cero tokens, cuando el norte este declarado.
-6. Lo pospuesto: los ojos (subproyecto 3), la rebanada 2 del abismo (M1, el Mac), el modelo propio.
+1. **Las nueve decisiones de Pedro del spec v2** (seccion 13 del spec): si el goal puede leer la memoria de
+   Pedro por el MCP, que pasa con los 1,1 GB de Blender si el goal muere, los numeros de tiempo y RAM para
+   correr una app, y el tope del caso guia -- 8 golpes y 40 minutos no alcanzan ni en el mejor escenario
+   (hacen falta siete golpes sin un solo error).
+2. **El plan y el SDD de las manos**, cuando esas nueve esten cerradas. La tarea 0 es la sonda contra el
+   CLI 2.1.273.
+3. **El detector con contexto**, medido contra el banco (piso: precision >= 95%, recall >= 60%). Y los 10
+   casos que quedaron para Pedro.
+4. **La sesion del padron**, con `2026-09-16-el-reino-modelo-economico.md` como punto de partida: cinco
+   decisiones, ninguna tecnica. Es irreversible.
+5. **El esquema del nodo del vault** (`calipso/vault/esquema.py`): los ocho DOSSIER.md existen y ninguna
+   linea de codigo los declara, valida ni lee. Horas, no dias.
+6. La deriva (`calipso/deriva.py`), determinista y a cero tokens, cuando el norte este declarado.
+7. Lo pospuesto: los ojos (subproyecto 3), la rebanada 2 del abismo (M1, el Mac), la rebanada 3 (la vista),
+   el modelo propio.
 
 ## 9. Pendientes que Pedro decidio postergar
 
