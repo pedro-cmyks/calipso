@@ -5,7 +5,7 @@ anillo: 1
 familia: personal
 estado: vivo
 remoto: github.com/pedro-cmyks/calipso
-visibilidad: privado
+visibilidad: publico (MIT, desde 2026-10-05)
 trabajo_vivo_en: main
 actualizado: 2026-09-16
 tags: [asistente-personal, agentes-autonomos, python-fastapi, ruteo-de-modelos, sandbox-bwrap]

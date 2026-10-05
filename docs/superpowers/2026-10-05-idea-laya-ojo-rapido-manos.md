@@ -3,7 +3,8 @@
 Nota de Pedro, dictada en la sesion del 2026-10-05, para que no se pierda. No es
 spec ni plan: es una direccion para el subproyecto de las manos
 (`specs/2026-09-15-manos-design.md`, terreno medido en
-`2026-09-16-terreno-manos.md`).
+`2026-09-16-terreno-manos.md`) y, en particular, para el "ojo" que ya plantea
+`specs/2026-08-27-ojos-y-manos-design.md`.
 
 ## El problema
 
